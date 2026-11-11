@@ -258,7 +258,8 @@ export function AdminPage() {
             <section className="admin-api-card">
               <div className="admin-api-heading"><div><span className="admin-eyebrow">GATEWAY · UNORouter</span><h2>Provider API key</h2></div><span className="admin-api-badge"><Zap size={13} /> Server-side · edge function</span></div>
               <p className="admin-api-note">Menyimpan kunci API untuk provider seperti UnoRouter. Kunci dipakai oleh edge function <b>ai-chat</b> di Supabase — klien browser hanya mengirim permintaan tanpa melihat kunci.</p>
-              {providerKeys.length === 0 ? <div className="admin-empty-inline">Belum ada provider. Tambahkan provider pertama di bawah.</div> : providerKeys.map((provider) => <div className="admin-api-row" key={provider.provider}>
+              {providerKeys.length === 0 && <div className="admin-empty-inline">Belum ada provider. Masukkan kunci UnoRouter di bawah — tersimpan otomatis.</div>}
+              {(providerKeys.some((item) => item.provider === 'unorouter') ? providerKeys : [{ provider: 'unorouter', label: 'UnoRouter', api_key: '' }, ...providerKeys]).map((provider) => <div className="admin-api-row" key={provider.provider}>
                 <div className="admin-api-row-top"><div><span className="admin-api-name">{provider.label || provider.provider}</span><small>{provider.provider}</small></div><span className={`admin-api-state ${provider.api_key ? '' : 'is-empty'}`}>{provider.api_key ? 'Terhubung' : 'Belum terhubung'}</span></div>
                 <div className="admin-api-input-row">
                   <LockKeyhole size={14} />
