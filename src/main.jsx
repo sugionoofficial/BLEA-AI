@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { supabase } from './lib/supabase';
 import {
   ArrowDown, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown,
   CirclePlay, Command, Globe2, Layers3, Menu, MessageCircle,
@@ -53,9 +54,40 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [email, setEmail] = useState('');
   const [joined, setJoined] = useState(false);
-  const handleJoin = (event) => {
+  const [submitting, setSubmitting] = useState(false);
+  const [signupMessage, setSignupMessage] = useState('');
+  const [signupError, setSignupError] = useState(false);
+
+  const handleJoin = async (event) => {
     event.preventDefault();
-    if (email.trim()) setJoined(true);
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || submitting) return;
+
+    setSubmitting(true);
+    setSignupMessage('');
+    setSignupError(false);
+    try {
+      const { error } = await supabase
+        .from('waitlist_signups')
+        .insert({ email: normalizedEmail });
+
+      if (error?.code === '23505') {
+        setSignupMessage('Email ini sudah terdaftar di daftar tunggu.');
+      } else if (error) {
+        console.error('Waitlist signup failed:', error);
+        setSignupMessage('Pendaftaran belum berhasil. Coba lagi sebentar, ya.');
+        setSignupError(true);
+      } else {
+        setJoined(true);
+        setSignupMessage('Berhasil! Email kamu sudah masuk daftar tunggu.');
+      }
+    } catch (error) {
+      console.error('Waitlist signup failed:', error);
+      setSignupMessage('Koneksi sedang bermasalah. Coba lagi sebentar, ya.');
+      setSignupError(true);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -96,7 +128,7 @@ function App() {
 
         <section id="cara-kerja" className="manifesto-section"><div className="container manifesto-wrap"><div className="manifesto-mark"><span /><span /><span /><span /></div><span className="eyebrow"><span /> CARA KERJA KAMI</span><h2>AI yang bikin kamu<br /><em>lebih jadi kamu.</em></h2><p>Teknologi terbaik bukan yang mengambil alih. Tapi yang membuka ruang agar versi terbaik dari idemu bisa muncul.</p><a href="#tentang" className="manifesto-link">Kenali BLEA <ArrowUpRight size={15} /></a><div className="manifesto-decoration deco-one">✳</div><div className="manifesto-decoration deco-two">✦</div></div></section>
 
-        <section id="tentang" className="cta-section section-pad"><div className="container"><div className="cta-card" id="daftar"><div className="cta-glow" /><div className="cta-content"><span className="eyebrow"><span /> MULAI DARI SINI</span><h2>Punya ide yang<br /><span>nggak sabar dibuat?</span></h2><p>Ruangmu sudah siap. Tinggal kamu dan ide berikutnya.</p><form className="signup-form" onSubmit={handleJoin}><label className="visually-hidden" htmlFor="email">Email kamu</label><input id="email" type="email" placeholder="Masukkan email kamu" value={email} onChange={(event) => setEmail(event.target.value)} required /><button type="submit">{joined ? <>Kamu masuk daftar <Check size={16} /></> : <>Gabung gratis <ArrowRight size={16} /></>}</button></form><span className="form-note">Tanpa kartu kredit. Mulai kapan saja.</span></div><div className="cta-art"><div className="cta-ring ring-outer" /><div className="cta-ring ring-middle" /><div className="cta-ring ring-inner" /><div className="cta-star">✳</div><div className="cta-mini mini-one"><Sparkles size={13} /></div><div className="cta-mini mini-two"><Zap size={13} /></div><span className="cta-art-caption">IDE KECIL,<br />DAMPAK BESAR.</span></div></div></div></section>
+        <section id="tentang" className="cta-section section-pad"><div className="container"><div className="cta-card" id="daftar"><div className="cta-glow" /><div className="cta-content"><span className="eyebrow"><span /> MULAI DARI SINI</span><h2>Punya ide yang<br /><span>nggak sabar dibuat?</span></h2><p>Ruangmu sudah siap. Tinggal kamu dan ide berikutnya.</p><form className="signup-form" onSubmit={handleJoin}><label className="visually-hidden" htmlFor="email">Email kamu</label><input id="email" type="email" autoComplete="email" placeholder="Masukkan email kamu" value={email} onChange={(event) => setEmail(event.target.value)} required disabled={joined} /><button type="submit" disabled={submitting || joined}>{submitting ? 'Mengirim...' : joined ? <>Kamu masuk daftar <Check size={16} /></> : <>Gabung gratis <ArrowRight size={16} /></>}</button></form><span className={`form-note${signupError ? ' form-note-error' : ''}`} role="status" aria-live="polite">{signupMessage || 'Tanpa kartu kredit. Mulai kapan saja.'}</span></div><div className="cta-art"><div className="cta-ring ring-outer" /><div className="cta-ring ring-middle" /><div className="cta-ring ring-inner" /><div className="cta-star">✳</div><div className="cta-mini mini-one"><Sparkles size={13} /></div><div className="cta-mini mini-two"><Zap size={13} /></div><span className="cta-art-caption">IDE KECIL,<br />DAMPAK BESAR.</span></div></div></div></section>
       </main>
 
       <footer className="footer"><div className="container footer-top"><div><Brand light /><p>Ruang kreatif untuk masa depan yang kamu bayangkan.</p></div><div className="footer-links"><a href="#fitur">Fitur</a><a href="#cara-kerja">Cara kerja</a><a href="#tentang">Tentang kami</a><a href="mailto:halo@blea.ai">Hubungi kami</a></div><a href="#top" className="back-top">Kembali ke atas <ArrowUpRight size={14} /></a></div><div className="container footer-bottom"><span>© 2026 BLEA AI. Dibuat untuk ide-ide besar.</span><div><a href="#privasi">Privasi</a><a href="#ketentuan">Ketentuan</a><span className="footer-status"><i /> Semua sistem beroperasi</span></div></div></footer>
