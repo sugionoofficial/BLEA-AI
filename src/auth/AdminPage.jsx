@@ -148,7 +148,9 @@ export function AdminPage() {
         ...current,
         [provider]: {
           type: 'error',
-          text: data?.error || `Verifikasi gagal (HTTP ${status ?? '—'}). Cek koneksi atau coba lagi.`,
+          text: status === 401
+            ? 'Sesi expired — login lagi sebelum verifikasi key.'
+            : data?.error || `Verifikasi gagal (HTTP ${status ?? '—'}). Cek koneksi atau coba lagi.`,
         },
       }));
     }
@@ -167,10 +169,10 @@ export function AdminPage() {
         text: `${models.length} model gratis tersedia. Pilih model aktif ( hijau ), lalu simpan.`,
       });
     } else {
-      setModelNotice({
-        type: 'error',
-        text: error || `Pemuatan daftar model gagal (HTTP ${status ?? '—'}). Coba lagi.`,
-      });
+      const msg = status === 401
+        ? 'Sesi kamu expired — login lagi untuk memuat daftar model.'
+        : error || `Pemuatan daftar model gagal (HTTP ${status ?? '—'}). Coba lagi.`;
+      setModelNotice({ type: 'error', text: msg });
     }
     setModelBusy('');
   }
@@ -186,7 +188,10 @@ export function AdminPage() {
     if (data?.ok) {
       setModelNotice({ type: 'success', text: `${data.activeCount} model aktif disimpan. AI Studio memakai model ini.` });
     } else {
-      setModelNotice({ type: 'error', text: data?.error || `Penyimpanan model gagal (HTTP ${status ?? '—'}). Cek permission admin.` });
+      const msg = status === 401
+        ? 'Sesi expired — login lagi sebelum menyimpan pilihan model.'
+        : data?.error || `Penyimpanan model gagal (HTTP ${status ?? '—'}). Cek permission admin.`;
+      setModelNotice({ type: 'error', text: msg });
     }
     setModelBusy('');
   }

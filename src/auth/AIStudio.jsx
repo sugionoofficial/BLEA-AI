@@ -122,6 +122,10 @@ export function AIStudio() {
       try {
         const status = await fetchProviderStatus();
         if (cancelled) return;
+        if (status?.error) {
+          console.error('Provider status failed:', status.error);
+          return;
+        }
         setProviderStatus(status);
         if (status?.configured) {
           const [enabled, freeModels] = await Promise.all([fetchEnabledModels(), fetchFreeModels()]);

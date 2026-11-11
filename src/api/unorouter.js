@@ -2,15 +2,27 @@ import { supabase } from '../lib/supabase';
 
 // Edge function "ai-chat" di Supabase — key API tetap di server.
 const EDGE_BASE = `${(import.meta.env.VITE_SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '')}/functions/ai-chat`;
+const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz';
 
 async function edgeRequest(path, body) {
+  // getSession() mengembalikan cache — bisa sudah expired (JWT 1 jam).
+  // Refresh dulu agar edge function menerima token valid.
   const { data: sessionData } = await supabase.auth.getSession();
-  const token = sessionData.session?.access_token;
+  const session = sessionData?.session;
+  let token = session?.access_token;
+  if (!token || (session?.expires_at && session.expires_at * 1000 < Date.now() + 60_000)) {
+    const refreshed = await supabase.auth.refreshSession();
+    token = refreshed?.data?.session?.access_token;
+  }
+  if (!token) {
+    return { ok: false, status: 401, data: { error: 'authentication required' } };
+  }
   const res = await fetch(`${EDGE_BASE}?path=${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      Authorization: `Bearer ${token || ''}`,
+      apikey: PUBLISHABLE_KEY,
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(body ?? {}),
   });
