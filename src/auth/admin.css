@@ -49,3 +49,11 @@
 .admin-model-toggle.is-active .admin-model-dot{background:#4fd68b;box-shadow:0 0 8px rgba(90,220,150,0.7)}
 .admin-model-toggle.is-off{color:#f5c6c0;background:rgba(170,60,52,0.22)}
 .admin-model-toggle.is-off .admin-model-dot{background:#f08a7e}
+.admin-model-filters{display:flex;align-items:center;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.admin-model-chip{height:28px;padding:0 12px;display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,0.14);border-radius:14px;background:transparent;color:#f0eef7;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.admin-model-chip:hover{border-color:rgba(255,255,255,0.3)}
+.admin-model-chip.is-active{background:#b6a4f6;color:#05060a;border-color:#b6a4f6}
+.admin-model-search{flex:1;min-width:160px;height:30px;padding:0 12px;border:1px solid rgba(255,255,255,0.14);border-radius:5px;background:rgba(255,255,255,0.04);color:#ffffff;font-family:inherit;font-size:13px}
+.admin-model-search::placeholder{color:rgba(240,238,247,0.4)}
+.admin-model-info{display:flex;flex-direction:column;gap:2px;min-width:0}
+.admin-model-tags{font-size:11px;color:#b3aec9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

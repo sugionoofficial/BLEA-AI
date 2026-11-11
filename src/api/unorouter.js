@@ -49,6 +49,12 @@ export async function fetchAdminModels({ apiKey } = {}) {
   return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
 }
 
+// Admin panel — catalog lengkap model gratis dari UnoRouter (di-fetch server-side via worker).
+export async function fetchCatalog() {
+  const { data, status } = await edgeRequest('/catalog', {});
+  return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
+}
+
 // Admin panel — simpan pilihan model aktif untuk provider.
 export async function saveProviderModels({ provider, models }) {
   return edgeRequest('/save-models', { provider, models });

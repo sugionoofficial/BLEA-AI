@@ -120,6 +120,37 @@ async function handleApi(request, url, env) {
       return jsonResponse({ models: (rows ?? []).map((m) => m.model) });
     }
 
+    // ---- /catalog: full free model list from UnoRouter (server-side, no API key needed) ----
+    if (path === 'catalog' && (method === 'GET' || method === 'POST')) {
+      try {
+        const upstream = await fetch('https://api.unorouter.com/api/pricing', {
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!upstream.ok) return jsonResponse({ error: 'Catalog fetch failed', status: upstream.status }, 502);
+        const catalog = await upstream.json().catch(() => ({}));
+        const rows = Array.isArray(catalog?.data) ? catalog.data : [];
+        const models = rows
+          .filter((row) => row.is_free && row.online)
+          .map((row) => {
+            let meta = {};
+            try { meta = JSON.parse(row.metadata || '{}'); } catch {}
+            const tags = String(row.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+            const mode = meta.mode;
+            let category;
+            if (mode === 'image') category = 'Image';
+            else if (mode === 'embedding') category = 'Embedding';
+            else if (mode === 'speech') category = 'Speech';
+            else if (mode === 'video') category = 'Video';
+            else if (tags.some((t) => t.toLowerCase() === 'text')) category = 'Text';
+            else category = 'Other';
+            return { id: row.model_name, category, tags, description: row.description || '' };
+          });
+        return jsonResponse({ models });
+      } catch (e) {
+        return jsonResponse({ error: String(e) }, 502);
+      }
+    }
+
     // ---- /admin-models: full model list (admin) ----
     if (path === 'admin-models' && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
