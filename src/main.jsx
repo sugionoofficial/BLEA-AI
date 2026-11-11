@@ -19,6 +19,7 @@ import {
   Sparkles, WandSparkles, X, Zap
 } from 'lucide-react';
 import './styles.css';
+import './readability.css';
 
 const navItems = [
   ['Fitur', '#fitur'],
