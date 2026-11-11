@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, FolderKanban, KeyRound, LayoutDashboard, LockKeyhole, LoaderCircle, LogOut, Mail, MessagesSquare, Plus, Search, ShieldCheck, Trash2, Users, X, Zap } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
-import { verifyKey, fetchAdminModels, saveProviderModels } from '../api/unorouter';
+import { verifyKey, fetchAdminModels, fetchCatalog, saveProviderModels } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const tabs = [
@@ -36,6 +36,8 @@ export function AdminPage() {
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [modelBusy, setModelBusy] = useState('');
   const [modelNotice, setModelNotice] = useState(null);
+  const [modelFilter, setModelFilter] = useState('All');
+  const [modelQuery, setModelQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
   const [search, setSearch] = useState('');
@@ -160,18 +162,26 @@ export function AdminPage() {
   async function loadUnoModels() {
     setModelBusy('load');
     setModelNotice({ type: 'info', text: 'Memuat daftar model dari UnoRouter...' });
-    const { models, error, status } = await fetchAdminModels({});
-    if (Array.isArray(models)) {
-      setUnoModels(models);
+    const [catalog, dbModels] = await Promise.all([fetchCatalog(), fetchAdminModels({})]);
+    const activeMap = new Map((dbModels.models || []).filter((m) => m.active).map((m) => [m.id, true]));
+    if (Array.isArray(catalog.models)) {
+      const merged = catalog.models.map((model) => ({ ...model, active: activeMap.has(model.id) }));
+      // Models in DB but missing from catalog (manual/legacy rows) keep their flag
+      for (const m of (dbModels.models || [])) {
+        if (!merged.some((item) => item.id === m.id)) {
+          merged.push({ id: m.id, category: 'Other', tags: [], active: m.active });
+        }
+      }
+      setUnoModels(merged);
       setModelsLoaded(true);
       setModelNotice({
         type: 'success',
-        text: `${models.length} model gratis tersedia. Pilih model aktif ( hijau ), lalu simpan.`,
+        text: `${merged.length} model gratis tersedia. Pilih model aktif (hijau), lalu simpan.`,
       });
     } else {
-      const msg = status === 401
+      const msg = catalog.status === 401
         ? 'Sesi kamu expired — login lagi untuk memuat daftar model.'
-        : error || `Pemuatan daftar model gagal (HTTP ${status ?? '—'}). Coba lagi.`;
+        : catalog.error || `Pemuatan daftar model gagal (HTTP ${catalog.status ?? '—'}). Coba lagi.`;
       setModelNotice({ type: 'error', text: msg });
     }
     setModelBusy('');
@@ -258,7 +268,8 @@ export function AdminPage() {
             <section className="admin-api-card">
               <div className="admin-api-heading"><div><span className="admin-eyebrow">GATEWAY · UNORouter</span><h2>Provider API key</h2></div><span className="admin-api-badge"><Zap size={13} /> Server-side · edge function</span></div>
               <p className="admin-api-note">Menyimpan kunci API untuk provider seperti UnoRouter. Kunci dipakai oleh edge function <b>ai-chat</b> di Supabase — klien browser hanya mengirim permintaan tanpa melihat kunci.</p>
-              {providerKeys.length === 0 ? <div className="admin-empty-inline">Belum ada provider. Tambahkan provider pertama di bawah.</div> : providerKeys.map((provider) => <div className="admin-api-row" key={provider.provider}>
+              {providerKeys.length === 0 && <div className="admin-empty-inline">Belum ada provider. Masukkan kunci UnoRouter di bawah — tersimpan otomatis.</div>}
+              {(providerKeys.some((item) => item.provider === 'unorouter') ? providerKeys : [{ provider: 'unorouter', label: 'UnoRouter', api_key: '' }, ...providerKeys]).map((provider) => <div className="admin-api-row" key={provider.provider}>
                 <div className="admin-api-row-top"><div><span className="admin-api-name">{provider.label || provider.provider}</span><small>{provider.provider}</small></div><span className={`admin-api-state ${provider.api_key ? '' : 'is-empty'}`}>{provider.api_key ? 'Terhubung' : 'Belum terhubung'}</span></div>
                 <div className="admin-api-input-row">
                   <LockKeyhole size={14} />
@@ -272,10 +283,19 @@ export function AdminPage() {
             </section>
             {providerKeys.some((item) => item.provider === 'unorouter') && <section className="admin-api-card">
               <div className="admin-api-heading"><div><span className="admin-eyebrow">MODEL · UNORouter</span><h2>Model tersedia</h2></div><span className="admin-api-badge"><Zap size={13} /> Model gratis · disaring</span></div>
-              <p className="admin-api-note">Daftar model dari UnoRouter — hanya model gratis yang ditampilkan. Tombol <b>Active</b> (hijau) mengaktifkan model untuk AI Studio; <b>OFF</b> (merah) menonaktifkannya. Pilih lalu simpan.</p>
+              <p className="admin-api-note">Daftar semua model gratis dari UnoRouter. Filter berdasarkan kategori, cari model, lalu pilih yang aktif (hijau) untuk AI Studio.</p>
               <div className="admin-model-toolbar"><button className="admin-api-verify" onClick={loadUnoModels} disabled={modelBusy === 'load' || !providerKeys.find((item) => item.provider === 'unorouter')?.api_key}>{modelBusy === 'load' ? 'Memuat...' : 'Muat daftar model'}</button><small>{unoModels.filter((model) => model.active).length} model aktif · {unoModels.length} tersedia</small></div>
               {modelNotice && <div className={`admin-api-notice is-${modelNotice.type}`}>{modelNotice.text}</div>}
-              {modelsLoaded && unoModels.length > 0 && <div className="admin-model-list">{unoModels.map((model) => <div className="admin-model-row" key={model.id}><span className="admin-model-name">{model.id}</span><button className={`admin-model-toggle ${model.active ? 'is-active' : 'is-off'}`} onClick={() => toggleUnoModel(model.id)} aria-pressed={model.active}><span className="admin-model-dot" />{model.active ? 'Active' : 'OFF'}</button></div>)}</div>}
+              {modelsLoaded && unoModels.length > 0 && <>
+                <div className="admin-model-filters">
+                  {['All', 'Text', 'Image', 'Embedding', 'Speech', 'Video', 'Other'].map((cat) => <button key={cat} className={`admin-model-chip ${modelFilter === cat ? 'is-active' : ''}`} onClick={() => setModelFilter(cat)}>{cat}</button>)}
+                  <input className="admin-model-search" value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Cari model..." />
+                </div>
+                <div className="admin-model-list">{unoModels.filter((model) => (modelFilter === 'All' || model.category === modelFilter) && model.id.toLowerCase().includes(modelQuery.toLowerCase())).map((model) => <div className="admin-model-row" key={model.id}>
+                  <span className="admin-model-info"><span className="admin-model-name">{model.id}</span><span className="admin-model-tags">{model.category}{model.tags?.length ? ' · ' + model.tags.slice(0, 3).join(' · ') : ''}</span></span>
+                  <button className={`admin-model-toggle ${model.active ? 'is-active' : 'is-off'}`} onClick={() => toggleUnoModel(model.id)} aria-pressed={model.active}><span className="admin-model-dot" />{model.active ? 'Active' : 'OFF'}</button>
+                </div>)}</div>
+              </>}
               {modelsLoaded && unoModels.length === 0 && <div className="admin-empty-inline">Tidak ada model gratis yang ditemukan. Cek API key atau muat ulang.</div>}
               {modelsLoaded && unoModels.length > 0 && <div className="admin-api-input-row" style={{ marginTop: 12 }}><button className="admin-api-save" onClick={saveUnoModels} disabled={modelBusy === 'save'}>Simpan pilihan model</button></div>}
             </section>}
