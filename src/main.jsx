@@ -7,10 +7,12 @@ import { Dashboard } from './auth/Dashboard';
 import { ProtectedRoute } from './auth/ProtectedRoute';
 import { AccountSettings } from './auth/AccountSettings';
 import { ForgotPasswordPage, ResetPasswordPage } from './auth/RecoveryPages';
+import { ProjectsPage } from './auth/ProjectsPage';
 import { Brand } from './components/Brand';
 import { supabase } from './lib/supabase';
 import './auth/auth.css';
 import './auth/settings.css';
+import './auth/projects.css';
 import {
   ArrowDown, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown,
   CirclePlay, Command, Globe2, Layers3, Menu, MessageCircle,
@@ -154,6 +156,7 @@ function App() {
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
+            <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/settings" element={<AccountSettings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
