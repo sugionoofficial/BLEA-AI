@@ -127,11 +127,21 @@ export function AdminPage() {
     }
     setKeyBusy(`verify-${provider}`);
     setKeyNotices((current) => ({ ...current, [provider]: { type: 'info', text: 'Memverifikasi ke UnoRouter...' } }));
-    const { data } = await verifyKey({ apiKey });
+    const { data, status } = await verifyKey({ apiKey });
     if (data?.ok) {
-      setKeyNotices((current) => ({ ...current, [provider]: { type: 'success', text: `Valid — ${data.modelsCount} model tersedia. Simpan untuk mengaktifkan.` } }));
+      const msg = data.verifiedVia === 'chat'
+        ? 'Valid — key bisa digunakan (verifikasi via chat). Simpan untuk mengaktifkan.'
+        : `Valid — ${data.modelsCount} model tersedia. Simpan untuk mengaktifkan.`;
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'success', text: msg } }));
     } else {
-      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: data?.error || 'Key tidak valid.' } }));
+      console.warn('verify key failed:', { provider, status, data });
+      setKeyNotices((current) => ({
+        ...current,
+        [provider]: {
+          type: 'error',
+          text: data?.error || `Verifikasi gagal (HTTP ${status ?? '—'}). Cek koneksi atau coba lagi.`,
+        },
+      }));
     }
     setKeyBusy('');
   }
