@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, FolderKanban, KeyRound, LayoutDashboard, LockKeyhole, LoaderCircle, LogOut, Mail, MessagesSquare, Plus, Search, ShieldCheck, Trash2, Users, X, Zap } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
-import { verifyKey } from '../api/unorouter';
+import { verifyKey, fetchAdminModels, saveProviderModels } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const tabs = [
@@ -32,6 +32,10 @@ export function AdminPage() {
   const [keyNotices, setKeyNotices] = useState({});
   const [keyBusy, setKeyBusy] = useState('');
   const [newProvider, setNewProvider] = useState({ provider: '', label: '' });
+  const [unoModels, setUnoModels] = useState([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelBusy, setModelBusy] = useState('');
+  const [modelNotice, setModelNotice] = useState(null);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
   const [search, setSearch] = useState('');
@@ -64,6 +68,11 @@ export function AdminPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => {
+    const uno = providerKeys.find((item) => item.provider === 'unorouter');
+    if (uno?.api_key && !modelsLoaded && !modelBusy) loadUnoModels();
+  }, [providerKeys, modelsLoaded, modelBusy]);
 
   const profileById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles]);
   const query = search.trim().toLowerCase();
@@ -146,8 +155,43 @@ export function AdminPage() {
     setKeyBusy('');
   }
 
-  async function addProvider() {
-    const provider = newProvider.provider.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  async function loadUnoModels() {
+    setModelBusy('load');
+    setModelNotice({ type: 'info', text: 'Memuat daftar model dari UnoRouter...' });
+    const { models, error, status } = await fetchAdminModels({});
+    if (Array.isArray(models)) {
+      setUnoModels(models);
+      setModelsLoaded(true);
+      setModelNotice({
+        type: 'success',
+        text: `${models.length} model gratis tersedia. Pilih model aktif ( hijau ), lalu simpan.`,
+      });
+    } else {
+      setModelNotice({
+        type: 'error',
+        text: error || `Pemuatan daftar model gagal (HTTP ${status ?? '—'}). Coba lagi.`,
+      });
+    }
+    setModelBusy('');
+  }
+
+  function toggleUnoModel(modelId) {
+    setUnoModels((current) => current.map((model) => model.id === modelId ? { ...model, active: !model.active } : model));
+  }
+
+  async function saveUnoModels() {
+    const active = unoModels.filter((model) => model.active).map((model) => model.id);
+    setModelBusy('save');
+    const { data, status } = await saveProviderModels({ provider: 'unorouter', models: active });
+    if (data?.ok) {
+      setModelNotice({ type: 'success', text: `${data.activeCount} model aktif disimpan. AI Studio memakai model ini.` });
+    } else {
+      setModelNotice({ type: 'error', text: data?.error || `Penyimpanan model gagal (HTTP ${status ?? '—'}). Cek permission admin.` });
+    }
+    setModelBusy('');
+  }
+
+  async function addProvider() {    const provider = newProvider.provider.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
     const label = newProvider.label.trim();
     if (!provider || !label) return;
     setKeyBusy('add');
@@ -221,6 +265,15 @@ export function AdminPage() {
                 {keyNotices[provider.provider] && <div className={`admin-api-notice is-${keyNotices[provider.provider].type}`}>{keyNotices[provider.provider].text}</div>}
               </div>)}
             </section>
+            {providerKeys.some((item) => item.provider === 'unorouter') && <section className="admin-api-card">
+              <div className="admin-api-heading"><div><span className="admin-eyebrow">MODEL · UNORouter</span><h2>Model tersedia</h2></div><span className="admin-api-badge"><Zap size={13} /> Model gratis · disaring</span></div>
+              <p className="admin-api-note">Daftar model dari UnoRouter — hanya model gratis yang ditampilkan. Tombol <b>Active</b> (hijau) mengaktifkan model untuk AI Studio; <b>OFF</b> (merah) menonaktifkannya. Pilih lalu simpan.</p>
+              <div className="admin-model-toolbar"><button className="admin-api-verify" onClick={loadUnoModels} disabled={modelBusy === 'load' || !providerKeys.find((item) => item.provider === 'unorouter')?.api_key}>{modelBusy === 'load' ? 'Memuat...' : 'Muat daftar model'}</button><small>{unoModels.filter((model) => model.active).length} model aktif · {unoModels.length} tersedia</small></div>
+              {modelNotice && <div className={`admin-api-notice is-${modelNotice.type}`}>{modelNotice.text}</div>}
+              {modelsLoaded && unoModels.length > 0 && <div className="admin-model-list">{unoModels.map((model) => <div className="admin-model-row" key={model.id}><span className="admin-model-name">{model.id}</span><button className={`admin-model-toggle ${model.active ? 'is-active' : 'is-off'}`} onClick={() => toggleUnoModel(model.id)} aria-pressed={model.active}><span className="admin-model-dot" />{model.active ? 'Active' : 'OFF'}</button></div>)}</div>}
+              {modelsLoaded && unoModels.length === 0 && <div className="admin-empty-inline">Tidak ada model gratis yang ditemukan. Cek API key atau muat ulang.</div>}
+              {modelsLoaded && unoModels.length > 0 && <div className="admin-api-input-row" style={{ marginTop: 12 }}><button className="admin-api-save" onClick={saveUnoModels} disabled={modelBusy === 'save'}>Simpan pilihan model</button></div>}
+            </section>}
             <section className="admin-api-card">
               <div className="admin-api-heading"><div><span className="admin-eyebrow">TAMBAH PROVIDER</span><h2>Provider baru</h2></div></div>
               <p className="admin-api-note">Provider lain yang memakai API key (misal gateway model tambahan) dapat ditambahkan di sini. Kunci baru tetap disimpan di Supabase dan diakses server-side.</p>
