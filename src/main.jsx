@@ -5,6 +5,7 @@ import { AuthProvider } from './auth/AuthProvider';
 import { Dashboard } from './auth/Dashboard';
 import { ProtectedRoute } from './auth/ProtectedRoute';
 import { AdminRoute } from './auth/AdminRoute';
+import { StudioErrorBoundary } from './auth/StudioErrorBoundary';
 const AuthPage = lazy(() => import('./auth/AuthPages').then((module) => ({ default: module.AuthPage })));
 const AccountSettings = lazy(() => import('./auth/AccountSettings').then((module) => ({ default: module.AccountSettings })));
 const ForgotPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ForgotPasswordPage })));
@@ -13,6 +14,7 @@ const ProjectsPage = lazy(() => import('./auth/ProjectsPage').then((module) => (
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
 import './auth/studio.css';
+import './auth/studio-fallback.css';
 import { Brand } from './components/Brand';
 import { supabase } from './lib/supabase';
 import './auth/auth.css';
@@ -165,7 +167,7 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
             <Route path="/projects" element={<ProjectsPage />} />
-            <Route path="/studio" element={<AIStudio />} />
+            <Route path="/studio" element={<StudioErrorBoundary><AIStudio /></StudioErrorBoundary>} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />

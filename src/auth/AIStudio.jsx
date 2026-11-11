@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowLeft, ArrowUpRight, Check, ChevronDown, CircleHelp, Command, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ArrowUpRight, Command, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
@@ -183,7 +183,7 @@ export function AIStudio() {
   }
 
   return (
-    <div className="studio-shell">
+    <div className="studio-shell studio-ready">
       <aside className="studio-sidebar">
         <div className="studio-brand"><Brand /></div>
         <div className="studio-workspace"><span><Sparkles size={14} /></span><div><b>Ruang pribadi</b><small>AI Studio · Pratinjau</small></div></div>
