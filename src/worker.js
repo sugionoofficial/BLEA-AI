@@ -5,12 +5,12 @@
 //
 // Routes (all accept POST, some GET):
 //   /api/status        -> { ok, configured }            — provider_api_keys has unorouter key
-//   /api/verify        -> { valid }                     — chatcompletions.dev key validation
+//   /api/verify        -> { valid }                     — UnoRouter gateway key validation
 //   /api/models        -> { models: [{id, label}] }     — provider_models where active
 //   /api/enabled-models -> { models: [id] }             — active model IDs
 //   /api/admin-models  -> { models: [...] }             — all provider_models
 //   /api/save-models   -> { ok, saved, activeCount }    — upsert provider_models
-//   /api/chat          -> { ok, reply, messageId }      — openrouter.ai proxy + DB save (auth required)
+//   /api/chat          -> { ok, reply, messageId }      — UnoRouter gateway proxy + DB save (auth required)
 //
 // Env vars (set in Wrangler):
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
@@ -88,16 +88,21 @@ async function handleApi(request, url, env) {
     // ---- /verify: chat-completions validate API key ----
     if (path === 'verify' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
+      // UnoRouter gateway (OpenAI-compatible) — key yang disimpan provider
+      // 'unorouter' adalah gateway key, bukan OpenRouter key.
+      const baseUrl = (body.baseUrl || 'https://api.unorouter.com/v1/chat/completions').replace(/\/+$/, '');
       try {
-        const r = await fetch('https://api.chatcompletions.dev/v1/chat/completions', {
+        const r = await fetch(baseUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (body.apiKey ?? '') },
-          body: JSON.stringify({ model: 'gpt-3.5-turbo', messages: [{ role: 'user', content: 'ping' }] }),
+          body: JSON.stringify({ model: 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
           signal: AbortSignal.timeout(30_000),
         });
         if (r.ok) return jsonResponse({ ok: true, valid: true, verifiedVia: 'chat', modelsCount: 0 });
         const text = await r.text().catch(() => '');
-        return jsonResponse({ ok: false, valid: false, status: r.status, error: text.slice(0, 200) });
+        // 401 = key ditolak (invalid); 404 = key diterima tapi model tidak ada di gateway.
+        const valid = r.status !== 401;
+        return jsonResponse({ ok: valid, valid, status: r.status, error: text.slice(0, 200) });
       } catch (e) {
         return jsonResponse({ ok: false, valid: false, error: String(e) });
       }
@@ -203,15 +208,23 @@ async function handleApi(request, url, env) {
       const user = await getUser(env, token);
       if (!user) return jsonResponse({ error: 'Invalid token' }, 401);
       const body = await request.json().catch(() => ({}));
-      // Read admin-configured API key
-      const keyRes = await servicePostgrest(env, '/provider_api_keys?select=api_key&provider=eq.unorouter&limit=1');
+      // Read admin-configured API key + gateway base URL (UnoRouter gateway —
+      // OpenAI-compatible; TIDAK memanggil openrouter.ai langsung karena key
+      // yang disimpan adalah UnoRouter gateway key).
+      const keyRes = await servicePostgrest(env, '/provider_api_keys?select=api_key,base_url&provider=eq.unorouter&limit=1');
       const keyRows = await keyRes.json().catch(() => []);
       const apiKey = keyRows?.[0]?.api_key || 'use-free';
-      const fetchBody = { ...body, api_key: apiKey, model: body.model, messages: body.messages, stream: false };
+      const gatewayBase = (keyRows?.[0]?.base_url || 'https://api.unorouter.com').replace(/\/+$/, '');
+      // base_url bisa berupa host (https://api.unorouter.com) atau URL lengkap
+      // (https://api.unorouter.com/v1/chat/completions) — jangan dobel /v1/chat/completions.
+      const chatUrl = gatewayBase.endsWith('/chat/completions')
+        ? gatewayBase
+        : `${gatewayBase}/v1/chat/completions`;
+      const fetchBody = { ...body, model: body.model, messages: body.messages, stream: false };
       delete fetchBody.apiKey;
       delete fetchBody.apiUrl;
       try {
-        const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const upstream = await fetch(chatUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey, 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' },
           body: JSON.stringify(fetchBody),
