@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase';
 
 export function AccountSettings() {
   const { user } = useAuth();
+  const isAdmin = user?.app_metadata?.role === 'admin';
   const [name, setName] = useState(user?.user_metadata?.full_name || '');
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
@@ -86,6 +87,7 @@ export function AccountSettings() {
         <div className="app-nav-label">AKUN</div>
         <Link className="app-nav-item active" to="/settings"><UserRound size={16} /> Profil & keamanan</Link>
         <Link className="app-nav-item" to="/app"><ArrowRight size={16} /> Kembali ke ringkasan</Link>
+        {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
         <div className="sidebar-spacer" />
         <a className="app-nav-item" href="mailto:halo@blea.ai"><CircleHelp size={16} /> Bantuan</a>
       </aside>

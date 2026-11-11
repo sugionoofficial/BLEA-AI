@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, AudioLines, Bell, Check, ChevronDown, CircleHelp, Command, Layers3, LogOut, MessageCircle, MoreHorizontal, Plus, Settings2, Sparkles, WandSparkles } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, AudioLines, Bell, Check, ChevronDown, CircleHelp, Command, Layers3, LogOut, MessageCircle, MoreHorizontal, Plus, Settings2, ShieldCheck, Sparkles, WandSparkles } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
@@ -17,6 +17,7 @@ export function Dashboard() {
   const [signingOut, setSigningOut] = useState(false);
   const fullName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Kreator';
   const firstName = fullName.trim().split(/\s+/)[0];
+  const isAdmin = user?.app_metadata?.role === 'admin';
   const initials = fullName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
   const [recentProjects, setRecentProjects] = useState([]);
 
@@ -47,6 +48,7 @@ export function Dashboard() {
         <div className="app-nav-label">WORKSPACE</div>
         <Link className="app-nav-item active" to="/app"><Command size={16} /> Ringkasan</Link>
         <Link className="app-nav-item" to="/projects"><Layers3 size={16} /> Proyek</Link>
+        {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
         {soonItems.map(({ label, icon: Icon }) => <div className="app-nav-item disabled" key={label}><Icon size={16} /><span>{label}</span><small>Segera</small></div>)}
         <div className="app-sidebar-divider" />
         <div className="app-nav-label">PREFERENSI</div>
