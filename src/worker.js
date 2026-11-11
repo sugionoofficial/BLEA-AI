@@ -169,16 +169,19 @@ async function handleApi(request, url, env) {
       const body = await request.json().catch(() => ({}));
       const provider = body.provider ?? 'unorouter';
       const activeIds = Array.isArray(body.models) ? body.models : [];
-      // Upsert active list
-      let saved = 0;
-      for (const model of activeIds) {
-        const res = await servicePostgrest(env, `/provider_models?provider=eq.${provider}&model=eq.${encodeURIComponent(model)}`, {
+      // Bulk upsert active models — PostgREST upsert to the resource root
+      // (filters are NOT allowed on POST; match happens on PK provider+model).
+      const rows = activeIds.map((model) => ({ provider, model, active: true }));
+      if (rows.length) {
+        const upRes = await servicePostgrest(env, '/provider_models', {
           method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates' },
-          body: { provider, model, active: true },
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
+          body: rows,
         });
-        if (!res.ok) return jsonResponse({ error: 'DB write failed', status: res.status, failed: model }, 500);
-        saved++;
+        if (!upRes.ok) {
+          const detail = await upRes.text().catch(() => '');
+          return jsonResponse({ error: 'DB write failed', status: upRes.status, detail: detail.slice(0, 200) }, 500);
+        }
       }
       // Deactivate models not in the active list
       const listRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.${provider}`);
@@ -190,7 +193,7 @@ async function handleApi(request, url, env) {
           body: { active: false },
         });
       }
-      return jsonResponse({ ok: true, saved, activeCount: activeIds.length });
+      return jsonResponse({ ok: true, saved: activeIds.length, activeCount: activeIds.length });
     }
 
     // ---- /chat: call openrouter, save assistant reply to DB, return JSON (auth required) ----
