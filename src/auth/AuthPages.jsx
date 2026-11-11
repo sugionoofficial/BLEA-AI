@@ -18,6 +18,8 @@ export function AuthPage({ mode = 'login' }) {
   const [notice, setNotice] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendMessage, setResendMessage] = useState('');
 
   if (authLoading) return <div className="auth-loading"><span className="loader-orbit" /><span>Menyiapkan ruangmu...</span></div>;
   if (user && !needsConfirmation) return <Navigate to="/app" replace />;
@@ -67,6 +69,18 @@ export function AuthPage({ mode = 'login' }) {
     }
   }
 
+  async function resendConfirmation() {
+    setResending(true);
+    setResendMessage('');
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: email.trim().toLowerCase(),
+      options: { emailRedirectTo: `${window.location.origin}/app` },
+    });
+    setResendMessage(error ? 'Belum berhasil mengirim ulang. Tunggu sebentar lalu coba lagi.' : 'Tautan konfirmasi baru sudah dikirim.');
+    setResending(false);
+  }
+
   return (
     <main className="auth-page">
       <div className="auth-backdrop auth-backdrop-left" /><div className="auth-backdrop auth-backdrop-right" />
@@ -87,6 +101,8 @@ export function AuthPage({ mode = 'login' }) {
                 <h2>Cek emailmu.</h2>
                 <p>{notice}</p>
                 <span className="confirmation-email">{email}</span>
+                <button type="button" className="resend-confirmation" onClick={resendConfirmation} disabled={resending}>{resending ? 'Mengirim ulang...' : 'Kirim ulang tautan konfirmasi'}</button>
+                {resendMessage && <span className="resend-status" role="status">{resendMessage}</span>}
                 <Link to="/login" className="auth-submit confirmation-button">Kembali ke masuk <ArrowRight size={16} /></Link>
               </div>
             ) : (
@@ -97,7 +113,7 @@ export function AuthPage({ mode = 'login' }) {
                   {isSignup && <label className="auth-field"><span>Nama lengkap</span><div className="auth-input-wrap"><input type="text" autoComplete="name" placeholder="Nama kamu" value={name} onChange={(event) => setName(event.target.value)} required maxLength={80} /></div></label>}
                   <label className="auth-field"><span>Email</span><div className="auth-input-wrap"><Mail size={16} /><input type="email" autoComplete="email" placeholder="nama@email.com" value={email} onChange={(event) => setEmail(event.target.value)} required /></div></label>
                   <label className="auth-field"><span>Kata sandi</span><div className="auth-input-wrap"><LockKeyhole size={16} /><input type={showPassword ? 'text' : 'password'} autoComplete={isSignup ? 'new-password' : 'current-password'} placeholder={isSignup ? 'Minimal 8 karakter' : 'Masukkan kata sandi'} value={password} onChange={(event) => setPassword(event.target.value)} required minLength={isSignup ? 8 : 1} /><button className="password-toggle" type="button" aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>
-                  {!isSignup && <div className="auth-form-meta"><span /> <a href="mailto:halo@blea.ai?subject=Bantuan%20reset%20kata%20sandi">Butuh bantuan masuk?</a></div>}
+                  {!isSignup && <div className="auth-form-meta"><span /> <Link to="/forgot-password">Lupa kata sandi?</Link></div>}
                   {errorMessage && <div className="auth-alert auth-alert-error" role="alert">{errorMessage}</div>}
                   {notice && <div className="auth-alert auth-alert-success" role="status">{notice}</div>}
                   <button className="auth-submit" type="submit" disabled={busy}>{busy ? <><span className="button-loader" /> Memproses...</> : <>{isSignup ? 'Buat akun gratis' : 'Masuk ke ruangku'} <ArrowRight size={16} /></>}</button>

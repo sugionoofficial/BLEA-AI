@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, AudioLines, Bell, Check, ChevronDown, CircleHelp, Command, Layers3, LogOut, MessageCircle, MoreHorizontal, Plus, Sparkles, WandSparkles } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, AudioLines, Bell, Check, ChevronDown, CircleHelp, Command, Layers3, LogOut, MessageCircle, MoreHorizontal, Plus, Settings2, Sparkles, WandSparkles } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
@@ -36,12 +36,13 @@ export function Dashboard() {
         {soonItems.map(({ label, icon: Icon }) => <div className="app-nav-item disabled" key={label}><Icon size={16} /><span>{label}</span><small>Segera</small></div>)}
         <div className="app-sidebar-divider" />
         <div className="app-nav-label">PREFERENSI</div>
+        <Link className="app-nav-item" to="/settings"><Settings2 size={16} /> Pengaturan akun</Link>
         <a className="app-nav-item" href="mailto:halo@blea.ai"><CircleHelp size={16} /> Bantuan</a>
         <div className="sidebar-spacer" />
         <button className={`sidebar-profile ${menuOpen ? 'is-open' : ''}`} onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen}>
           <span className="profile-avatar">{initials}</span><span className="profile-details"><b>{fullName}</b><small>{user?.email}</small></span><MoreHorizontal size={17} />
         </button>
-        {menuOpen && <div className="profile-menu"><div className="profile-menu-email">{user?.email}</div><button onClick={handleSignOut} disabled={signingOut}><LogOut size={14} />{signingOut ? 'Keluar...' : 'Keluar dari akun'}</button></div>}
+        {menuOpen && <div className="profile-menu"><div className="profile-menu-email">{user?.email}</div><Link to="/settings" className="profile-menu-link"><Settings2 size={14} /> Pengaturan akun</Link><button onClick={handleSignOut} disabled={signingOut}><LogOut size={14} />{signingOut ? 'Keluar...' : 'Keluar dari akun'}</button></div>}
       </aside>
 
       <main className="app-main">

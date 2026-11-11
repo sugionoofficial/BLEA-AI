@@ -5,9 +5,12 @@ import { AuthProvider } from './auth/AuthProvider';
 import { AuthPage } from './auth/AuthPages';
 import { Dashboard } from './auth/Dashboard';
 import { ProtectedRoute } from './auth/ProtectedRoute';
+import { AccountSettings } from './auth/AccountSettings';
+import { ForgotPasswordPage, ResetPasswordPage } from './auth/RecoveryPages';
 import { Brand } from './components/Brand';
 import { supabase } from './lib/supabase';
 import './auth/auth.css';
+import './auth/settings.css';
 import {
   ArrowDown, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown,
   CirclePlay, Command, Globe2, Layers3, Menu, MessageCircle,
@@ -147,8 +150,11 @@ function App() {
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<AuthPage mode="login" />} />
           <Route path="/signup" element={<AuthPage mode="signup" />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
+            <Route path="/settings" element={<AccountSettings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
