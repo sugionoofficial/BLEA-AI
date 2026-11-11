@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, ChevronDown, Command, Cpu, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, ChevronDown, Command, Cpu, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Paperclip, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
-import { chatCompletion, fetchFreeModels, fetchProviderStatus } from '../api/unorouter';
+import { chatCompletion, fetchEnabledModels, fetchFreeModels, fetchProviderStatus } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -11,6 +11,27 @@ const prompts = [
   'Buat kerangka konten yang terasa personal',
   'Pecah proyek besar jadi langkah kecil',
 ];
+
+const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
+
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Konten pesan multimodal: teks + gambar (image_url) + tautan file.
+function buildMessageContent(text, attachments) {
+  const parts = [{ type: 'text', text }];
+  for (const attachment of attachments) {
+    if (attachment.type && attachment.type.startsWith('image/')) {
+      parts.push({ type: 'image_url', image_url: { url: attachment.url } });
+    } else {
+      parts.push({ type: 'text', text: `[File: ${attachment.name}](${attachment.url})` });
+    }
+  }
+  return parts;
+}
 
 function shortTitle(text) {
   const normalized = text.trim().replace(/\s+/g, ' ');
@@ -36,7 +57,10 @@ export function AIStudio() {
   const [error, setError] = useState('');
   const [providerStatus, setProviderStatus] = useState(null);
   const [models, setModels] = useState([]);
+  const [enabledModels, setEnabledModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('gpt-oss-120b:free');
+  const [attachments, setAttachments] = useState([]);
+  const [uploading, setUploading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
@@ -44,6 +68,7 @@ export function AIStudio() {
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
+  const fileInputRef = useRef(null);
   const activeConversation = useMemo(() => conversations.find((conversation) => conversation.id === activeId) || null, [conversations, activeId]);
   const fullName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Kreator';
   const initials = fullName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
@@ -99,8 +124,12 @@ export function AIStudio() {
         if (cancelled) return;
         setProviderStatus(status);
         if (status?.configured) {
-          const freeModels = await fetchFreeModels();
-          if (!cancelled && Array.isArray(freeModels) && freeModels.length) {
+          const [enabled, freeModels] = await Promise.all([fetchEnabledModels(), fetchFreeModels()]);
+          if (cancelled) return;
+          if (Array.isArray(enabled) && enabled.length) {
+            setEnabledModels(enabled);
+            setSelectedModel((current) => enabled.includes(current) ? current : enabled[0]);
+          } else if (Array.isArray(freeModels) && freeModels.length) {
             setModels(freeModels);
             setSelectedModel((current) => freeModels.includes(current) ? current : freeModels[0]);
           }
@@ -134,10 +163,50 @@ export function AIStudio() {
     draftRef.current?.focus();
   }
 
+  async function attachFiles(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length) return;
+    setError('');
+    const oversized = files.filter((file) => file.size > MAX_UPLOAD_BYTES);
+    if (oversized.length) {
+      setError(`${oversized.map((file) => file.name).join(', ')} melebihi batas 30MB.`);
+    }
+    const uploads = files.filter((file) => file.size <= MAX_UPLOAD_BYTES);
+    if (!uploads.length) return;
+    setUploading(true);
+    try {
+      const uploaded = [];
+      for (const file of uploads) {
+        const safeName = file.name.replace(/[^a-z0-9._-]/gi, '_').slice(0, 80);
+        const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+        const { data, error: uploadError } = await supabase.storage.from('ai-studio-uploads').upload(path, file, { contentType: file.type || 'application/octet-stream' });
+        if (uploadError) {
+          setError(`"${file.name}" gagal diunggah: ${uploadError.message}`);
+          continue;
+        }
+        uploaded.push({
+          id: data.path,
+          name: file.name,
+          size: file.size,
+          type: file.type || '',
+          url: data.publicUrl,
+        });
+      }
+      if (uploaded.length) setAttachments((current) => [...current, ...uploaded]);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeAttachment(id) {
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  }
+
   async function saveMessage(event) {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || sending) return;
+    if ((!content && !attachments.length) || sending) return;
     setSending(true);
     sendingRef.current = true;
     setError('');
@@ -163,14 +232,17 @@ export function AIStudio() {
         if (updateError) throw updateError;
       }
 
+      const fileRefs = attachments.map((attachment) => `[File: ${attachment.name} — ${attachment.url}]`).join('\n');
+      const storedContent = fileRefs ? `${content}\n${fileRefs}` : content;
       const { data: savedMessage, error: insertError } = await supabase
         .from('ai_messages')
-        .insert({ conversation_id: conversation.id, user_id: user.id, role: 'user', content })
+        .insert({ conversation_id: conversation.id, user_id: user.id, role: 'user', content: storedContent })
         .select('id,conversation_id,user_id,role,content,created_at')
         .single();
       if (insertError) throw insertError;
 
       setDraft('');
+      setAttachments([]);
       setMessages((current) => [...current, savedMessage]);
       setConversations((current) => current.map((item) => item.id === conversation.id
         ? { ...item, title: item.title || shortTitle(content), updated_at: savedMessage.created_at }
@@ -178,7 +250,7 @@ export function AIStudio() {
 
       if (!providerStatus?.configured) return;
 
-      const history = [...messages, savedMessage]
+      const history = [...messages, { role: 'user', content: buildMessageContent(content, attachments) }]
         .filter((message) => message.role === 'user' || message.role === 'assistant')
         .map((message) => ({ role: message.role, content: message.content }));
 
@@ -277,8 +349,26 @@ export function AIStudio() {
           <div className="studio-composer-area">
             {!activeConversation && projects.length > 0 && <label className="studio-project-context"><FolderOpen size={14} /><span>Tambahkan ke proyek</span><select value={selectedProject} onChange={(event) => setSelectedProject(event.target.value)}><option value="">Tanpa proyek</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={12} /></label>}
             {activeConversation?.project_id && <div className="studio-context-pill"><FolderOpen size={13} /> {projects.find((project) => project.id === activeConversation.project_id)?.name || 'Proyek terkait'}</div>}
-            {providerStatus?.configured && models.length > 0 && <label className="studio-model-context"><Cpu size={14} /><span>Model</span><select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select><ChevronDown size={12} /></label>}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · model gratis UnoRouter' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="submit" disabled={!draft.trim() || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div></form>
+            {providerStatus?.configured && <div className="studio-model-block">
+              <div className="studio-model-block-head">
+                <span className="studio-model-block-icon"><Cpu size={14} /></span>
+                <div><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif · UnoRouter` : `${models.length} model gratis · UnoRouter`}</small></div>
+              </div>
+              <div className="studio-model-block-select">
+                <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select>
+                <ChevronDown size={13} />
+              </div>
+            </div>}
+            {attachments.length > 0 && (
+              <div className="studio-attachments">
+                {attachments.map((attachment) => <div className="studio-attachment-chip" key={attachment.id}>
+                  {attachment.type.startsWith('image/') ? <img src={attachment.url} alt={attachment.name} /> : attachment.type.startsWith('video/') ? <video src={attachment.url} muted /> : <Paperclip size={13} />}
+                  <span className="studio-attachment-name">{attachment.name}<small>{formatBytes(attachment.size)}</small></span>
+                  <button type="button" onClick={() => removeAttachment(attachment.id)} aria-label={`Hapus ${attachment.name}`}><X size={11} /></button>
+                </div>)}
+              </div>
+            )}
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
             <div className="studio-privacy-note"><ShieldCheck size={12} /> Riwayat hanya dapat diakses oleh akunmu. <Link to="/projects">Kelola proyek <ArrowRight size={11} /></Link></div>
           </div>
         </div>

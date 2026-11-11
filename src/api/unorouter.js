@@ -28,6 +28,23 @@ export async function fetchFreeModels() {
   return data.models || [];
 }
 
+// Admin panel — daftar model UnoRouter (model gratis) dengan status aktif.
+export async function fetchAdminModels({ apiKey } = {}) {
+  const { data, status } = await edgeRequest('admin-models', { apiKey });
+  return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
+}
+
+// Admin panel — simpan pilihan model aktif untuk provider.
+export async function saveProviderModels({ provider, models }) {
+  return edgeRequest('save-models', { provider, models });
+}
+
+// AI Studio — model aktif yang dipilih admin (berjalan ke UnoRouter).
+export async function fetchEnabledModels() {
+  const { data } = await edgeRequest('enabled-models', {});
+  return Array.isArray(data?.models) ? data.models : [];
+}
+
 export async function chatCompletion({ conversationId, model, messages }) {
   return edgeRequest('chat', { conversationId, model, messages });
 }
