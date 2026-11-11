@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, ChevronDown, Command, Cpu, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Paperclip, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Check, ChevronDown, Command, Copy, Cpu, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Paperclip, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
 import { chatCompletion, fetchEnabledModels, fetchFreeModels, fetchProviderStatus } from '../api/unorouter';
@@ -65,6 +65,7 @@ export function AIStudio() {
   const [deleting, setDeleting] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -324,6 +325,36 @@ export function AIStudio() {
     draftRef.current?.focus();
   }
 
+  function copyMessage(message) {
+    const content = String(message.content || '');
+    if (!content) return;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(content).then(() => {
+        setCopiedId(message.id);
+        window.setTimeout(() => setCopiedId((current) => (current === message.id ? null : current)), 2000);
+      }).catch(() => {
+        // Fallback: textarea copy for non-secure contexts
+        const area = document.createElement('textarea');
+        area.value = content;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        try { document.execCommand('copy'); setCopiedId(message.id); window.setTimeout(() => setCopiedId((current) => (current === message.id ? null : current)), 2000); } catch { /* ignore */ }
+        document.body.removeChild(area);
+      });
+    } else {
+      const area = document.createElement('textarea');
+      area.value = content;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      try { document.execCommand('copy'); setCopiedId(message.id); window.setTimeout(() => setCopiedId((current) => (current === message.id ? null : current)), 2000); } catch { /* ignore */ }
+      document.body.removeChild(area);
+    }
+  }
+
   return (
     <div className="studio-shell studio-ready">
       <aside className="studio-sidebar">
@@ -346,7 +377,7 @@ export function AIStudio() {
         <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `UNO · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
         <div className="studio-content">
           <div className={`studio-conversation ${messages.length ? 'has-messages' : ''}`}>
-            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'Tanya apa saja tentang idemu. Jawaban AI aktif dengan model teks gratis UnoRouter; riwayat tersimpan di akunmu.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}><span className="studio-message-avatar">{message.role === 'user' ? initials.slice(0, 1) : <Sparkles size={13} />}</span><div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time></div><p>{message.content}</p></div></article>)}<div ref={endOfMessages} /></div>}
+            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'Tanya apa saja tentang idemu. Jawaban AI aktif dengan model teks gratis UnoRouter; riwayat tersimpan di akunmu.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}><span className="studio-message-avatar">{message.role === 'user' ? initials.slice(0, 1) : <Sparkles size={13} />}</span><div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div><p>{message.content}</p></div></article>)}<div ref={endOfMessages} /></div>}
           </div>
           {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
           {error && <div className="studio-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Tutup pesan"><X size={13} /></button></div>}
