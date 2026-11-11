@@ -1,8 +1,10 @@
 import { supabase } from '../lib/supabase';
 
-// Edge function "ai-chat" di Supabase — key API tetap di server.
-// Gateway hanya serve edge function di /functions/v1/<slug>.
-const EDGE_BASE = `${(import.meta.env.VITE_SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '')}/functions/v1/ai-chat`;
+// API routes served by the Cloudflare Worker (same origin — no CORS).
+// These replace the Supabase edge function "ai-chat" (edge runtime on this
+// project returns BOOT_ERROR for all functions — see dashboard logs).
+// Env vars for the Worker: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
+const EDGE_BASE = '/api';
 const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz';
 
 async function edgeRequest(path, body) {
@@ -18,7 +20,7 @@ async function edgeRequest(path, body) {
   if (!token) {
     return { ok: false, status: 401, data: { error: 'authentication required' } };
   }
-  const res = await fetch(`${EDGE_BASE}?path=${path}`, {
+  const res = await fetch(`${EDGE_BASE}${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
