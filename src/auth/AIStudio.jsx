@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, ArrowUpRight, Command, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, ChevronDown, Command, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
