@@ -6,7 +6,6 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
 
 const soonItems = [
-  { label: 'AI Studio', icon: WandSparkles },
   { label: 'Asisten', icon: MessageCircle },
 ];
 
@@ -48,6 +47,7 @@ export function Dashboard() {
         <div className="app-nav-label">WORKSPACE</div>
         <Link className="app-nav-item active" to="/app"><Command size={16} /> Ringkasan</Link>
         <Link className="app-nav-item" to="/projects"><Layers3 size={16} /> Proyek</Link>
+        <Link className="app-nav-item" to="/studio"><WandSparkles size={16} /> AI Studio</Link>
         {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
         {soonItems.map(({ label, icon: Icon }) => <div className="app-nav-item disabled" key={label}><Icon size={16} /><span>{label}</span><small>Segera</small></div>)}
         <div className="app-sidebar-divider" />
@@ -66,7 +66,7 @@ export function Dashboard() {
         <div className="app-content">
           <div className="app-greeting-row"><div><span className="app-date">RUANG KERJA • BLEA AI</span><h1>Selamat datang, {firstName}<span className="greeting-star"> ✳</span></h1><p>Satu ruang untuk ide-ide yang ingin kamu wujudkan.</p></div><Link className="app-new-button" to="/projects?new=1"><Plus size={16} /> Proyek baru</Link></div>
 
-          <section className="welcome-panel"><div className="welcome-copy"><div className="welcome-icon"><Sparkles size={18} /></div><span className="welcome-eyebrow">LANGKAH PERTAMA</span><h2>Ruang kreatifmu<br />sudah siap.</h2><p>Akunmu aktif. Kami sedang merapikan AI Studio agar kamu bisa mengembangkan ide, menulis, dan mengelola proyek di satu tempat.</p><div className="welcome-actions"><span className="account-ready"><Check size={13} /> Akun terhubung</span><a href="mailto:halo@blea.ai?subject=BLEA%20AI%20early%20access">Minta akses awal <ArrowRight size={14} /></a></div></div><div className="welcome-art"><div className="welcome-art-orbit orbit-a" /><div className="welcome-art-orbit orbit-b" /><div className="welcome-art-core"><Sparkles size={24} /></div><span className="welcome-art-dot dot-a" /><span className="welcome-art-dot dot-b" /><span className="welcome-art-label">IDE → NYATA</span></div></section>
+          <section className="welcome-panel"><div className="welcome-copy"><div className="welcome-icon"><Sparkles size={18} /></div><span className="welcome-eyebrow">LANGKAH PERTAMA</span><h2>Ruang kreatifmu<br />sudah siap.</h2><p>Akunmu aktif. AI Studio sudah bisa dipakai untuk menyimpan ide dan prompt; jawaban AI akan aktif setelah provider model terhubung.</p><div className="welcome-actions"><span className="account-ready"><Check size={13} /> Akun terhubung</span><Link to="/studio">Coba AI Studio <ArrowRight size={14} /></Link></div></div><div className="welcome-art"><div className="welcome-art-orbit orbit-a" /><div className="welcome-art-orbit orbit-b" /><div className="welcome-art-core"><Sparkles size={24} /></div><span className="welcome-art-dot dot-a" /><span className="welcome-art-dot dot-b" /><span className="welcome-art-label">IDE → NYATA</span></div></section>
 
           <div className="dashboard-section-heading"><div><span className="app-date">RUANG KERJAMU</span><h2>Proyek terbaru.</h2></div><Link className="dashboard-view-all" to="/projects">Lihat semua <ArrowRight size={13} /></Link></div>
           {recentProjects.length ? <div className="dashboard-project-list">{recentProjects.map((project) => <Link className="dashboard-project-row" to="/projects" key={project.id}><span className="dashboard-project-icon"><Layers3 size={15} /></span><span className="dashboard-project-info"><b>{project.name}</b><small>{project.description || 'Proyek kreatif'}</small></span><span className="dashboard-project-date">{new Date(project.updated_at || project.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}</span><ArrowUpRight size={14} /></Link>)}<Link to="/projects" className="dashboard-projects-link">Lihat semua proyek <ArrowRight size={13} /></Link></div> : <section className="empty-projects"><div className="empty-illustration"><div className="empty-illustration-ring"><div><Layers3 size={20} /></div></div><span className="empty-star star-left">✦</span><span className="empty-star star-right">✳</span></div><span className="empty-kicker">MULAI DENGAN SATU IDE</span><h3>Setiap karya hebat dimulai dari satu ide.</h3><p>Buat proyek pertama untuk menyimpan ide, catatan, dan rencana yang ingin kamu kembangkan.</p><Link className="empty-cta" to="/projects?new=1">Buat proyek pertamamu <ArrowRight size={15} /></Link></section>}

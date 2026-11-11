@@ -1,15 +1,18 @@
-import React, { useState } from 'react';
+import React, { lazy, Suspense, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthProvider';
-import { AuthPage } from './auth/AuthPages';
 import { Dashboard } from './auth/Dashboard';
 import { ProtectedRoute } from './auth/ProtectedRoute';
-import { AccountSettings } from './auth/AccountSettings';
-import { ForgotPasswordPage, ResetPasswordPage } from './auth/RecoveryPages';
-import { ProjectsPage } from './auth/ProjectsPage';
-import { AdminPage } from './auth/AdminPage';
 import { AdminRoute } from './auth/AdminRoute';
+const AuthPage = lazy(() => import('./auth/AuthPages').then((module) => ({ default: module.AuthPage })));
+const AccountSettings = lazy(() => import('./auth/AccountSettings').then((module) => ({ default: module.AccountSettings })));
+const ForgotPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ForgotPasswordPage })));
+const ResetPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ResetPasswordPage })));
+const ProjectsPage = lazy(() => import('./auth/ProjectsPage').then((module) => ({ default: module.ProjectsPage })));
+const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
+const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
+import './auth/studio.css';
 import { Brand } from './components/Brand';
 import { supabase } from './lib/supabase';
 import './auth/auth.css';
@@ -152,7 +155,8 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Routes>
+        <Suspense fallback={<div className="auth-loading"><span className="loader-orbit" /><span>Menyiapkan halaman...</span></div>}>
+          <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<AuthPage mode="login" />} />
           <Route path="/signup" element={<AuthPage mode="signup" />} />
@@ -161,13 +165,15 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
             <Route path="/projects" element={<ProjectsPage />} />
+            <Route path="/studio" element={<AIStudio />} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+          </Routes>
+        </Suspense>
       </AuthProvider>
     </BrowserRouter>
   );

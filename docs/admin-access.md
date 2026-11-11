@@ -22,4 +22,4 @@ Do not assign the role through `user_metadata` or from the browser. Regular acco
 
 ## Data access
 
-The admin console reads profiles, projects, and waitlist entries through the regular Supabase client. Row Level Security permits cross-user reads/deletes only when the verified JWT contains the admin claim. The `service_role` key is not used in the browser.
+The admin console reads profiles, projects, conversation metadata, and waitlist entries through the regular Supabase client. Row Level Security permits cross-user reads/deletes only when the verified JWT contains the admin claim. Chat message contents remain private to each account; an administrator can delete a conversation but cannot read its messages. The `service_role` key is not used in the browser.

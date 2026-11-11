@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Command, FolderPlus, Layers3, LogOut, MoreHorizontal, Pencil, Plus, Search, Settings2, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Command, FolderPlus, Layers3, LogOut, MoreHorizontal, Pencil, Plus, Search, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
@@ -125,7 +125,7 @@ export function ProjectsPage() {
         <Link className="app-nav-item" to="/app"><Command size={16} /> Ringkasan</Link>
         <div className="app-nav-item active"><Layers3 size={16} /> Proyek</div>
         {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
-        <div className="app-nav-item disabled"><Sparkles size={16} /><span>AI Studio</span><small>Segera</small></div>
+        <Link className="app-nav-item" to="/studio"><WandSparkles size={16} /> AI Studio</Link>
         <div className="app-sidebar-divider" />
         <div className="app-nav-label">PREFERENSI</div>
         <Link className="app-nav-item" to="/settings"><Settings2 size={16} /> Pengaturan akun</Link>
