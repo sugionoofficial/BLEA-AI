@@ -1,7 +1,8 @@
 import { supabase } from '../lib/supabase';
 
 // Edge function "ai-chat" di Supabase — key API tetap di server.
-const EDGE_BASE = `${(import.meta.env.VITE_SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '')}/functions/ai-chat`;
+// Gateway hanya serve edge function di /functions/v1/<slug>.
+const EDGE_BASE = `${(import.meta.env.VITE_SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '')}/functions/v1/ai-chat`;
 const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz';
 
 async function edgeRequest(path, body) {
@@ -31,36 +32,36 @@ async function edgeRequest(path, body) {
 }
 
 export async function fetchProviderStatus() {
-  const { data } = await edgeRequest('status', {});
+  const { data } = await edgeRequest('/status', {});
   return data;
 }
 
 export async function fetchFreeModels() {
-  const { data } = await edgeRequest('models', {});
+  const { data } = await edgeRequest('/models', {});
   return data.models || [];
 }
 
 // Admin panel — daftar model UnoRouter (model gratis) dengan status aktif.
 export async function fetchAdminModels({ apiKey } = {}) {
-  const { data, status } = await edgeRequest('admin-models', { apiKey });
+  const { data, status } = await edgeRequest('/admin-models', { apiKey });
   return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
 }
 
 // Admin panel — simpan pilihan model aktif untuk provider.
 export async function saveProviderModels({ provider, models }) {
-  return edgeRequest('save-models', { provider, models });
+  return edgeRequest('/save-models', { provider, models });
 }
 
 // AI Studio — model aktif yang dipilih admin (berjalan ke UnoRouter).
 export async function fetchEnabledModels() {
-  const { data } = await edgeRequest('enabled-models', {});
+  const { data } = await edgeRequest('/enabled-models', {});
   return Array.isArray(data?.models) ? data.models : [];
 }
 
 export async function chatCompletion({ conversationId, model, messages }) {
-  return edgeRequest('chat', { conversationId, model, messages });
+  return edgeRequest('/chat', { conversationId, model, messages });
 }
 
 export async function verifyKey({ apiKey, baseUrl }) {
-  return edgeRequest('verify', { apiKey, baseUrl });
+  return edgeRequest('/verify', { apiKey, baseUrl });
 }
