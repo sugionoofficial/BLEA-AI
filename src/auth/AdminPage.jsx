@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, FolderKanban, LayoutDashboard, LoaderCircle, LogOut, Mail, MessagesSquare, Search, ShieldCheck, Trash2, Users, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, FolderKanban, KeyRound, LayoutDashboard, LockKeyhole, LoaderCircle, LogOut, Mail, MessagesSquare, Plus, Search, ShieldCheck, Trash2, Users, X, Zap } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
+import { verifyKey } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const tabs = [
@@ -11,6 +12,7 @@ const tabs = [
   { id: 'projects', label: 'Proyek', icon: FolderKanban },
   { id: 'conversations', label: 'Percakapan', icon: MessagesSquare },
   { id: 'waitlist', label: 'Waitlist', icon: Mail },
+  { id: 'api-keys', label: 'API Key', icon: KeyRound },
 ];
 
 const dateFormat = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -25,6 +27,11 @@ export function AdminPage() {
   const [projects, setProjects] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [waitlist, setWaitlist] = useState([]);
+  const [providerKeys, setProviderKeys] = useState([]);
+  const [keyDrafts, setKeyDrafts] = useState({});
+  const [keyNotices, setKeyNotices] = useState({});
+  const [keyBusy, setKeyBusy] = useState('');
+  const [newProvider, setNewProvider] = useState({ provider: '', label: '' });
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
   const [search, setSearch] = useState('');
@@ -35,13 +42,14 @@ export function AdminPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     setErrorMessage('');
-    const [profileResult, projectResult, conversationResult, waitlistResult] = await Promise.all([
+    const [profileResult, projectResult, conversationResult, waitlistResult, providerKeyResult] = await Promise.all([
       supabase.from('profiles').select('id,email,full_name,created_at').order('created_at', { ascending: false }).limit(500),
       supabase.from('projects').select('id,user_id,name,description,created_at,updated_at').order('updated_at', { ascending: false }).limit(500),
       supabase.from('ai_conversations').select('id,user_id,project_id,title,created_at,updated_at').order('updated_at', { ascending: false }).limit(500),
       supabase.from('waitlist_signups').select('id,email,created_at').order('created_at', { ascending: false }).limit(500),
+      supabase.from('provider_api_keys').select('provider,label,api_key,key_version,min_verified_at').order('provider'),
     ]);
-    const errors = [profileResult.error, projectResult.error, conversationResult.error, waitlistResult.error].filter(Boolean);
+    const errors = [profileResult.error, projectResult.error, conversationResult.error, waitlistResult.error, providerKeyResult.error].filter(Boolean);
     if (errors.length) {
       console.error('Admin data load failed:', errors);
       setErrorMessage('Sebagian data belum bisa dimuat. Pastikan akunmu memiliki role admin lalu coba lagi.');
@@ -50,6 +58,7 @@ export function AdminPage() {
       setProjects(projectResult.data ?? []);
       setConversations(conversationResult.data ?? []);
       setWaitlist(waitlistResult.data ?? []);
+      setProviderKeys(providerKeyResult.data ?? []);
     }
     setLoading(false);
   }, []);
@@ -89,6 +98,74 @@ export function AdminPage() {
     URL.revokeObjectURL(href);
   }
 
+  async function saveProviderKey(provider) {
+    const apiKey = String(keyDrafts[provider] || '').trim();
+    if (!apiKey) {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Masukkan API key terlebih dahulu.' } }));
+      return;
+    }
+    setKeyBusy(`save-${provider}`);
+    const { error } = await supabase
+      .from('provider_api_keys')
+      .upsert({ provider, api_key: apiKey, updated_at: new Date().toISOString() });
+    if (error) {
+      console.error('Save provider key failed:', error);
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Penyimpanan gagal. Cek permission admin.' } }));
+    } else {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'success', text: 'API key disimpan di Supabase.' } }));
+      setKeyDrafts((current) => ({ ...current, [provider]: '' }));
+      await loadData();
+    }
+    setKeyBusy('');
+  }
+
+  async function verifyProviderKey(provider) {
+    const apiKey = String(keyDrafts[provider] || '').trim();
+    if (!apiKey) {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Masukkan API key terlebih dahulu.' } }));
+      return;
+    }
+    setKeyBusy(`verify-${provider}`);
+    setKeyNotices((current) => ({ ...current, [provider]: { type: 'info', text: 'Memverifikasi ke UnoRouter...' } }));
+    const { data } = await verifyKey({ apiKey });
+    if (data?.ok) {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'success', text: `Valid — ${data.modelsCount} model tersedia. Simpan untuk mengaktifkan.` } }));
+    } else {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: data?.error || 'Key tidak valid.' } }));
+    }
+    setKeyBusy('');
+  }
+
+  async function addProvider() {
+    const provider = newProvider.provider.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const label = newProvider.label.trim();
+    if (!provider || !label) return;
+    setKeyBusy('add');
+    const { error } = await supabase
+      .from('provider_api_keys')
+      .insert({ provider, label, api_key: '' });
+    if (error) {
+      console.error('Add provider failed:', error);
+      setKeyNotices((current) => ({ ...current, [`add:${provider}`]: { type: 'error', text: 'Provider tidak bisa ditambahkan.' } }));
+    } else {
+      setNewProvider({ provider: '', label: '' });
+      await loadData();
+    }
+    setKeyBusy('');
+  }
+
+  async function removeProvider(provider) {
+    setKeyBusy(`delete-${provider}`);
+    const { error } = await supabase.from('provider_api_keys').delete().eq('provider', provider);
+    if (error) {
+      console.error('Remove provider failed:', error);
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Penghapusan gagal.' } }));
+    } else {
+      await loadData();
+    }
+    setKeyBusy('');
+  }
+
   async function signOut() {
     setSigningOut(true);
     await supabase.auth.signOut();
@@ -110,7 +187,7 @@ export function AdminPage() {
       <main className="admin-main">
         <header className="admin-topbar"><div className="admin-breadcrumb"><span>BLEA AI</span><ChevronRight size={13} /><b>{tabs.find((item) => item.id === tab)?.label}</b></div><div className="admin-top-actions"><span className="admin-access"><ShieldCheck size={13} /> Akses administrator</span><Link to="/app" className="admin-back-link"><ArrowLeft size={14} /> Kembali ke aplikasi</Link></div></header>
         <div className="admin-content">
-          <div className="admin-heading"><div><span className="admin-eyebrow"><i /> ADMINISTRATOR</span><h1>{tab === 'overview' ? 'Pusat kendali.' : tab === 'users' ? 'Pengguna.' : tab === 'projects' ? 'Semua proyek.' : tab === 'conversations' ? 'Percakapan.' : 'Daftar tunggu.'}</h1><p>{tab === 'overview' ? 'Kelola pengguna dan konten BLEA AI dari satu tempat.' : tab === 'users' ? 'Akun yang sudah terdaftar di BLEA AI.' : tab === 'projects' ? 'Pantau dan kelola proyek di semua workspace.' : tab === 'conversations' ? 'Lihat ringkasan percakapan tersimpan; isi pesan tetap privat bagi pemilik akun.' : 'Email yang meminta akses awal BLEA AI.'}</p></div><div className="admin-heading-meta"><span><Clock3 size={13} /> {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</span><span className="admin-user-chip"><i>{(user?.user_metadata?.full_name || user?.email || 'A').slice(0, 1).toUpperCase()}</i>{user?.email}</span></div></div>
+          <div className="admin-heading"><div><span className="admin-eyebrow"><i /> ADMINISTRATOR</span><h1>{tab === 'overview' ? 'Pusat kendali.' : tab === 'users' ? 'Pengguna.' : tab === 'projects' ? 'Semua proyek.' : tab === 'conversations' ? 'Percakapan.' : tab === 'api-keys' ? 'Connect API key.' : 'Daftar tunggu.'}</h1><p>{tab === 'overview' ? 'Kelola pengguna dan konten BLEA AI dari satu tempat.' : tab === 'users' ? 'Akun yang sudah terdaftar di BLEA AI.' : tab === 'projects' ? 'Pantau dan kelola proyek di semua workspace.' : tab === 'conversations' ? 'Lihat ringkasan percakapan tersimpan; isi pesan tetap privat bagi pemilik akun.' : tab === 'api-keys' ? 'Semua provider yang memakai API key dikelola dari halaman ini. Kunci disimpan di Supabase dan digunakan server-side melalui edge function — tidak pernah sampai ke browser.' : 'Email yang meminta akses awal BLEA AI.'}</p></div><div className="admin-heading-meta"><span><Clock3 size={13} /> {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</span><span className="admin-user-chip"><i>{(user?.user_metadata?.full_name || user?.email || 'A').slice(0, 1).toUpperCase()}</i>{user?.email}</span></div></div>
           {errorMessage && <div className="admin-error" role="alert">{errorMessage}<button onClick={loadData}>Coba lagi</button></div>}
           {tab === 'overview' && <>
             <section className="admin-metrics"><article><span className="metric-icon metric-purple"><Users size={17} /></span><span className="metric-label">PENGGUNA</span><b>{loading ? '—' : profiles.length}</b><small>Akun terdaftar</small></article><article><span className="metric-icon metric-blue"><FolderKanban size={17} /></span><span className="metric-label">PROYEK</span><b>{loading ? '—' : projects.length}</b><small>Di semua workspace</small></article><article><span className="metric-icon metric-peach"><Mail size={17} /></span><span className="metric-label">WAITLIST</span><b>{loading ? '—' : waitlist.length}</b><small>Pendaftar akses awal</small></article><article><span className="metric-icon metric-green"><MessagesSquare size={17} /></span><span className="metric-label">PERCAKAPAN</span><b>{loading ? '—' : conversations.length}</b><small>Riwayat tersimpan</small></article></section>
@@ -118,7 +195,34 @@ export function AdminPage() {
             <section className="admin-note"><ShieldCheck size={16} /><div><b>Akses admin terlindungi.</b><p>Panel ini dan operasi datanya diproteksi oleh role `app_metadata` serta Row Level Security di Supabase.</p></div><span>RLS ACTIVE</span></section>
           </>}
 
-          {tab !== 'overview' && <section className="admin-table-card"><div className="admin-table-toolbar"><label className="admin-search"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tab === 'users' ? 'Cari nama atau email...' : tab === 'projects' ? 'Cari proyek atau pemilik...' : tab === 'conversations' ? 'Cari percakapan atau pemilik...' : 'Cari email waitlist...'} /></label>{tab === 'waitlist' && <button className="admin-export-button" onClick={exportWaitlist} disabled={!waitlist.length}><ArrowDownToLine size={14} /> Ekspor CSV</button>}<button className="admin-refresh-button" onClick={loadData} disabled={loading}><LoaderCircle size={14} className={loading ? 'spinning' : ''} /> Muat ulang</button></div>
+          {tab === 'api-keys' && <>
+            <section className="admin-api-card">
+              <div className="admin-api-heading"><div><span className="admin-eyebrow">GATEWAY · UNORouter</span><h2>Provider API key</h2></div><span className="admin-api-badge"><Zap size={13} /> Server-side · edge function</span></div>
+              <p className="admin-api-note">Menyimpan kunci API untuk provider seperti UnoRouter. Kunci dipakai oleh edge function <b>ai-chat</b> di Supabase — klien browser hanya mengirim permintaan tanpa melihat kunci.</p>
+              {providerKeys.length === 0 ? <div className="admin-empty-inline">Belum ada provider. Tambahkan provider pertama di bawah.</div> : providerKeys.map((provider) => <div className="admin-api-row" key={provider.provider}>
+                <div className="admin-api-row-top"><div><span className="admin-api-name">{provider.label || provider.provider}</span><small>{provider.provider}</small></div><span className={`admin-api-state ${provider.api_key ? '' : 'is-empty'}`}>{provider.api_key ? 'Terhubung' : 'Belum terhubung'}</span></div>
+                <div className="admin-api-input-row">
+                  <LockKeyhole size={14} />
+                  <input type="password" value={keyDrafts[provider.provider] || ''} onChange={(event) => setKeyDrafts((current) => ({ ...current, [provider.provider]: event.target.value }))} placeholder={provider.api_key ? 'Ganti kunci...' : 'Masukkan API key...'} />
+                  <button className="admin-api-verify" onClick={() => verifyProviderKey(provider.provider)} disabled={keyBusy === `verify-${provider.provider}`}><Check size={14} /> Verifikasi</button>
+                  <button className="admin-api-save" onClick={() => saveProviderKey(provider.provider)} disabled={keyBusy === `save-${provider.provider}`}>Simpan</button>
+                  <button className="admin-api-remove" onClick={() => removeProvider(provider.provider)} disabled={keyBusy === `delete-${provider.provider}`} aria-label={`Hapus ${provider.provider}`}><Trash2 size={14} /></button>
+                </div>
+                {keyNotices[provider.provider] && <div className={`admin-api-notice is-${keyNotices[provider.provider].type}`}>{keyNotices[provider.provider].text}</div>}
+              </div>)}
+            </section>
+            <section className="admin-api-card">
+              <div className="admin-api-heading"><div><span className="admin-eyebrow">TAMBAH PROVIDER</span><h2>Provider baru</h2></div></div>
+              <p className="admin-api-note">Provider lain yang memakai API key (misal gateway model tambahan) dapat ditambahkan di sini. Kunci baru tetap disimpan di Supabase dan diakses server-side.</p>
+              <div className="admin-api-input-row">
+                <input value={newProvider.provider} onChange={(event) => setNewProvider((current) => ({ ...current, provider: event.target.value }))} placeholder="id provider (contoh: openai)" />
+                <input value={newProvider.label} onChange={(event) => setNewProvider((current) => ({ ...current, label: event.target.value }))} placeholder="Nama tampilan" />
+                <button className="admin-api-save" onClick={addProvider} disabled={keyBusy === 'add' || !newProvider.provider.trim() || !newProvider.label.trim()}><Plus size={14} /> Tambah provider</button>
+              </div>
+              {keyNotices[`add:${newProvider.provider}`] && <div className={`admin-api-notice is-${keyNotices[`add:${newProvider.provider}`].type}`}>{keyNotices[`add:${newProvider.provider}`].text}</div>}
+            </section>
+          </>}
+          {tab !== 'overview' && tab !== 'api-keys' && <section className="admin-table-card"><div className="admin-table-toolbar"><label className="admin-search"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tab === 'users' ? 'Cari nama atau email...' : tab === 'projects' ? 'Cari proyek atau pemilik...' : tab === 'conversations' ? 'Cari percakapan atau pemilik...' : 'Cari email waitlist...'} /></label>{tab === 'waitlist' && <button className="admin-export-button" onClick={exportWaitlist} disabled={!waitlist.length}><ArrowDownToLine size={14} /> Ekspor CSV</button>}<button className="admin-refresh-button" onClick={loadData} disabled={loading}><LoaderCircle size={14} className={loading ? 'spinning' : ''} /> Muat ulang</button></div>
             <div className="admin-table-scroll"><table><thead><tr>{tab === 'users' ? <><th>PENGGUNA</th><th>ID AKUN</th><th>BERGABUNG</th><th>STATUS</th></> : tab === 'projects' ? <><th>NAMA PROYEK</th><th>PEMILIK</th><th>DIPERBARUI</th><th></th></> : tab === 'conversations' ? <><th>JUDUL</th><th>PEMILIK</th><th>DIPERBARUI</th><th></th></> : <><th>EMAIL</th><th>MENDAFTAR</th><th></th></>}</tr></thead><tbody>
               {loading ? <tr><td colSpan={4} className="admin-table-message">Memuat data...</td></tr> : tab === 'users' ? filteredProfiles.map((profile) => <tr key={profile.id}><td><span className="admin-user-cell"><i className="admin-avatar">{(profile.full_name || profile.email || '?').slice(0, 1).toUpperCase()}</i><span><b>{profile.full_name || 'Nama belum diatur'}</b><small>{profile.email || '—'}</small></span></span></td><td className="admin-id-cell">{profile.id.slice(0, 8)}…</td><td>{formatDate(profile.created_at)}</td><td><span className="admin-status-pill"><i /> Terdaftar</span></td></tr>) : tab === 'projects' ? filteredProjects.map((project) => <tr key={project.id}><td><span className="admin-project-cell"><b>{project.name}</b><small>{project.description || 'Tanpa deskripsi'}</small></span></td><td>{profileById.get(project.user_id)?.email || '—'}</td><td>{formatDate(project.updated_at)}</td><td><button className="admin-delete-icon" aria-label={`Hapus ${project.name}`} onClick={() => setDeleteTarget({ kind: 'project', id: project.id, label: project.name })}><Trash2 size={14} /></button></td></tr>) : tab === 'conversations' ? filteredConversations.map((conversation) => <tr key={conversation.id}><td><span className="admin-project-cell"><b>{conversation.title}</b><small>Isi pesan tidak ditampilkan demi privasi</small></span></td><td>{profileById.get(conversation.user_id)?.email || '—'}</td><td>{formatDate(conversation.updated_at)}</td><td><button className="admin-delete-icon" aria-label={`Hapus percakapan ${conversation.title}`} onClick={() => setDeleteTarget({ kind: 'conversation', id: conversation.id, label: conversation.title })}><Trash2 size={14} /></button></td></tr>) : filteredWaitlist.map((entry) => <tr key={entry.id}><td><b className="admin-email-cell">{entry.email}</b></td><td>{formatDate(entry.created_at)}</td><td><button className="admin-delete-icon" aria-label={`Hapus ${entry.email} dari waitlist`} onClick={() => setDeleteTarget({ kind: 'waitlist', id: entry.id, label: entry.email })}><Trash2 size={14} /></button></td></tr>)}
               {!loading && activeRows.length === 0 && <tr><td colSpan={4} className="admin-table-message">{query ? 'Tidak ada hasil yang cocok.' : 'Belum ada data.'}</td></tr>}

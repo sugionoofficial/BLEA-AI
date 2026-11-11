@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, ChevronDown, Command, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, ChevronDown, Command, Cpu, FolderOpen, Layers3, LogOut, MessageSquarePlus, MoreHorizontal, Plus, Send, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { supabase } from '../lib/supabase';
+import { chatCompletion, fetchFreeModels, fetchProviderStatus } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -33,12 +34,16 @@ export function AIStudio() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [providerStatus, setProviderStatus] = useState(null);
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState('gpt-oss-120b:free');
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
+  const sendingRef = useRef(false);
   const activeConversation = useMemo(() => conversations.find((conversation) => conversation.id === activeId) || null, [conversations, activeId]);
   const fullName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Kreator';
   const initials = fullName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
@@ -87,6 +92,28 @@ export function AIStudio() {
   useEffect(() => { loadSidebarData(); }, [loadSidebarData]);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await fetchProviderStatus();
+        if (cancelled) return;
+        setProviderStatus(status);
+        if (status?.configured) {
+          const freeModels = await fetchFreeModels();
+          if (!cancelled && Array.isArray(freeModels) && freeModels.length) {
+            setModels(freeModels);
+            setSelectedModel((current) => freeModels.includes(current) ? current : freeModels[0]);
+          }
+        }
+      } catch (statusError) {
+        console.error('Provider status failed:', statusError);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (sendingRef.current) return;
     loadMessages(activeId);
     if (activeId) {
       const conversation = conversations.find((item) => item.id === activeId);
@@ -112,6 +139,7 @@ export function AIStudio() {
     const content = draft.trim();
     if (!content || sending) return;
     setSending(true);
+    sendingRef.current = true;
     setError('');
 
     try {
@@ -147,11 +175,49 @@ export function AIStudio() {
       setConversations((current) => current.map((item) => item.id === conversation.id
         ? { ...item, title: item.title || shortTitle(content), updated_at: savedMessage.created_at }
         : item).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
+
+      if (!providerStatus?.configured) return;
+
+      const history = [...messages, savedMessage]
+        .filter((message) => message.role === 'user' || message.role === 'assistant')
+        .map((message) => ({ role: message.role, content: message.content }));
+
+      const { ok: chatOk, data: chatData } = await chatCompletion({
+        conversationId: conversation.id,
+        model: selectedModel,
+        messages: history,
+      });
+
+      if (chatOk && chatData?.reply) {
+        // append lokal + update timestamp percakapan. Edge function sudah
+        // menyimpan pesan assistant ke DB — riwayat konsisten pada reload berikutnya.
+        const replyMessage = {
+          id: chatData.messageId || `reply-${Date.now()}`,
+          conversation_id: conversation.id,
+          user_id: user.id,
+          role: 'assistant',
+          content: chatData.reply,
+          created_at: new Date().toISOString(),
+        };
+        setMessages((current) => [...current, replyMessage]);
+        const { error: metaError } = await supabase
+          .from('ai_conversations')
+          .update({ updated_at: replyMessage.created_at })
+          .eq('id', conversation.id)
+          .eq('user_id', user.id);
+        if (metaError) console.error('Conversation meta update failed:', metaError);
+        setConversations((current) => current.map((item) => item.id === conversation.id
+          ? { ...item, updated_at: replyMessage.created_at }
+          : item).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
+      } else {
+        setError(chatData?.error || 'Respons AI gagal. Coba lagi sebentar.');
+      }
     } catch (saveError) {
       console.error('Saving chat message failed:', saveError);
       setError('Pesan belum berhasil disimpan. Coba lagi sebentar.');
       await loadSidebarData();
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }
@@ -186,7 +252,7 @@ export function AIStudio() {
     <div className="studio-shell studio-ready">
       <aside className="studio-sidebar">
         <div className="studio-brand"><Brand /></div>
-        <div className="studio-workspace"><span><Sparkles size={14} /></span><div><b>Ruang pribadi</b><small>AI Studio · Pratinjau</small></div></div>
+        <div className="studio-workspace"><span><Sparkles size={14} /></span><div><b>Ruang pribadi</b><small>AI Studio · UnoRouter</small></div></div>
         <button className="studio-new-chat" onClick={startNewConversation}><MessageSquarePlus size={15} /> Percakapan baru <Plus size={15} /></button>
         <nav className="studio-primary-nav" aria-label="Navigasi workspace"><Link to="/app"><Command size={15} /> Ringkasan</Link><Link to="/projects"><Layers3 size={15} /> Proyek</Link>{isAdmin && <Link to="/admin"><ShieldCheck size={15} /> Admin panel</Link>}</nav>
         <div className="studio-history-heading"><span>RIWAYAT</span><span>{conversations.length}</span></div>
@@ -201,17 +267,18 @@ export function AIStudio() {
       </aside>
 
       <main className="studio-main">
-        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className="preview-status"><i /> MODE PRATINJAU · MODEL BELUM TERHUBUNG</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
+        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `UNO · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
         <div className="studio-content">
           <div className={`studio-conversation ${messages.length ? 'has-messages' : ''}`}>
-            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; respons AI akan aktif setelah provider model dipilih.</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}><span className="studio-message-avatar">{message.role === 'user' ? initials.slice(0, 1) : <Sparkles size={13} />}</span><div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time></div><p>{message.content}</p></div></article>)}<div ref={endOfMessages} /></div>}
+            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'Tanya apa saja tentang idemu. Jawaban AI aktif dengan model teks gratis UnoRouter; riwayat tersimpan di akunmu.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}><span className="studio-message-avatar">{message.role === 'user' ? initials.slice(0, 1) : <Sparkles size={13} />}</span><div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time></div><p>{message.content}</p></div></article>)}<div ref={endOfMessages} /></div>}
           </div>
-          {activeConversation && messages.length > 0 && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
+          {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
           {error && <div className="studio-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Tutup pesan"><X size={13} /></button></div>}
           <div className="studio-composer-area">
             {!activeConversation && projects.length > 0 && <label className="studio-project-context"><FolderOpen size={14} /><span>Tambahkan ke proyek</span><select value={selectedProject} onChange={(event) => setSelectedProject(event.target.value)}><option value="">Tanpa proyek</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={12} /></label>}
             {activeConversation?.project_id && <div className="studio-context-pill"><FolderOpen size={13} /> {projects.find((project) => project.id === activeConversation.project_id)?.name || 'Proyek terkait'}</div>}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Tulis ide atau prompt untuk disimpan..." rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</span><button type="submit" disabled={!draft.trim() || sending} aria-label="Simpan pesan">{sending ? <span className="studio-send-loader" /> : <><span>Simpan</span><Send size={14} /></>}</button></div></form>
+            {providerStatus?.configured && models.length > 0 && <label className="studio-model-context"><Cpu size={14} /><span>Model</span><select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select><ChevronDown size={12} /></label>}
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · model gratis UnoRouter' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="submit" disabled={!draft.trim() || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div></form>
             <div className="studio-privacy-note"><ShieldCheck size={12} /> Riwayat hanya dapat diakses oleh akunmu. <Link to="/projects">Kelola proyek <ArrowRight size={11} /></Link></div>
           </div>
         </div>
