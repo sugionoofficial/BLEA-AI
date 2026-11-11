@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { AuthProvider } from './auth/AuthProvider';
+import { AuthPage } from './auth/AuthPages';
+import { Dashboard } from './auth/Dashboard';
+import { ProtectedRoute } from './auth/ProtectedRoute';
+import { Brand } from './components/Brand';
 import { supabase } from './lib/supabase';
+import './auth/auth.css';
 import {
   ArrowDown, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown,
   CirclePlay, Command, Globe2, Layers3, Menu, MessageCircle,
@@ -13,10 +20,6 @@ const navItems = [
   ['Cara kerja', '#cara-kerja'],
   ['Tentang', '#tentang'],
 ];
-
-function Brand({ light = false }) {
-  return <a className={`brand ${light ? 'brand-light' : ''}`} href="#top" aria-label="BLEA AI beranda"><span className="brand-mark"><span /><span /><span /><span /></span><span>BLEA<span className="brand-ai">.AI</span></span></a>;
-}
 
 function ProductPreview() {
   return (
@@ -50,7 +53,7 @@ function ProductPreview() {
   );
 }
 
-function App() {
+function LandingPage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [email, setEmail] = useState('');
   const [joined, setJoined] = useState(false);
@@ -96,7 +99,7 @@ function App() {
       <header className="header">
         <div className="container nav-wrap"><Brand />
           <nav className={menuOpen ? 'nav-links open' : 'nav-links'} aria-label="Navigasi utama">{navItems.map(([label, href]) => <a key={label} onClick={() => setMenuOpen(false)} href={href}>{label}</a>)}</nav>
-          <div className="nav-actions"><a className="login-link" href="#daftar">Masuk</a><a className="nav-cta" href="#daftar">Mulai gratis <ArrowUpRight size={15} /></a></div>
+          <div className="nav-actions"><a className="login-link" href="/login">Masuk</a><a className="nav-cta" href="/signup">Mulai gratis <ArrowUpRight size={15} /></a></div>
           <button className="menu-toggle" aria-label={menuOpen ? 'Tutup menu' : 'Buka menu'} onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? <X /> : <Menu />}</button>
         </div>
       </header>
@@ -107,7 +110,7 @@ function App() {
             <a className="announcement" href="#fitur"><span className="announcement-dot"><Sparkles size={12} /></span><span>Kenalan dengan cara baru berkarya</span><ArrowRight size={13} /></a>
             <h1>Ide besar.<br /><span className="headline-gradient">Eksekusi lebih cepat.</span></h1>
             <p className="hero-description">Ruang kreatif berbasis AI yang membantu kamu berpikir lebih jernih, bergerak lebih cepat, dan menciptakan hal yang berarti.</p>
-            <div className="hero-actions"><a className="button-primary" href="#daftar">Mulai berkarya gratis <ArrowRight size={16} /></a><a className="button-secondary" href="#cara-kerja"><span className="play-circle"><CirclePlay size={17} /></span> Lihat cara kerja</a></div>
+            <div className="hero-actions"><a className="button-primary" href="/signup">Mulai berkarya gratis <ArrowRight size={16} /></a><a className="button-secondary" href="#cara-kerja"><span className="play-circle"><CirclePlay size={17} /></span> Lihat cara kerja</a></div>
             <div className="social-proof"><div className="proof-avatars"><span>R</span><span>M</span><span>A</span><span>+</span></div><div><div className="proof-stars">★★★★★ <span>4.9/5</span></div><p>Dipercaya para kreator yang berani mulai</p></div></div>
           </div>
           <div className="hero-visual"><div className="visual-glow" /><div className="orbit orbit-one" /><div className="orbit orbit-two" /><ProductPreview /><div className="visual-caption"><span className="caption-line" /> DARI IDE PERTAMA, SAMPAI JADI NYATA</div></div>
@@ -133,6 +136,24 @@ function App() {
 
       <footer className="footer"><div className="container footer-top"><div><Brand light /><p>Ruang kreatif untuk masa depan yang kamu bayangkan.</p></div><div className="footer-links"><a href="#fitur">Fitur</a><a href="#cara-kerja">Cara kerja</a><a href="#tentang">Tentang kami</a><a href="mailto:halo@blea.ai">Hubungi kami</a></div><a href="#top" className="back-top">Kembali ke atas <ArrowUpRight size={14} /></a></div><div className="container footer-bottom"><span>© 2026 BLEA AI. Dibuat untuk ide-ide besar.</span><div><a href="#privasi">Privasi</a><a href="#ketentuan">Ketentuan</a><span className="footer-status"><i /> Semua sistem beroperasi</span></div></div></footer>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<AuthPage mode="login" />} />
+          <Route path="/signup" element={<AuthPage mode="signup" />} />
+          <Route element={<ProtectedRoute />}>
+            <Route path="/app" element={<Dashboard />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
 
