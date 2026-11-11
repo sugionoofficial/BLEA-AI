@@ -1,0 +1,18 @@
+# Supabase configuration for BLEA-AI project
+# Reference: https://supabase.com/docs/guides/cli/local-development
+
+project_id = "lwknqvgnxgecptkvtkfb"
+
+[functions]
+  # ai-chat edge function — UnoRouter proxy
+  # verify_jwt=false at gateway: function self-verifies JWT via supabase.auth.getUser
+  [functions.ai-chat]
+    verify_jwt = false
+
+[auth]
+  # Site URL for auth redirects
+  site_url = "https://blea-ai.blea-ai.workers.dev"
+
+[storage]
+  # Allowed bucket names
+  allowed_bucket_names = ["ai-studio-uploads"]
