@@ -34,8 +34,10 @@ test('OAuth validates state, protects token and isolates BLEA users', async () =
   assert.ok(state);
   const bad = await call('/auth/github/callback?code=test&state=wrong', { method: 'GET', cookie: stateCookie });
   assert.equal(bad.status, 400);
+  assert.match(await bad.text(), /href="\/studio"/);
   const callback = await call(`/auth/github/callback?code=test&state=${state}`, { method: 'GET', cookie: stateCookie });
-  assert.equal(callback.status, 200);
+  assert.equal(callback.status, 303);
+  assert.equal(callback.headers.get('location'), '/studio');
   const header = callback.headers.get('set-cookie');
   assert.doesNotMatch(header, /github-secret-token/);
   const session = header.match(/__Host-blea_github=([^;,]+)/)[0];

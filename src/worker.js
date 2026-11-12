@@ -362,7 +362,7 @@ function summarizeTool(name, result) {
 async function handleGithubCallback(request, url, env) {
   const headers = new Headers({ 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'content-security-policy': "default-src 'none'; base-uri 'none'" });
   headers.append('set-cookie', `${STATE_COOKIE}=; ${cookieOptions}; Max-Age=0`);
-  const fail = () => new Response('<!doctype html><meta charset="utf-8"><h1>Koneksi GitHub gagal</h1><p>Silakan ulangi proses koneksi dari AI Studio.</p><a href="/app/studio">Kembali ke AI Studio</a>', { status: 400, headers });
+  const fail = () => new Response('<!doctype html><meta charset="utf-8"><h1>Koneksi GitHub gagal</h1><p>Silakan ulangi proses koneksi dari AI Studio.</p><a href="/studio">Kembali ke AI Studio</a>', { status: 400, headers });
   const state = await unseal(cookieValue(request, STATE_COOKIE), env);
   if (!state || !url.searchParams.get('state') || state.nonce !== url.searchParams.get('state') || url.searchParams.get('error') || !url.searchParams.get('code')) return fail();
   const tokenData = await exchangeGithubCode(url.searchParams.get('code'), env);
@@ -371,7 +371,8 @@ async function handleGithubCallback(request, url, env) {
   headers.append('set-cookie', `${GH_COOKIE}=${session}; ${cookieOptions}; Max-Age=2592000`);
   // Remove a legacy unencrypted token left by older deployments.
   headers.append('set-cookie', 'blea_github_token=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0');
-  return new Response('<!doctype html><meta charset="utf-8"><h1>GitHub terhubung!</h1><a href="/app/studio">Lanjut ke AI Studio</a>', { status: 200, headers });
+  headers.set('location', '/studio');
+  return new Response(null, { status: 303, headers });
 }
 
 async function jsonResponse(data, status = 200) {
