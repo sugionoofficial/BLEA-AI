@@ -346,10 +346,7 @@ export function AIStudio() {
   }
 
   return (
-    <DropXLayout
-      title="AI Studio"
-      description="Chat dengan BLEA AI untuk mengembangkan idemu."
-    >
+    <DropXLayout footer={false}>
       <div className="studio-shell studio-ready">
         <div className="studio-sidebar">
         <button className="studio-new-chat" onClick={startNewConversation}><MessageSquarePlus size={15} /> Percakapan baru <Plus size={15} /></button>
