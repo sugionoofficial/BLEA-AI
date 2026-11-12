@@ -611,7 +611,8 @@ export function AIStudio() {
         <span className="studio-consent-icon">{consentApp === 'github' ? <Github size={20} /> : consentApp === 'notion' ? <BookOpen size={20} /> : <Slack size={20} />}</span>
         <h2 id="studio-consent-title">Hubungkan {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'}</h2>
         <p>BLEA AI ingin mengakses akun {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'} kamu untuk memberikan bantuan yang lebih baik — seperti agen yang bisa mengelola catatan, dokumen, dan repository.</p>
-        <div className="studio-consent-account"><span>Akun</span><b>{fullName} · {user?.email || '—'}</b></div>
+        <div className="studio-consent-account"><span>Akun BLEA AI</span><b>{fullName} · {user?.email || '—'}</b></div>
+        {consentApp === 'github' && <p className="studio-consent-note">Akun GitHub kamu akan diminta login di halaman github.com setelah kamu klik Setujui &amp; Hubungkan. Pastikan akun GitHub yang benar sedang login di browser kamu.</p>}
         <div className="studio-consent-permissions">
           <div className="studio-consent-perm"><Check size={12} /><span>Akses repository (read &amp; write)</span></div>
           <div className="studio-consent-perm"><Check size={12} /><span>Profil pengguna (read)</span></div>

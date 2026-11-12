@@ -206,6 +206,7 @@
 .studio-consent-account { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); }
 .studio-consent-account > span { font-size: 10px; color: var(--muted-foreground); font-weight: 600; }
 .studio-consent-account b { font-size: 11.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-consent-note { font-size: 11px; color: var(--muted-foreground); line-height: 1.5; margin-bottom: 12px; }
 .studio-consent-permissions { display: flex; flex-direction: column; gap: 7px; margin-bottom: 20px; text-align: left; }
 .studio-consent-perm { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
 .studio-consent-perm svg { color: var(--success); flex: none; }
