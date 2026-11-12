@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, GitBranch, Github, MessageSquarePlus, Network, Paperclip, Plus, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, Github, MessageSquarePlus, Network, Paperclip, Plus, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import { chatCompletion, fetchConnectedRepos, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
@@ -128,9 +128,8 @@ export function AIStudio() {
   const [sendingWeb, setSendingWeb] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
-  const [repoConnected, setRepoConnected] = useState(true);
+  const [repos, setRepos] = useState([]);
   const [repoConnecting, setRepoConnecting] = useState(false);
-  const [connectedRepo, setConnectedRepo] = useState(null);
   // App koneksi — seperti Arena: TIDAK otomatis terhubung; klik untuk koneksikan.
   const [appConnections, setAppConnections] = useState({ notion: false, slack: false, github: false });
   const [appConnecting, setAppConnecting] = useState(null);
@@ -203,8 +202,8 @@ export function AIStudio() {
     let cancelled = false;
     (async () => {
       try {
-        const repo = await fetchConnectedRepos();
-        if (!cancelled && repo) { setConnectedRepo(repo); setRepoConnected(true); }
+        const list = await fetchConnectedRepos();
+        if (!cancelled) setRepos(list);
       } catch { /* repo info opsional */ }
     })();
     return () => { cancelled = true; };
@@ -492,8 +491,8 @@ export function AIStudio() {
   async function reconnectRepo() {
     setRepoConnecting(true);
     try {
-      const repo = await fetchConnectedRepos();
-      if (repo) { setConnectedRepo(repo); setRepoConnected(true); }
+      const list = await fetchConnectedRepos();
+      setRepos(list);
     } catch { /* retry gagal — tetap terputus */ }
     finally { setRepoConnecting(false); }
   }
@@ -519,7 +518,7 @@ export function AIStudio() {
           window.location.href = data.url;
           return;
         }
-        setError(data?.error || 'GitHub OAuth App belum dikonfigurasi. Buat di https://github.com/settings/developers.');
+        setError(data?.error || 'Koneksi GitHub gagal. Hubungi administrator BLEA AI.');
       } catch (startError) {
         setError(String(startError?.message || startError));
       }
@@ -594,11 +593,14 @@ export function AIStudio() {
                 <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
                 <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => handleAppChipClick('notion')} disabled={appConnecting === 'notion'} aria-pressed={appConnections.notion}>{appConnecting === 'notion' ? <span className="studio-send-loader" /> : <BookOpen size={12} />} Notion{appConnections.notion && <i />}</button>
                 <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => handleAppChipClick('slack')} disabled={appConnecting === 'slack'} aria-pressed={appConnections.slack}>{appConnecting === 'slack' ? <span className="studio-send-loader" /> : <Slack size={12} />} Slack{appConnections.slack && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${githubConnected?.connected ? 'is-on' : ''}`} onClick={() => (githubConnected?.connected ? githubLogout().then(() => setGithubConnected({ ok: false, connected: false })) : setConsentApp('github'))} aria-pressed={!!githubConnected?.connected}><Github size={12} /> GitHub{githubConnected?.connected && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${githubConnected?.connected ? 'is-on' : ''}`} onClick={() => (githubConnected?.connected ? githubLogout().then((result) => { if (result.ok) { setGithubConnected({ ok: false, connected: false }); setRepos([]); } else setError(result.data?.error || 'Gagal memutus koneksi GitHub.'); }) : setConsentApp('github'))} aria-pressed={!!githubConnected?.connected}><Github size={12} /> GitHub{githubConnected?.connected && <i />}</button>
               </div>
               <div className="studio-repos">
                 <span className="studio-repos-label">REPO TERHUBUNG</span>
-                {repoConnected ? (connectedRepo ? <div className="studio-repo-item"><button type="button" className="studio-repo-icon-btn" onClick={() => setRepoConnected(false)} aria-label="Putus koneksi repo"><Github size={14} /></button><div><b>{connectedRepo.fullName}</b><small>{connectedRepo.defaultBranch}</small></div><button type="button" className="studio-repo-disconnect" onClick={() => setRepoConnected(false)}>Putus</button></div> : <div className="studio-repo-item is-loading"><span className="studio-repo-icon"><GitBranch size={14} /></span><div><b>Menunggu info repo…</b></div></div>) : <div className="studio-repo-item is-disconnected"><button type="button" className="studio-repo-icon-btn" onClick={reconnectRepo} disabled={repoConnecting} aria-label="Koneksi ulang repo">{repoConnecting ? <span className="studio-send-loader" /> : <Github size={14} />}</button><div><b>Repo tidak terhubung</b><small>Koneksi ulang menggunakan autentikasi akunmu</small></div><button type="button" className="studio-repo-reconnect" onClick={reconnectRepo} disabled={repoConnecting}>{repoConnecting ? 'Menghubungkan…' : 'Koneksi ulang'}</button></div>}
+                {!githubConnected?.connected ? <small>Hubungkan GitHub untuk melihat repository.</small> : <>
+                  <button type="button" onClick={reconnectRepo} disabled={repoConnecting}>{repoConnecting ? 'Memuat…' : 'Muat ulang repository'}</button>
+                  {repos.length ? <ul>{repos.map((repo) => <li key={repo.fullName}>{repo.fullName} ({repo.defaultBranch})</li>)}</ul> : <small>Tidak ada repository yang ditampilkan.</small>}
+                </> }
               </div>
             </div>}
           </div>
@@ -612,11 +614,11 @@ export function AIStudio() {
         <h2 id="studio-consent-title">Hubungkan {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'}</h2>
         <p>BLEA AI ingin mengakses akun {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'} kamu untuk memberikan bantuan yang lebih baik — seperti agen yang bisa mengelola catatan, dokumen, dan repository.</p>
         <div className="studio-consent-account"><span>Akun BLEA AI</span><b>{fullName} · {user?.email || '—'}</b></div>
-        {consentApp === 'github' && <p className="studio-consent-note">Akun GitHub kamu akan diminta login di halaman github.com setelah kamu klik Setujui &amp; Hubungkan. Pastikan akun GitHub yang benar sedang login di browser kamu.</p>}
+        {consentApp === 'github' && <p className="studio-consent-note">Akun GitHub kamu akan diminta login di halaman github.com setelah kamu klik Setujui &amp; Hubungkan. Pastikan akun GitHub yang benar sedang login di browser kamu. GitHub meminta izin repo yang mencakup akses baca dan tulis, termasuk repository privat; BLEA AI saat ini hanya menjalankan alat baca.</p>}
         <div className="studio-consent-permissions">
           <div className="studio-consent-perm"><Check size={12} /><span>Akses repository (read &amp; write)</span></div>
           <div className="studio-consent-perm"><Check size={12} /><span>Profil pengguna (read)</span></div>
-          <div className="studio-consent-perm"><Check size={12} /><span>Trigger workflow CI (deploy)</span></div>
+          <div className="studio-consent-perm"><Check size={12} /><span>Putus koneksi di BLEA AI tidak mencabut izin di GitHub; cabut melalui pengaturan aplikasi GitHub.</span></div>
         </div>
         <div><button className="studio-cancel-button" onClick={() => setConsentApp(null)}>Batal</button><button className="studio-consent-approve" onClick={() => approveConsent(consentApp)}>Setujui &amp; Hubungkan</button></div>
       </section></div>}

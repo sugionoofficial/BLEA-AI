@@ -66,14 +66,14 @@ export async function fetchEnabledModels() {
   return Array.isArray(data?.models) ? data.models : [];
 }
 
-export async function chatCompletion({ conversationId, model, messages }) {
-  return edgeRequest('/chat', { conversationId, model, messages });
+export async function chatCompletion({ conversationId, model, messages, github }) {
+  return edgeRequest('/chat', { conversationId, model, messages, github });
 }
 
 // AI Studio — repo terhubung (GitHub) untuk panel koneksi di bawah input.
 export async function fetchConnectedRepos() {
   const { data } = await edgeRequest('/repos', {});
-  return data?.repo || null;
+  return Array.isArray(data?.repos) ? data.repos : [];
 }
 
 // AI Studio agen mode — akses internet: pencarian web melalui worker (server-side).
@@ -84,8 +84,7 @@ export async function webSearch(query) {
 
 // GitHub OAuth — mulai alur otorisasi (real).
 export async function githubStart() {
-  const { data } = await edgeRequest('/auth/github/start', {});
-  return data;
+  return edgeRequest('/auth/github/start', {});
 }
 
 // GitHub OAuth — status koneksi + identitas akun.
@@ -103,8 +102,6 @@ export async function githubLogout() {
 export async function githubTool(name, args = {}) {
   const { data } = await edgeRequest(`/github/tools/${name}`, {
     ...args,
-    owner: args.owner || 'sugionoofficial',
-    repo: args.repo || 'BLEA-AI',
   });
   return data;
 }
