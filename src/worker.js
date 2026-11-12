@@ -61,6 +61,69 @@ async function servicePostgrest(env, path, options = {}) {
   });
 }
 
+// BLEA AI — system prompt untuk mode agen (mandiri, cerdas, tanggap, akses
+// internet, koneksi ke berbagai app). Disuntikkan ke /api/chat.
+const AGENT_SYSTEM_PROMPT = [
+  'Kamu adalah BLEA AI, agen mandiri di dalam BLEA AI Studio. Prinsip kerja:',
+  '- Mandiri: bekerja sendiri, mengambil keputusan dan langkah yang diperlukan tanpa diminta langkah demi langkah.',
+  '- Cerdas: analitis dan logis; jawaban akurat, terstruktur, dengan prioritas informasi yang penting.',
+  '- Tanggap: pahami konteks percakapan; ikuti bahasa pengguna (Bahasa Indonesia bila pengguna berbicara Bahasa Indonesia); langsung pada inti.',
+  '- Akses internet: kamu memiliki akses ke hasil pencarian web terkini (disertakan dalam pesan pengguna). Gunakan hasil tersebut untuk pertanyaan tentang berita, harga, peristiwa terbaru, atau informasi yang membutuhkan data terkini. Sebutkan sumber bila mengutip.',
+  '- Koneksi ke berbagai app: kamu dapat terhubung ke aplikasi seperti Notion, Slack, dan GitHub. Bila pengguna meminta manajemen catatan, dokumen, saluran, atau repository, berikan bantuan sesuai kapabilitas aplikasi tersebut.',
+  '- Format: jawaban normal berupa teks biasa tanpa blok. Bila kamu memberikan kode, script, atau prompt, bungkus dalam blok kode (```) — pengguna menampilkannya dalam blok merah yang dapat disalin.',
+].join(' ');
+
+function stripHtmlTags(html) {
+  return String(html || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Web search server-side: DuckDuckGo HTML (umum) + Wikipedia (fallback).
+async function webSearch(query) {
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  try {
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      headers: { 'user-agent': ua, accept: 'text/html' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const results = [];
+      const re = /<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]{0,500}?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+      let match;
+      while ((match = re.exec(html)) && results.length < 6) {
+        let href = match[1];
+        try {
+          const parsed = new URL(href, 'https://duckduckgo.com');
+          href = parsed.searchParams.get('uddg') || href;
+        } catch {}
+        const title = stripHtmlTags(match[2]);
+        const snippet = stripHtmlTags(match[3]);
+        if (title && href) results.push({ title, url: href, snippet, source: 'duckduckgo' });
+      }
+      if (results.length) return results;
+    }
+  } catch {}
+  try {
+    const res = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch=${encodeURIComponent(query)}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    const data = await res.json().catch(() => ({}));
+    const rows = data?.query?.search || [];
+    return rows.map((row) => ({
+      title: row.title,
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(row.title.replace(/ /g, '_'))}`,
+      snippet: stripHtmlTags(row.snippet || ''),
+      source: 'wikipedia',
+    }));
+  } catch {}
+  return [];
+}
+
 async function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -201,6 +264,15 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, saved: activeIds.length, activeCount: activeIds.length });
     }
 
+    // ---- /search: web search untuk mode agen (internet access) ----
+    if (path === 'search' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const query = String(body.query || '').trim();
+      if (!query) return jsonResponse({ error: 'query required' }, 400);
+      const results = await webSearch(query);
+      return jsonResponse({ ok: true, results, query });
+    }
+
     // ---- /chat: call openrouter, save assistant reply to DB, return JSON (auth required) ----
     if (path === 'chat' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
@@ -220,7 +292,7 @@ async function handleApi(request, url, env) {
       const chatUrl = gatewayBase.endsWith('/chat/completions')
         ? gatewayBase
         : `${gatewayBase}/v1/chat/completions`;
-      const fetchBody = { ...body, model: body.model, messages: body.messages, stream: false };
+      const fetchBody = { ...body, model: body.model, messages: [...(body.messages || []), { role: 'system', content: AGENT_SYSTEM_PROMPT }], stream: false };
       delete fetchBody.apiKey;
       delete fetchBody.apiUrl;
       try {

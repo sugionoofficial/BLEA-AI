@@ -70,6 +70,12 @@ export async function chatCompletion({ conversationId, model, messages }) {
   return edgeRequest('/chat', { conversationId, model, messages });
 }
 
+// AI Studio agen mode — akses internet: pencarian web melalui worker (server-side).
+export async function webSearch(query) {
+  const { data } = await edgeRequest('/search', { query });
+  return Array.isArray(data?.results) ? data.results : [];
+}
+
 export async function verifyKey({ apiKey, baseUrl }) {
   return edgeRequest('/verify', { apiKey, baseUrl });
 }
