@@ -47,10 +47,7 @@ jobs:
             echo "::warning::Cloudflare secrets not set — skipping secret put."
             exit 0
           fi
-          curl -fsS -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/blea-ai/secrets" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"name\":\"GITHUB_CLIENT_SECRET\",\"type\":\"secret_text\",\"value\":\"$BLEA_GITHUB_CLIENT_SECRET\"}"
+          echo "$BLEA_GITHUB_CLIENT_SECRET" | npx wrangler secret put GITHUB_CLIENT_SECRET --name blea-ai
           echo "GITHUB_CLIENT_SECRET configured."
 
       - name: Deploy to Cloudflare Workers
