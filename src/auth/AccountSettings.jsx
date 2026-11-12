@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Check, CircleHelp, KeyRound, Mail, Save, ShieldCheck, UserRound } from 'lucide-react';
 import { Brand } from '../components/Brand';
+import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 
@@ -81,7 +82,8 @@ export function AccountSettings() {
 
   return (
     <div className="app-shell">
-      <aside className="app-sidebar">
+      <AppDrawer>
+        <AppDrawerPanel>
         <div className="app-sidebar-brand"><Brand /></div>
         <div className="workspace-switcher"><span className="workspace-logo"><UserRound size={15} /></span><span><b>Pengaturan akun</b><small>Profil dan keamanan</small></span></div>
         <div className="app-nav-label">AKUN</div>
@@ -90,9 +92,9 @@ export function AccountSettings() {
         {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
         <div className="sidebar-spacer" />
         <a className="app-nav-item" href="mailto:halo@blea.ai"><CircleHelp size={16} /> Bantuan</a>
-      </aside>
+        </AppDrawerPanel>
       <main className="app-main">
-        <header className="app-topbar"><div className="app-breadcrumb"><Link to="/app">Ruang pribadi</Link><span>/</span><b>Pengaturan akun</b></div><a href="/" className="website-link">Lihat website <ArrowRight size={14} /></a></header>
+        <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><Link to="/app">Ruang pribadi</Link><span>/</span><b>Pengaturan akun</b></div><a href="/" className="website-link">Lihat website <ArrowRight size={14} /></a></header>
         <div className="app-content settings-content">
           <div className="settings-heading"><span className="app-date">PREFERENSI AKUN</span><h1>Profil & keamanan</h1><p>Kelola identitas, email, dan akses akun BLEA-mu.</p></div>
           {notice && <div className="settings-banner settings-success" role="status"><Check size={15} />{notice}</div>}
@@ -118,6 +120,7 @@ export function AccountSettings() {
           <div className="app-footer settings-footer"><span>BLEA AI · Pengaturan akun</span><div><span className="footer-status"><i /> Akses akunmu terlindungi</span></div></div>
         </div>
       </main>
+      </AppDrawer>
     </div>
   );
 }

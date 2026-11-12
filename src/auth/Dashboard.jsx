@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, ArrowUpRight, AudioLines, Bell, Check, ChevronDown, CircleHelp, Command, Layers3, LogOut, MessageCircle, MoreHorizontal, Plus, Settings2, ShieldCheck, Sparkles, WandSparkles } from 'lucide-react';
 import { Brand } from '../components/Brand';
+import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
 
@@ -41,7 +42,8 @@ export function Dashboard() {
 
   return (
     <div className="app-shell">
-      <aside className="app-sidebar">
+      <AppDrawer>
+        <AppDrawerPanel>
         <div className="app-sidebar-brand"><Brand /></div>
         <div className="workspace-switcher"><span className="workspace-logo"><Sparkles size={15} /></span><span><b>Ruang pribadi</b><small>Workspace gratis</small></span><ChevronDown size={14} /></div>
         <div className="app-nav-label">WORKSPACE</div>
@@ -59,10 +61,10 @@ export function Dashboard() {
           <span className="profile-avatar">{initials}</span><span className="profile-details"><b>{fullName}</b><small>{user?.email}</small></span><MoreHorizontal size={17} />
         </button>
         {menuOpen && <div className="profile-menu"><div className="profile-menu-email">{user?.email}</div><Link to="/settings" className="profile-menu-link"><Settings2 size={14} /> Pengaturan akun</Link><button onClick={handleSignOut} disabled={signingOut}><LogOut size={14} />{signingOut ? 'Keluar...' : 'Keluar dari akun'}</button></div>}
-      </aside>
+        </AppDrawerPanel>
 
       <main className="app-main">
-        <header className="app-topbar"><div className="app-breadcrumb"><span>Ruang pribadi</span><span>/</span><b>Ringkasan</b></div><div className="app-top-actions"><span className="system-status"><i /> Semua sistem beroperasi</span><button className="icon-button" aria-label="Notifikasi"><Bell size={16} /><i /></button><a href="/" className="website-link">Lihat website <ArrowUpRight size={14} /></a></div></header>
+        <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><span>Ruang pribadi</span><span>/</span><b>Ringkasan</b></div><div className="app-top-actions"><span className="system-status"><i /> Semua sistem beroperasi</span><button className="icon-button" aria-label="Notifikasi"><Bell size={16} /><i /></button><a href="/" className="website-link">Lihat website <ArrowUpRight size={14} /></a></div></header>
         <div className="app-content">
           <div className="app-greeting-row"><div><span className="app-date">RUANG KERJA • BLEA AI</span><h1>Selamat datang, {firstName}<span className="greeting-star"> ✳</span></h1><p>Satu ruang untuk ide-ide yang ingin kamu wujudkan.</p></div><Link className="app-new-button" to="/projects?new=1"><Plus size={16} /> Proyek baru</Link></div>
 
@@ -75,6 +77,7 @@ export function Dashboard() {
           <footer className="app-footer"><span>© 2026 BLEA AI</span><div><a href="#privasi">Privasi</a><a href="#ketentuan">Ketentuan</a><span className="footer-status"><i /> Terenkripsi dan aman</span></div></footer>
         </div>
       </main>
+      </AppDrawer>
     </div>
   );
 }

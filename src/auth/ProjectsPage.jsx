@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Command, FolderPlus, Layers3, LogOut, MoreHorizontal, Pencil, Plus, Search, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { Brand } from '../components/Brand';
+import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
 
@@ -118,7 +119,8 @@ export function ProjectsPage() {
 
   return (
     <div className="app-shell projects-shell">
-      <aside className="app-sidebar">
+      <AppDrawer>
+        <AppDrawerPanel>
         <div className="app-sidebar-brand"><Brand /></div>
         <div className="workspace-switcher"><span className="workspace-logo"><Sparkles size={15} /></span><span><b>Ruang pribadi</b><small>Workspace gratis</small></span><ChevronDown size={14} /></div>
         <div className="app-nav-label">WORKSPACE</div>
@@ -133,10 +135,10 @@ export function ProjectsPage() {
         <div className="sidebar-spacer" />
         <button className={`sidebar-profile ${profileMenu ? 'is-open' : ''}`} onClick={() => setProfileMenu(!profileMenu)} aria-expanded={profileMenu}><span className="profile-avatar">{initials}</span><span className="profile-details"><b>{fullName}</b><small>{user?.email}</small></span><MoreHorizontal size={17} /></button>
         {profileMenu && <div className="profile-menu"><div className="profile-menu-email">{user?.email}</div><Link to="/settings" className="profile-menu-link"><Settings2 size={14} /> Pengaturan akun</Link><button onClick={signOut}><LogOut size={14} /> Keluar dari akun</button></div>}
-      </aside>
+        </AppDrawerPanel>
 
       <main className="app-main">
-        <header className="app-topbar"><div className="app-breadcrumb"><span>Ruang pribadi</span><span>/</span><b>Proyek</b></div><div className="app-top-actions"><span className="system-status"><i /> Semua sistem beroperasi</span><a href="/" className="website-link">Lihat website <ArrowUpRight size={14} /></a></div></header>
+        <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><span>Ruang pribadi</span><span>/</span><b>Proyek</b></div><div className="app-top-actions"><span className="system-status"><i /> Semua sistem beroperasi</span><a href="/" className="website-link">Lihat website <ArrowUpRight size={14} /></a></div></header>
         <div className="app-content projects-content">
           <div className="projects-heading"><div><span className="app-date">RUANG KERJA</span><h1>Proyekmu.</h1><p>Simpan ide dan kembangkan satu langkah demi satu.</p></div><button className="project-create-button" onClick={openCreate}><Plus size={16} /> Proyek baru</button></div>
           <div className="projects-toolbar"><div className="projects-count"><Layers3 size={15} /><span>{projects.length} {projects.length === 1 ? 'proyek' : 'proyek'}</span></div><label className="project-search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cari proyek..." aria-label="Cari proyek" /></label></div>
@@ -146,6 +148,7 @@ export function ProjectsPage() {
           <footer className="app-footer projects-footer"><span>© 2026 BLEA AI</span><div><span className="footer-status"><i /> Proyek tersimpan aman</span></div></footer>
         </div>
       </main>
+      </AppDrawer>
 
       {modalProject !== undefined && <div className="project-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setModalProject(undefined); }}><section className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title"><div className="project-modal-head"><span className="project-modal-icon"><Layers3 size={17} /></span><button className="modal-close" onClick={() => setModalProject(undefined)} aria-label="Tutup"><X size={17} /></button></div><span className="app-date">{modalProject ? 'EDIT PROYEK' : 'PROYEK BARU'}</span><h2 id="project-modal-title">{modalProject ? 'Rapikan idemu.' : 'Mulai dari satu ide.'}</h2><p className="project-modal-intro">{modalProject ? 'Perbarui detail proyek ini kapan saja.' : 'Beri nama pada ruang untuk ide yang ingin kamu wujudkan.'}</p><form onSubmit={saveProject} className="project-form"><label><span>Nama proyek</span><input name="name" defaultValue={modalProject?.name || ''} placeholder="Contoh: Brand baru, rencana konten..." maxLength={80} required autoFocus /></label><label><span>Deskripsi <small>OPSIONAL</small></span><textarea name="description" defaultValue={modalProject?.description || ''} placeholder="Apa yang ingin kamu capai dengan proyek ini?" maxLength={500} rows={4} /></label>{formError && <div className="auth-alert auth-alert-error" role="alert">{formError}</div>}<div className="project-form-footer"><span>Maks. 80 karakter untuk nama</span><div><button type="button" className="project-cancel" onClick={() => setModalProject(undefined)}>Batal</button><button type="submit" className="project-create-button" disabled={saving}>{saving ? 'Menyimpan...' : modalProject ? 'Simpan perubahan' : 'Buat proyek'} <ArrowRight size={14} /></button></div></div></form></section></div>}
       {deleteProject && <div className="project-modal-backdrop"><section className="project-modal delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title"><div className="delete-modal-icon"><Trash2 size={18} /></div><h2 id="delete-modal-title">Hapus proyek ini?</h2><p>“{deleteProject.name}” akan dihapus dari ruang kerjamu. Tindakan ini tidak bisa dibatalkan.</p><div className="delete-modal-actions"><button className="project-cancel" onClick={() => setDeleteProject(null)}>Batal</button><button className="delete-confirm-button" onClick={confirmDelete} disabled={deleting}>{deleting ? 'Menghapus...' : 'Ya, hapus proyek'}</button></div></section></div>}

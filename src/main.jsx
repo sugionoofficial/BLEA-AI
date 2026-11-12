@@ -21,6 +21,7 @@ import './auth/auth.css';
 import './auth/settings.css';
 import './auth/projects.css';
 import './auth/admin.css';
+import './auth/drawer.css';
 import {
   ArrowDown, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown,
   CirclePlay, Command, Globe2, Layers3, Menu, MessageCircle,
