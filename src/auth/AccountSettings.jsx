@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Check, KeyRound, Mail, Save, ShieldCheck, UserRound } from 'lucide-react';
-import { AppDrawer, AppDrawerToggle } from '../components/AppDrawer';
-import { GlobalNavPanel } from '../components/AppNav';
+import { DropXLayout } from '../dropx/DropXLayout';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 
@@ -80,14 +79,12 @@ export function AccountSettings() {
   }
 
   return (
-    <div className="app-shell">
-      <AppDrawer>
-        <GlobalNavPanel />
-      <main className="app-main">
-        <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><Link to="/app">Ruang pribadi</Link><span>/</span><b>Pengaturan akun</b></div><a href="/" className="website-link">Lihat website <ArrowRight size={14} /></a></header>
-        <div className="app-content settings-content">
-          <div className="settings-heading"><span className="app-date">PREFERENSI AKUN</span><h1>Profil & keamanan</h1><p>Kelola identitas, email, dan akses akun BLEA-mu.</p></div>
-          {notice && <div className="settings-banner settings-success" role="status"><Check size={15} />{notice}</div>}
+    <DropXLayout
+      title="Pengaturan akun"
+      description="Kelola identitas, email, dan akses akun BLEA-mu."
+    >
+      <div className="app-content settings-content">
+        {notice && <div className="settings-banner settings-success" role="status"><Check size={15} />{notice}</div>}
           {errorMessage && <div className="settings-banner settings-error" role="alert">{errorMessage}</div>}
 
           <form className="settings-card" onSubmit={saveProfile}>
@@ -107,10 +104,7 @@ export function AccountSettings() {
             <div className="settings-card-title"><span className="settings-card-icon"><KeyRound size={16} /></span><div><h2>Kata sandi</h2><p>Kirim tautan aman untuk mengganti kata sandi.</p></div></div>
             <div className="settings-card-actions"><span className="settings-hint">Tautan dikirim ke {user?.email}.</span><Link className="settings-save settings-link-button" to="/forgot-password">Kirim tautan reset <ArrowRight size={14} /></Link></div>
           </section>
-          <div className="app-footer settings-footer"><span>BLEA AI · Pengaturan akun</span><div><span className="footer-status"><i /> Akses akunmu terlindungi</span></div></div>
         </div>
-      </main>
-      </AppDrawer>
-    </div>
+    </DropXLayout>
   );
 }

@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, ArrowUpRight, Check, ChevronDown, Copy, Cpu, FolderOpen, MessageSquarePlus, Paperclip, Plus, Send, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
-import { AppDrawer, AppDrawerToggle } from '../components/AppDrawer';
-import { GlobalNavPanel } from '../components/AppNav';
+import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import { chatCompletion, fetchEnabledModels, fetchFreeModels, fetchProviderStatus } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
@@ -347,18 +346,21 @@ export function AIStudio() {
   }
 
   return (
-    <div className="studio-shell studio-ready">
-      <AppDrawer>
-        <GlobalNavPanel context={<>
+    <DropXLayout
+      title="AI Studio"
+      description="Chat dengan BLEA AI untuk mengembangkan idemu."
+    >
+      <div className="studio-shell studio-ready">
+        <div className="studio-sidebar">
         <button className="studio-new-chat" onClick={startNewConversation}><MessageSquarePlus size={15} /> Percakapan baru <Plus size={15} /></button>
         <div className="studio-history-heading"><span>RIWAYAT</span><span>{conversations.length}</span></div>
         <div className="studio-history-list">
           {loadingHistory ? <div className="studio-history-loading">Memuat riwayat...</div> : conversations.length ? conversations.map((conversation) => <div key={conversation.id} className={`studio-history-item ${activeId === conversation.id ? 'active' : ''}`}><button className="studio-history-select" onClick={() => { setActiveId(conversation.id); setError(''); }}><span className="history-message-icon"><MessageSquarePlus size={14} /></span><span><b>{conversation.title}</b><small>{new Date(conversation.updated_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}</small></span></button><button className="studio-history-delete" onClick={() => setDeleteTarget(conversation)} aria-label={`Hapus percakapan ${conversation.title}`}><Trash2 size={13} /></button></div>) : <p className="studio-history-empty">Percakapan yang kamu simpan akan muncul di sini.</p>}
         </div>
-        </>} />
+        </div>
 
       <main className="studio-main">
-        <header className="studio-topbar"><AppDrawerToggle /><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `UNO · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
+        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `UNO · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
         <div className="studio-content">
           <div className={`studio-conversation ${messages.length ? 'has-messages' : ''}`}>
             {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'Tanya apa saja tentang idemu. Jawaban AI aktif dengan model teks gratis UnoRouter; riwayat tersimpan di akunmu.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}><span className="studio-message-avatar">{message.role === 'user' ? initials.slice(0, 1) : <Sparkles size={13} />}</span><div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div><p>{message.content}</p></div></article>)}<div ref={endOfMessages} /></div>}
@@ -394,7 +396,7 @@ export function AIStudio() {
       </main>
 
       {deleteTarget && <div className="studio-modal-backdrop"><section className="studio-delete-modal" role="dialog" aria-modal="true" aria-labelledby="studio-delete-title"><span className="studio-delete-icon"><Trash2 size={18} /></span><h2 id="studio-delete-title">Hapus percakapan?</h2><p>“{deleteTarget.title}” dan seluruh riwayat pesan di dalamnya akan dihapus.</p><div><button className="studio-cancel-button" onClick={() => setDeleteTarget(null)}>Batal</button><button className="studio-delete-confirm" onClick={deleteConversation} disabled={deleting}>{deleting ? 'Menghapus...' : 'Hapus percakapan'}</button></div></section></div>}
-      </AppDrawer>
-    </div>
+      </div>
+    </DropXLayout>
   );
 }
