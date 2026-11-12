@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, GitBranch, Github, MessageSquarePlus, Network, Paperclip, Plus, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatCompletion, fetchConnectedRepos, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, webSearch } from '../api/unorouter';
+import { chatCompletion, fetchConnectedRepos, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -137,6 +137,7 @@ export function AIStudio() {
   // Modal persetujuan auth login (seperti consent OAuth) — klik logo app
   // untuk koneksikan, approval dari pemilik akun.
   const [consentApp, setConsentApp] = useState(null);
+  const [githubConnected, setGithubConnected] = useState(null);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -186,6 +187,17 @@ export function AIStudio() {
   }, [user?.id]);
 
   useEffect(() => { loadSidebarData(); }, [loadSidebarData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await githubStatus();
+        if (!cancelled) setGithubConnected(status);
+      } catch { /* status opsional */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -361,6 +373,7 @@ export function AIStudio() {
         conversationId: conversation.id,
         model: selectedModel,
         messages: history,
+        github: !!githubConnected?.connected,
       });
 
       if (chatOk && chatData?.reply) {
@@ -374,7 +387,7 @@ export function AIStudio() {
           content: chatData.reply,
           created_at: new Date().toISOString(),
         };
-        setMessages((current) => [...current, replyMessage]);
+        setMessages((current) => [...current, { ...replyMessage, actions: chatData?.actions || [] }]);
         const { error: metaError } = await supabase
           .from('ai_conversations')
           .update({ updated_at: replyMessage.created_at })
@@ -498,6 +511,20 @@ export function AIStudio() {
   // Setujui & Hubungkan dari modal persetujuan — alur auth login.
   async function approveConsent(app) {
     setConsentApp(null);
+    if (app === 'github') {
+      // OAuth real: redirect ke github.com/authorize.
+      try {
+        const { ok, data } = await githubStart();
+        if (ok && data?.url) {
+          window.location.href = data.url;
+          return;
+        }
+        setError(data?.error || 'GitHub OAuth App belum dikonfigurasi. Buat di https://github.com/settings/developers.');
+      } catch (startError) {
+        setError(String(startError?.message || startError));
+      }
+      return;
+    }
     setAppConnecting(app);
     await new Promise((resolve) => setTimeout(resolve, 1200));
     setAppConnections((current) => ({ ...current, [app]: true }));
@@ -539,10 +566,10 @@ export function AIStudio() {
         </div>
 
       <main className="studio-main">
-        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `AGEN · WEB · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
+        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `AGEN · WEB${githubConnected?.connected ? ' · GH' : ''} · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
         <div className="studio-content">
           <div className={`studio-conversation ${messages.length ? 'has-messages' : ''}`}>
-            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'BLEA AI adalah agen mandiri — cerdas, tanggap, punya akses internet, dan bisa terhubung ke berbagai app seperti Notion, Slack, dan GitHub. Kode, script, dan prompt akan tampil dalam blok merah yang dapat disalin.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}>{message.role === 'assistant' && <span className="studio-message-avatar"><Sparkles size={13} /></span>}<div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div>{message.role === 'assistant' ? <StudioMessageBody content={message.content} copiedCodeKey={copiedCodeKey} onCopyCode={copyCode} /> : <p className="studio-message-text">{message.content}</p>}</div></article>)}<div ref={endOfMessages} /></div>}
+            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'BLEA AI adalah agen mandiri — cerdas, tanggap, punya akses internet, dan bisa terhubung ke berbagai app seperti Notion, Slack, dan GitHub. Kode, script, dan prompt akan tampil dalam blok merah yang dapat disalin.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}>{message.role === 'assistant' && <span className="studio-message-avatar"><Sparkles size={13} /></span>}<div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div>{message.role === 'assistant' ? <StudioMessageBody content={message.content} copiedCodeKey={copiedCodeKey} onCopyCode={copyCode} /> : <p className="studio-message-text">{message.content}</p>}</div>{message.actions?.length > 0 && <div className="studio-message-actions">{message.actions.map((action, actionIndex) => <span key={actionIndex} className={`studio-action-pill ${action.ok ? 'is-ok' : 'is-fail'}`}>{action.tool} {action.ok ? '✓' : '✗'}</span>)}</div>}</article>)}<div ref={endOfMessages} /></div>}
           </div>
           {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
           {error && <div className="studio-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Tutup pesan"><X size={13} /></button></div>}
@@ -567,7 +594,7 @@ export function AIStudio() {
                 <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
                 <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => handleAppChipClick('notion')} disabled={appConnecting === 'notion'} aria-pressed={appConnections.notion}>{appConnecting === 'notion' ? <span className="studio-send-loader" /> : <BookOpen size={12} />} Notion{appConnections.notion && <i />}</button>
                 <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => handleAppChipClick('slack')} disabled={appConnecting === 'slack'} aria-pressed={appConnections.slack}>{appConnecting === 'slack' ? <span className="studio-send-loader" /> : <Slack size={12} />} Slack{appConnections.slack && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${appConnections.github ? 'is-on' : ''}`} onClick={() => handleAppChipClick('github')} disabled={appConnecting === 'github'} aria-pressed={appConnections.github}>{appConnecting === 'github' ? <span className="studio-send-loader" /> : <Github size={12} />} GitHub{appConnections.github && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${githubConnected?.connected ? 'is-on' : ''}`} onClick={() => (githubConnected?.connected ? githubLogout().then(() => setGithubConnected({ ok: false, connected: false })) : setConsentApp('github'))} aria-pressed={!!githubConnected?.connected}><Github size={12} /> GitHub{githubConnected?.connected && <i />}</button>
               </div>
               <div className="studio-repos">
                 <span className="studio-repos-label">REPO TERHUBUNG</span>

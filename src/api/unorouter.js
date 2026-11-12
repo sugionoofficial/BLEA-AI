@@ -82,6 +82,33 @@ export async function webSearch(query) {
   return Array.isArray(data?.results) ? data.results : [];
 }
 
+// GitHub OAuth — mulai alur otorisasi (real).
+export async function githubStart() {
+  const { data } = await edgeRequest('/auth/github/start', {});
+  return data;
+}
+
+// GitHub OAuth — status koneksi + identitas akun.
+export async function githubStatus() {
+  const { data } = await edgeRequest('/github/status', {});
+  return data;
+}
+
+// GitHub OAuth — putus koneksi.
+export async function githubLogout() {
+  return edgeRequest('/auth/github/logout', {});
+}
+
+// Alat agen GitHub (real): read/write/delete/commit/push/pr/pr_merge/deploy.
+export async function githubTool(name, args = {}) {
+  const { data } = await edgeRequest(`/github/tools/${name}`, {
+    ...args,
+    owner: args.owner || 'sugionoofficial',
+    repo: args.repo || 'BLEA-AI',
+  });
+  return data;
+}
+
 export async function verifyKey({ apiKey, baseUrl }) {
   return edgeRequest('/verify', { apiKey, baseUrl });
 }

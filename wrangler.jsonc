@@ -5,7 +5,8 @@
   "compatibility_date": "2026-11-11",
   "vars": {
     "SUPABASE_URL": "https://lwknqvgnxgecptkvtkfb.supabase.co",
-    "SUPABASE_ANON_KEY": "sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz"
+    "SUPABASE_ANON_KEY": "sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz",
+    "GITHUB_CLIENT_ID": ""
   },
   "assets": {
     "directory": "./dist",
