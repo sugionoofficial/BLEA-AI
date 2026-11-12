@@ -124,6 +124,239 @@ async function webSearch(query) {
   return [];
 }
 
+// GitHub OAuth — OAuth App dibuat manual di
+// https://github.com/settings/developers (name: BLEA AI Studio,
+// callback: https://blea-ai.blea-ai.workers.dev/auth/github/callback).
+// Client ID di wrangler vars; client secret di Cloudflare secret
+// GITHUB_CLIENT_SECRET. Scope: repo (full — read/write/push/PR/deploy).
+const GITHUB_SCOPE = 'repo read:user';
+
+// Prompt alat GitHub untuk agen — dikirim bila chat dengan github=true.
+const GITHUB_TOOLS_PROMPT = [
+  'Kamu memiliki alat GitHub yang dapat dijalankan. Bila perlu bertindak di GitHub (baca, tulis, hapus, commit, push, PR, merge, deploy), balas dengan blok alat, lalu jelaskan hasilnya secara natural.',
+  'Format alat (blok ```tool, JSON):',
+  '```tool',
+  '{"name": "github_read", "arguments": {"path": "src/app.js"}}',
+  '```',
+  'Alat tersedia:',
+  '- github_repos: {} — daftar repository pengguna',
+  '- github_read: {path, branch?} — baca file/folder',
+  '- github_write: {path, content, message?, branch?} — tulis/edit file (commit)',
+  '- github_delete: {path, message?, branch?} — hapus file',
+  '- github_commit: {message, entries: [{path, content, mode?, type?}], branch?} — commit batch',
+  '- github_push: {branch, sha, force?} — push commit ke branch',
+  '- github_pr: {head, base?, title, body?} — buat pull request',
+  '- github_prs: {} — daftar pull request',
+  '- github_pr_merge: {number, method?} — merge pull request',
+  '- github_deploy: {ref?} — build & deploy (trigger CI workflow)',
+  'Catatan: path relatif root repo; owner/repo default sugionoofficial/BLEA-AI; branch default main. Gunakan alat hanya bila pengguna meminta tindakan di GitHub.',
+].join(' ');
+
+function githubTokenFromCookie(request) {
+  const cookie = request.headers.get('cookie') || '';
+  const match = cookie.match(/blea_github_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+async function githubApi(request, path, { method = 'GET', body, accept = 'application/vnd.github+json' } = {}) {
+  const token = githubTokenFromCookie(request);
+  if (!token) return { ok: false, status: 401, data: { error: 'GitHub tidak terhubung' } };
+  const res = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept,
+      'content-type': 'application/json',
+      'user-agent': 'blea-ai-studio',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(30_000),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+async function exchangeGithubCode(code, env) {
+  const res = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'blea-ai-studio' },
+    body: JSON.stringify({
+      client_id: env.GITHUB_CLIENT_ID,
+      client_secret: env.GITHUB_CLIENT_SECRET,
+      code,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  return res.json().catch(() => ({}));
+}
+
+// Eksekusi alat GitHub agen. toolPath = nama alat.
+async function executeGithubTool(request, toolPath, args, env) {
+  const gh = (p, opts) => githubApi(request, p, opts);
+  try {
+    if (toolPath === 'repos') {
+      const { ok, data } = await gh('/user/repos?per_page=100&sort=updated');
+      return { ok, data: ok ? (data || []).map((r) => ({ full_name: r.full_name, default_branch: r.default_branch, pushed_at: r.pushed_at })) : data };
+    }
+    if (toolPath === 'read') {
+      const relPath = String(args.path || '').replace(/^\/+/, '');
+      const encoded = relPath.split('/').map((part) => encodeURIComponent(part)).join('/');
+      const ref = args.branch || args.ref || 'main';
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`);
+      return { ok, data };
+    }
+    if (toolPath === 'write') {
+      const relPath = String(args.path || '').replace(/^\/+/, '');
+      const encoded = relPath.split('/').map((part) => encodeURIComponent(part)).join('/');
+      const ref = args.branch || args.ref || 'main';
+      const { data: existing } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`);
+      const content = Buffer.from(String(args.content ?? ''), 'utf8').toString('base64');
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}`, {
+        method: 'PUT',
+        body: {
+          message: String(args.message || `Update ${relPath}`),
+          content,
+          branch: ref,
+          ...(existing?.sha ? { sha: existing.sha } : {}),
+        },
+      });
+      return { ok, data };
+    }
+    if (toolPath === 'delete') {
+      const relPath = String(args.path || '').replace(/^\/+/, '');
+      const encoded = relPath.split('/').map((part) => encodeURIComponent(part)).join('/');
+      const ref = args.branch || args.ref || 'main';
+      const { data: existing } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`);
+      if (!existing?.sha) return { ok: false, data: { error: 'File tidak ditemukan' } };
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}`, {
+        method: 'DELETE',
+        body: { message: String(args.message || `Delete ${relPath}`), sha: existing.sha, branch: ref },
+      });
+      return { ok, data };
+    }
+    if (toolPath === 'commit') {
+      const branch = args.branch || args.ref || 'main';
+      const { data: refData } = await gh(`/repos/${args.owner}/${args.repo}/git/ref/heads/${branch}`);
+      const baseSha = refData?.object?.sha;
+      if (!baseSha) return { ok: false, data: { error: `Branch ${branch} tidak ditemukan` } };
+      const { data: baseCommit } = await gh(`/repos/${args.owner}/${args.repo}/git/commits/${baseSha}`);
+      const { ok: treeOk, data: treeData } = await gh(`/repos/${args.owner}/${args.repo}/git/trees`, {
+        method: 'POST',
+        body: {
+          base_tree: baseCommit?.tree?.sha,
+          tree: (Array.isArray(args.entries) ? args.entries : []).map((entry) => ({
+            path: entry.path,
+            mode: entry.mode || '100644',
+            type: entry.type || 'blob',
+            ...(entry.content !== undefined ? { content: Buffer.from(String(entry.content), 'utf8').toString('base64') } : {}),
+            ...(entry.sha ? { sha: entry.sha } : {}),
+          })),
+        },
+      });
+      const treeSha = treeData?.tree?.[0]?.sha;
+      if (!treeSha) return { ok: false, data: { error: treeOk ? 'Tree kosong' : (treeData?.message || 'Tree gagal') } };
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/git/commits`, {
+        method: 'POST',
+        body: { message: String(args.message || 'Commit'), tree: treeSha, parents: [baseSha] },
+      });
+      return { ok, data };
+    }
+    if (toolPath === 'push') {
+      const branch = args.branch || args.ref || 'main';
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/git/refs/heads/${branch}`, {
+        method: 'PATCH',
+        body: { sha: args.sha, force: !!args.force },
+      });
+      return { ok, data };
+    }
+    if (toolPath === 'pr') {
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/pulls`, {
+        method: 'POST',
+        body: {
+          head: args.head,
+          base: args.base || 'main',
+          title: String(args.title || 'Update'),
+          body: String(args.body || ''),
+        },
+      });
+      return { ok, data };
+    }
+    if (toolPath === 'prs') {
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/pulls?state=all&per_page=20`);
+      return { ok, data };
+    }
+    if (toolPath === 'pr_merge') {
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/pulls/${args.number}/merge`, {
+        method: 'PUT',
+        body: { merge_method: args.method || 'squash' },
+      });
+      return { ok, data };
+    }
+    if (toolPath === 'deploy') {
+      const workflowId = args.workflow_id || 'main.yml';
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/actions/workflows/${workflowId}/dispatches`, {
+        method: 'POST',
+        body: { ref: args.ref || 'main' },
+      });
+      return { ok, data };
+    }
+    return { ok: false, data: { error: `Unknown tool: ${toolPath}` } };
+  } catch (e) {
+    return { ok: false, data: { error: String(e) } };
+  }
+}
+
+function parseToolCalls(text) {
+  const calls = [];
+  const re = /```tool\s*(\{[\s\S]*?\})\s*```/g;
+  let match;
+  while ((match = re.exec(String(text || ''))) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed?.name) calls.push({ name: parsed.name, arguments: parsed.arguments || {} });
+    } catch { /* skip malformed */ }
+  }
+  return calls;
+}
+
+function summarizeTool(name, result) {
+  if (!result?.ok) return String(result?.data?.error || result?.data?.message || 'gagal');
+  const d = result.data;
+  if (Array.isArray(d)) return `${d.length} entri`;
+  switch (name) {
+    case 'repos': return `${(d || []).length} repo`;
+    case 'read': return d?.type === 'dir' || Array.isArray(d) ? 'folder' : `file (${d?.size || 0} bytes)`;
+    case 'write': return `commit ${d?.commit?.sha ? d.commit.sha.slice(0, 7) : 'ok'}`;
+    case 'delete': return 'file dihapus';
+    case 'commit': return `commit ${d?.sha ? d.sha.slice(0, 7) : 'ok'}`;
+    case 'push': return 'branch diperbarui';
+    case 'pr': return `PR #${d?.number || '?'} — ${d?.title || ''}`;
+    case 'prs': return `${(d || []).length} PR`;
+    case 'pr_merge': return d?.merged ? `PR #${d?.number || '?'} dimerge` : 'gagal merge';
+    case 'deploy': return 'deploy di-trigger';
+    default: return 'ok';
+  }
+}
+
+async function handleGithubCallback(request, url, env) {
+  const error = url.searchParams.get('error');
+  const code = url.searchParams.get('code');
+  const fail = (message) => new Response(`<!doctype html><meta charset="utf-8"><h1>Koneksi GitHub gagal</h1><p>${message}</p><a href="/app/studio">Kembali ke AI Studio</a>`, { status: 400, headers: { 'content-type': 'text/html; charset=utf-8' } });
+  if (error) return fail(error);
+  if (!code) return fail('Missing code');
+  const tokenData = await exchangeGithubCode(code, env);
+  const accessToken = tokenData?.access_token;
+  if (!accessToken) return fail(String(tokenData?.error_description || tokenData?.error || 'Token tidak diperoleh'));
+  return new Response('<!doctype html><meta charset="utf-8"><h1>GitHub terhubung!</h1><a href="/app/studio">Lanjut ke AI Studio</a>', {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'set-cookie': `blea_github_token=${encodeURIComponent(accessToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
+    },
+  });
+}
+
 async function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -298,6 +531,48 @@ async function handleApi(request, url, env) {
       }
     }
 
+    // ---- /api/auth/github/start: URL otorisasi OAuth GitHub ----
+    if (path === 'auth/github/start' && method === 'POST') {
+      const clientId = env.GITHUB_CLIENT_ID;
+      if (!clientId) {
+        return jsonResponse({ error: 'GitHub OAuth App belum dikonfigurasi. Buat di https://github.com/settings/developers dan isi client_id.' }, 503);
+      }
+      const redirectUri = `${url.origin}/auth/github/callback`;
+      const authUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(GITHUB_SCOPE)}`;
+      return jsonResponse({ ok: true, url: authUrl });
+    }
+
+    // ---- /api/auth/github/logout: putus koneksi GitHub ----
+    if (path === 'auth/github/logout' && method === 'POST') {
+      return new Response('ok', {
+        status: 200,
+        headers: {
+          'content-type': 'text/plain',
+          'set-cookie': 'blea_github_token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax',
+        },
+      });
+    }
+
+    // ---- /api/github/status: koneksi + identitas akun ----
+    if (path === 'github/status' && (method === 'GET' || method === 'POST')) {
+      const { ok, data } = await githubApi(request, '/user');
+      if (!ok) return jsonResponse({ ok: false, connected: false });
+      return jsonResponse({ ok: true, connected: true, login: data?.login, name: data?.name, scopes: GITHUB_SCOPE });
+    }
+
+    // ---- /api/github/tools/{tool}: alat agen GitHub (real) ----
+    if (path.startsWith('github/tools/') && method === 'POST') {
+      const toolPath = path.slice('github/tools/'.length);
+      const body = await request.json().catch(() => ({}));
+      const args = {
+        ...body,
+        owner: body.owner || 'sugionoofficial',
+        repo: body.repo || 'BLEA-AI',
+      };
+      const result = await executeGithubTool(request, toolPath, args, env);
+      return jsonResponse(result);
+    }
+
     // ---- /chat: call openrouter, save assistant reply to DB, return JSON (auth required) ----
     if (path === 'chat' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
@@ -317,7 +592,8 @@ async function handleApi(request, url, env) {
       const chatUrl = gatewayBase.endsWith('/chat/completions')
         ? gatewayBase
         : `${gatewayBase}/v1/chat/completions`;
-      const fetchBody = { ...body, model: body.model, messages: [...(body.messages || []), { role: 'system', content: AGENT_SYSTEM_PROMPT }], stream: false };
+      const systemPrompt = body.github ? `${AGENT_SYSTEM_PROMPT}\n\n${GITHUB_TOOLS_PROMPT}` : AGENT_SYSTEM_PROMPT;
+      const fetchBody = { ...body, model: body.model, messages: [...(body.messages || []), { role: 'system', content: systemPrompt }], stream: false };
       delete fetchBody.apiKey;
       delete fetchBody.apiUrl;
       try {
@@ -332,7 +608,34 @@ async function handleApi(request, url, env) {
           return jsonResponse({ error: 'Upstream error', status: upstream.status, detail: text.slice(0, 500) }, 502);
         }
         const upstreamData = await upstream.json().catch(() => ({}));
-        const reply = upstreamData?.choices?.[0]?.message?.content ?? '';
+        let finalReply = upstreamData?.choices?.[0]?.message?.content ?? '';
+        // Tool loop: parse \`\`\`tool dari reply model, eksekusi alat
+        // GitHub, lalu lanjut percakapan dengan hasil alat (maks 4 iterasi).
+        const actions = [];
+        if (body.github) {
+          for (let round = 0; round < 4; round += 1) {
+            const toolCalls = parseToolCalls(finalReply);
+            if (!toolCalls.length) break;
+            const toolResults = [];
+            for (const call of toolCalls) {
+              const args = { ...call.arguments, owner: call.arguments.owner || 'sugionoofficial', repo: call.arguments.repo || 'BLEA-AI' };
+              const result = await executeGithubTool(request, call.name, args, env);
+              const summary = summarizeTool(call.name, result);
+              actions.push({ tool: call.name, ok: result.ok, result: summary });
+              toolResults.push({ name: call.name, ok: result.ok, result: summary });
+            }
+            const toolMessage = `Alat telah dijalankan:\n${toolResults.map((r) => `- ${r.name}: ${r.ok ? 'berhasil' : 'gagal'} — ${r.result}`).join('\n')}\n\nLanjutkan: jelaskan hasilnya secara natural. Jika perlu tindakan lanjutan, gunakan blok alat lagi.`;
+            const upstream2 = await fetch(chatUrl, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey, 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' },
+              body: JSON.stringify({ ...fetchBody, messages: [...fetchBody.messages, { role: 'assistant', content: finalReply }, { role: 'user', content: toolMessage }], stream: false }),
+              signal: AbortSignal.timeout(120_000),
+            });
+            const upstreamData2 = await upstream2.json().catch(() => ({}));
+            finalReply = upstreamData2?.choices?.[0]?.message?.content ?? '';
+          }
+        }
+        const reply = finalReply;
         // Save assistant message to DB
         const insertRes = await servicePostgrest(env, '/ai_messages', {
           method: 'POST',
@@ -349,7 +652,7 @@ async function handleApi(request, url, env) {
           const inserted = await insertRes.json().catch(() => []);
           messageId = inserted?.[0]?.id ?? '';
         }
-        return jsonResponse({ ok: true, reply, messageId });
+        return jsonResponse({ ok: true, reply, messageId, actions });
       } catch (e) {
         return jsonResponse({ error: String(e) }, 502);
       }
@@ -366,6 +669,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
       return handleApi(request, url, env);
+    }
+    if (url.pathname === '/auth/github/callback') {
+      return handleGithubCallback(request, url, env);
     }
     // Static assets (SPA)
     return env.ASSETS.fetch(request);
