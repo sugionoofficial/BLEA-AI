@@ -70,6 +70,12 @@ export async function chatCompletion({ conversationId, model, messages }) {
   return edgeRequest('/chat', { conversationId, model, messages });
 }
 
+// AI Studio — repo terhubung (GitHub) untuk panel koneksi di bawah input.
+export async function fetchConnectedRepos() {
+  const { data } = await edgeRequest('/repos', {});
+  return data?.repo || null;
+}
+
 // AI Studio agen mode — akses internet: pencarian web melalui worker (server-side).
 export async function webSearch(query) {
   const { data } = await edgeRequest('/search', { query });

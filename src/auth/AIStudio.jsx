@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, MessageSquarePlus, Paperclip, Plus, Send, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { BookOpen, ArrowRight, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, GitBranch, Github, MessageSquarePlus, Paperclip, Plus, Send, ShieldCheck, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatCompletion, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, webSearch } from '../api/unorouter';
+import { chatCompletion, fetchConnectedRepos, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, webSearch } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -127,6 +127,7 @@ export function AIStudio() {
   const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const [sendingWeb, setSendingWeb] = useState(false);
   const [modelBlockOpen, setModelBlockOpen] = useState(true);
+  const [connectedRepo, setConnectedRepo] = useState(null);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -176,6 +177,17 @@ export function AIStudio() {
   }, [user?.id]);
 
   useEffect(() => { loadSidebarData(); }, [loadSidebarData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const repo = await fetchConnectedRepos();
+        if (!cancelled && repo) setConnectedRepo(repo);
+      } catch { /* repo info opsional */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -476,19 +488,22 @@ export function AIStudio() {
           <div className="studio-composer-area">
             {!activeConversation && projects.length > 0 && <label className="studio-project-context"><FolderOpen size={14} /><span>Tambahkan ke proyek</span><select value={selectedProject} onChange={(event) => setSelectedProject(event.target.value)}><option value="">Tanpa proyek</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ChevronDown size={12} /></label>}
             {activeConversation?.project_id && <div className="studio-context-pill"><FolderOpen size={13} /> {projects.find((project) => project.id === activeConversation.project_id)?.name || 'Proyek terkait'}</div>}
-            {providerStatus?.configured && <div className="studio-model-block">
+            {providerStatus?.configured && <>
+            <div className={`studio-model-block ${modelBlockOpen ? 'is-open' : ''}`}>
               <div className="studio-model-block-head">
                 <span className="studio-model-block-icon"><Cpu size={14} /></span>
                 <div><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif · UnoRouter` : `${models.length} model gratis · UnoRouter`}</small></div>
-                <button type="button" className={`studio-model-toggle ${modelBlockOpen ? 'is-open' : ''}`} onClick={() => setModelBlockOpen((open) => !open)} aria-label={modelBlockOpen ? 'Sembunyikan model' : 'Tampilkan model'}><ChevronDown size={14} /></button>
+                <button type="button" className={`studio-model-toggle ${modelBlockOpen ? 'is-open' : ''}`} onClick={() => setModelBlockOpen(false)} aria-label="Sembunyikan blok model"><ChevronDown size={14} /></button>
               </div>
-              <div className={`studio-model-collapse ${modelBlockOpen ? 'is-open' : ''}`}>
+              <div className="studio-model-collapse">
                 <div className="studio-model-block-select">
                   <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select>
                   <ChevronDown size={13} />
                 </div>
               </div>
-            </div>}
+            </div>
+            <button type="button" className={`studio-model-bar ${modelBlockOpen ? 'is-hidden' : ''}`} onClick={() => setModelBlockOpen(true)} aria-label="Tampilkan blok model"><Cpu size={12} /> Model tersedia <ChevronDown size={13} /></button>
+            </>}
             {attachments.length > 0 && (
               <div className="studio-attachments">
                 {attachments.map((attachment) => <div className="studio-attachment-chip" key={attachment.id}>
@@ -498,9 +513,24 @@ export function AIStudio() {
                 </div>)}
               </div>
             )}
-            {providerStatus?.configured && <button type="button" className={`studio-web-toggle ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={13} /> Akses web <i /></button>}
             <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
             <div className="studio-privacy-note"><ShieldCheck size={12} /> Riwayat hanya dapat diakses oleh akunmu. <Link to="/projects">Kelola proyek <ArrowRight size={11} /></Link></div>
+            <div className="studio-connections">
+              <div className="studio-connections-head">
+                <span>Koneksi agen</span>
+                <span className={`studio-connections-status ${webSearchEnabled ? 'is-on' : ''}`}>{webSearchEnabled ? 'Akses web aktif' : 'Akses web nonaktif'}</span>
+              </div>
+              <div className="studio-connections-row">
+                <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
+                <span className="studio-conn-chip is-on"><BookOpen size={12} /> Notion</span>
+                <span className="studio-conn-chip is-on"><Slack size={12} /> Slack</span>
+                <span className="studio-conn-chip is-on"><Github size={12} /> GitHub</span>
+              </div>
+              <div className="studio-repos">
+                <span className="studio-repos-label">REPO TERHUBUNG</span>
+                {connectedRepo ? <div className="studio-repo-item"><span className="studio-repo-icon"><Github size={14} /></span><div><b>{connectedRepo.fullName}</b><small>{connectedRepo.description || connectedRepo.defaultBranch}</small></div><span className="studio-repo-status"><i /> Terhubung</span></div> : <div className="studio-repo-item is-loading"><span className="studio-repo-icon"><GitBranch size={14} /></span><div><b>Menunggu info repo…</b></div></div>}
+              </div>
+            </div>
           </div>
         </div>
       </main>

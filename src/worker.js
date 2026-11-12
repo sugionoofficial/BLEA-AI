@@ -273,6 +273,31 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, results, query });
     }
 
+    // ---- /repos: repo terhubung (GitHub API server-side, no CORS) ----
+    if (path === 'repos' && method === 'POST') {
+      try {
+        const res = await fetch('https://api.github.com/repos/sugionoofficial/BLEA-AI', {
+          signal: AbortSignal.timeout(15_000),
+          headers: { 'user-agent': 'blea-ai-studio', accept: 'application/vnd.github+json' },
+        });
+        const repo = await res.json().catch(() => ({}));
+        if (repo?.full_name) {
+          return jsonResponse({
+            ok: true,
+            repo: {
+              fullName: repo.full_name,
+              defaultBranch: repo.default_branch,
+              description: repo.description || '',
+              pushedAt: repo.pushed_at || null,
+            },
+          });
+        }
+        return jsonResponse({ ok: true, repo: null });
+      } catch {
+        return jsonResponse({ ok: true, repo: null });
+      }
+    }
+
     // ---- /chat: call openrouter, save assistant reply to DB, return JSON (auth required) ----
     if (path === 'chat' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
