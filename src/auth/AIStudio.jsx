@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, Copy, Cpu, FolderOpen, MessageSquarePlus, Paperclip, Plus, Send, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, MessageSquarePlus, Paperclip, Plus, Send, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatCompletion, fetchEnabledModels, fetchFreeModels, fetchProviderStatus } from '../api/unorouter';
+import { chatCompletion, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, webSearch } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -42,6 +42,66 @@ function formatTime(value) {
   return new Date(value).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
 
+function codeLabel(lang) {
+  const l = String(lang || '').toLowerCase();
+  if (['bash', 'sh', 'shell', 'zsh'].includes(l)) return 'SKRIPT · BASH';
+  if (['js', 'jsx', 'ts', 'tsx', 'javascript', 'typescript'].includes(l)) return 'KODE · JS';
+  if (['py', 'python'].includes(l)) return 'KODE · PYTHON';
+  if (['json'].includes(l)) return 'KODE · JSON';
+  if (['css', 'scss'].includes(l)) return 'KODE · CSS';
+  if (['html', 'xml', 'svg'].includes(l)) return 'KODE · HTML';
+  if (['sql'].includes(l)) return 'KODE · SQL';
+  if (['prompt'].includes(l)) return 'PROMPT';
+  if (['java', 'kotlin', 'go', 'rust', 'c', 'cpp'].includes(l)) return `KODE · ${lang.toUpperCase()}`;
+  return `BLOCK · ${(lang || 'TEXT').toUpperCase()}`;
+}
+
+// Blok merah: kode / script / prompt dari AI tetap dapat disalin.
+function StudioCodeBlock({ lang, code, copied, onCopy }) {
+  return (
+    <div className="studio-code-block">
+      <div className="studio-code-head">
+        <span className="studio-code-lang">{codeLabel(lang)}</span>
+        <button type="button" className={`studio-code-copy ${copied ? 'is-copied' : ''}`} onClick={onCopy} aria-label="Salin kode">
+          {copied ? <Check size={11} /> : <Copy size={11} />} Salin
+        </button>
+      </div>
+      <pre className="studio-code-pre"><code>{code}</code></pre>
+    </div>
+  );
+}
+
+// Render pesan AI: teks biasa tetap plain tanpa blok; blok kode (```...```)
+// ditampilkan sebagai blok merah.
+function StudioMessageBody({ content, copiedCodeKey, onCopyCode }) {
+  const parts = [];
+  String(content || '').split(/(```[\s\S]*?```)/g).forEach((segment, index) => {
+    if (segment.startsWith('```')) {
+      const match = segment.match(/^```(\w*)\r?\n([\s\S]*?)\r?\n?```$/);
+      if (match) {
+        const key = `code-${index}`;
+        parts.push(
+          <StudioCodeBlock
+            key={key}
+            lang={match[1]}
+            code={match[2]}
+            copied={copiedCodeKey === key}
+            onCopy={() => onCopyCode(match[2], key)}
+          />,
+        );
+        return;
+      }
+    }
+    segment
+      .split(/\n{2,}/)
+      .filter((paragraph) => paragraph.trim())
+      .forEach((paragraph, pIndex) => {
+        parts.push(<p key={`t-${index}-${pIndex}`} className="studio-message-text">{paragraph}</p>);
+      });
+  });
+  return parts;
+}
+
 export function AIStudio() {
   const { user } = useAuth();
   const [projects, setProjects] = useState([]);
@@ -63,6 +123,10 @@ export function AIStudio() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
+  const [copiedCodeKey, setCopiedCodeKey] = useState('');
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
+  const [sendingWeb, setSendingWeb] = useState(false);
+  const [modelBlockOpen, setModelBlockOpen] = useState(true);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -251,7 +315,24 @@ export function AIStudio() {
 
       if (!providerStatus?.configured) return;
 
-      const history = [...messages, { role: 'user', content: buildMessageContent(content, attachments) }]
+      // Mode agen: akses internet — cari web sebelum menghubungi model.
+      let webResults = [];
+      if (webSearchEnabled && providerStatus?.configured) {
+        setSendingWeb(true);
+        try {
+          webResults = (await webSearch(content)).slice(0, 5);
+        } catch { /* pencarian web opsional — lanjut tanpa hasil jika gagal */ }
+        finally { setSendingWeb(false); }
+      }
+
+      const history = [
+        ...(webResults.length ? [{
+          role: 'user',
+          content: `Berikut hasil pencarian web terkini untuk: "${content}"\n\n${webResults.map((result, index) => `${index + 1}. ${result.title}\n   ${result.url}\n   ${result.snippet}`).join('\n')}\n\nGunakan informasi ini bila relevan. Sebutkan sumber bila mengutip.`,
+        }] : []),
+        ...messages,
+        { role: 'user', content: buildMessageContent(content, attachments) },
+      ]
         .filter((message) => message.role === 'user' || message.role === 'assistant')
         .map((message) => ({ role: message.role, content: message.content }));
 
@@ -345,6 +426,34 @@ export function AIStudio() {
     }
   }
 
+  function copyCode(code, key) {
+    const done = () => {
+      setCopiedCodeKey(key);
+      window.setTimeout(() => setCopiedCodeKey((current) => (current === key ? '' : current)), 2000);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(code).then(done).catch(() => {
+        const area = document.createElement('textarea');
+        area.value = code;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        try { document.execCommand('copy'); done(); } catch { /* ignore */ }
+        document.body.removeChild(area);
+      });
+    } else {
+      const area = document.createElement('textarea');
+      area.value = code;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      try { document.execCommand('copy'); done(); } catch { /* ignore */ }
+      document.body.removeChild(area);
+    }
+  }
+
   return (
     <DropXLayout footer={false}>
       <div className="studio-shell studio-ready">
@@ -357,10 +466,10 @@ export function AIStudio() {
         </div>
 
       <main className="studio-main">
-        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `UNO · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
+        <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>AI Studio</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `AGEN · WEB · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
         <div className="studio-content">
           <div className={`studio-conversation ${messages.length ? 'has-messages' : ''}`}>
-            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'Tanya apa saja tentang idemu. Jawaban AI aktif dengan model teks gratis UnoRouter; riwayat tersimpan di akunmu.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}><span className="studio-message-avatar">{message.role === 'user' ? initials.slice(0, 1) : <Sparkles size={13} />}</span><div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div><p>{message.content}</p></div></article>)}<div ref={endOfMessages} /></div>}
+            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'BLEA AI adalah agen mandiri — cerdas, tanggap, punya akses internet, dan bisa terhubung ke berbagai app seperti Notion, Slack, dan GitHub. Kode, script, dan prompt akan tampil dalam blok merah yang dapat disalin.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}>{message.role === 'assistant' && <span className="studio-message-avatar"><Sparkles size={13} /></span>}<div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div>{message.role === 'assistant' ? <StudioMessageBody content={message.content} copiedCodeKey={copiedCodeKey} onCopyCode={copyCode} /> : <p className="studio-message-text">{message.content}</p>}</div></article>)}<div ref={endOfMessages} /></div>}
           </div>
           {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
           {error && <div className="studio-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Tutup pesan"><X size={13} /></button></div>}
@@ -371,10 +480,13 @@ export function AIStudio() {
               <div className="studio-model-block-head">
                 <span className="studio-model-block-icon"><Cpu size={14} /></span>
                 <div><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif · UnoRouter` : `${models.length} model gratis · UnoRouter`}</small></div>
+                <button type="button" className={`studio-model-toggle ${modelBlockOpen ? 'is-open' : ''}`} onClick={() => setModelBlockOpen((open) => !open)} aria-label={modelBlockOpen ? 'Sembunyikan model' : 'Tampilkan model'}><ChevronDown size={14} /></button>
               </div>
-              <div className="studio-model-block-select">
-                <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select>
-                <ChevronDown size={13} />
+              <div className={`studio-model-collapse ${modelBlockOpen ? 'is-open' : ''}`}>
+                <div className="studio-model-block-select">
+                  <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select>
+                  <ChevronDown size={13} />
+                </div>
               </div>
             </div>}
             {attachments.length > 0 && (
@@ -386,7 +498,8 @@ export function AIStudio() {
                 </div>)}
               </div>
             )}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
+            {providerStatus?.configured && <button type="button" className={`studio-web-toggle ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={13} /> Akses web <i /></button>}
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
             <div className="studio-privacy-note"><ShieldCheck size={12} /> Riwayat hanya dapat diakses oleh akunmu. <Link to="/projects">Kelola proyek <ArrowRight size={11} /></Link></div>
           </div>
         </div>

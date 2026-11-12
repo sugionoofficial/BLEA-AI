@@ -60,25 +60,38 @@
 .studio-prompt-chips button:hover { border-color: rgb(99 102 241 / 0.4); background: rgb(99 102 241 / 0.05); }
 .studio-prompt-chips svg { color: var(--primary); }
 
-/* Messages */
-.studio-message-list { width: min(700px, 100%); margin: 0 auto; padding: 29px 0; display: flex; flex-direction: column; gap: 24px; }
-.studio-message { display: flex; align-items: flex-start; gap: 11px; }
-.studio-message-avatar { width: 27px; height: 27px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 700; }
-.from-assistant .studio-message-avatar { background: var(--muted); color: var(--muted-foreground); border: 1px solid var(--border); }
-.studio-message-body { min-width: 0; flex: 1; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); padding: 10px 13px; box-shadow: var(--shadow-card); }
-.from-user .studio-message-body { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
-.studio-message-meta { display: flex; align-items: center; gap: 9px; padding-top: 3px; }
-.studio-message-meta b { font-size: 12px; font-weight: 600; }
-.from-user .studio-message-meta b, .from-user .studio-message-meta time { color: var(--primary-foreground); }
-.from-user .studio-message-meta time { opacity: .8; }
+/* Messages — bubble chat: pesan user di kanan, balasan AI di kiri */
+.studio-message-list { width: min(700px, 100%); margin: 0 auto; padding: 29px 0; display: flex; flex-direction: column; gap: 22px; }
+.studio-message { display: flex; align-items: flex-start; gap: 10px; }
+.studio-message.from-user { flex-direction: row-reverse; }
+.studio-message-avatar { width: 27px; height: 27px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--muted); color: var(--muted-foreground); border: 1px solid var(--border); font-size: 12px; font-weight: 700; }
+.studio-message-body { min-width: 0; max-width: min(620px, 100%); border: 1px solid var(--border); border-radius: 14px; background: var(--card); padding: 10px 13px; box-shadow: var(--shadow-card); }
+.studio-message.from-user .studio-message-body { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); border-top-right-radius: 5px; box-shadow: 0 8px 24px rgb(99 102 241 / 0.25); }
+.studio-message.from-assistant .studio-message-body { border-top-left-radius: 5px; }
+.studio-message-meta { display: flex; align-items: center; gap: 9px; padding-top: 1px; }
+.studio-message-meta b { font-size: 11.5px; font-weight: 600; }
+.studio-message.from-user .studio-message-meta b, .studio-message.from-user .studio-message-meta time { color: var(--primary-foreground); }
+.studio-message.from-user .studio-message-meta time { opacity: .8; }
 .studio-message-meta time { font-size: 10px; color: var(--muted-foreground); }
-.studio-message-body p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; color: var(--foreground); font-size: 13px; line-height: 1.8; }
-.from-user .studio-message-body p { color: var(--primary-foreground); }
+.studio-message-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; color: var(--foreground); font-size: 13px; line-height: 1.8; }
+.studio-message-text + .studio-message-text { margin-top: 9px; }
+.studio-message.from-user .studio-message-text { color: var(--primary-foreground); }
 .studio-message-loading { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
 .studio-copy-button { border: 0; background: none; color: var(--muted-foreground); font-size: 11px; cursor: pointer; padding: 2px 4px; border-radius: var(--radius-sm); margin-left: auto; }
-.from-user .studio-copy-button { color: var(--primary-foreground); opacity: .75; }
+.studio-message.from-user .studio-copy-button { color: var(--primary-foreground); opacity: .75; }
 .studio-copy-button:hover { color: var(--primary); background: rgb(99 102 241 / 0.1); }
 .studio-copy-button.is-copied { color: var(--success); }
+
+/* Blok merah: kode / script / prompt dari AI (dapat disalin) */
+.studio-code-block { margin: 9px 0 2px; border: 1px solid rgb(239 68 68 / 0.45); border-radius: 10px; overflow: hidden; background: #fef2f2; }
+.studio-code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 11px; background: #fee2e2; border-bottom: 1px solid rgb(239 68 68 / 0.45); }
+.studio-code-lang { font-size: 9.5px; font-weight: 700; letter-spacing: .07em; color: #b91c1c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.studio-code-copy { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 10.5px; font-weight: 600; color: #b91c1c; border: 1px solid rgb(239 68 68 / 0.5); background: #fff; border-radius: 7px; padding: 4px 8px; cursor: pointer; font-family: inherit; }
+.studio-code-copy:hover { background: #fee2e2; }
+.studio-code-copy.is-copied { color: #15803d; border-color: rgb(22 163 74 / 0.5); background: #dcfce7; }
+.studio-code-pre { margin: 0; padding: 11px 13px; overflow-x: auto; }
+.studio-code-pre code { font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; color: #7f1d1d; white-space: pre; }
+.studio-code-block + .studio-message-text { margin-top: 9px; }
 
 /* Notices */
 .studio-not-connected { width: min(700px, 100%); margin: 0 auto 10px; display: flex; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid rgb(245 158 11 / 0.3); border-radius: var(--radius-lg); background: rgb(245 158 11 / 0.08); color: var(--warning); font-size: 12px; line-height: 1.6; }
@@ -94,8 +107,18 @@
 .studio-project-context select { max-width: 160px; border: 0; outline: 0; background: transparent; color: var(--foreground); font-family: inherit; font-size: 12px; }
 .studio-context-pill { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 9px; margin-bottom: 7px; border: 1px solid rgb(99 102 241 / 0.3); border-radius: var(--radius-md); background: rgb(99 102 241 / 0.08); color: var(--primary); font-size: 11px; }
 .studio-context-pill > svg:first-child { color: var(--primary); }
+.studio-web-toggle { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px; margin-bottom: 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-family: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.studio-web-toggle:hover { border-color: rgb(16 185 129 / 0.4); }
+.studio-web-toggle.is-on { color: #047857; border-color: rgb(16 185 129 / 0.4); background: #ecfdf5; }
+.studio-web-toggle i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.studio-web-toggle.is-on i { background: #10b981; box-shadow: 0 0 6px rgb(16 185 129 / 0.6); }
 .studio-model-block { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
-.studio-model-block-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.studio-model-block-head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.studio-model-toggle { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--muted-foreground); cursor: pointer; transition: transform .25s ease; }
+.studio-model-toggle.is-open { transform: rotate(180deg); }
+.studio-model-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .28s ease; }
+.studio-model-collapse.is-open { grid-template-rows: 1fr; }
+.studio-model-collapse > div { overflow: hidden; }
 .studio-model-block-icon { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: var(--radius-md); background: rgb(99 102 241 / 0.1); color: var(--primary); }
 .studio-model-block-head b { font-size: 12px; font-weight: 600; }
 .studio-model-block-head small { display: block; font-size: 10px; color: var(--muted-foreground); }
@@ -156,4 +179,7 @@
   .studio-welcome { padding: 18px 0 14px; }
   .studio-welcome h1 { font-size: 24px; }
   .studio-topbar { gap: 8px; }
+  .studio-message-body { max-width: 100%; }
+  .studio-code-pre { padding: 9px 10px; }
+  .studio-code-pre code { font-size: 11px; }
 }
