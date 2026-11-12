@@ -134,6 +134,9 @@ export function AIStudio() {
   // App koneksi — seperti Arena: TIDAK otomatis terhubung; klik untuk koneksikan.
   const [appConnections, setAppConnections] = useState({ notion: false, slack: false, github: false });
   const [appConnecting, setAppConnecting] = useState(null);
+  // Modal persetujuan auth login (seperti consent OAuth) — klik logo app
+  // untuk koneksikan, approval dari pemilik akun.
+  const [consentApp, setConsentApp] = useState(null);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -482,6 +485,25 @@ export function AIStudio() {
     finally { setRepoConnecting(false); }
   }
 
+  // Klik logo app: jika belum terhubung -> buka modal persetujuan; jika
+  // terhubung -> putus koneksi.
+  function handleAppChipClick(app) {
+    if (appConnections[app]) {
+      toggleAppConnection(app);
+      return;
+    }
+    setConsentApp(app);
+  }
+
+  // Setujui & Hubungkan dari modal persetujuan — alur auth login.
+  async function approveConsent(app) {
+    setConsentApp(null);
+    setAppConnecting(app);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    setAppConnections((current) => ({ ...current, [app]: true }));
+    setAppConnecting(null);
+  }
+
   // Toggle koneksi app — klik logo untuk koneksikan (tidak otomatis).
   async function toggleAppConnection(app) {
     if (appConnections[app]) {
@@ -543,9 +565,9 @@ export function AIStudio() {
               </div>
               <div className="studio-connections-row">
                 <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
-                <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => toggleAppConnection('notion')} disabled={appConnecting === 'notion'} aria-pressed={appConnections.notion}>{appConnecting === 'notion' ? <span className="studio-send-loader" /> : <BookOpen size={12} />} Notion{appConnections.notion && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => toggleAppConnection('slack')} disabled={appConnecting === 'slack'} aria-pressed={appConnections.slack}>{appConnecting === 'slack' ? <span className="studio-send-loader" /> : <Slack size={12} />} Slack{appConnections.slack && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${appConnections.github ? 'is-on' : ''}`} onClick={() => toggleAppConnection('github')} disabled={appConnecting === 'github'} aria-pressed={appConnections.github}>{appConnecting === 'github' ? <span className="studio-send-loader" /> : <Github size={12} />} GitHub{appConnections.github && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => handleAppChipClick('notion')} disabled={appConnecting === 'notion'} aria-pressed={appConnections.notion}>{appConnecting === 'notion' ? <span className="studio-send-loader" /> : <BookOpen size={12} />} Notion{appConnections.notion && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => handleAppChipClick('slack')} disabled={appConnecting === 'slack'} aria-pressed={appConnections.slack}>{appConnecting === 'slack' ? <span className="studio-send-loader" /> : <Slack size={12} />} Slack{appConnections.slack && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.github ? 'is-on' : ''}`} onClick={() => handleAppChipClick('github')} disabled={appConnecting === 'github'} aria-pressed={appConnections.github}>{appConnecting === 'github' ? <span className="studio-send-loader" /> : <Github size={12} />} GitHub{appConnections.github && <i />}</button>
               </div>
               <div className="studio-repos">
                 <span className="studio-repos-label">REPO TERHUBUNG</span>
@@ -557,6 +579,18 @@ export function AIStudio() {
       </main>
 
       {deleteTarget && <div className="studio-modal-backdrop"><section className="studio-delete-modal" role="dialog" aria-modal="true" aria-labelledby="studio-delete-title"><span className="studio-delete-icon"><Trash2 size={18} /></span><h2 id="studio-delete-title">Hapus percakapan?</h2><p>“{deleteTarget.title}” dan seluruh riwayat pesan di dalamnya akan dihapus.</p><div><button className="studio-cancel-button" onClick={() => setDeleteTarget(null)}>Batal</button><button className="studio-delete-confirm" onClick={deleteConversation} disabled={deleting}>{deleting ? 'Menghapus...' : 'Hapus percakapan'}</button></div></section></div>}
+
+      {consentApp && <div className="studio-modal-backdrop"><section className="studio-consent-modal" role="dialog" aria-modal="true" aria-labelledby="studio-consent-title">
+        <span className="studio-consent-icon">{consentApp === 'github' ? <Github size={20} /> : consentApp === 'notion' ? <BookOpen size={20} /> : <Slack size={20} />}</span>
+        <h2 id="studio-consent-title">Hubungkan {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'}</h2>
+        <p>BLEA AI ingin mengakses akun {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'} kamu untuk memberikan bantuan yang lebih baik — seperti agen yang bisa mengelola catatan, dokumen, dan repository.</p>
+        <div className="studio-consent-account"><span>Akun</span><b>{fullName} · {user?.email || '—'}</b></div>
+        <div className="studio-consent-permissions">
+          <div className="studio-consent-perm"><Check size={12} /><span>Akses repository (read)</span></div>
+          <div className="studio-consent-perm"><Check size={12} /><span>Profil pengguna (read)</span></div>
+        </div>
+        <div><button className="studio-cancel-button" onClick={() => setConsentApp(null)}>Batal</button><button className="studio-consent-approve" onClick={() => approveConsent(consentApp)}>Setujui &amp; Hubungkan</button></div>
+      </section></div>}
       </div>
     </DropXLayout>
   );
