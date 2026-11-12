@@ -15,6 +15,9 @@
       "GITHUB_CLIENT_ID": "Ov23lid5DMIVJE8LQOLC"
     }
   },
+  "build": {
+    "command": "npm run build"
+  },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
