@@ -1,0 +1,36 @@
+.app-drawer-root,.admin-drawer-root{flex:none;display:flex;position:relative}
+.app-nav-toggle,.admin-nav-toggle{display:none;width:30px;height:30px;flex:none;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.16);border-radius:5px;background:transparent;color:#c4bece;cursor:pointer;transition:background .15s,color .15s}
+.app-nav-toggle:hover,.admin-nav-toggle:hover{background:rgba(255,255,255,0.1);color:#ffffff}
+.app-drawer-close,.admin-drawer-close{display:none;width:100%;height:30px;align-items:center;justify-content:flex-end;margin-bottom:11px;padding:0;border:0;background:transparent;color:#f0eef7;cursor:pointer}
+.app-drawer-close:hover,.admin-drawer-close:hover{color:#ffffff}
+.app-drawer-backdrop,.admin-drawer-backdrop{display:none}
+@media(max-width:640px){
+  .app-drawer-root,.admin-drawer-root{position:fixed;inset:0;z-index:65;pointer-events:none}
+  .app-drawer-root.is-open,.admin-drawer-root.is-open{pointer-events:auto}
+  .app-drawer-backdrop,.admin-drawer-backdrop{display:block;position:absolute;inset:0;border:0;padding:0;background:rgba(3,3,7,.55);backdrop-filter:blur(4px);opacity:0;transition:opacity .2s;cursor:pointer;pointer-events:none}
+  .app-drawer-root.is-open .app-drawer-backdrop,.admin-drawer-root.is-open .admin-drawer-backdrop{opacity:1;pointer-events:auto}
+  .app-nav-toggle,.admin-nav-toggle{display:flex;margin-right:8px}
+  .app-drawer-close,.admin-drawer-close{display:flex}
+  .app-sidebar,.admin-sidebar{position:fixed;top:0;bottom:0;left:0;width:min(82vw,266px);transform:translateX(-102%);transition:transform .26s ease;z-index:66;box-shadow:0 0 44px rgba(0,0,0,.5);border-right:1px solid rgba(255,255,255,0.14);background:#05060a;padding:15px 12px 11px;align-items:stretch}
+  .app-drawer-root.is-open .app-sidebar,.admin-drawer-root.is-open .admin-sidebar{transform:translateX(0)}
+  .app-breadcrumb,.admin-breadcrumb{flex:1;min-width:0}
+  .app-sidebar-brand,.admin-brand{padding:0 3px 16px}
+  .app-sidebar .brand,.admin-brand .brand{font-size:18px;gap:7px}
+  .app-sidebar .brand>span:last-child,.admin-brand .brand>span:last-child{display:block}
+  .app-sidebar .brand-mark,.admin-brand .brand-mark{width:20px;height:20px}
+  .workspace-switcher{width:auto;min-height:auto;justify-content:flex-start;padding:6px 8px;margin-bottom:11px}
+  .workspace-switcher>span:nth-child(2),.workspace-switcher>svg{display:block}
+  .app-nav-label,.app-sidebar-divider,.profile-details,.sidebar-profile>svg{display:block}
+  .app-drawer-root .app-sidebar .app-nav-item,.admin-drawer-root .admin-nav button{width:auto;height:34px;justify-content:flex-start;padding:0 9px;font-size:11px;gap:9px;display:flex}
+  .app-drawer-root .app-sidebar .app-nav-item.active svg,.admin-drawer-root .admin-nav button svg{width:15px;height:15px}
+  .sidebar-profile{justify-content:flex-start;padding:5px 6px;width:auto}
+  .profile-menu{left:0;right:0;bottom:72px;width:auto}
+  .admin-nav-label{display:block}
+  .admin-sidebar-bottom button{display:flex}
+  .admin-console-mark{width:auto;min-height:auto;justify-content:flex-start;padding:6px 8px;margin-bottom:11px}
+  .admin-console-mark>div{display:block}
+  .admin-drawer-root .admin-nav{width:auto;align-items:stretch}
+  .admin-drawer-root .admin-nav button span,.admin-drawer-root .admin-nav button small{display:block}
+  .admin-sidebar-bottom{width:auto;justify-content:flex-start;padding-top:7px}
+  .admin-live{font-size:9px}
+}

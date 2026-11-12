@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, FolderKanban, KeyRound, LayoutDashboard, LockKeyhole, LoaderCircle, LogOut, Mail, MessagesSquare, Plus, Search, ShieldCheck, Trash2, Users, X, Zap } from 'lucide-react';
 import { Brand } from '../components/Brand';
+import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
 import { supabase } from '../lib/supabase';
 import { verifyKey, fetchAdminModels, fetchCatalog, saveProviderModels } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
@@ -245,16 +246,17 @@ export function AdminPage() {
 
   return (
     <div className="admin-shell">
-      <aside className="admin-sidebar">
+      <AppDrawer>
+        <AppDrawerPanel variant="admin">
         <div className="admin-brand"><Brand /></div>
         <div className="admin-console-mark"><span><ShieldCheck size={15} /></span><div><b>Admin console</b><small>BLEA AI management</small></div></div>
         <div className="admin-nav-label">PENGELOLAAN</div>
         <nav className="admin-nav" aria-label="Navigasi admin">{tabs.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setSearch(''); }}><Icon size={16} /><span>{label}</span>{id === 'users' && <small>{profiles.length}</small>}{id === 'projects' && <small>{projects.length}</small>}{id === 'conversations' && <small>{conversations.length}</small>}{id === 'waitlist' && <small>{waitlist.length}</small>}</button>)}</nav>
         <div className="admin-sidebar-bottom"><span className="admin-live"><i /> ADMIN MODE</span><button onClick={signOut} disabled={signingOut}><LogOut size={14} />{signingOut ? 'Keluar...' : 'Keluar'}</button></div>
-      </aside>
+        </AppDrawerPanel>
 
       <main className="admin-main">
-        <header className="admin-topbar"><div className="admin-breadcrumb"><span>BLEA AI</span><ChevronRight size={13} /><b>{tabs.find((item) => item.id === tab)?.label}</b></div><div className="admin-top-actions"><span className="admin-access"><ShieldCheck size={13} /> Akses administrator</span><Link to="/app" className="admin-back-link"><ArrowLeft size={14} /> Kembali ke aplikasi</Link></div></header>
+        <header className="admin-topbar"><AppDrawerToggle variant="admin" /><div className="admin-breadcrumb"><span>BLEA AI</span><ChevronRight size={13} /><b>{tabs.find((item) => item.id === tab)?.label}</b></div><div className="admin-top-actions"><span className="admin-access"><ShieldCheck size={13} /> Akses administrator</span><Link to="/app" className="admin-back-link"><ArrowLeft size={14} /> Kembali ke aplikasi</Link></div></header>
         <div className="admin-content">
           <div className="admin-heading"><div><span className="admin-eyebrow"><i /> ADMINISTRATOR</span><h1>{tab === 'overview' ? 'Pusat kendali.' : tab === 'users' ? 'Pengguna.' : tab === 'projects' ? 'Semua proyek.' : tab === 'conversations' ? 'Percakapan.' : tab === 'api-keys' ? 'Connect API key.' : 'Daftar tunggu.'}</h1><p>{tab === 'overview' ? 'Kelola pengguna dan konten BLEA AI dari satu tempat.' : tab === 'users' ? 'Akun yang sudah terdaftar di BLEA AI.' : tab === 'projects' ? 'Pantau dan kelola proyek di semua workspace.' : tab === 'conversations' ? 'Lihat ringkasan percakapan tersimpan; isi pesan tetap privat bagi pemilik akun.' : tab === 'api-keys' ? 'Semua provider yang memakai API key dikelola dari halaman ini. Kunci disimpan di Supabase dan digunakan server-side melalui edge function — tidak pernah sampai ke browser.' : 'Email yang meminta akses awal BLEA AI.'}</p></div><div className="admin-heading-meta"><span><Clock3 size={13} /> {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</span><span className="admin-user-chip"><i>{(user?.user_metadata?.full_name || user?.email || 'A').slice(0, 1).toUpperCase()}</i>{user?.email}</span></div></div>
           {errorMessage && <div className="admin-error" role="alert">{errorMessage}<button onClick={loadData}>Coba lagi</button></div>}
@@ -319,6 +321,7 @@ export function AdminPage() {
           <footer className="admin-footer"><span>BLEA AI · Admin console</span><span><i /> Hanya administrator terverifikasi</span></footer>
         </div>
       </main>
+      </AppDrawer>
       {deleteTarget && <div className="admin-modal-backdrop"><section className="admin-delete-modal" role="dialog" aria-modal="true" aria-labelledby="admin-delete-title"><button className="admin-modal-close" onClick={() => setDeleteTarget(null)} aria-label="Tutup"><X size={16} /></button><span className="admin-delete-icon-large"><Trash2 size={19} /></span><h2 id="admin-delete-title">Hapus data ini?</h2><p><b>{deleteTarget.label}</b> akan dihapus permanen. Tindakan ini tidak bisa dibatalkan.</p><div><button className="admin-cancel-button" onClick={() => setDeleteTarget(null)}>Batal</button><button className="admin-confirm-delete" onClick={deleteRecord} disabled={deleting}>{deleting ? 'Menghapus...' : 'Ya, hapus'}</button></div></section></div>}
     </div>
   );
