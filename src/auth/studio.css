@@ -107,18 +107,43 @@
 .studio-project-context select { max-width: 160px; border: 0; outline: 0; background: transparent; color: var(--foreground); font-family: inherit; font-size: 12px; }
 .studio-context-pill { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 9px; margin-bottom: 7px; border: 1px solid rgb(99 102 241 / 0.3); border-radius: var(--radius-md); background: rgb(99 102 241 / 0.08); color: var(--primary); font-size: 11px; }
 .studio-context-pill > svg:first-child { color: var(--primary); }
-.studio-web-toggle { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px; margin-bottom: 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-family: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
-.studio-web-toggle:hover { border-color: rgb(16 185 129 / 0.4); }
-.studio-web-toggle.is-on { color: #047857; border-color: rgb(16 185 129 / 0.4); background: #ecfdf5; }
-.studio-web-toggle i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-.studio-web-toggle.is-on i { background: #10b981; box-shadow: 0 0 6px rgb(16 185 129 / 0.6); }
-.studio-model-block { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
-.studio-model-block-head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+
+/* Panel koneksi agen — seperti Arena: akses web + app + repo terhubung, di bawah input */
+.studio-connections { width: min(700px, 100%); margin: 10px auto 0; padding-top: 10px; border-top: 1px dashed var(--border); }
+.studio-connections-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.studio-connections-head > span:first-child { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted-foreground); }
+.studio-connections-status { font-size: 9.5px; font-weight: 600; color: var(--muted-foreground); }
+.studio-connections-status.is-on { color: #047857; }
+.studio-connections-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 12px; }
+.studio-conn-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-family: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.studio-conn-chip:hover { border-color: rgb(99 102 241 / 0.4); color: var(--primary); }
+.studio-conn-chip.is-on { color: #047857; border-color: rgb(16 185 129 / 0.4); background: #ecfdf5; cursor: default; }
+.studio-conn-chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.studio-conn-chip.is-on i { background: #10b981; box-shadow: 0 0 6px rgb(16 185 129 / 0.6); }
+.studio-repos { display: flex; flex-direction: column; gap: 6px; }
+.studio-repos-label { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted-foreground); }
+.studio-repo-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+.studio-repo-icon { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: var(--radius-sm); background: rgb(236 72 153 / 0.1); color: #db2777; }
+.studio-repo-item > div { min-width: 0; }
+.studio-repo-item b { display: block; font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-repo-item small { font-size: 9.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-repo-status { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 700; color: var(--success); border: 1px solid rgb(16 185 129 / 0.3); border-radius: 999px; padding: 2px 8px; background: rgb(16 185 129 / 0.08); }
+.studio-repo-status i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+/* Blok "Model tersedia": slide sembunyikan SEMUA blok (bukan hanya select) —
+   halaman jadi lebih luas; saat tertutup tinggal slim bar. */
+.studio-model-block { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .3s ease; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); overflow: hidden; }
+.studio-model-block.is-open { grid-template-rows: auto auto; }
+.studio-model-block > * { overflow: hidden; }
+.studio-model-block-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px; min-width: 0; }
 .studio-model-toggle { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--muted-foreground); cursor: pointer; transition: transform .25s ease; }
 .studio-model-toggle.is-open { transform: rotate(180deg); }
-.studio-model-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .28s ease; }
-.studio-model-collapse.is-open { grid-template-rows: 1fr; }
+.studio-model-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .25s ease; }
+.studio-model-block.is-open .studio-model-collapse { grid-template-rows: 1fr; }
 .studio-model-collapse > div { overflow: hidden; }
+.studio-model-bar { display: none; align-items: center; gap: 8px; height: 34px; padding: 0 11px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); color: var(--foreground); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.studio-model-bar:not(.is-hidden) { display: inline-flex; }
+.studio-model-bar.is-hidden { display: none; }
+.studio-model-bar > svg:first-child { color: var(--primary); }
 .studio-model-block-icon { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: var(--radius-md); background: rgb(99 102 241 / 0.1); color: var(--primary); }
 .studio-model-block-head b { font-size: 12px; font-weight: 600; }
 .studio-model-block-head small { display: block; font-size: 10px; color: var(--muted-foreground); }
