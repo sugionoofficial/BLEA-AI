@@ -66,8 +66,8 @@ export async function fetchEnabledModels() {
   return Array.isArray(data?.models) ? data.models : [];
 }
 
-export async function chatCompletion({ conversationId, model, messages, github }) {
-  return edgeRequest('/chat', { conversationId, model, messages, github });
+export async function chatCompletion({ conversationId, model, messages, github, repository }) {
+  return edgeRequest('/chat', { conversationId, model, messages, github, repository });
 }
 
 // AI Studio — repo terhubung (GitHub) untuk panel koneksi di bawah input.

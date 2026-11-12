@@ -4,11 +4,25 @@ import worker from '../src/worker.js';
 
 const env = { SUPABASE_URL: 'https://supabase.example', SUPABASE_ANON_KEY: 'anon', GITHUB_CLIENT_ID: 'client', GITHUB_CLIENT_SECRET: 'secret' };
 const realFetch = globalThis.fetch;
+const githubPaths = [];
+const chatBodies = [];
 globalThis.fetch = async (url, options = {}) => {
   url = String(url);
   if (url.endsWith('/auth/v1/user')) {
     const token = options.headers.authorization?.replace('Bearer ', '');
     return Response.json(token === 'alice' || token === 'bob' ? { id: token } : {}, { status: token === 'alice' || token === 'bob' ? 200 : 401 });
+  }
+  if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([]);
+  if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'message' }]);
+  if (url === 'https://api.unorouter.com/v1/chat/completions') {
+    const body = JSON.parse(options.body);
+    chatBodies.push(body);
+    const isFollowup = body.messages.some((message) => message.role === 'assistant');
+    return Response.json({ choices: [{ message: { content: isFollowup ? 'Selesai' : '```tool\n{"name":"github_read","arguments":{"owner":"other","repo":"wrong","path":"README.md"}}\n```' } }] });
+  }
+  if (url.startsWith('https://api.github.com/repos/')) {
+    githubPaths.push(url);
+    return Response.json({ type: 'file', size: 10 });
   }
   if (url === 'https://github.com/login/oauth/access_token') return Response.json({ access_token: 'github-secret-token' });
   if (url === 'https://api.github.com/user') return Response.json({ login: 'github-alice' });
@@ -50,6 +64,15 @@ test('OAuth validates state, protects token and isolates BLEA users', async () =
   assert.equal((await repos.json()).repos[0].fullName, 'alice/project');
   assert.equal((await call('/api/github/tools/delete', { token: 'alice', cookie: session })).status, 403);
   assert.equal((await call('/api/github/tools/read', { token: 'alice', cookie: session })).status, 400);
+  const chat = await call('/api/chat', { token: 'alice', cookie: session, body: { github: true, repository: 'alice/project', model: 'test', messages: [] } });
+  assert.equal(chat.status, 200);
+  assert.equal(githubPaths.length, 1);
+  assert.match(githubPaths[0], /\/repos\/alice\/project\/contents\/README.md/);
+  assert.ok(chatBodies[0].messages.some((message) => message.content.includes('alice/project')));
+  assert.equal(chatBodies[0].repository, undefined);
+  const noSelection = await call('/api/chat', { token: 'alice', cookie: session, body: { github: true, model: 'test', messages: [] } });
+  assert.equal(noSelection.status, 200);
+  assert.equal(githubPaths.length, 1);
   const logout = await call('/api/auth/github/logout', { token: 'alice', cookie: session });
   assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
 });

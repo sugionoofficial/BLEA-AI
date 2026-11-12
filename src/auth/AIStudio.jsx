@@ -129,6 +129,7 @@ export function AIStudio() {
   const [modelOpen, setModelOpen] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [repos, setRepos] = useState([]);
+  const [selectedRepo, setSelectedRepo] = useState('');
   const [repoConnecting, setRepoConnecting] = useState(false);
   // App koneksi — seperti Arena: TIDAK otomatis terhubung; klik untuk koneksikan.
   const [appConnections, setAppConnections] = useState({ notion: false, slack: false, github: false });
@@ -372,7 +373,8 @@ export function AIStudio() {
         conversationId: conversation.id,
         model: selectedModel,
         messages: history,
-        github: !!githubConnected?.connected,
+        github: !!githubConnected?.connected && !!selectedRepo,
+        repository: selectedRepo,
       });
 
       if (chatOk && chatData?.reply) {
@@ -493,7 +495,8 @@ export function AIStudio() {
     try {
       const list = await fetchConnectedRepos();
       setRepos(list);
-    } catch { /* retry gagal — tetap terputus */ }
+      setSelectedRepo((current) => list.some((repo) => repo.fullName === current) ? current : '');
+    } catch { setError('Gagal memuat repository. Coba lagi.'); }
     finally { setRepoConnecting(false); }
   }
 
@@ -593,14 +596,20 @@ export function AIStudio() {
                 <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
                 <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => handleAppChipClick('notion')} disabled={appConnecting === 'notion'} aria-pressed={appConnections.notion}>{appConnecting === 'notion' ? <span className="studio-send-loader" /> : <BookOpen size={12} />} Notion{appConnections.notion && <i />}</button>
                 <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => handleAppChipClick('slack')} disabled={appConnecting === 'slack'} aria-pressed={appConnections.slack}>{appConnecting === 'slack' ? <span className="studio-send-loader" /> : <Slack size={12} />} Slack{appConnections.slack && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${githubConnected?.connected ? 'is-on' : ''}`} onClick={() => (githubConnected?.connected ? githubLogout().then((result) => { if (result.ok) { setGithubConnected({ ok: false, connected: false }); setRepos([]); } else setError(result.data?.error || 'Gagal memutus koneksi GitHub.'); }) : setConsentApp('github'))} aria-pressed={!!githubConnected?.connected}><Github size={12} /> GitHub{githubConnected?.connected && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${githubConnected?.connected ? 'is-on' : ''}`} onClick={() => (githubConnected?.connected ? githubLogout().then((result) => { if (result.ok) { setGithubConnected({ ok: false, connected: false }); setRepos([]); setSelectedRepo(''); } else setError(result.data?.error || 'Gagal memutus koneksi GitHub.'); }) : setConsentApp('github'))} aria-pressed={!!githubConnected?.connected}><Github size={12} /> GitHub{githubConnected?.connected && <i />}</button>
               </div>
               <div className="studio-repos">
-                <span className="studio-repos-label">REPO TERHUBUNG</span>
-                {!githubConnected?.connected ? <small>Hubungkan GitHub untuk melihat repository.</small> : <>
-                  <button type="button" onClick={reconnectRepo} disabled={repoConnecting}>{repoConnecting ? 'Memuat…' : 'Muat ulang repository'}</button>
-                  {repos.length ? <ul>{repos.map((repo) => <li key={repo.fullName}>{repo.fullName} ({repo.defaultBranch})</li>)}</ul> : <small>Tidak ada repository yang ditampilkan.</small>}
-                </> }
+                <label className="studio-repos-label" htmlFor="studio-repo-select">REPOSITORY AKTIF</label>
+                {!githubConnected?.connected ? <small>Hubungkan GitHub untuk memilih repository.</small> : <>
+                  <div className="studio-repo-picker">
+                    <select id="studio-repo-select" value={selectedRepo} onChange={(event) => setSelectedRepo(event.target.value)} disabled={!repos.length}>
+                      <option value="">Pilih satu repository</option>
+                      {repos.map((repo) => <option key={repo.fullName} value={repo.fullName}>{repo.fullName} ({repo.defaultBranch})</option>)}
+                    </select>
+                    <button type="button" onClick={reconnectRepo} disabled={repoConnecting}>{repoConnecting ? 'Memuat…' : 'Muat ulang'}</button>
+                  </div>
+                  <small>{selectedRepo ? `Repository aktif: ${selectedRepo} · akses agen hanya baca` : repos.length ? 'Pilih repository untuk digunakan agen.' : 'Tidak ada repository yang ditampilkan.'}</small>
+                </>}
               </div>
             </div>}
           </div>
