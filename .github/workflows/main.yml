@@ -37,9 +37,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+          BLEA_GITHUB_CLIENT_SECRET: ${{ secrets.BLEA_GITHUB_CLIENT_SECRET }}
         run: |
-          if [ -z "$GITHUB_CLIENT_SECRET" ]; then
+          if [ -z "$BLEA_GITHUB_CLIENT_SECRET" ]; then
             echo "::warning::GITHUB_CLIENT_SECRET tidak diatur — OAuth GitHub dinonaktifkan. Buat OAuth App di https://github.com/settings/developers dan tambahkan client secret sebagai repo secret."
             exit 0
           fi
@@ -50,7 +50,7 @@ jobs:
           curl -fsS -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/blea-ai/secrets" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"name\":\"GITHUB_CLIENT_SECRET\",\"type\":\"secret_text\",\"value\":\"$GITHUB_CLIENT_SECRET\"}"
+            -d "{\"name\":\"GITHUB_CLIENT_SECRET\",\"type\":\"secret_text\",\"value\":\"$BLEA_GITHUB_CLIENT_SECRET\"}"
           echo "GITHUB_CLIENT_SECRET configured."
 
       - name: Deploy to Cloudflare Workers
