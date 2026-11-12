@@ -129,7 +129,7 @@ async function webSearch(query) {
 // callback: https://blea-ai.blea-ai.workers.dev/auth/github/callback).
 // Client ID di wrangler vars; client secret di Cloudflare secret
 // GITHUB_CLIENT_SECRET. Scope: repo (full — read/write/push/PR/deploy).
-const GITHUB_SCOPE = 'repo read:user';
+const GITHUB_SCOPE = 'repo workflow';
 
 // Prompt alat GitHub untuk agen — dikirim bila chat dengan github=true.
 const GITHUB_TOOLS_PROMPT = [
