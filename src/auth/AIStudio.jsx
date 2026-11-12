@@ -613,8 +613,9 @@ export function AIStudio() {
         <p>BLEA AI ingin mengakses akun {consentApp === 'github' ? 'GitHub' : consentApp === 'notion' ? 'Notion' : 'Slack'} kamu untuk memberikan bantuan yang lebih baik — seperti agen yang bisa mengelola catatan, dokumen, dan repository.</p>
         <div className="studio-consent-account"><span>Akun</span><b>{fullName} · {user?.email || '—'}</b></div>
         <div className="studio-consent-permissions">
-          <div className="studio-consent-perm"><Check size={12} /><span>Akses repository (read)</span></div>
+          <div className="studio-consent-perm"><Check size={12} /><span>Akses repository (read &amp; write)</span></div>
           <div className="studio-consent-perm"><Check size={12} /><span>Profil pengguna (read)</span></div>
+          <div className="studio-consent-perm"><Check size={12} /><span>Trigger workflow CI (deploy)</span></div>
         </div>
         <div><button className="studio-cancel-button" onClick={() => setConsentApp(null)}>Batal</button><button className="studio-consent-approve" onClick={() => approveConsent(consentApp)}>Setujui &amp; Hubungkan</button></div>
       </section></div>}
