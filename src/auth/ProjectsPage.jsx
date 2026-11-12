@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Command, FolderPlus, Layers3, LogOut, MoreHorizontal, Pencil, Plus, Search, Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
-import { Brand } from '../components/Brand';
-import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
+import { useSearchParams } from 'react-router-dom';
+import { ArrowRight, ArrowUpRight, Check, FolderPlus, Layers3, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
+import { AppDrawer, AppDrawerToggle } from '../components/AppDrawer';
+import { GlobalNavPanel } from '../components/AppNav';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
 
@@ -12,16 +12,13 @@ function formatDate(value) {
 
 export function ProjectsPage() {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const isAdmin = user?.app_metadata?.role === 'admin';
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [modalProject, setModalProject] = useState(undefined);
   const [deleteProject, setDeleteProject] = useState(null);
-  const [profileMenu, setProfileMenu] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [formError, setFormError] = useState('');
@@ -108,34 +105,12 @@ export function ProjectsPage() {
     setDeleting(false);
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    navigate('/login', { replace: true });
-  }
-
   const filteredProjects = projects.filter((project) => `${project.name} ${project.description}`.toLowerCase().includes(search.toLowerCase()));
-  const fullName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Kreator';
-  const initials = fullName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
 
   return (
     <div className="app-shell projects-shell">
       <AppDrawer>
-        <AppDrawerPanel>
-        <div className="app-sidebar-brand"><Brand /></div>
-        <div className="workspace-switcher"><span className="workspace-logo"><Sparkles size={15} /></span><span><b>Ruang pribadi</b><small>Workspace gratis</small></span><ChevronDown size={14} /></div>
-        <div className="app-nav-label">WORKSPACE</div>
-        <Link className="app-nav-item" to="/app"><Command size={16} /> Ringkasan</Link>
-        <div className="app-nav-item active"><Layers3 size={16} /> Proyek</div>
-        {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
-        <Link className="app-nav-item" to="/studio"><WandSparkles size={16} /> AI Studio</Link>
-        <div className="app-sidebar-divider" />
-        <div className="app-nav-label">PREFERENSI</div>
-        <Link className="app-nav-item" to="/settings"><Settings2 size={16} /> Pengaturan akun</Link>
-        <a className="app-nav-item" href="mailto:halo@blea.ai"><CircleHelp size={16} /> Bantuan</a>
-        <div className="sidebar-spacer" />
-        <button className={`sidebar-profile ${profileMenu ? 'is-open' : ''}`} onClick={() => setProfileMenu(!profileMenu)} aria-expanded={profileMenu}><span className="profile-avatar">{initials}</span><span className="profile-details"><b>{fullName}</b><small>{user?.email}</small></span><MoreHorizontal size={17} /></button>
-        {profileMenu && <div className="profile-menu"><div className="profile-menu-email">{user?.email}</div><Link to="/settings" className="profile-menu-link"><Settings2 size={14} /> Pengaturan akun</Link><button onClick={signOut}><LogOut size={14} /> Keluar dari akun</button></div>}
-        </AppDrawerPanel>
+        <GlobalNavPanel />
 
       <main className="app-main">
         <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><span>Ruang pribadi</span><span>/</span><b>Proyek</b></div><div className="app-top-actions"><span className="system-status"><i /> Semua sistem beroperasi</span><a href="/" className="website-link">Lihat website <ArrowUpRight size={14} /></a></div></header>

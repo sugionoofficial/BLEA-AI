@@ -12,28 +12,25 @@ export function AppDrawer({ children }) {
   );
 }
 
-export function AppDrawerPanel({ children, variant = 'app' }) {
+export function AppDrawerPanel({ children }) {
   const { open, setOpen } = useContext(AppDrawerContext);
-  const cfg = variant === 'admin'
-    ? { root: 'admin-drawer-root', sidebar: 'admin-sidebar', backdrop: 'admin-drawer-backdrop', close: 'admin-drawer-close' }
-    : { root: 'app-drawer-root', sidebar: 'app-sidebar', backdrop: 'app-drawer-backdrop', close: 'app-drawer-close' };
   return (
-    <div className={`${cfg.root} ${open ? 'is-open' : ''}`}>
-      <button type="button" className={cfg.backdrop} onClick={() => setOpen(false)} aria-label="Tutup navigasi" />
-      <aside className={cfg.sidebar} onClick={(event) => {
-        if (event.target.closest('a') || event.target.closest('.admin-nav button') || event.target.closest('.app-nav-item')) {
+    <div className={`app-drawer-root ${open ? 'is-open' : ''}`}>
+      <button type="button" className="app-drawer-backdrop" onClick={() => setOpen(false)} aria-label="Tutup navigasi" />
+      <aside className="app-sidebar" onClick={(event) => {
+        if (event.target.closest('.sidebar-profile, .profile-menu, .studio-profile-button')) return;
+        if (event.target.closest('a') || event.target.closest('.app-nav-item') || event.target.closest('.studio-history-item') || event.target.closest('.studio-new-chat')) {
           setOpen(false);
         }
       }}>
-        <button type="button" className={cfg.close} onClick={() => setOpen(false)} aria-label="Tutup navigasi"><X size={14} /></button>
+        <button type="button" className="app-drawer-close" onClick={() => setOpen(false)} aria-label="Tutup navigasi"><X size={14} /></button>
         {children}
       </aside>
     </div>
   );
 }
 
-export function AppDrawerToggle({ variant = 'app' }) {
+export function AppDrawerToggle() {
   const { setOpen } = useContext(AppDrawerContext) || {};
-  const className = variant === 'admin' ? 'admin-nav-toggle' : 'app-nav-toggle';
-  return <button type="button" className={className} onClick={() => setOpen?.(true)} aria-label="Buka navigasi"><Menu size={16} /></button>;
+  return <button type="button" className="app-nav-toggle" onClick={() => setOpen?.(true)} aria-label="Buka navigasi"><Menu size={16} /></button>;
 }

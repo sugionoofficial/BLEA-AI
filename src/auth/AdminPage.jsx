@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleHelp, Clock3, FolderKanban, KeyRound, LayoutDashboard, LockKeyhole, LoaderCircle, LogOut, Mail, MessagesSquare, Plus, Search, ShieldCheck, Trash2, Users, X, Zap } from 'lucide-react';
-import { Brand } from '../components/Brand';
-import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
+import { Link } from 'react-router-dom';
+import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, ChevronRight, Clock3, FolderKanban, KeyRound, LayoutDashboard, LockKeyhole, LoaderCircle, Mail, MessagesSquare, Plus, Search, ShieldCheck, Trash2, Users, X, Zap } from 'lucide-react';
+import { AppDrawer, AppDrawerToggle } from '../components/AppDrawer';
+import { GlobalNavPanel } from '../components/AppNav';
 import { supabase } from '../lib/supabase';
 import { verifyKey, fetchAdminModels, fetchCatalog, saveProviderModels } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const tabs = [
-  { id: 'overview', label: 'Ringkasan', icon: LayoutDashboard },
+  { id: 'overview', label: 'Ikhtisar', icon: LayoutDashboard },
   { id: 'users', label: 'Pengguna', icon: Users },
-  { id: 'projects', label: 'Proyek', icon: FolderKanban },
+  { id: 'projects', label: 'Semua proyek', icon: FolderKanban },
   { id: 'conversations', label: 'Percakapan', icon: MessagesSquare },
   { id: 'waitlist', label: 'Waitlist', icon: Mail },
   { id: 'api-keys', label: 'API Key', icon: KeyRound },
@@ -22,7 +22,6 @@ const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
 
 export function AdminPage() {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const [tab, setTab] = useState('overview');
   const [profiles, setProfiles] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -44,7 +43,6 @@ export function AdminPage() {
   const [search, setSearch] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -236,27 +234,20 @@ export function AdminPage() {
     setKeyBusy('');
   }
 
-  async function signOut() {
-    setSigningOut(true);
-    await supabase.auth.signOut();
-    navigate('/login', { replace: true });
-  }
-
+  const tabCounts = { users: profiles.length, projects: projects.length, conversations: conversations.length, waitlist: waitlist.length };
   const activeRows = tab === 'users' ? filteredProfiles : tab === 'projects' ? filteredProjects : tab === 'conversations' ? filteredConversations : filteredWaitlist;
+  const adminTabs = <>      <div className="app-sidebar-divider" />
+        <div className="app-nav-label">PENGELOLAAN</div>
+        {tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={`app-nav-item${tab === id ? ' active' : ''}`} onClick={() => { setTab(id); setSearch(''); }}><Icon size={16} />{label}{tabCounts[id] !== undefined && <small className="app-nav-count">{tabCounts[id]}</small>}</button>)}
+      </>;
 
   return (
     <div className="admin-shell">
       <AppDrawer>
-        <AppDrawerPanel variant="admin">
-        <div className="admin-brand"><Brand /></div>
-        <div className="admin-console-mark"><span><ShieldCheck size={15} /></span><div><b>Admin console</b><small>BLEA AI management</small></div></div>
-        <div className="admin-nav-label">PENGELOLAAN</div>
-        <nav className="admin-nav" aria-label="Navigasi admin">{tabs.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setSearch(''); }}><Icon size={16} /><span>{label}</span>{id === 'users' && <small>{profiles.length}</small>}{id === 'projects' && <small>{projects.length}</small>}{id === 'conversations' && <small>{conversations.length}</small>}{id === 'waitlist' && <small>{waitlist.length}</small>}</button>)}</nav>
-        <div className="admin-sidebar-bottom"><span className="admin-live"><i /> ADMIN MODE</span><button onClick={signOut} disabled={signingOut}><LogOut size={14} />{signingOut ? 'Keluar...' : 'Keluar'}</button></div>
-        </AppDrawerPanel>
+        <GlobalNavPanel context={adminTabs} />
 
       <main className="admin-main">
-        <header className="admin-topbar"><AppDrawerToggle variant="admin" /><div className="admin-breadcrumb"><span>BLEA AI</span><ChevronRight size={13} /><b>{tabs.find((item) => item.id === tab)?.label}</b></div><div className="admin-top-actions"><span className="admin-access"><ShieldCheck size={13} /> Akses administrator</span><Link to="/app" className="admin-back-link"><ArrowLeft size={14} /> Kembali ke aplikasi</Link></div></header>
+        <header className="admin-topbar"><AppDrawerToggle /><div className="admin-breadcrumb"><span>BLEA AI</span><ChevronRight size={13} /><b>{tabs.find((item) => item.id === tab)?.label}</b></div><div className="admin-top-actions"><span className="admin-access"><ShieldCheck size={13} /> Akses administrator</span><Link to="/app" className="admin-back-link"><ArrowLeft size={14} /> Kembali ke aplikasi</Link></div></header>
         <div className="admin-content">
           <div className="admin-heading"><div><span className="admin-eyebrow"><i /> ADMINISTRATOR</span><h1>{tab === 'overview' ? 'Pusat kendali.' : tab === 'users' ? 'Pengguna.' : tab === 'projects' ? 'Semua proyek.' : tab === 'conversations' ? 'Percakapan.' : tab === 'api-keys' ? 'Connect API key.' : 'Daftar tunggu.'}</h1><p>{tab === 'overview' ? 'Kelola pengguna dan konten BLEA AI dari satu tempat.' : tab === 'users' ? 'Akun yang sudah terdaftar di BLEA AI.' : tab === 'projects' ? 'Pantau dan kelola proyek di semua workspace.' : tab === 'conversations' ? 'Lihat ringkasan percakapan tersimpan; isi pesan tetap privat bagi pemilik akun.' : tab === 'api-keys' ? 'Semua provider yang memakai API key dikelola dari halaman ini. Kunci disimpan di Supabase dan digunakan server-side melalui edge function — tidak pernah sampai ke browser.' : 'Email yang meminta akses awal BLEA AI.'}</p></div><div className="admin-heading-meta"><span><Clock3 size={13} /> {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</span><span className="admin-user-chip"><i>{(user?.user_metadata?.full_name || user?.email || 'A').slice(0, 1).toUpperCase()}</i>{user?.email}</span></div></div>
           {errorMessage && <div className="admin-error" role="alert">{errorMessage}<button onClick={loadData}>Coba lagi</button></div>}

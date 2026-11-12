@@ -1,14 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Check, CircleHelp, KeyRound, Mail, Save, ShieldCheck, UserRound } from 'lucide-react';
-import { Brand } from '../components/Brand';
-import { AppDrawer, AppDrawerPanel, AppDrawerToggle } from '../components/AppDrawer';
+import { ArrowRight, Check, KeyRound, Mail, Save, ShieldCheck, UserRound } from 'lucide-react';
+import { AppDrawer, AppDrawerToggle } from '../components/AppDrawer';
+import { GlobalNavPanel } from '../components/AppNav';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 
 export function AccountSettings() {
   const { user } = useAuth();
-  const isAdmin = user?.app_metadata?.role === 'admin';
   const [name, setName] = useState(user?.user_metadata?.full_name || '');
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
@@ -83,16 +82,7 @@ export function AccountSettings() {
   return (
     <div className="app-shell">
       <AppDrawer>
-        <AppDrawerPanel>
-        <div className="app-sidebar-brand"><Brand /></div>
-        <div className="workspace-switcher"><span className="workspace-logo"><UserRound size={15} /></span><span><b>Pengaturan akun</b><small>Profil dan keamanan</small></span></div>
-        <div className="app-nav-label">AKUN</div>
-        <Link className="app-nav-item active" to="/settings"><UserRound size={16} /> Profil & keamanan</Link>
-        <Link className="app-nav-item" to="/app"><ArrowRight size={16} /> Kembali ke ringkasan</Link>
-        {isAdmin && <Link className="app-nav-item admin-nav-shortcut" to="/admin"><ShieldCheck size={16} /> Admin panel</Link>}
-        <div className="sidebar-spacer" />
-        <a className="app-nav-item" href="mailto:halo@blea.ai"><CircleHelp size={16} /> Bantuan</a>
-        </AppDrawerPanel>
+        <GlobalNavPanel />
       <main className="app-main">
         <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><Link to="/app">Ruang pribadi</Link><span>/</span><b>Pengaturan akun</b></div><a href="/" className="website-link">Lihat website <ArrowRight size={14} /></a></header>
         <div className="app-content settings-content">
