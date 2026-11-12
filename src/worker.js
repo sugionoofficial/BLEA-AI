@@ -135,9 +135,9 @@ const GITHUB_SCOPE = 'repo';
 // Prompt alat GitHub untuk agen — dikirim bila chat dengan github=true.
 const GITHUB_TOOLS_PROMPT = [
   'Kamu memiliki alat GitHub hanya baca. Gunakan hanya bila diminta pengguna.',
-  'Format: blok kode tool berisi JSON, misalnya {"name":"github_repos","arguments":{}}.',
-  'Alat tersedia: github_repos {}, github_read {owner, repo, path, branch?}, github_prs {owner, repo}.',
-  'Tentukan owner dan repo secara eksplisit; jangan menebak. Hasil alat hanya berupa ringkasan metadata, bukan isi file. Tindakan yang mengubah data belum tersedia.',
+  'Format: blok kode tool berisi JSON, misalnya {"name":"github_read","arguments":{"path":"README.md"}}.',
+  'Alat tersedia: github_read {path, branch?}, github_prs {}. Repository ditentukan oleh pilihan pengguna.',
+  'Hasil alat hanya berupa ringkasan metadata, bukan isi file. Tindakan yang mengubah data belum tersedia.',
 ].join(' ');
 
 // Encrypted, user-bound browser session. The OAuth secret never leaves the Worker.
@@ -222,8 +222,9 @@ async function executeGithubTool(request, toolPath, args, env, user) {
     if (toolPath === 'read') {
       const relPath = String(args.path || '').replace(/^\/+/, '');
       const encoded = relPath.split('/').map((part) => encodeURIComponent(part)).join('/');
-      const ref = args.branch || args.ref || 'main';
-      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`);
+      const ref = args.branch || args.ref;
+      const query = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+      const { ok, data } = await gh(`/repos/${args.owner}/${args.repo}/contents/${encoded}${query}`);
       return { ok, data };
     }
     if (toolPath === 'write') {
@@ -581,9 +582,13 @@ async function handleApi(request, url, env) {
       const chatUrl = gatewayBase.endsWith('/chat/completions')
         ? gatewayBase
         : `${gatewayBase}/v1/chat/completions`;
-      const systemPrompt = body.github && await githubToken(request, env, user) ? `${AGENT_SYSTEM_PROMPT}\n\n${GITHUB_TOOLS_PROMPT}` : AGENT_SYSTEM_PROMPT;
+      const repository = typeof body.repository === 'string' && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(body.repository) ? body.repository : '';
+      const githubEnabled = !!(body.github && repository && await githubToken(request, env, user));
+      const [selectedOwner, selectedName] = repository.split('/');
+      const systemPrompt = githubEnabled ? `${AGENT_SYSTEM_PROMPT}\n\n${GITHUB_TOOLS_PROMPT}\nRepository yang dipilih pengguna: ${repository}. Gunakan hanya repository ini.` : AGENT_SYSTEM_PROMPT;
       const fetchBody = { ...body, model: body.model, messages: [...(body.messages || []), { role: 'system', content: systemPrompt }], stream: false };
       delete fetchBody.github;
+      delete fetchBody.repository;
       delete fetchBody.apiKey;
       delete fetchBody.apiUrl;
       try {
@@ -602,16 +607,16 @@ async function handleApi(request, url, env) {
         // Tool loop: parse \`\`\`tool dari reply model, eksekusi alat
         // GitHub, lalu lanjut percakapan dengan hasil alat (maks 4 iterasi).
         const actions = [];
-        if (body.github && await githubToken(request, env, user)) {
+        if (githubEnabled) {
           for (let round = 0; round < 4; round += 1) {
             const toolCalls = parseToolCalls(finalReply);
             if (!toolCalls.length) break;
             const toolResults = [];
             for (const call of toolCalls) {
-              const args = call.arguments || {};
+              const args = { ...(call.arguments || {}), owner: selectedOwner, repo: selectedName };
               const tool = String(call.name).replace(/^github_/, '');
-              const allowed = ['repos', 'read', 'prs'].includes(tool) && (tool === 'repos' || (args.owner && args.repo));
-              const result = allowed ? await executeGithubTool(request, tool, args, env, user) : { ok: false, data: { error: 'Tindakan ditolak: hanya baca dan repository harus ditentukan.' } };
+              const allowed = ['read', 'prs'].includes(tool);
+              const result = allowed ? await executeGithubTool(request, tool, args, env, user) : { ok: false, data: { error: 'Tindakan ditolak: hanya akses baca repository yang dipilih tersedia.' } };
               const summary = summarizeTool(call.name, result);
               actions.push({ tool: call.name, ok: result.ok, result: summary });
               toolResults.push({ name: call.name, ok: result.ok, result: summary });

@@ -237,3 +237,10 @@
   .studio-code-pre { padding: 9px 10px; }
   .studio-code-pre code { font-size: 11px; }
 }
+
+/* Single active repository selector */
+.studio-repo-picker { display: flex; gap: 8px; align-items: center; }
+.studio-repo-picker select { min-width: 0; flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--foreground); font: inherit; }
+.studio-repo-picker button { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--foreground); cursor: pointer; }
+.studio-repo-picker button:disabled { opacity: .6; cursor: wait; }
+.studio-repos small { color: var(--muted-foreground); overflow-wrap: anywhere; }
