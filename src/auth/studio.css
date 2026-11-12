@@ -118,10 +118,15 @@
 .studio-conn-chip.is-on { color: #047857; border-color: rgb(16 185 129 / 0.4); background: #ecfdf5; }
 .studio-conn-chip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .studio-conn-chip.is-on i { background: #10b981; box-shadow: 0 0 6px rgb(16 185 129 / 0.6); }
+.studio-conn-chip .studio-send-loader { width: 10px; height: 10px; border-width: 1.5px; }
+.studio-repo-icon-btn .studio-send-loader { width: 11px; height: 11px; border-width: 1.5px; color: #db2777; }
 .studio-repos { display: flex; flex-direction: column; gap: 6px; }
 .studio-repos-label { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted-foreground); }
 .studio-repo-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
 .studio-repo-icon { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: var(--radius-sm); background: rgb(236 72 153 / 0.1); color: #db2777; }
+.studio-repo-icon-btn { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 0; border-radius: var(--radius-sm); background: rgb(236 72 153 / 0.1); color: #db2777; cursor: pointer; transition: background .15s, transform .15s; }
+.studio-repo-icon-btn:hover { background: rgb(236 72 153 / 0.2); transform: scale(1.08); }
+.studio-repo-icon-btn:disabled { opacity: .6; cursor: wait; transform: none; }
 .studio-repo-item > div { min-width: 0; }
 .studio-repo-item b { display: block; font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .studio-repo-item small { font-size: 9.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

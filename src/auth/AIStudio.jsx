@@ -133,6 +133,7 @@ export function AIStudio() {
   const [connectedRepo, setConnectedRepo] = useState(null);
   // App koneksi — seperti Arena: TIDAK otomatis terhubung; klik untuk koneksikan.
   const [appConnections, setAppConnections] = useState({ notion: false, slack: false, github: false });
+  const [appConnecting, setAppConnecting] = useState(null);
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -482,8 +483,16 @@ export function AIStudio() {
   }
 
   // Toggle koneksi app — klik logo untuk koneksikan (tidak otomatis).
-  function toggleAppConnection(app) {
-    setAppConnections((current) => ({ ...current, [app]: !current[app] }));
+  async function toggleAppConnection(app) {
+    if (appConnections[app]) {
+      setAppConnections((current) => ({ ...current, [app]: false }));
+      return;
+    }
+    setAppConnecting(app);
+    // Alur koneksi seperti Arena (auth login) — status "Menghubungkan…".
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    setAppConnections((current) => ({ ...current, [app]: true }));
+    setAppConnecting(null);
   }
 
   // Tutup popover model saat klik di luar.
@@ -534,13 +543,13 @@ export function AIStudio() {
               </div>
               <div className="studio-connections-row">
                 <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
-                <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => toggleAppConnection('notion')} aria-pressed={appConnections.notion}><BookOpen size={12} /> Notion{appConnections.notion && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => toggleAppConnection('slack')} aria-pressed={appConnections.slack}><Slack size={12} /> Slack{appConnections.slack && <i />}</button>
-                <button type="button" className={`studio-conn-chip ${appConnections.github ? 'is-on' : ''}`} onClick={() => toggleAppConnection('github')} aria-pressed={appConnections.github}><Github size={12} /> GitHub{appConnections.github && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => toggleAppConnection('notion')} disabled={appConnecting === 'notion'} aria-pressed={appConnections.notion}>{appConnecting === 'notion' ? <span className="studio-send-loader" /> : <BookOpen size={12} />} Notion{appConnections.notion && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => toggleAppConnection('slack')} disabled={appConnecting === 'slack'} aria-pressed={appConnections.slack}>{appConnecting === 'slack' ? <span className="studio-send-loader" /> : <Slack size={12} />} Slack{appConnections.slack && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.github ? 'is-on' : ''}`} onClick={() => toggleAppConnection('github')} disabled={appConnecting === 'github'} aria-pressed={appConnections.github}>{appConnecting === 'github' ? <span className="studio-send-loader" /> : <Github size={12} />} GitHub{appConnections.github && <i />}</button>
               </div>
               <div className="studio-repos">
                 <span className="studio-repos-label">REPO TERHUBUNG</span>
-                {repoConnected ? (connectedRepo ? <div className="studio-repo-item"><span className="studio-repo-icon"><Github size={14} /></span><div><b>{connectedRepo.fullName}</b><small>{connectedRepo.defaultBranch}</small></div><button type="button" className="studio-repo-disconnect" onClick={() => setRepoConnected(false)}>Putus</button></div> : <div className="studio-repo-item is-loading"><span className="studio-repo-icon"><GitBranch size={14} /></span><div><b>Menunggu info repo…</b></div></div>) : <div className="studio-repo-item is-disconnected"><span className="studio-repo-icon"><Github size={14} /></span><div><b>Repo tidak terhubung</b><small>Koneksi ulang menggunakan autentikasi akunmu</small></div><button type="button" className="studio-repo-reconnect" onClick={reconnectRepo} disabled={repoConnecting}>{repoConnecting ? 'Menghubungkan…' : 'Koneksi ulang'}</button></div>}
+                {repoConnected ? (connectedRepo ? <div className="studio-repo-item"><button type="button" className="studio-repo-icon-btn" onClick={() => setRepoConnected(false)} aria-label="Putus koneksi repo"><Github size={14} /></button><div><b>{connectedRepo.fullName}</b><small>{connectedRepo.defaultBranch}</small></div><button type="button" className="studio-repo-disconnect" onClick={() => setRepoConnected(false)}>Putus</button></div> : <div className="studio-repo-item is-loading"><span className="studio-repo-icon"><GitBranch size={14} /></span><div><b>Menunggu info repo…</b></div></div>) : <div className="studio-repo-item is-disconnected"><button type="button" className="studio-repo-icon-btn" onClick={reconnectRepo} disabled={repoConnecting} aria-label="Koneksi ulang repo">{repoConnecting ? <span className="studio-send-loader" /> : <Github size={14} />}</button><div><b>Repo tidak terhubung</b><small>Koneksi ulang menggunakan autentikasi akunmu</small></div><button type="button" className="studio-repo-reconnect" onClick={reconnectRepo} disabled={repoConnecting}>{repoConnecting ? 'Menghubungkan…' : 'Koneksi ulang'}</button></div>}
               </div>
             </div>}
           </div>
