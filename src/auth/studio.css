@@ -192,6 +192,22 @@
 .studio-delete-confirm:hover { background: rgb(239 68 68 / 0.2); }
 .studio-delete-confirm:disabled { opacity: .6; cursor: wait; }
 
+/* Modal persetujuan auth login — seperti halaman consent OAuth */
+.studio-consent-modal { width: min(420px, 100%); padding: 25px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); text-align: center; box-shadow: var(--shadow-modal); }
+.studio-consent-icon { width: 48px; height: 48px; margin: 0 auto 14px; display: grid; place-items: center; border-radius: 14px; color: #fff; background: linear-gradient(145deg, #1e293b, #334155); box-shadow: 0 8px 22px rgb(30 41 59 / 0.3); }
+.studio-consent-modal h2 { font-size: 18px; margin: 0 0 8px; }
+.studio-consent-modal p { font-size: 12px; line-height: 1.75; color: var(--muted-foreground); margin: 0 0 16px; }
+.studio-consent-account { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); }
+.studio-consent-account > span { font-size: 10px; color: var(--muted-foreground); font-weight: 600; }
+.studio-consent-account b { font-size: 11.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-consent-permissions { display: flex; flex-direction: column; gap: 7px; margin-bottom: 20px; text-align: left; }
+.studio-consent-perm { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+.studio-consent-perm svg { color: var(--success); flex: none; }
+.studio-consent-perm span { font-size: 11.5px; color: var(--foreground); }
+.studio-consent-modal > div:last-child { display: flex; justify-content: center; gap: 8px; }
+.studio-consent-approve { height: 34px; padding: 0 14px; border: 0; border-radius: var(--radius-lg); background: var(--primary); color: var(--primary-foreground); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgb(99 102 241 / 0.35); }
+.studio-consent-approve:hover { background: var(--primary-600); }
+
 @media (max-width: 480px) {
   .studio-status { font-size: 9px; padding: 5px 6px; }
   .studio-top-actions { gap: 8px; }
