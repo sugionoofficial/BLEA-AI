@@ -91,7 +91,7 @@ function NavLinkItem({ item, collapsed, activeHref, pathname, onNavigate }) {
   );
 }
 
-export function DropXLayout({ children, title, description, actions }) {
+export function DropXLayout({ children, title, description, actions, footer = true }) {
   const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -274,15 +274,17 @@ export function DropXLayout({ children, title, description, actions }) {
             </div>
           )}
           {children}
-          <footer className="dropx-footer">
-            <span>© {new Date().getFullYear()} BLEA AI v1.0</span>
-            <span>
-              Designed &amp; developed by{' '}
-              <a href="https://themewagon.com/" target="_blank" rel="noopener noreferrer">
-                DropX Admin
-              </a>
-            </span>
-          </footer>
+          {footer && (
+            <footer className="dropx-footer">
+              <span>© {new Date().getFullYear()} BLEA AI v1.0</span>
+              <span>
+                Designed &amp; developed by{' '}
+                <a href="https://themewagon.com/" target="_blank" rel="noopener noreferrer">
+                  DropX Admin
+                </a>
+              </span>
+            </footer>
+          )}
         </main>
       </div>
     </div>
