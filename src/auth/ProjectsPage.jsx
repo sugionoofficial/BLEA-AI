@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ArrowRight, ArrowUpRight, Check, FolderPlus, Layers3, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
-import { AppDrawer, AppDrawerToggle } from '../components/AppDrawer';
-import { GlobalNavPanel } from '../components/AppNav';
+import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
 
@@ -108,25 +107,19 @@ export function ProjectsPage() {
   const filteredProjects = projects.filter((project) => `${project.name} ${project.description}`.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div className="app-shell projects-shell">
-      <AppDrawer>
-        <GlobalNavPanel />
-
-      <main className="app-main">
-        <header className="app-topbar"><AppDrawerToggle /><div className="app-breadcrumb"><span>Ruang pribadi</span><span>/</span><b>Proyek</b></div><div className="app-top-actions"><span className="system-status"><i /> Semua sistem beroperasi</span><a href="/" className="website-link">Lihat website <ArrowUpRight size={14} /></a></div></header>
-        <div className="app-content projects-content">
-          <div className="projects-heading"><div><span className="app-date">RUANG KERJA</span><h1>Proyekmu.</h1><p>Simpan ide dan kembangkan satu langkah demi satu.</p></div><button className="project-create-button" onClick={openCreate}><Plus size={16} /> Proyek baru</button></div>
-          <div className="projects-toolbar"><div className="projects-count"><Layers3 size={15} /><span>{projects.length} {projects.length === 1 ? 'proyek' : 'proyek'}</span></div><label className="project-search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cari proyek..." aria-label="Cari proyek" /></label></div>
+    <DropXLayout
+      title="Proyek"
+      description="Simpan ide dan kembangkan satu langkah demi satu."
+      actions={<button type="button" className="dropx-btn dropx-btn-primary dropx-btn-sm" onClick={openCreate}><Plus size={15} /> Proyek baru</button>}
+    >
+      <div className="app-content projects-content">
+        <div className="projects-toolbar"><div className="projects-count"><Layers3 size={15} /><span>{projects.length} {projects.length === 1 ? 'proyek' : 'proyek'}</span></div><label className="project-search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cari proyek..." aria-label="Cari proyek" /></label></div>
           {actionMessage && <div className="project-feedback" role="status"><Check size={14} />{actionMessage}</div>}
           {loadError && <div className="project-feedback project-feedback-error" role="alert">{loadError}<button onClick={loadProjects}>Coba lagi</button></div>}
           {loading ? <div className="project-loading"><span className="loader-orbit" />Memuat proyekmu...</div> : filteredProjects.length ? <div className="project-grid">{filteredProjects.map((project) => <article className="project-card" key={project.id}><div className="project-card-top"><span className="project-card-icon"><Layers3 size={17} /></span><div className="project-card-actions"><button onClick={() => openEdit(project)} aria-label={`Edit ${project.name}`}><Pencil size={14} /></button><button onClick={() => setDeleteProject(project)} aria-label={`Hapus ${project.name}`}><Trash2 size={14} /></button></div></div><button className="project-name-button" onClick={() => openEdit(project)}>{project.name}<ArrowUpRight size={13} /></button><p className="project-description">{project.description || 'Belum ada deskripsi untuk proyek ini.'}</p><div className="project-card-footer"><span>Diperbarui {formatDate(project.updated_at || project.created_at)}</span><span className="project-owner-dot"><i /> Milikmu</span></div></article>)}</div> : search ? <div className="projects-empty"><div className="project-empty-icon"><Search size={19} /></div><h2>Belum ada yang cocok.</h2><p>Coba kata pencarian lain untuk menemukan proyekmu.</p><button className="project-clear-search" onClick={() => setSearch('')}>Hapus pencarian</button></div> : <div className="projects-empty"><div className="project-empty-icon"><FolderPlus size={20} /></div><span className="empty-kicker">MULAI DENGAN SATU IDE</span><h2>Belum ada proyek.</h2><p>Buat ruang pertama untuk menyimpan ide, catatan, dan rencana yang ingin kamu kembangkan.</p><button className="project-create-button" onClick={openCreate}><Plus size={15} /> Buat proyek pertama</button></div>}
-          <footer className="app-footer projects-footer"><span>© 2026 BLEA AI</span><div><span className="footer-status"><i /> Proyek tersimpan aman</span></div></footer>
         </div>
-      </main>
-      </AppDrawer>
-
       {modalProject !== undefined && <div className="project-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setModalProject(undefined); }}><section className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-modal-title"><div className="project-modal-head"><span className="project-modal-icon"><Layers3 size={17} /></span><button className="modal-close" onClick={() => setModalProject(undefined)} aria-label="Tutup"><X size={17} /></button></div><span className="app-date">{modalProject ? 'EDIT PROYEK' : 'PROYEK BARU'}</span><h2 id="project-modal-title">{modalProject ? 'Rapikan idemu.' : 'Mulai dari satu ide.'}</h2><p className="project-modal-intro">{modalProject ? 'Perbarui detail proyek ini kapan saja.' : 'Beri nama pada ruang untuk ide yang ingin kamu wujudkan.'}</p><form onSubmit={saveProject} className="project-form"><label><span>Nama proyek</span><input name="name" defaultValue={modalProject?.name || ''} placeholder="Contoh: Brand baru, rencana konten..." maxLength={80} required autoFocus /></label><label><span>Deskripsi <small>OPSIONAL</small></span><textarea name="description" defaultValue={modalProject?.description || ''} placeholder="Apa yang ingin kamu capai dengan proyek ini?" maxLength={500} rows={4} /></label>{formError && <div className="auth-alert auth-alert-error" role="alert">{formError}</div>}<div className="project-form-footer"><span>Maks. 80 karakter untuk nama</span><div><button type="button" className="project-cancel" onClick={() => setModalProject(undefined)}>Batal</button><button type="submit" className="project-create-button" disabled={saving}>{saving ? 'Menyimpan...' : modalProject ? 'Simpan perubahan' : 'Buat proyek'} <ArrowRight size={14} /></button></div></div></form></section></div>}
       {deleteProject && <div className="project-modal-backdrop"><section className="project-modal delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title"><div className="delete-modal-icon"><Trash2 size={18} /></div><h2 id="delete-modal-title">Hapus proyek ini?</h2><p>“{deleteProject.name}” akan dihapus dari ruang kerjamu. Tindakan ini tidak bisa dibatalkan.</p><div className="delete-modal-actions"><button className="project-cancel" onClick={() => setDeleteProject(null)}>Batal</button><button className="delete-confirm-button" onClick={confirmDelete} disabled={deleting}>{deleting ? 'Menghapus...' : 'Ya, hapus proyek'}</button></div></section></div>}
-    </div>
+    </DropXLayout>
   );
 }

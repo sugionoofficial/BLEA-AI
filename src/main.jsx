@@ -14,6 +14,7 @@ const ResetPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module
 const ProjectsPage = lazy(() => import('./auth/ProjectsPage').then((module) => ({ default: module.ProjectsPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
+import './dropx/dropx.css';
 import './auth/studio.css';
 import './auth/studio-fallback.css';
 import './auth/auth.css';
