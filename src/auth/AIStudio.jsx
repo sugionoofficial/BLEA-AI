@@ -126,11 +126,13 @@ export function AIStudio() {
   const [copiedCodeKey, setCopiedCodeKey] = useState('');
   const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const [sendingWeb, setSendingWeb] = useState(false);
-  const [modelBlockOpen, setModelBlockOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [repoConnected, setRepoConnected] = useState(true);
   const [repoConnecting, setRepoConnecting] = useState(false);
   const [connectedRepo, setConnectedRepo] = useState(null);
+  // App koneksi — seperti Arena: TIDAK otomatis terhubung; klik untuk koneksikan.
+  const [appConnections, setAppConnections] = useState({ notion: false, slack: false, github: false });
   const endOfMessages = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
@@ -479,6 +481,21 @@ export function AIStudio() {
     finally { setRepoConnecting(false); }
   }
 
+  // Toggle koneksi app — klik logo untuk koneksikan (tidak otomatis).
+  function toggleAppConnection(app) {
+    setAppConnections((current) => ({ ...current, [app]: !current[app] }));
+  }
+
+  // Tutup popover model saat klik di luar.
+  useEffect(() => {
+    if (!modelOpen) return undefined;
+    const close = (event) => {
+      if (!event.target.closest('.studio-model-wrap')) setModelOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [modelOpen]);
+
   return (
     <DropXLayout footer={false}>
       <div className="studio-shell studio-ready">
@@ -509,22 +526,7 @@ export function AIStudio() {
                 </div>)}
               </div>
             )}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" />{providerStatus?.configured && <>
-              <div className={`studio-model-block ${modelBlockOpen ? 'is-open' : ''}`}>
-                <div className="studio-model-block-head">
-                  <span className="studio-model-block-icon"><Cpu size={13} /></span>
-                  <div><b>Model tersedia</b><small>{selectedModel}</small></div>
-                  <button type="button" className={`studio-model-toggle ${modelBlockOpen ? 'is-open' : ''}`} onClick={() => setModelBlockOpen(false)} aria-label="Sembunyikan blok model"><ChevronDown size={14} /></button>
-                </div>
-                <div className="studio-model-collapse">
-                  <div className="studio-model-block-select">
-                    <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select>
-                    <ChevronDown size={13} />
-                  </div>
-                </div>
-              </div>
-              <button type="button" className={`studio-model-bar ${modelBlockOpen ? 'is-hidden' : ''}`} onClick={() => setModelBlockOpen(true)} aria-label="Tampilkan blok model"><Cpu size={12} /> Model tersedia <ChevronDown size={13} /></button>
-            </>}<div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> Koneksi</button><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /> {selectedModel} <ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif · UnoRouter` : `${models.length} model gratis · UnoRouter`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select></div>}</div>}{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> Koneksi</button><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
             {connectionsOpen && <div className="studio-connections">
               <div className="studio-connections-head">
                 <span>Koneksi agen</span>
@@ -532,9 +534,9 @@ export function AIStudio() {
               </div>
               <div className="studio-connections-row">
                 <button type="button" className={`studio-conn-chip ${webSearchEnabled ? 'is-on' : ''}`} onClick={() => setWebSearchEnabled((enabled) => !enabled)} aria-pressed={webSearchEnabled}><Globe size={12} /> Akses web <i /></button>
-                <span className="studio-conn-chip is-on"><BookOpen size={12} /> Notion</span>
-                <span className="studio-conn-chip is-on"><Slack size={12} /> Slack</span>
-                <span className="studio-conn-chip is-on"><Github size={12} /> GitHub</span>
+                <button type="button" className={`studio-conn-chip ${appConnections.notion ? 'is-on' : ''}`} onClick={() => toggleAppConnection('notion')} aria-pressed={appConnections.notion}><BookOpen size={12} /> Notion{appConnections.notion && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.slack ? 'is-on' : ''}`} onClick={() => toggleAppConnection('slack')} aria-pressed={appConnections.slack}><Slack size={12} /> Slack{appConnections.slack && <i />}</button>
+                <button type="button" className={`studio-conn-chip ${appConnections.github ? 'is-on' : ''}`} onClick={() => toggleAppConnection('github')} aria-pressed={appConnections.github}><Github size={12} /> GitHub{appConnections.github && <i />}</button>
               </div>
               <div className="studio-repos">
                 <span className="studio-repos-label">REPO TERHUBUNG</span>

@@ -114,9 +114,9 @@
 .studio-connections-status.is-on { color: #047857; }
 .studio-connections-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 12px; }
 .studio-conn-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-family: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
-.studio-conn-chip:hover { border-color: rgb(99 102 241 / 0.4); color: var(--primary); }
-.studio-conn-chip.is-on { color: #047857; border-color: rgb(16 185 129 / 0.4); background: #ecfdf5; cursor: default; }
-.studio-conn-chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.studio-conn-chip:hover { border-color: rgb(99 102 241 / 0.4); color: var(--primary); background: rgb(99 102 241 / 0.05); }
+.studio-conn-chip.is-on { color: #047857; border-color: rgb(16 185 129 / 0.4); background: #ecfdf5; }
+.studio-conn-chip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .studio-conn-chip.is-on i { background: #10b981; box-shadow: 0 0 6px rgb(16 185 129 / 0.6); }
 .studio-repos { display: flex; flex-direction: column; gap: 6px; }
 .studio-repos-label { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted-foreground); }
@@ -131,29 +131,17 @@
 .studio-repo-reconnect { margin-left: auto; flex: none; height: 24px; padding: 0 10px; border: 0; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-family: inherit; font-size: 10px; font-weight: 600; cursor: pointer; }
 .studio-repo-reconnect:hover:not(:disabled) { background: var(--primary-600); }
 .studio-repo-reconnect:disabled { opacity: .6; cursor: wait; }
-/* Blok "Model tersedia" — berada di dalam blok input text; slide sembunyikan
-   SEMUA blok (bukan hanya select) supaya halaman lebih luas. min-height:0
-   dibutuhkan agar grid-template-rows:0fr benar-benar melipat. */
-.studio-model-block { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .3s ease; overflow: hidden; }
-.studio-model-block.is-open { grid-template-rows: auto auto; }
-.studio-model-block > * { overflow: hidden; min-height: 0; }
-.studio-model-block-head { display: flex; align-items: center; gap: 8px; padding: 8px 13px 10px; min-width: 0; }
-.studio-model-block-icon { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: var(--radius-sm); background: rgb(99 102 241 / 0.1); color: var(--primary); }
-.studio-model-block-head > div { min-width: 0; }
-.studio-model-block-head b { font-size: 11px; font-weight: 600; }
-.studio-model-block-head small { display: block; font-size: 10px; color: var(--muted-foreground); }
-.studio-model-toggle { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--muted-foreground); cursor: pointer; transition: transform .25s ease; }
-.studio-model-toggle.is-open { transform: rotate(180deg); }
-.studio-model-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .25s ease; }
-.studio-model-block.is-open .studio-model-collapse { grid-template-rows: 1fr; }
-.studio-model-collapse > div { overflow: hidden; min-height: 0; }
-.studio-model-block-select { display: flex; align-items: center; gap: 4px; padding: 0 13px 11px; }
-.studio-model-block-select select { flex: 1; max-width: none; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); color: var(--foreground); font-family: inherit; font-size: 11.5px; padding: 5px 8px; outline: none; }
-.studio-model-block-select svg { color: var(--muted-foreground); flex: none; }
-.studio-model-bar { display: none; align-items: center; gap: 7px; width: 100%; padding: 8px 13px; border-top: 1px dashed var(--border); background: var(--bg); color: var(--muted-foreground); font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
-.studio-model-bar:not(.is-hidden) { display: flex; }
-.studio-model-bar.is-hidden { display: none; }
-.studio-model-bar > svg:first-child { color: var(--primary); }
+/* Model tersedia — pill sejajar icon upload di baris bawah input;
+   popover benar-benar tidak terlihat jika tidak diklik. */
+.studio-model-wrap { position: relative; flex: none; }
+.studio-model-pill { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.studio-model-pill svg:first-child { color: var(--primary); }
+.studio-model-pill:hover, .studio-model-pill.is-open { border-color: rgb(99 102 241 / 0.4); color: var(--foreground); background: rgb(99 102 241 / 0.05); }
+.studio-model-pill.is-open svg:last-child { transform: rotate(180deg); }
+.studio-model-popover { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 270px; max-width: 320px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); box-shadow: var(--shadow-modal); display: flex; flex-direction: column; gap: 8px; animation: studio-slide-down .2s ease-out; }
+.studio-model-popover-head b { font-size: 11px; font-weight: 600; }
+.studio-model-popover-head small { display: block; font-size: 9.5px; color: var(--muted-foreground); margin-top: 2px; }
+.studio-model-popover select { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); color: var(--foreground); font-family: inherit; font-size: 12px; padding: 6px 8px; outline: none; }
 .studio-model-block-icon { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: var(--radius-md); background: rgb(99 102 241 / 0.1); color: var(--primary); }
 .studio-model-block-head b { font-size: 12px; font-weight: 600; }
 .studio-model-block-head small { display: block; font-size: 10px; color: var(--muted-foreground); }
