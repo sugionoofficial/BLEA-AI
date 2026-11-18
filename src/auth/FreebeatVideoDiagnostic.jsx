@@ -144,6 +144,10 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
         {test.status === 'submitted' && !test.canPoll && <p>Status hanya dapat diperiksa dari sesi Freebeat yang digunakan saat pengiriman.</p>}
         {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy} onClick={() => poll(test.id)}>Periksa status video</button></div>}
         {taskResults[test.id] && <div className="freebeat-task-result"><p>Status tugas: {taskResults[test.id].status}. Biaya/refund yang tidak dilaporkan tidak diketahui.</p><pre>{JSON.stringify(taskResults[test.id].billing, null, 2)}</pre>
+          {['failed', 'partial_failed', 'action_required'].includes(taskResults[test.id].status) && <>
+            <p>Rincian kegagalan di bawah disaring; nilai kosong berarti tidak diketahui atau tidak dilaporkan. Pesan bebas disembunyikan demi privasi. Nilai retryable bukan persetujuan membuat ulang video.</p>
+            <FreebeatCopyResult title="Status video dan rincian kegagalan yang disaring" value={{ status: taskResults[test.id].status, billing: taskResults[test.id].billing, failure: taskResults[test.id].failure, item_failures: taskResults[test.id].item_failures }} />
+          </>}
           {taskResults[test.id].videos.length > 0 && <div className="freebeat-result-links">{taskResults[test.id].videos.map((url, index) => <a className="freebeat-result-link" href={url} key={url} target="_blank" rel="noopener noreferrer">Buka hasil video {index + 1}</a>)}</div>}
           {taskResults[test.id].status === 'completed' && taskResults[test.id].videos.length === 0 && <p>Video selesai tetapi tautan belum tersedia. Periksa lagi atau lihat Freebeat; jangan ulangi generasi.</p>}
           {taskResults[test.id].videos.length > 0 && <p>Membuka tautan menghubungkan browser ke host penyedia; jangan bagikan tautan pribadi.</p>}

@@ -21,13 +21,14 @@ async function connect(image = true, token = 'admin') {
 }
 function fixture() {
   const rows = new Map(), calls = [];
-  let quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok';
+  let quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null;
   return {
     rows, calls,
     setQuote(value) { quote = value; },
     setGenerateMode(value) { generateMode = value; },
     setToken(value) { tokenValue = value; },
     setDbMode(value) { dbMode = value; },
+    setTaskResult(value) { taskResult = value; },
     async fetch(input, init = {}) {
       const url = new URL(String(input));
       if (url.href === 'https://supabase.example/auth/v1/user') {
@@ -71,7 +72,7 @@ function fixture() {
         else data = { batch_id: 'batch-123', secret: 'SECRET-DATA' };
       } else if (body.params.name === 'get_task_status') {
         assert.deepEqual(body.params.arguments, { task_id: 'batch-123' });
-        data = { status: 'completed', items: [{ video_url: 'https://cdn.example/video.mp4' }, { video_url: 'javascript:alert(1)' }, { video_url: 'https://user:pass@example.com/img' }], billing: { charged: 23, refunded: null, net: 23, refund_state: 'none', secret: 'SECRET' }, token: 'SECRET' };
+        data = taskResult || { status: 'completed', items: [{ video_url: 'https://cdn.example/video.mp4' }, { video_url: 'javascript:alert(1)' }, { video_url: 'https://user:pass@example.com/img' }], billing: { charged: 23, refunded: null, net: 23, refund_state: 'none', secret: 'SECRET' }, token: 'SECRET' };
       } else throw new Error(`Unexpected tool ${body.params.name}`);
       return Response.json({ id: body.id, result: { structuredContent: data } });
     },
@@ -117,8 +118,16 @@ test('admin video test binds explicit approval and cap to fresh quote, dispatche
     assert.doesNotMatch(JSON.stringify(listed), /batch-123|PROVIDER-SECRET|test prompt/);
     const result = await api('video-task', { cookie, method: 'POST', data: { id: accepted.id } });
     const text = await result.text();
-    assert.deepEqual(JSON.parse(text).task, { status: 'completed', videos: ['https://cdn.example/video.mp4'], billing: { charged: 23, refunded: null, net: 23, refund_state: 'none' } });
+    assert.deepEqual(JSON.parse(text).task, { status: 'completed', videos: ['https://cdn.example/video.mp4'], billing: { charged: 23, refunded: null, net: 23, refund_state: 'none' }, failure: null, item_failures: [] });
     assert.doesNotMatch(text, /SECRET|javascript|user:pass|batch-123/);
+    f.setTaskResult({ status: 'failed', billing: { charged: 0 }, failure: { stage: 'generation', reason: 'Secret message https://private.example?token=SECRET', retryable: false }, items: [{ failure: { stage: 'SECRET', reason: 'invalid_image', retryable: true } }, { failure: { reason: 'SECRET', retryable: 'yes' } }] });
+    const failed = await api('video-task', { cookie, method: 'POST', data: { id: accepted.id } });
+    const failedText = await failed.text();
+    assert.doesNotMatch(failedText, /SECRET|private\.example|batch-123/);
+    const failedTask = JSON.parse(failedText).task;
+    assert.deepEqual(failedTask.failure, { stage: 'generation', stage_hidden: false, reason: null, reason_hidden: true, retryable: false });
+    assert.deepEqual(failedTask.item_failures, [{ stage: null, stage_hidden: true, reason: 'invalid_image', reason_hidden: false, retryable: true }, { stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: null }]);
+    assert.deepEqual(failedTask.billing, { charged: 0, refunded: null, net: null, refund_state: null });
     assert.equal((await api('video-task', { cookie, token: 'other-admin', method: 'POST', data: { id: accepted.id } })).status, 401);
     f.setToken('NEW-PROVIDER-SECRET'); const newCookie = await connect();
     assert.equal((await api('video-task', { cookie: newCookie, method: 'POST', data: { id: accepted.id } })).status, 404);
