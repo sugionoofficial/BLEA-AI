@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
+import { resolveProviderApiBase } from '../src/lib/videoCatalog.js';
 
 function createEnv() {
   return {
@@ -267,6 +268,63 @@ test('/api/chat places system message first, diversifies fallback across familie
       capturedPayloads.map((p) => p.model),
       ['qwen3.7-flash:free', 'gemini-2.5-flash:free'],
     );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('PEKPIK OpenAI-compatible provider works in /api/status, /api/catalog, and /api/chat', async () => {
+  assert.equal(resolveProviderApiBase('pekpik'), 'https://aiapiv2.pekpik.com/v1');
+
+  const realFetch = globalThis.fetch;
+  let capturedAuth = '';
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'pekpik', api_key: 'sk-pekpik-test', base_url: null }]);
+    }
+    if (url === 'https://aiapiv2.pekpik.com/v1/models') {
+      return Response.json({ data: [{ id: 'gemini-2.5-flash' }, { id: 'gpt-5.5' }, { id: 'text-embedding-3-small' }] });
+    }
+    if (url === 'https://aiapiv2.pekpik.com/v1/chat/completions') {
+      capturedAuth = init.headers.authorization;
+      return Response.json({ choices: [{ message: { content: 'Balasan dari PEKPIK!' } }] });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-pek-1' }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const statusRes = await worker.fetch(apiRequest('/api/status', { body: {} }), createEnv());
+    assert.equal(statusRes.status, 200);
+    const statusData = await statusRes.json();
+    assert.equal(statusData.configured, true);
+    assert.deepEqual(statusData.providers, ['pekpik']);
+
+    const catRes = await worker.fetch(apiRequest('/api/catalog', { body: { provider: 'pekpik' } }), createEnv());
+    assert.equal(catRes.status, 200);
+    const catData = await catRes.json();
+    assert.equal(catData.models.length, 3);
+    assert.equal(catData.models.find((m) => m.id === 'text-embedding-3-small')?.category, 'Embedding');
+
+    const chatRes = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-pek-1',
+        provider: 'pekpik',
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Halo PEKPIK' }],
+      },
+    }), createEnv());
+    assert.equal(chatRes.status, 200);
+    const chatData = await chatRes.json();
+    assert.equal(chatData.ok, true);
+    assert.equal(chatData.provider, 'pekpik');
+    assert.equal(chatData.reply, 'Balasan dari PEKPIK!');
+    assert.equal(capturedAuth, 'Bearer sk-pekpik-test');
   } finally {
     globalThis.fetch = realFetch;
   }
