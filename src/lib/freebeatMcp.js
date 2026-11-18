@@ -1,5 +1,6 @@
 // Admin-only Freebeat MCP diagnostics. No generation or credit spending is exposed.
 import { boundedJson, siteBalance } from './freebeatSiteBalance.js';
+import { FREEBEAT_VIDEO_TEST } from './freebeatVideoTestSettings.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
 const IMAGE_SCOPE = 'freebeat:generate';
@@ -391,7 +392,7 @@ async function videoDiagnostic(accessToken, action, input) {
   const headers = await openMcp(accessToken);
   const params = action === 'video-help'
     ? { name: 'get_model_help', arguments: { type: 'video', model_id: 182 } }
-    : { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: input.prompt, generation_type: 'image', images: [input.image_url] } } };
+    : { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { ...FREEBEAT_VIDEO_TEST, prompt: input.prompt, images: [input.image_url] } } };
   const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params }, action === 'video-help' ? 'help' : 'quote', headers, 262144);
   const content = modelContent(result);
   if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure(action === 'video-help' ? 'help' : 'quote', 'response');

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
+import { FREEBEAT_VIDEO_TEST } from '../lib/freebeatVideoTestSettings';
 
 export function FreebeatVideoDiagnostic({ connected, loading, request, userId, storage }) {
   const [busy, setBusy] = useState(false);
@@ -71,11 +72,12 @@ export function FreebeatVideoDiagnostic({ connected, loading, request, userId, s
     {uploadError && <div className="freebeat-alert is-error" role="alert">{uploadError}</div>}
     {uploadNotice && <p role="status">{uploadNotice}</p>}
     <p>Untuk memeriksa quote, gunakan URL hasil upload atau masukkan URL HTTPS lain yang dapat diakses Freebeat. Menekan tombol quote mengirim prompt dan URL tersebut ke Freebeat; jangan gunakan gambar pribadi atau URL bertanda tangan yang tidak ingin Anda bagikan.</p>
-    <p>Quote memakai mode gambar dan opsi default Freebeat, tanpa durasi atau resolusi yang dipilih. Angka quote bukan biaya akhir dan tidak menjamin generasi berhasil. Tidak ada generasi atau pengeluaran kredit pada pemeriksaan ini.</p>
+    <p>Parameter quote: <strong>Wan 3.0 · gambar ke video · {FREEBEAT_VIDEO_TEST.duration} detik · {FREEBEAT_VIDEO_TEST.resolution}</strong>. Opsi lain memakai default Freebeat. Dukungan durasi dan resolusi ini belum terkonfirmasi; Freebeat dapat menolak atau tidak memberikan quote. Jangan menganggapnya pilihan termurah tanpa membandingkan quote.</p>
+    <p>Angka quote bukan biaya akhir dan tidak menjamin generasi berhasil. Tidak ada generasi atau pengeluaran kredit pada pemeriksaan ini.</p>
     <label className="freebeat-field">Prompt video<input type="text" value={prompt} maxLength={2000} disabled={busy || uploadBusy} onChange={(event) => { setPrompt(event.target.value); setQuote(null); }} /></label>
     <label className="freebeat-field">URL HTTPS gambar<input type="url" value={imageUrl} maxLength={2048} disabled={busy || uploadBusy} autoComplete="off" onChange={(event) => { setImageUrl(event.target.value); setQuote(null); }} /></label>
     <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={!imageUrl || busy || uploadBusy} onClick={copyUrl}>Salin URL gambar</button><button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy || !prompt.trim() || !imageUrl.trim()} onClick={() => inspect('video-quote')}>Periksa quote Wan 3.0</button></div>
     {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
-    {quote !== null && <FreebeatCopyResult title="Quote video yang disaring" value={{ model_id: 182, generation_type: 'image', quote }} description="Hasil ini tidak memuat prompt atau URL gambar. Quote bukan biaya akhir maupun persetujuan generasi." />}
+    {quote !== null && <FreebeatCopyResult title="Quote video yang disaring" value={{ ...FREEBEAT_VIDEO_TEST, quote }} description="Hasil ini tidak memuat prompt atau URL gambar. Quote bukan biaya akhir maupun persetujuan generasi." />}
   </div>;
 }

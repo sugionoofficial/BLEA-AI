@@ -624,7 +624,7 @@ test('Wan video help and quote are admin-only, bounded read-only diagnostics wit
       assert.deepEqual(body.params.arguments, { type: 'video', model_id: 182 });
       return Response.json({ id: body.id, result: { structuredContent: { generation_types: ['image', 'text'], resolutions: ['720p', '1080p', 'SECRET'], duration: [5, 10], description: 'SECRET-MESSAGE', token: 'SECRET-TOKEN', url: 'https://SECRET.example' } } });
     }
-    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: 'Seekor kucing berjalan', generation_type: 'image', images: ['https://images.example/cat.png?signature=SECRET'] } } });
+    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: 'Seekor kucing berjalan', generation_type: 'image', duration: 5, resolution: '480p', images: ['https://images.example/cat.png?signature=SECRET'] } } });
     return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: 42, prompt: 'SECRET-PROMPT', images: ['https://images.example/SECRET'], message: 'SECRET-MESSAGE' } } });
   };
   const invoke = (action, { cookie, token = 'admin-token', origin = 'https://blea-ai.blea-ai.workers.dev', contentType = 'application/json', data = {} } = {}) => worker.fetch(new Request(`https://blea-ai.blea-ai.workers.dev/api/freebeat/${action}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}), 'content-type': contentType }, body: JSON.stringify(data) }), env);
@@ -642,6 +642,7 @@ test('Wan video help and quote are admin-only, bounded read-only diagnostics wit
       { prompt: ' ', image_url: 'https://images.example/cat.png' },
       { prompt: 'x', image_url: 'https://images.example/cat.png', max_credits: 10 },
       { prompt: 'x', image_url: 'https://images.example/cat.png', model_id: 80 },
+      { prompt: 'x', image_url: 'https://images.example/cat.png', duration: 10, resolution: '1080p' },
     ]) assert.equal((await invoke('video-quote', { cookie, data })).status, 400);
     assert.equal(calls.length, 0);
     const help = await invoke('video-help', { cookie });
