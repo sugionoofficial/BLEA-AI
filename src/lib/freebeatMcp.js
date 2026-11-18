@@ -1,6 +1,7 @@
 // Read-only Freebeat MCP connection test. No generation tools are exposed here.
 import { siteBalance } from './freebeatSiteBalance.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
+const READ_SCOPE = 'freebeat:read';
 const REGISTER = 'https://freebeat.ai/oauth/register';
 const AUTH = 'https://freebeat.ai/oauth/authorize';
 const TOKEN = 'https://freebeat.ai/oauth/token';
@@ -116,14 +117,16 @@ async function jsonFetch(url, options, stage) {
 export async function startFreebeat(env, userId) {
   await key(env);
   const redirect = redirectUri(env);
-  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }) }, 'register');
+  // Freebeat accepted this combination in a live registration test. Requesting
+  // the refresh grant does not mean we retain or use any returned refresh token.
+  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: READ_SCOPE }) }, 'register');
   if (typeof registration.client_id !== 'string' || !registration.client_id || registration.client_id.length > 500) throw fail('Registrasi klien Freebeat tidak mengembalikan client ID yang valid.');
   const state = random(), verifier = random();
   const challenge = b64(await crypto.subtle.digest('SHA-256', encoder.encode(verifier)));
   const sealed = await seal({ uid: userId, clientId: registration.client_id, state, verifier, redirect, created: Date.now() }, env, 'pending');
   if (sealed.length > 3800) throw fail('Data sesi Freebeat terlalu besar.', 503);
   const auth = new URL(AUTH);
-  for (const [name, value] of Object.entries({ response_type: 'code', client_id: registration.client_id, redirect_uri: redirect, state, code_challenge: challenge, code_challenge_method: 'S256', scope: 'freebeat:read', resource: ENDPOINT })) auth.searchParams.set(name, value);
+  for (const [name, value] of Object.entries({ response_type: 'code', client_id: registration.client_id, redirect_uri: redirect, state, code_challenge: challenge, code_challenge_method: 'S256', scope: READ_SCOPE, resource: ENDPOINT })) auth.searchParams.set(name, value);
   return response({ url: auth.toString() }, 200, { 'set-cookie': cookie(PENDING, sealed, 600) });
 }
 

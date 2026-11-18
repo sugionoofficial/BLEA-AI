@@ -8,6 +8,8 @@ Token akses untuk pengujian dienkripsi AES-GCM ke cookie HttpOnly, Secure, SameS
 
 Koneksi, saldo, cakupan OAuth, dan ketersediaan pada akun/plan belum diuji pada Freebeat live. Tidak ada bypass pembatasan plan atau kredit. Penggunaan kredit Freebeat gratis bersifat nonkomersial menurut ketentuan Freebeat; akses untuk pengguna BLEA dan penggunaan komersial memerlukan pengecekan izin terpisah. Sistem kredit BLEA tidak terhubung ke Freebeat, dan pembelian tetap nonaktif.
 
+Pendaftaran dinamis meminta scope `freebeat:read`, response type `code`, dan grant `authorization_code` serta `refresh_token`. Kombinasi metadata ini diterima dalam satu uji registrasi langsung dengan callback default; login, pertukaran token, scope, dan MCP masih perlu diuji secara live. Grant refresh hanya metadata registrasi: BLEA tidak menyimpan atau menggunakan refresh token. Klien uji yang dibuat di luar BLEA tidak dipakai ulang; setiap percobaan koneksi BLEA membuat registrasi baru.
+
 Unit/integration tests: `node --test tests/freebeat-mcp.test.js`; pengujian menggunakan respons upstream tiruan, bukan akun Freebeat asli.
 
 ## Diagnosis koneksi

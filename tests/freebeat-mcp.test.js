@@ -21,8 +21,14 @@ test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls
     }
     if (url === 'https://freebeat.ai/oauth/register') {
       const params = JSON.parse(init.body);
-      assert.deepEqual(params.redirect_uris, ['https://blea-ai.blea-ai.workers.dev/api/freebeat/callback']);
-      assert.equal(params.token_endpoint_auth_method, 'none');
+      assert.deepEqual(params, {
+        client_name: 'BLEA AI (uji MCP)',
+        redirect_uris: ['https://blea-ai.blea-ai.workers.dev/api/freebeat/callback'],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        scope: 'freebeat:read',
+      });
       return Response.json({ client_id: 'client-123' });
     }
     if (url === 'https://freebeat.ai/oauth/token') {
@@ -70,6 +76,15 @@ test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls
     const headers = callback.headers.getSetCookie();
     assert.doesNotMatch(headers.join(';'), /FREEBEAT-SENSITIVE-ACCESS-TOKEN|NEVER-STORE-REFRESH/);
     const session = headers.find((h) => h.startsWith('__Host-blea_freebeat_session=')).split(';')[0];
+    // Verify the encrypted session itself does not retain the upstream refresh token.
+    const [iv, ciphertext] = session.slice(session.indexOf('=') + 1).split('.').map((part) => Buffer.from(part, 'base64url'));
+    const encoded = new TextEncoder();
+    const digest = await crypto.subtle.digest('SHA-256', encoded.encode(`blea-freebeat-mcp-v1:${env.PROVIDER_CREDENTIAL_ENCRYPTION_KEY}`));
+    const aes = await crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['decrypt']);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: encoded.encode('session') }, aes, ciphertext);
+    const stored = JSON.parse(new TextDecoder().decode(plaintext));
+    assert.deepEqual(Object.keys(stored).sort(), ['accessToken', 'clientId', 'expiresAt', 'uid']);
+    assert.equal(JSON.stringify(stored).includes('NEVER-STORE-REFRESH'), false);
     assert.equal((await (await call('/api/freebeat/status', { token: 'other-admin', cookie: session })).json()).connected, false);
     assert.equal((await call('/api/freebeat/balance', { token: 'other-admin', cookie: session, method: 'POST' })).status, 401);
     assert.equal((await call('/api/freebeat/balance', { token: 'user-token', cookie: session, method: 'POST' })).status, 403);
