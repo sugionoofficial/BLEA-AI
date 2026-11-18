@@ -388,7 +388,7 @@ function safeVideoHelp(value, depth = 0, field = '') {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeVideoHelp(child, depth + 1, name)]));
   return safeQuote(value, depth, field);
 }
-async function videoDiagnostic(accessToken, action, input) {
+async function videoDiagnostic(accessToken, action, input, raw = false) {
   const headers = await openMcp(accessToken);
   const params = action === 'video-help'
     ? { name: 'get_model_help', arguments: { type: 'video', model_id: 182 } }
@@ -396,10 +396,12 @@ async function videoDiagnostic(accessToken, action, input) {
   const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params }, action === 'video-help' ? 'help' : 'quote', headers, 262144);
   const content = modelContent(result);
   if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure(action === 'video-help' ? 'help' : 'quote', 'response');
-  return action === 'video-help' ? safeVideoHelp(content) : safeQuote(content);
+  return raw ? content : action === 'video-help' ? safeVideoHelp(content) : safeQuote(content);
 }
 async function parseVideoQuote(request) {
-  const input = await imageJson(request);
+  return validateVideoInput(await imageJson(request));
+}
+function validateVideoInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000 || typeof input.image_url !== 'string' || input.image_url.trim().length > 2048) throw fail('Masukkan prompt 1–2000 karakter dan satu URL gambar HTTPS.', 400);
   const imageUrl = input.image_url.trim();
   let url;
@@ -455,28 +457,30 @@ async function imageJson(request) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail('Format permintaan tidak valid.', 400);
   try { return await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
 }
-async function imageDb(env, path, options = {}) {
-  if (!env.SUPABASE_SERVICE_ROLE_KEY || !env.SUPABASE_URL) throw fail('Penyimpanan uji gambar belum dikonfigurasi; tidak ada generasi yang dikirim.', 503);
+async function imageDb(env, path, options = {}, kind = 'image') {
+  const label = kind === 'video' ? 'video' : 'gambar';
+  const table = kind === 'video' ? 'freebeat_admin_video_tests' : 'freebeat_admin_image_tests';
+  if (!env.SUPABASE_SERVICE_ROLE_KEY || !env.SUPABASE_URL) throw fail(`Penyimpanan uji ${label} belum dikonfigurasi; tidak ada generasi yang dikirim.`, 503);
   const base = new URL(env.SUPABASE_URL);
-  if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw fail('Konfigurasi penyimpanan uji gambar tidak valid.', 503);
+  if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw fail(`Konfigurasi penyimpanan uji ${label} tidak valid.`, 503);
   let res;
   try {
-    res = await fetch(`${base.toString().replace(/\/$/, '')}/rest/v1/freebeat_admin_image_tests${path}`, {
+    res = await fetch(`${base.toString().replace(/\/$/, '')}/rest/v1/${table}${path}`, {
       method: options.method || 'GET', redirect: 'manual', signal: AbortSignal.timeout(15000),
       headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, 'content-type': 'application/json', prefer: 'return=representation' },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     });
-  } catch { throw fail('Penyimpanan uji gambar tidak dapat dihubungi. Periksa catatan sebelum mencoba lagi.', 503); }
+  } catch { throw fail(`Penyimpanan uji ${label} tidak dapat dihubungi. Periksa catatan sebelum mencoba lagi.`, 503); }
   if (!res.ok) {
     try { await res.body?.cancel(); } catch { /* ignore */ }
     if (res.status === 409) throw fail('Persetujuan sudah digunakan atau ada uji dengan hasil belum pasti. Jangan ulangi; periksa catatan uji.', 409);
-    throw fail('Penyimpanan uji gambar menolak permintaan. Periksa catatan sebelum mencoba lagi.', 503);
+    throw fail(`Penyimpanan uji ${label} menolak permintaan. Periksa catatan sebelum mencoba lagi.`, 503);
   }
   try {
     const data = await boundedJson(res);
     if (!Array.isArray(data)) throw new Error('invalid');
     return data;
-  } catch { throw fail('Respons penyimpanan uji gambar tidak dapat dipastikan. Periksa catatan sebelum mencoba lagi.', 503); }
+  } catch { throw fail(`Respons penyimpanan uji ${label} tidak dapat dipastikan. Periksa catatan sebelum mencoba lagi.`, 503); }
 }
 async function markTest(env, userId, id, status, taskId = null) {
   const rows = await imageDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(userId)}&status=eq.dispatching`, { method: 'PATCH', body: { status, task_id: taskId, updated_at: new Date().toISOString() } });
@@ -549,6 +553,76 @@ async function pollImage(env, user, session, request) {
   return safeTask(modelContent(result));
 }
 
+// Video testing is separate from image tests and never touches the BLEA wallet.
+// The encrypted ticket binds the exact URL, prompt, settings, user, session and cap.
+const videoDb = (env, path, options = {}) => imageDb(env, path, options, 'video');
+async function videoMark(env, uid, id, status, taskId = null) {
+  const rows = await videoDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(uid)}&status=eq.dispatching`, { method: 'PATCH', body: { status, task_id: taskId, updated_at: new Date().toISOString() } });
+  if (rows.length !== 1) throw fail('Status penyimpanan uji video tidak dapat dipastikan.', 503);
+}
+async function prepareVideo(env, user, session, input) {
+  await requireImageSession(session);
+  const models = await getModels(session.accessToken, 'video');
+  if (!models.models.some((model) => model.model_id === FREEBEAT_VIDEO_TEST.model_id)) throw fail('Wan 3.0 tidak ditemukan dalam katalog video saat ini.', 400);
+  await videoDiagnostic(session.accessToken, 'video-help', null, true);
+  const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', input, true));
+  if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
+  const expires = Date.now() + APPROVAL_LIFETIME;
+  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings: FREEBEAT_VIDEO_TEST, ...input, credits, expires }, env, 'video-approval');
+  if (approval.length > 12000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
+  return { approval, settings: FREEBEAT_VIDEO_TEST, prompt: input.prompt, image_url: input.image_url, credits, expiresAt: expires };
+}
+async function submitVideo(env, user, session, request) {
+  await requireImageSession(session);
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['approval', 'confirm'].includes(key)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 12000) throw fail('Persetujuan uji tidak valid.', 400);
+  const ticket = await unseal(input.approval, env, 'video-approval', 12000);
+  if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || JSON.stringify(ticket.settings) !== JSON.stringify(FREEBEAT_VIDEO_TEST) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME || typeof ticket.credits !== 'number' || !Number.isFinite(ticket.credits) || ticket.credits < 0 || ticket.credits > 1000000) throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
+  const exact = validateVideoInput({ prompt: ticket.prompt, image_url: ticket.image_url });
+  if (exact.prompt !== ticket.prompt || exact.image_url !== ticket.image_url) throw fail('Persetujuan tidak valid.', 400);
+  const current = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true));
+  if (current === null || current !== ticket.credits) throw fail('Quote berubah atau tidak tersedia. Tidak ada video dikirim; buat quote baru.', 409);
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
+  const headers = await openMcp(session.accessToken);
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
+  const rows = await videoDb(env, '', { method: 'POST', body: { id: ticket.id, admin_id: user.id, session_hash: ticket.sessionHash, model_id: ticket.settings.model_id, quote_credits: ticket.credits, max_credits: ticket.credits, status: 'dispatching' } });
+  if (rows.length !== 1 || rows[0]?.id !== ticket.id) throw fail('Pencatatan belum dapat dipastikan. Jangan ulangi sebelum memeriksa catatan.', 503);
+  if (ticket.expires <= Date.now()) {
+    try { await videoMark(env, user.id, ticket.id, 'reviewed'); } catch { /* preserve lock */ }
+    throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada video dikirim. Periksa catatan.', 409);
+  }
+  let taskId;
+  try {
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { ...ticket.settings, prompt: exact.prompt, images: [exact.image_url], max_credits: ticket.credits } } }, 'generate', headers, 262144);
+    const content = modelContent(result);
+    if (!content || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) throw new Error('unrecognized');
+    taskId = content.batch_id;
+  } catch {
+    try { await videoMark(env, user.id, ticket.id, 'unknown'); } catch { /* retain lock */ }
+    return { id: ticket.id, status: 'unknown' };
+  }
+  try { await videoMark(env, user.id, ticket.id, 'submitted', taskId); }
+  catch { return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId }; }
+  return { id: ticket.id, status: 'submitted' };
+}
+async function videoTests(env, user, session) {
+  const rows = await videoDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,model_id,quote_credits,max_credits,status,created_at,session_hash&order=created_at.desc&limit=20`);
+  const hash = await sessionHash(session);
+  return rows.map((row) => ({ id: row.id, model_id: row.model_id, quote_credits: row.quote_credits, max_credits: row.max_credits, status: row.status, created_at: row.created_at, canPoll: row.status === 'submitted' && row.session_hash === hash }));
+}
+async function pollVideo(env, user, session, request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID uji tidak valid.', 400);
+  const rows = await videoDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash&limit=1`);
+  const row = rows[0];
+  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || row.session_hash !== await sessionHash(session)) throw fail('Uji tidak tersedia pada sesi Freebeat ini.', 404);
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_task_status', arguments: { task_id: row.task_id } } }, 'task', headers, 262144);
+  const content = modelContent(result);
+  const summary = safeTask(content);
+  return { status: summary.status, billing: summary.billing, videos: Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.video_url)).filter(Boolean) : [] };
+}
+
 export async function handleFreebeat(request, url, env, user) {
   try {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
@@ -582,6 +656,14 @@ export async function handleFreebeat(request, url, env, user) {
         return response({ ok: true, model_id: 182, help: await videoDiagnostic(session.accessToken, action) });
       }
       return response({ ok: true, quote: await videoDiagnostic(session.accessToken, action, await parseVideoQuote(request)) });
+    }
+    if (['video-prepare', 'video-submit', 'video-tests', 'video-task'].includes(action)) {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      if (action === 'video-tests' && request.method === 'GET') return response({ ok: true, tests: await videoTests(env, user, session) });
+      if (action === 'video-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareVideo(env, user, session, await parseVideoQuote(request))) });
+      if (action === 'video-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVideo(env, user, session, request)) });
+      if (action === 'video-task' && request.method === 'POST') return response({ ok: true, task: await pollVideo(env, user, session, request) });
     }
     if (['image-prepare', 'image-submit', 'image-tests', 'image-task'].includes(action)) {
       const session = await readSession(request, env, user.id);

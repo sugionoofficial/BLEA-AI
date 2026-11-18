@@ -241,7 +241,7 @@ export function FreebeatPage() {
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">VIDEO · KHUSUS ADMIN · BACA SAJA</span>
         <h2>Persiapan uji video</h2>
-        <p>Periksa model dan skema video Freebeat tanpa membuat video atau memakai kredit. Uji generasi video belum tersedia; quote dan persetujuan batas kredit diperlukan sebelum pengiriman berbayar dapat ditambahkan.</p>
+        <p>Periksa model dan skema video tanpa memakai kredit. Uji generasi video admin di bawah hanya dikirim setelah quote dan persetujuan eksplisit.</p>
         <div className="freebeat-actions">
           <button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Lihat model video</button>
           <button type="button" className="is-secondary" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-schemas')}>Periksa skema tool video</button>
@@ -249,7 +249,7 @@ export function FreebeatPage() {
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
         {videoModels && <FreebeatCopyResult title="Model video dari Freebeat" value={{ models: videoModels.models, truncated: videoModels.truncated === true }} description={videoModels.truncated ? 'Daftar dibatasi hingga 100 model.' : 'Salin daftar model dan status kelengkapannya.'} />}
         {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
-        <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
+        <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>

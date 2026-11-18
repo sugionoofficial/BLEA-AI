@@ -86,3 +86,44 @@ test('admin explicitly uploads a public image, uses its link for quote and delet
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('video generation requires fresh quote and explicit one-time consent', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => {
+    calls.push(args);
+    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 50, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-tests') return { tests: [] };
+    if (args[0] === 'video-submit') return { status: 'submitted' };
+    throw new Error('unexpected action');
+  };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  async function change(selector, value) { const input = document.querySelector(selector); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); }
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request })));
+    await change('input[type=text]', 'Kucing berjalan'); await change('input[type=url]', 'https://images.example/cat.png');
+    await React.act(async () => button('Siapkan quote video untuk persetujuan').click());
+    assert.deepEqual(calls.map((c) => c[0]), ['video-prepare', 'video-tests']);
+    assert.equal(button('Setujui dan kirim satu video').disabled, true);
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    assert.equal(button('Setujui dan kirim satu video').disabled, false);
+    await change('input[type=text]', 'Kucing tidur');
+    assert.equal(button('Setujui dan kirim satu video'), undefined);
+    await React.act(async () => button('Siapkan quote video untuk persetujuan').click());
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    await React.act(async () => button('Setujui dan kirim satu video').click());
+    assert.equal(calls.filter((c) => c[0] === 'video-submit').length, 1);
+    assert.deepEqual(calls.find((c) => c[0] === 'video-submit'), ['video-submit', 'POST', { approval: 'encrypted-ticket', confirm: true }]);
+    assert.equal(button('Setujui dan kirim satu video'), undefined);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
