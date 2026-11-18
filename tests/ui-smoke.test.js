@@ -106,7 +106,26 @@ test('DropXDashboard and AdminPage render video generation metrics instead of Pr
   );
   assert.ok(adminHtml.includes('Generasi video'));
   assert.ok(adminHtml.includes('API Key'));
+  assert.ok(adminHtml.includes('admin-subnav'));
+  assert.ok(adminHtml.includes('Provider &amp; API Key'));
+  assert.ok(adminHtml.includes('Katalog Model'));
+  assert.ok(adminHtml.includes('Model Manual'));
+  assert.ok(adminHtml.includes('Tambah Provider'));
   assert.equal(adminHtml.includes('Semua proyek'), false);
+  assert.equal(adminHtml.includes('Belum terhubung'), false, 'AdminPage must not inject a hardcoded fallback UnoRouter provider row');
+});
+
+test('Admin CSS keeps readable contrast and avoids white-on-white legacy readability overrides', async () => {
+  const fs = await import('node:fs');
+  const readabilityCss = fs.readFileSync(new URL('../src/readability.css', import.meta.url), 'utf8');
+  const adminCss = fs.readFileSync(new URL('../src/auth/admin.css', import.meta.url), 'utf8');
+  const adminSource = fs.readFileSync(new URL('../src/auth/AdminPage.jsx', import.meta.url), 'utf8');
+
+  assert.equal(/\.admin-/.test(readabilityCss), false, 'readability.css must not override .admin-* text to white');
+  assert.equal(/\bth\s*\{|\btd\s*\{/.test(readabilityCss), false, 'readability.css must not override table th/td to white');
+  assert.ok(adminCss.includes('.admin-workspace'), 'admin.css should define nested .admin-workspace grid');
+  assert.ok(adminCss.includes('.admin-subnav-children'), 'admin.css should style nested sub-navigation');
+  assert.equal(adminSource.includes("provider: 'unorouter', label: 'UnoRouter'"), false, 'AdminPage must not hardcode a fallback UnoRouter row');
 });
 
 test('AIStudio renders composer, chat history shell, and model status cleanly', async () => {
