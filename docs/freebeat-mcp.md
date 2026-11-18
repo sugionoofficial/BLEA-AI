@@ -9,3 +9,7 @@ Token akses untuk pengujian dienkripsi AES-GCM ke cookie HttpOnly, Secure, SameS
 Koneksi, saldo, cakupan OAuth, dan ketersediaan pada akun/plan belum diuji pada Freebeat live. Tidak ada bypass pembatasan plan atau kredit. Penggunaan kredit Freebeat gratis bersifat nonkomersial menurut ketentuan Freebeat; akses untuk pengguna BLEA dan penggunaan komersial memerlukan pengecekan izin terpisah. Sistem kredit BLEA tidak terhubung ke Freebeat, dan pembelian tetap nonaktif.
 
 Unit/integration tests: `node --test tests/freebeat-mcp.test.js`; pengujian menggunakan respons upstream tiruan, bukan akun Freebeat asli.
+
+## Diagnosis koneksi
+
+Pada tahap registrasi atau pertukaran token, pesan menyertakan kode tetap yang aman untuk dibagikan: `FB-REGISTER-NETWORK`/`FB-TOKEN-NETWORK` berarti permintaan gagal sebelum menerima respons; `TIMEOUT` berarti batas waktu terlampaui; `HTTP` berarti Freebeat memberi respons penolakan; `RESPONSE` berarti respons JSON tidak valid; `REDIRECT` berarti pengalihan ditolak demi keamanan. Status HTTP registrasi dicantumkan jika tersedia. Detail mentah kesalahan, kode OAuth dan token tidak ditampilkan atau dicatat. Pengalihan 307/308 hanya diikuti sekali ke endpoint yang sama pada origin Freebeat yang sama, termasuk variasi garis miring akhir; semua pengalihan lain ditolak.

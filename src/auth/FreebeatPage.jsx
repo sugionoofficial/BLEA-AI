@@ -20,6 +20,11 @@ const resultMessage = {
   denied: 'Otorisasi dibatalkan atau ditolak oleh Freebeat.',
   invalid: 'Sesi otorisasi tidak cocok atau kedaluwarsa. Coba hubungkan kembali.',
   failed: 'Otorisasi Freebeat tidak berhasil. Coba lagi atau periksa akses akun Anda.',
+  'failed-network': 'Worker tidak dapat terhubung ke Freebeat saat penukaran token. [FB-TOKEN-NETWORK]',
+  'failed-timeout': 'Freebeat tidak merespons saat penukaran token. [FB-TOKEN-TIMEOUT]',
+  'failed-redirect': 'Freebeat mengirim pengalihan token yang tidak didukung atau tidak aman. [FB-TOKEN-REDIRECT]',
+  'failed-http': 'Freebeat menolak penukaran token. [FB-TOKEN-HTTP]',
+  'failed-response': 'Respons token Freebeat tidak valid. [FB-TOKEN-RESPONSE]',
 };
 
 export function FreebeatPage() {

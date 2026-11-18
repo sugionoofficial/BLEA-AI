@@ -48,19 +48,44 @@ function cookie(name, value, age) { return `${name}=${value}; Path=/; Max-Age=${
 function response(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers } });
 }
-async function jsonFetch(url, options) {
+// Expose only fixed diagnostic codes; never expose provider bodies, OAuth codes or tokens.
+function oauthFailure(stage, kind, status) {
+  const tag = `[FB-${stage.toUpperCase()}-${kind.toUpperCase()}]`;
+  const message = kind === 'timeout' ? 'Freebeat tidak merespons dalam 15 detik.'
+    : kind === 'network' ? 'Worker tidak dapat terhubung ke Freebeat.'
+      : kind === 'redirect' ? 'Freebeat mengirim pengalihan yang tidak didukung atau tidak aman.'
+        : kind === 'http' ? `Freebeat menolak permintaan (HTTP ${status}).`
+          : 'Freebeat mengirim respons yang bukan JSON yang valid.';
+  console.warn('Freebeat OAuth request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}) });
+  return Object.assign(fail(`${message} ${tag}`), { freebeatKind: kind });
+}
+
+async function jsonFetch(url, options, stage) {
   let res;
-  try { res = await fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(15000) }); }
-  catch { throw fail('Freebeat tidak dapat dihubungi. Coba lagi.'); }
-  const data = await res.json().catch(() => null);
-  if (!res.ok || !data) throw fail(`Freebeat menolak permintaan (HTTP ${res.status}).`);
+  let target = url;
+  for (let redirects = 0; redirects <= 1; redirects += 1) {
+    try { res = await fetch(target, { ...options, redirect: 'manual', signal: AbortSignal.timeout(15000) }); }
+    catch (error) { throw oauthFailure(stage, ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'network'); }
+    if (![301, 302, 303, 307, 308].includes(res.status)) break;
+    // Preserve POST and credentials only on 307/308 to the same endpoint with an optional trailing slash.
+    // Never forward OAuth tokens or codes to another origin, a different path or query string.
+    let next; try { next = new URL(res.headers.get('location'), target); } catch { throw oauthFailure(stage, 'redirect', res.status); }
+    const original = new URL(url);
+    if (redirects || ![307, 308].includes(res.status) || next.origin !== original.origin || next.pathname.replace(/\/$/, '') !== original.pathname.replace(/\/$/, '') || next.search || next.hash || next.username || next.password) throw oauthFailure(stage, 'redirect', res.status);
+    target = next.toString();
+  }
+  if (!res.ok) throw oauthFailure(stage, 'http', res.status);
+  let data;
+  try { data = await res.json(); }
+  catch (error) { throw oauthFailure(stage, ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'response', res.status); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw oauthFailure(stage, 'response', res.status);
   return data;
 }
 
 export async function startFreebeat(env, userId) {
   await key(env);
   const redirect = redirectUri(env);
-  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }) });
+  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }) }, 'register');
   if (typeof registration.client_id !== 'string' || !registration.client_id || registration.client_id.length > 500) throw fail('Registrasi klien Freebeat tidak mengembalikan client ID yang valid.');
   const state = random(), verifier = random();
   const challenge = b64(await crypto.subtle.digest('SHA-256', encoder.encode(verifier)));
@@ -85,7 +110,7 @@ export async function freebeatCallback(request, env) {
     const code = url.searchParams.get('code');
     if (!code || code.length > 4000) return finish('invalid');
     const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: pending.clientId, code, redirect_uri: pending.redirect, code_verifier: pending.verifier, resource: ENDPOINT });
-    const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: body.toString() });
+    const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: body.toString() }, 'token');
     if (typeof tokens.access_token !== 'string' || !tokens.access_token || tokens.access_token.length > 2000 || (tokens.token_type && tokens.token_type.toLowerCase() !== 'bearer')) return finish('failed');
     const lifetime = Math.min(3600, Number(tokens.expires_in) || 300);
     if (lifetime < 1) return finish('failed');
@@ -93,7 +118,10 @@ export async function freebeatCallback(request, env) {
     if (encrypted.length > 3800) return finish('failed');
     headers.append('set-cookie', cookie(SESSION, encrypted, Math.floor(lifetime)));
     return finish('connected');
-  } catch { return finish('failed'); }
+  } catch (error) {
+    const kind = error?.freebeatKind;
+    return finish(['network', 'timeout', 'redirect', 'http', 'response'].includes(kind) ? `failed-${kind}` : 'failed');
+  }
 }
 
 async function readSession(request, env, userId) {
