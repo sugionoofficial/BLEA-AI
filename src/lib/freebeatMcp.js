@@ -376,6 +376,36 @@ async function rawImageQuote(accessToken, input) {
 async function quoteImage(accessToken, input) {
   return safeQuote(await rawImageQuote(accessToken, input));
 }
+
+// Diagnostics only: reveal a small vocabulary of model options, never raw
+// provider messages, prompts, URLs or credentials. Unknown values stay hidden.
+const VIDEO_HELP_WORDS = new Set(['video', 'image', 'text', 'transition', 'reference', '720p', '1080p', '480p', '360p', '4k', '2k', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'standard', 'pro', 'fast', 'default', 'auto']);
+function safeVideoHelp(value, depth = 0, field = '') {
+  if (depth > 5) return null;
+  if (typeof value === 'string' && VIDEO_HELP_WORDS.has(value.toLowerCase())) return value;
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => safeVideoHelp(item, depth + 1));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeVideoHelp(child, depth + 1, name)]));
+  return safeQuote(value, depth, field);
+}
+async function videoDiagnostic(accessToken, action, input) {
+  const headers = await openMcp(accessToken);
+  const params = action === 'video-help'
+    ? { name: 'get_model_help', arguments: { type: 'video', model_id: 182 } }
+    : { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: input.prompt, generation_type: 'image', images: [input.image_url] } } };
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params }, action === 'video-help' ? 'help' : 'quote', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure(action === 'video-help' ? 'help' : 'quote', 'response');
+  return action === 'video-help' ? safeVideoHelp(content) : safeQuote(content);
+}
+async function parseVideoQuote(request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000 || typeof input.image_url !== 'string' || input.image_url.trim().length > 2048) throw fail('Masukkan prompt 1–2000 karakter dan satu URL gambar HTTPS.', 400);
+  const imageUrl = input.image_url.trim();
+  let url;
+  try { url = new URL(imageUrl); } catch { throw fail('URL gambar HTTPS tidak valid.', 400); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || !url.hostname.includes('.') || url.hostname.endsWith('.local') || /^[\d.]+$/.test(url.hostname) || url.hostname.startsWith('[')) throw fail('Gunakan URL gambar HTTPS dengan nama domain publik tanpa kredensial atau fragment.', 400);
+  return { prompt: input.prompt.trim(), image_url: imageUrl };
+}
 async function parseImageQuote(request) {
   if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail('Format permintaan tidak valid.', 400);
@@ -541,6 +571,16 @@ export async function handleFreebeat(request, url, env, user) {
       if (action === 'image-models') return response({ ok: true, ...(await getModels(session.accessToken, 'image')) });
       if (action === 'video-models') return response({ ok: true, ...(await getModels(session.accessToken, 'video')) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
+    }
+    if (['video-help', 'video-quote'].includes(action) && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      if (action === 'video-help') {
+        const input = await imageJson(request);
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw fail('Permintaan tidak valid.', 400);
+        return response({ ok: true, model_id: 182, help: await videoDiagnostic(session.accessToken, action) });
+      }
+      return response({ ok: true, quote: await videoDiagnostic(session.accessToken, action, await parseVideoQuote(request)) });
     }
     if (['image-prepare', 'image-submit', 'image-tests', 'image-task'].includes(action)) {
       const session = await readSession(request, env, user.id);

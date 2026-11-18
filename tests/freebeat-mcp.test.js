@@ -604,3 +604,58 @@ test('video discovery is read-only and admin-isolated, filtering tool schemas an
     assert.equal(calls.filter((c) => c.method === 'tools/call').every((c) => c.params.name === 'list_models'), true);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('Wan video help and quote are admin-only, bounded read-only diagnostics with filtered output', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    calls.push(body.params);
+    if (body.params.name === 'get_model_help') {
+      assert.deepEqual(body.params.arguments, { type: 'video', model_id: 182 });
+      return Response.json({ id: body.id, result: { structuredContent: { generation_types: ['image', 'text'], resolutions: ['720p', '1080p', 'SECRET'], duration: [5, 10], description: 'SECRET-MESSAGE', token: 'SECRET-TOKEN', url: 'https://SECRET.example' } } });
+    }
+    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: 'Seekor kucing berjalan', generation_type: 'image', images: ['https://images.example/cat.png?signature=SECRET'] } } });
+    return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: 42, prompt: 'SECRET-PROMPT', images: ['https://images.example/SECRET'], message: 'SECRET-MESSAGE' } } });
+  };
+  const invoke = (action, { cookie, token = 'admin-token', origin = 'https://blea-ai.blea-ai.workers.dev', contentType = 'application/json', data = {} } = {}) => worker.fetch(new Request(`https://blea-ai.blea-ai.workers.dev/api/freebeat/${action}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}), 'content-type': contentType }, body: JSON.stringify(data) }), env);
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await invoke('video-help', { cookie, token: 'user' })).status, 403);
+    assert.equal((await invoke('video-help', { cookie, token: 'other-admin' })).status, 401);
+    assert.equal((await invoke('video-help', { cookie, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await invoke('video-help', { cookie, data: { model_id: 80 } })).status, 400);
+    assert.equal((await invoke('video-quote', { cookie, contentType: 'text/plain' })).status, 400);
+    for (const data of [
+      { prompt: 'x', image_url: 'http://images.example/cat.png' },
+      { prompt: 'x', image_url: 'https://127.0.0.1/cat.png' },
+      { prompt: 'x', image_url: 'https://user:pass@images.example/cat.png' },
+      { prompt: ' ', image_url: 'https://images.example/cat.png' },
+      { prompt: 'x', image_url: 'https://images.example/cat.png', max_credits: 10 },
+      { prompt: 'x', image_url: 'https://images.example/cat.png', model_id: 80 },
+    ]) assert.equal((await invoke('video-quote', { cookie, data })).status, 400);
+    assert.equal(calls.length, 0);
+    const help = await invoke('video-help', { cookie });
+    assert.equal(help.status, 200);
+    assert.equal(help.headers.get('cache-control'), 'no-store');
+    const helpText = await help.text();
+    assert.doesNotMatch(helpText, /SECRET/);
+    assert.deepEqual(JSON.parse(helpText).help.generation_types, ['image', 'text']);
+    assert.deepEqual(JSON.parse(helpText).help.resolutions, ['720p', '1080p', '[teks disembunyikan]']);
+    const quote = await invoke('video-quote', { cookie, data: { prompt: ' Seekor kucing berjalan ', image_url: ' https://images.example/cat.png?signature=SECRET ' } });
+    assert.equal(quote.status, 200);
+    const text = await quote.text();
+    assert.doesNotMatch(text, /SECRET|Seekor kucing/);
+    assert.equal(JSON.parse(text).quote.credits, 42);
+    assert.deepEqual(calls.map((c) => c.name), ['get_model_help', 'quote_generation']);
+  } finally { globalThis.fetch = originalFetch; }
+});
