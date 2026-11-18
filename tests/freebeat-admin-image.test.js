@@ -9,8 +9,8 @@ const env = { SUPABASE_URL: 'https://supabase.example', SUPABASE_ANON_KEY: 'anon
 function api(path, { token = 'admin', cookie, method = 'GET', data, origin = base } = {}) {
   return worker.fetch(new Request(`${base}/api/freebeat/${path}`, { method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(data !== undefined ? { 'content-type': 'application/json', origin } : {}) }, ...(data !== undefined ? { body: JSON.stringify(data) } : {}) }), env);
 }
-async function connect(image = true, token = 'admin') {
-  const res = await api(image ? 'start-image' : 'start', { token, method: 'POST' });
+async function connect(token = 'admin') {
+  const res = await api('start', { token, method: 'POST' });
   assert.equal(res.status, 200);
   const pending = res.headers.get('set-cookie').split(';')[0];
   const state = new URL((await res.json()).url).searchParams.get('state');
@@ -21,9 +21,10 @@ async function connect(image = true, token = 'admin') {
 }
 function fixture() {
   const rows = new Map(), calls = [];
-  let quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok';
+  let scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok';
   return {
     rows, calls,
+    setScope(value) { scope = value; },
     setQuote(value) { quote = value; },
     setGenerateMode(value) { generateMode = value; },
     setToken(value) { tokenValue = value; },
@@ -35,7 +36,7 @@ function fixture() {
         return Response.json({ id: bearer, app_metadata: { role: bearer === 'user' ? 'user' : 'admin' } });
       }
       if (url.href === 'https://freebeat.ai/oauth/register') return Response.json({ client_id: 'client' });
-      if (url.href === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: tokenValue, expires_in: 600 });
+      if (url.href === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: tokenValue, expires_in: 600, scope });
       if (url.pathname === '/rest/v1/freebeat_admin_image_tests') {
         assert.equal(init.redirect, 'manual');
         if (dbMode === 'unavailable') return new Response('SECRET-DB-BODY', { status: 503 });
@@ -87,7 +88,8 @@ async function submit(cookie, approval, extra = {}) {
 test('admin image test binds explicit approval and cap to fresh quote, dispatches once and polls safely', async () => {
   const original = globalThis.fetch, f = fixture(); globalThis.fetch = f.fetch;
   try {
-    const cookie = await connect(), readOnly = await connect(false);
+    const cookie = await connect();
+    f.setScope('freebeat:read'); const readOnly = await connect(); f.setScope('freebeat:read freebeat:generate');
     assert.equal((await prepare(cookie, 'user')).status, 403);
     assert.equal((await prepare(cookie, 'other-admin')).status, 401);
     assert.equal((await prepare(readOnly)).status, 403);

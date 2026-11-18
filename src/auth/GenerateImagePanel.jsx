@@ -65,7 +65,7 @@ function FreebeatAdminImagePanel({ isAdmin, initialPrompt = '', request }) {
   return <div className="generate-card freebeat-page generate-image-panel">
     <div className="generate-card-head"><div><h2 className="generate-card-title">Generate gambar</h2><p className="generate-card-sub">Uji Freebeat menggunakan akun admin sendiri; belum dibagikan ke pengguna lain.</p></div></div>
     <p className="generate-hint">Quote bukan biaya akhir. Pengiriman berbayar memerlukan persetujuan terpisah dengan batas kredit; refund tidak dijamin. Pastikan penggunaan sesuai plan dan ketentuan Freebeat.</p>
-    {status && (!status.connected || !status.imageAccess) && <div className="generate-banner" role="status"><span>Hubungkan izin gambar untuk akun admin di halaman Freebeat, lalu kembali ke sini. Sesi bersifat sementara.</span><Link className="generate-banner-link" to="/admin/freebeat">Hubungkan Freebeat</Link></div>}
+    {status && (!status.connected || !status.imageAccess) && <div className="generate-banner" role="status"><span>Hubungkan Freebeat dan setujui izin generasi untuk akun admin di halaman Freebeat, lalu kembali ke sini. Sesi bersifat sementara.</span><Link className="generate-banner-link" to="/admin/freebeat">Hubungkan Freebeat</Link></div>}
     {error && <div className="generate-banner is-error" role="alert">{error}</div>}
     {notice && <div className="generate-banner is-success" role="status">{notice}</div>}
     <form onSubmit={prepare}>

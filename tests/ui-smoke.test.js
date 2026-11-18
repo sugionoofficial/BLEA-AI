@@ -246,7 +246,8 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.equal(html.includes('Uji saldo situs dengan cookie'), false);
   assert.ok(html.includes('Lihat model gambar'));
   assert.ok(html.includes('Periksa skema tool gambar'));
-  assert.ok(html.includes('Hubungkan izin gambar'));
+  assert.equal(html.includes('Hubungkan izin gambar'), false);
+  assert.ok(html.includes('freebeat:generate'));
   assert.ok(html.includes('Periksa respons quote'));
   assert.ok(html.includes('Siapkan quote untuk persetujuan'));
   assert.ok(html.includes('Uji generasi gambar admin'));

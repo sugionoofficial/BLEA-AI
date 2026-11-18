@@ -2,8 +2,8 @@
 export function prepareBlockers({ loading, connected, imageAccess, busy, imageBusy, testBusy, model, prompt }) {
   const reasons = [];
   if (loading) reasons.push('Menunggu pemeriksaan koneksi Freebeat.');
-  else if (!connected) reasons.push('Sesi Freebeat belum terhubung atau sudah berakhir. Tekan Hubungkan izin gambar di atas.');
-  else if (!imageAccess) reasons.push('Izin gambar belum tersedia. Tekan Hubungkan izin gambar di atas dan setujui izin di Freebeat.');
+  else if (!connected) reasons.push('Sesi Freebeat belum terhubung atau sudah berakhir. Tekan Hubungkan Freebeat di atas.');
+  else if (!imageAccess) reasons.push('Izin gambar belum tersedia. Tekan Hubungkan Freebeat di atas dan setujui izin di Freebeat.');
   if (busy || imageBusy || testBusy) reasons.push('Tunggu pemeriksaan yang sedang berjalan.');
   if (!model) reasons.push('Isi ID model gambar, misalnya 80.');
   else if (!/^\d+$/.test(model) || !Number.isSafeInteger(Number(model))) reasons.push('ID model harus berupa bilangan bulat nonnegatif.');
