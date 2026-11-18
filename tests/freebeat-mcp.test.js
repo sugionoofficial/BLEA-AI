@@ -335,3 +335,86 @@ test('MCP accepts matching SSE event without waiting for stream closure and reje
     }
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
+
+test('admin image discovery uses only read-only MCP tools, filters schema and model data, and preserves session isolation', async () => {
+  const originalFetch = globalThis.fetch;
+  const providerCalls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    providerCalls.push(body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    if (body.method === 'tools/list') {
+      if (!body.params.cursor) return Response.json({ id: body.id, result: { tools: [
+        { name: 'quote_generation', inputSchema: { type: 'object', description: 'SECRET PROVIDER BODY', required: ['tool_name', 'arguments'], properties: { tool_name: { type: 'string', enum: ['generate_image', 'SECRET_VALUE'] }, arguments: { type: 'object', properties: { model_id: { type: 'integer' }, prompt: { type: 'string', default: 'SECRET DEFAULT' } } } } } },
+        { name: 'unrelated_tool', inputSchema: { type: 'object' } },
+      ], nextCursor: 'secret-cursor' } });
+      assert.equal(body.params.cursor, 'secret-cursor');
+      return Response.json({ id: body.id, result: { tools: [{ name: 'generate_image', inputSchema: { type: 'object', properties: { max_credits: { type: 'integer' }, accept_unknown_cost: { type: 'boolean' } } } }] } });
+    }
+    assert.equal(body.method, 'tools/call');
+    assert.deepEqual(body.params, { name: 'list_models', arguments: { type: 'image' } });
+    return Response.json({ id: body.id, result: { content: [{ type: 'text', text: JSON.stringify({ models: [{ model_id: 108, display_name: 'Example image' }, { model_id: 'other-model', name: 'Other image', secret: 'SECRET-PRIVATE' }] }) }] } });
+  };
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await call('/api/freebeat/image-schemas', { token: 'user', cookie, method: 'POST' })).status, 403);
+    assert.equal((await call('/api/freebeat/image-models', { token: 'different-admin', cookie, method: 'POST' })).status, 401);
+    assert.equal(providerCalls.length, 0);
+    const schemaRes = await call('/api/freebeat/image-schemas', { token: 'admin-token', cookie, method: 'POST' });
+    const schemaText = await schemaRes.text();
+    assert.equal(schemaRes.status, 200);
+    const schemas = JSON.parse(schemaText);
+    assert.deepEqual(Object.keys(schemas.tools), ['quote_generation', 'generate_image']);
+    assert.deepEqual(schemas.tools.quote_generation.required, ['tool_name', 'arguments']);
+    assert.deepEqual(schemas.tools.quote_generation.properties.tool_name.known_enum_values, ['generate_image']);
+    assert.equal(schemas.tools.quote_generation.properties.tool_name.enum_incomplete, true);
+    assert.equal(schemas.tools.generate_image.properties.max_credits.type, 'integer');
+    assert.equal(schemas.truncated, false);
+    assert.doesNotMatch(schemaText, /SECRET|secret-cursor|unrelated_tool|ACCESS-TOKEN/);
+    const modelRes = await call('/api/freebeat/image-models', { token: 'admin-token', cookie, method: 'POST' });
+    const modelText = await modelRes.text();
+    assert.equal(modelRes.status, 200);
+    assert.deepEqual(JSON.parse(modelText).models, [{ model_id: 108, name: 'Example image' }, { model_id: 'other-model', name: 'Other image' }]);
+    assert.doesNotMatch(modelText, /SECRET|ACCESS-TOKEN/);
+    assert.deepEqual(providerCalls.map((body) => body.method), ['initialize', 'notifications/initialized', 'tools/list', 'tools/list', 'initialize', 'notifications/initialized', 'tools/call']);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('image discovery fails safely for invalid model shapes and repeating pagination cursor', async () => {
+  const originalFetch = globalThis.fetch, originalWarn = console.warn;
+  console.warn = () => {};
+  let kind = 'models';
+  let calls = 0;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    calls++;
+    if (kind === 'schemas') return Response.json({ id: body.id, result: { tools: [], nextCursor: 'repeated' } });
+    return Response.json({ id: body.id, result: { structuredContent: { unexpected: 'SECRET-DATA' } } });
+  };
+  try {
+    const cookie = await connectFixture();
+    let res = await call('/api/freebeat/image-models', { token: 'admin-token', cookie, method: 'POST' });
+    assert.equal(res.status, 502);
+    assert.doesNotMatch(await res.text(), /SECRET/);
+    kind = 'schemas'; calls = 0;
+    res = await call('/api/freebeat/image-schemas', { token: 'admin-token', cookie, method: 'POST' });
+    const text = await res.text();
+    assert.equal(res.status, 502);
+    assert.match(text, /FB-MCP-INSPECT-RESPONSE/);
+    assert.doesNotMatch(text, /repeated|SECRET/);
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});

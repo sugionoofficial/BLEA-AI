@@ -40,6 +40,10 @@ export function FreebeatPage() {
   const [siteError, setSiteError] = useState('');
   const [siteBalance, setSiteBalance] = useState(null);
   const [siteAcknowledged, setSiteAcknowledged] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState('');
+  const [imageModels, setImageModels] = useState(null);
+  const [imageSchemas, setImageSchemas] = useState(null);
   const load = useCallback(async () => {
     try { const result = await request('status'); setConnected(result.connected); setExpiresAt(result.expiresAt); }
     catch (err) { setError(err.message); }
@@ -72,11 +76,21 @@ export function FreebeatPage() {
         setNotice('Permintaan baca saldo selesai tanpa menjalankan generasi.');
       } else {
         const result = await request('disconnect', 'POST');
-        setConnected(false); setExpiresAt(null); setBalance(null);
+        setConnected(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null);
         setNotice(result.revoked ? 'Koneksi lokal dihapus dan token dicabut di Freebeat.' : 'Koneksi lokal dihapus. Pencabutan token di Freebeat belum dapat dikonfirmasi; periksa pengaturan akses di akun Freebeat.');
       }
     } catch (err) { setError(err.message || 'Koneksi gagal.'); }
     finally { setBusy(false); }
+  }
+  async function inspectImages(action) {
+    if (imageBusy) return;
+    setImageBusy(true); setImageError('');
+    if (action === 'image-models') setImageModels(null); else setImageSchemas(null);
+    try {
+      const result = await request(action, 'POST');
+      if (action === 'image-models') setImageModels(result); else setImageSchemas(result);
+    } catch (err) { setImageError(err.message || 'Pemeriksaan gambar gagal.'); }
+    finally { setImageBusy(false); }
   }
   async function checkSiteBalance(event) {
     event.preventDefault();
@@ -106,6 +120,18 @@ export function FreebeatPage() {
           {connected && <button type="button" className="is-secondary" disabled={busy} onClick={() => run('disconnect')}><Unplug size={15} /> Putuskan</button>}
         </div>
         {balance !== null && <div className="freebeat-result"><h3>Respons saldo dari Freebeat</h3><pre>{typeof balance === 'string' ? balance : JSON.stringify(balance, null, 2)}</pre></div>}
+      </section>
+      <section className="freebeat-card freebeat-site-test">
+        <span className="freebeat-kicker">GAMBAR · KHUSUS ADMIN · BACA SAJA</span>
+        <h2>Persiapan uji gambar</h2>
+        <p>Periksa daftar model gambar dan struktur tool MCP tanpa membuat gambar atau memakai kredit. Format perkiraan biaya perlu diverifikasi sebelum generasi dapat diaktifkan. Belum ada tombol generasi atau pembelian.</p>
+        <div className="freebeat-actions">
+          <button type="button" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-models')}>Lihat model gambar</button>
+          <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-schemas')}>Periksa skema tool gambar</button>
+        </div>
+        {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
+        {imageModels && <div className="freebeat-result"><h3>Model gambar dari Freebeat</h3><pre>{JSON.stringify(imageModels.models, null, 2)}</pre>{imageModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
+        {imageSchemas && <div className="freebeat-result"><h3>Struktur tool gambar</h3><p>Hanya nama parameter dan tipe dasar; deskripsi dan data sesi tidak ditampilkan. Bagikan hasil ini untuk memeriksa format biaya.</p><pre>{JSON.stringify(imageSchemas.tools, null, 2)}</pre>{imageSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>
