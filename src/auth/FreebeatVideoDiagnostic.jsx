@@ -95,15 +95,20 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     setTests(result.tests);
   }
   async function prepare() {
-    if (busy || uploadBusy || videoBusy || !selected || Number(model) !== FREEBEAT_VIDEO_TEST.model_id) return;
+    if (busy || uploadBusy || videoBusy || loading || !connected || !imageAccess || !selected || !prompt.trim() || !imageUrl.trim()) return;
     const version = catalogVersion.current, connectionVersion = visibilityVersion.current;
     setBusy(true); setError(''); setTestNotice(''); clearApproval();
-    try { const result = await request('video-prepare', 'POST', { prompt, image_url: imageUrl }); await refreshTests(); if (version === catalogVersion.current && connectionVersion === visibilityVersion.current) setApproval(result); }
+    try {
+      const result = await request('video-prepare', 'POST', { model_id: Number(model), prompt, image_url: imageUrl });
+      if (result.settings?.model_id !== Number(model) || result.settings?.generation_type !== FREEBEAT_VIDEO_TEST.generation_type || result.settings?.duration !== FREEBEAT_VIDEO_TEST.duration || result.settings?.resolution !== FREEBEAT_VIDEO_TEST.resolution || result.prompt !== prompt.trim() || result.image_url !== imageUrl.trim() || typeof result.credits !== 'number' || !Number.isFinite(result.credits) || result.credits < 0 || typeof result.approval !== 'string') throw new Error('Persetujuan tidak cocok dengan input yang dipilih. Tidak ada video dikirim; buat quote baru.');
+      await refreshTests();
+      if (version === catalogVersion.current && connectionVersion === visibilityVersion.current) setApproval(result);
+    }
     catch (err) { setError(err.message || 'Persiapan uji video gagal.'); }
     finally { setBusy(false); }
   }
   async function submit() {
-    if (!approval || !confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || Number(model) !== FREEBEAT_VIDEO_TEST.model_id) return;
+    if (!approval || !confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || approval.settings?.model_id !== Number(model)) return;
     const receipt = approval.approval;
     clearApproval(); setBusy(true); setError(''); setTestNotice('');
     try {
@@ -188,21 +193,21 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     {help !== null && <FreebeatCopyResult title="Informasi model video yang disaring" value={help} />}
     {quote !== null && <FreebeatCopyResult title="Quote video yang disaring" value={quote} description="Hasil tidak memuat prompt atau URL gambar; quote bukan biaya akhir atau persetujuan generasi." />}
     <div className="freebeat-result">
-      <h3>Uji generasi video khusus admin · Wan 3.0</h3>
+      <h3>Uji generasi video khusus admin</h3>
       <p>Ini memakai kredit akun Freebeat admin, bukan kredit BLEA. Gunakan hanya sesuai ketentuan plan Freebeat. Biaya aktual dan refund tidak dijamin, termasuk jika tugas gagal. Jika hasil pengiriman tidak pasti, jangan ulangi sebelum memeriksa Freebeat dan catatan.</p>
       <p>Menyiapkan quote tidak membuat video. Pengiriman memerlukan konfirmasi terpisah, dengan batas maksimum sama dengan quote yang baru. URL gambar dan prompt dikirim ke Freebeat; isi di URL dapat berubah setelah persetujuan.</p>
       {!imageAccess && <p>Hubungkan Freebeat dan setujui izin generasi terlebih dahulu di atas.</p>}
-      {(!selected || Number(model) !== FREEBEAT_VIDEO_TEST.model_id) && <p>Pilih Wan 3.0 ID 182 pada dropdown untuk menyiapkan uji berbayar; model lain hanya dapat diperiksa.</p>}
+      {!selected && <p>Pilih model video di atas untuk menyiapkan quote persetujuan.</p>}
       <div className="freebeat-actions">
-        <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || videoBusy || busy || uploadBusy || !selected || Number(model) !== FREEBEAT_VIDEO_TEST.model_id || !prompt.trim() || !imageUrl.trim()} onClick={prepare}>Siapkan quote Wan 3.0 untuk persetujuan</button>
+        <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || videoBusy || busy || uploadBusy || !selected || !prompt.trim() || !imageUrl.trim()} onClick={prepare}>Siapkan quote untuk persetujuan video</button>
         <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy} onClick={inspectTests}>Periksa catatan uji video</button>
       </div>
       {approval && <div className="freebeat-result">
         <h3>Periksa dan setujui satu video</h3>
-        <p>Model {approval.settings.model_id} · gambar ke video · {approval.settings.duration} detik · {approval.settings.resolution} · quote dan batas maksimum <strong>{approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
+        <p>Model {modelOptions.find((item) => item.id === approval.settings.model_id)?.name || 'video'} · ID {approval.settings.model_id} · gambar ke video · {approval.settings.duration} detik · {approval.settings.resolution} · quote dan batas maksimum <strong>{approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
         <p>Prompt dan URL gambar yang akan dikirim:</p><pre>{approval.prompt}</pre><pre>{approval.image_url}</pre>
         <label className="freebeat-confirm"><input type="checkbox" checked={confirmed} disabled={busy || !connected || !imageAccess} onChange={(event) => setConfirmed(event.target.checked)} /> Saya menyetujui satu kali generasi video ini dengan batas maksimum {approval.credits} kredit Freebeat. Biaya aktual dan refund belum dipastikan.</label>
-        <div className="freebeat-actions"><button type="button" disabled={!confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || Number(model) !== FREEBEAT_VIDEO_TEST.model_id} onClick={submit}>Setujui dan kirim satu video</button></div>
+        <div className="freebeat-actions"><button type="button" disabled={!confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || approval.settings?.model_id !== Number(model)} onClick={submit}>Setujui dan kirim satu video</button></div>
       </div>}
       {testNotice && <div className="freebeat-alert" role="status">{testNotice}</div>}
       {tests.length > 0 && <div className="freebeat-result"><h3>Catatan uji video admin</h3>{tests.map((test) => <div key={test.id} className="freebeat-test-row">

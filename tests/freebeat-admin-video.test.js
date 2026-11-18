@@ -21,10 +21,11 @@ async function connect(token = 'admin') {
 }
 function fixture() {
   const rows = new Map(), calls = [];
-  let scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null;
+  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null;
   return {
     rows, calls,
     setScope(value) { scope = value; },
+    setModel(value, max = 23) { expectedModel = value; expectedMax = max; },
     setQuote(value) { quote = value; },
     setGenerateMode(value) { generateMode = value; },
     setToken(value) { tokenValue = value; },
@@ -63,11 +64,11 @@ function fixture() {
       if (body.method === 'initialize') return Response.json({ id: body.id, result: { protocolVersion: '2025-03-26' } });
       if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
       let data;
-      if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }] }; }
-      else if (body.params.name === 'get_model_help') { assert.deepEqual(body.params.arguments, { type: 'video', model_id: 182 }); data = { model_id: 182 }; }
-      else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
+      if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: '186', name: 'Model 186' }] }; }
+      else if (body.params.name === 'get_model_help') { assert.deepEqual(body.params.arguments, { type: 'video', model_id: expectedModel }); data = { model_id: expectedModel }; }
+      else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
       else if (body.params.name === 'generate_video') {
-        assert.deepEqual(body.params.arguments, { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: 23 });
+        assert.deepEqual(body.params.arguments, { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: expectedMax });
         if (generateMode === 'lost') throw new Error('PRIVATE-NETWORK-ERROR');
         if (generateMode === 'bad') data = { batch_id: 'not a valid id', secret: 'SECRET-DATA' };
         else data = { batch_id: 'batch-123', secret: 'SECRET-DATA' };
@@ -79,8 +80,8 @@ function fixture() {
     },
   };
 }
-async function prepare(cookie, token = 'admin') {
-  return api('video-prepare', { token, cookie, method: 'POST', data: { image_url: 'https://images.example/input.png', prompt: ' test prompt ' } });
+async function prepare(cookie, token = 'admin', model_id = 182) {
+  return api('video-prepare', { token, cookie, method: 'POST', data: { model_id, image_url: 'https://images.example/input.png', prompt: ' test prompt ' } });
 }
 async function submit(cookie, approval, extra = {}) {
   return api('video-submit', { cookie, method: 'POST', data: { approval, confirm: true, ...extra } });
@@ -199,10 +200,15 @@ test('expired, changed-session, invalid inputs and unavailable storage fail with
   try {
     const cookie = await connect();
     for (const body of [
-      { image_url: 'http://images.example/input.png', prompt: 'test prompt' },
-      { image_url: 'https://images.example/input.png', prompt: ' '.repeat(10) },
-      { image_url: 'https://images.example/input.png', prompt: 'x'.repeat(2001) },
-      { image_url: 'https://images.example/input.png', prompt: 'test prompt', duration: 10 },
+      { image_url: 'https://images.example/input.png', prompt: 'test prompt' },
+      { model_id: 186, image_url: 'https://images.example/input.png', prompt: 'test prompt', max_credits: 999 },
+      { model_id: -1, image_url: 'https://images.example/input.png', prompt: 'test prompt' },
+      { model_id: '186', image_url: 'https://images.example/input.png', prompt: 'test prompt' },
+      { model_id: 987, image_url: 'https://images.example/input.png', prompt: 'test prompt' },
+      { model_id: 182, image_url: 'http://images.example/input.png', prompt: 'test prompt' },
+      { model_id: 182, image_url: 'https://images.example/input.png', prompt: ' '.repeat(10) },
+      { model_id: 182, image_url: 'https://images.example/input.png', prompt: 'x'.repeat(2001) },
+      { model_id: 182, image_url: 'https://images.example/input.png', prompt: 'test prompt', duration: 10 },
     ]) assert.equal((await api('video-prepare', { cookie, method: 'POST', data: body })).status, 400);
     let { approval } = await (await prepare(cookie)).json();
     Date.now = () => originalNow() + 6 * 60 * 1000;
@@ -217,4 +223,47 @@ test('expired, changed-session, invalid inputs and unavailable storage fail with
     assert.equal((await submit(newCookie, newApproval)).status, 503);
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
   } finally { globalThis.fetch = original; Date.now = originalNow; }
+});
+
+test('selected model 186 is bound to the fresh quote, approval, dispatch and durable record', async () => {
+  const original = globalThis.fetch, f = fixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect();
+    f.setModel(186, 135); f.setQuote({ status: 'quoted', credits: 135 });
+    const ready = await prepare(cookie, 'admin', 186);
+    assert.equal(ready.status, 200);
+    const { approval, settings, credits } = await ready.json();
+    assert.deepEqual(settings, { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p' });
+    assert.equal(credits, 135);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+    assert.equal((await submit(cookie, approval, { model_id: 182 })).status, 400);
+    assert.equal((await submit(cookie, approval, { confirm: false })).status, 400);
+    f.setQuote({ status: 'quoted', credits: 136 });
+    assert.equal((await submit(cookie, approval)).status, 409);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+    f.setQuote({ status: 'quoted', credits: 135 });
+    const result = await submit(cookie, approval);
+    assert.equal(result.status, 200);
+    const submitted = await result.json();
+    assert.equal(submitted.status, 'submitted');
+    assert.equal(f.rows.get(submitted.id).model_id, 186);
+    assert.equal(f.rows.get(submitted.id).max_credits, 135);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+    assert.equal((await submit(cookie, approval)).status, 409);
+  } finally { globalThis.fetch = original; }
+});
+
+test('unknown video dispatch blocks another model until reconciled', async () => {
+  const original = globalThis.fetch, f = fixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect();
+    f.setModel(186, 135); f.setQuote({ status: 'quoted', credits: 135 });
+    const { approval } = await (await prepare(cookie, 'admin', 186)).json();
+    f.setGenerateMode('lost');
+    assert.equal((await (await submit(cookie, approval)).json()).status, 'unknown');
+    f.setGenerateMode('success'); f.setModel(182); f.setQuote({ status: 'quoted', credits: 23 });
+    const next = await (await prepare(cookie)).json();
+    assert.equal((await submit(cookie, next.approval)).status, 409);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+  } finally { globalThis.fetch = original; }
 });
