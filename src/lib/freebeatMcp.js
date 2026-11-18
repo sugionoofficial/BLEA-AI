@@ -49,15 +49,42 @@ function response(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers } });
 }
 // Expose only fixed diagnostic codes; never expose provider bodies, OAuth codes or tokens.
-function oauthFailure(stage, kind, status) {
+function oauthFailure(stage, kind, status, registrationError = null) {
   const tag = `[FB-${stage.toUpperCase()}-${kind.toUpperCase()}]`;
   const message = kind === 'timeout' ? 'Freebeat tidak merespons dalam 15 detik.'
     : kind === 'network' ? 'Worker tidak dapat terhubung ke Freebeat.'
       : kind === 'redirect' ? 'Freebeat mengirim pengalihan yang tidak didukung atau tidak aman.'
         : kind === 'http' ? `Freebeat menolak permintaan (HTTP ${status}).`
           : 'Freebeat mengirim respons yang bukan JSON yang valid.';
-  console.warn('Freebeat OAuth request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}) });
-  return Object.assign(fail(`${message} ${tag}`), { freebeatKind: kind });
+  const details = registrationError ? ` Kode OAuth: ${registrationError.code}.${registrationError.loopback ? ' Freebeat menyebut callback localhost/loopback.' : ''}` : '';
+  console.warn('Freebeat OAuth request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}), ...(registrationError ? { oauthCode: registrationError.code, loopback: registrationError.loopback } : {}) });
+  return Object.assign(fail(`${message} ${tag}${details}`), { freebeatKind: kind });
+}
+
+// Read a small registration error body only; never return or log its raw contents.
+async function registrationErrorDetails(res) {
+  if (!res.body || !(res.headers.get('content-type') || '').toLowerCase().includes('json')) return null;
+  const maxBytes = 16384;
+  const length = Number(res.headers.get('content-length'));
+  if (Number.isFinite(length) && length > maxBytes) return null;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) { await reader.cancel(); return null; }
+      chunks.push(value);
+    }
+    const text = chunks.map((part) => new TextDecoder().decode(part)).join('');
+    const data = JSON.parse(text);
+    const allowed = ['invalid_redirect_uri', 'invalid_client_metadata', 'invalid_scope', 'invalid_request', 'unauthorized_client', 'access_denied', 'unsupported_grant_type', 'registration_not_supported'];
+    if (!data || typeof data !== 'object' || !allowed.includes(data.error)) return null;
+    const description = typeof data.error_description === 'string' ? data.error_description.slice(0, 1000) : '';
+    return { code: data.error, loopback: data.error === 'invalid_redirect_uri' && /localhost|loopback|127\.0\.0\.1|\[::1\]/i.test(description) };
+  } catch { return null; }
 }
 
 async function jsonFetch(url, options, stage) {
@@ -74,7 +101,10 @@ async function jsonFetch(url, options, stage) {
     if (redirects || ![307, 308].includes(res.status) || next.origin !== original.origin || next.pathname.replace(/\/$/, '') !== original.pathname.replace(/\/$/, '') || next.search || next.hash || next.username || next.password) throw oauthFailure(stage, 'redirect', res.status);
     target = next.toString();
   }
-  if (!res.ok) throw oauthFailure(stage, 'http', res.status);
+  if (!res.ok) {
+    const details = stage === 'register' && res.status === 400 ? await registrationErrorDetails(res) : null;
+    throw oauthFailure(stage, 'http', res.status, details);
+  }
   let data;
   try { data = await res.json(); }
   catch (error) { throw oauthFailure(stage, ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'response', res.status); }
