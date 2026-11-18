@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
@@ -41,6 +41,7 @@ export function FreebeatPage() {
   const [videoSchemas, setVideoSchemas] = useState(null);
   const [videoError, setVideoError] = useState('');
   const [videoBusy, setVideoBusy] = useState(false);
+  const videoRequestVersion = useRef(0);
   const [quoteModel, setQuoteModel] = useState('');
   const [quotePrompt, setQuotePrompt] = useState('');
   const [imageQuote, setImageQuote] = useState(null);
@@ -100,16 +101,22 @@ export function FreebeatPage() {
     } catch (err) { setImageError(err.message || 'Pemeriksaan gambar gagal.'); }
     finally { setImageBusy(false); }
   }
-  async function inspectVideos(action) {
-    if (videoBusy) return;
+  async function inspectVideos(action, version = videoRequestVersion.current) {
     setVideoBusy(true); setVideoError('');
     if (action === 'video-models') setVideoModels(null); else setVideoSchemas(null);
     try {
       const result = await request(action, 'POST');
+      if (videoRequestVersion.current !== version) return;
       if (action === 'video-models') setVideoModels(result); else setVideoSchemas(result);
-    } catch (err) { setVideoError(err.message || 'Pemeriksaan video gagal.'); }
-    finally { setVideoBusy(false); }
+    } catch (err) { if (videoRequestVersion.current === version) setVideoError(err.message || 'Pemeriksaan video gagal.'); }
+    finally { if (videoRequestVersion.current === version) setVideoBusy(false); }
   }
+  useEffect(() => {
+    const version = ++videoRequestVersion.current;
+    if (connected) inspectVideos('video-models', version);
+    else { setVideoModels(null); setVideoSchemas(null); setVideoBusy(false); setVideoError(''); }
+    return () => { videoRequestVersion.current += 1; };
+  }, [connected]);
   async function inspectQuote(event) {
     event.preventDefault();
     if (imageBusy) return;
@@ -225,13 +232,12 @@ export function FreebeatPage() {
         <h2>Persiapan uji video</h2>
         <p>Periksa model dan skema video tanpa memakai kredit. Uji generasi video admin di bawah hanya dikirim setelah quote dan persetujuan eksplisit.</p>
         <div className="freebeat-actions">
-          <button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Lihat model video</button>
+          <button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Muat ulang model video</button>
           <button type="button" className="is-secondary" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-schemas')}>Periksa skema tool video</button>
         </div>
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
-        {videoModels && <FreebeatCopyResult title="Model video dari Freebeat" value={{ models: videoModels.models, truncated: videoModels.truncated === true }} description={videoModels.truncated ? 'Daftar dibatasi hingga 100 model.' : 'Salin daftar model dan status kelengkapannya.'} />}
         {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
-        <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
+        <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} videoModels={videoModels} videoBusy={videoBusy} />
       </section>
     </div>
   </DropXLayout>;
