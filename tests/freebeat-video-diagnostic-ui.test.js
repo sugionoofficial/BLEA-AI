@@ -343,3 +343,49 @@ test('private model help needs acknowledgement and is cleared on model change or
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('initial response diagnostics are optional and do not bypass separate spending consent', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => {
+    calls.push(args);
+    if (args[0] === 'video-prepare') return { approval: 'encrypted', settings: { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-tests') return { tests: [] };
+    if (args[0] === 'video-submit') return { status: 'unknown', initial_diagnostics: { received: true, messages: ['Private provider detail'] } };
+    throw new Error('unexpected action');
+  };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const checkbox = (label) => [...document.querySelectorAll('label')].find((item) => item.textContent.includes(label)).querySelector('input');
+  async function change(selector, value) { const input = document.querySelector(selector); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); }
+  const render = async (props = {}) => React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog, ...props })));
+  try {
+    await render(); await selectModel(React, dom, '186');
+    await change('input[type=text]', 'Kucing berjalan'); await change('input[type=url]', 'https://images.example/cat.png');
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
+    assert.equal(checkbox('Opsional: tampilkan pesan respons awal').checked, false);
+    await React.act(async () => checkbox('Opsional: tampilkan pesan respons awal').click());
+    assert.equal(button('Setujui dan kirim satu video').disabled, true);
+    assert.equal(calls.filter(([action]) => action === 'video-submit').length, 0);
+    await React.act(async () => checkbox('Saya menyetujui satu kali generasi video').click());
+    await React.act(async () => button('Setujui dan kirim satu video').click());
+    assert.deepEqual(calls.find(([action]) => action === 'video-submit'), ['video-submit', 'POST', { approval: 'encrypted', confirm: true, private_diagnostics: true }]);
+    const output = document.querySelector('[aria-label="Diagnostik respons awal privat"]');
+    assert.match(output.textContent, /Private provider detail/);
+    assert.match(document.querySelector('[role=alert]').textContent, /tidak pasti/);
+    assert.equal(output.querySelector('textarea'), null);
+    assert.equal([...output.querySelectorAll('button')].some((item) => /salin/i.test(item.textContent)), false);
+    await React.act(async () => button('Sembunyikan respons awal').click());
+    assert.equal(document.querySelector('[aria-label="Diagnostik respons awal privat"]'), null);
+    assert.equal(calls.filter(([action]) => action === 'video-submit').length, 1);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});

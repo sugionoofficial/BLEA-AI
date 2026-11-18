@@ -21,7 +21,7 @@ async function connect(token = 'admin') {
 }
 function fixture() {
   const rows = new Map(), calls = [];
-  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null;
+  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null, createResult = null;
   return {
     rows, calls,
     setScope(value) { scope = value; },
@@ -31,6 +31,7 @@ function fixture() {
     setToken(value) { tokenValue = value; },
     setDbMode(value) { dbMode = value; },
     setTaskResult(value) { taskResult = value; },
+    setCreateResult(value) { createResult = value; },
     async fetch(input, init = {}) {
       const url = new URL(String(input));
       if (url.href === 'https://supabase.example/auth/v1/user') {
@@ -70,8 +71,11 @@ function fixture() {
       else if (body.params.name === 'generate_video') {
         assert.deepEqual(body.params.arguments, { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: expectedMax });
         if (generateMode === 'lost') throw new Error('PRIVATE-NETWORK-ERROR');
+        if (generateMode === 'rpc-error') return Response.json({ id: body.id, error: { code: -32000, message: 'Rejected https://secret.example/a?token=VALUE Bearer BADTOKEN' } });
+        if (generateMode === 'sse-error') return new Response(`event: message\ndata: ${JSON.stringify({ id: body.id, error: { code: -32000, message: 'Rejected https://secret.example/a?token=VALUE Bearer BADTOKEN' } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+        if (generateMode === 'tool-error') return Response.json({ id: body.id, result: { isError: true, content: [{ type: 'text', text: 'Invalid image; contact admin@example.com' }] } });
         if (generateMode === 'bad') data = { batch_id: 'not a valid id', secret: 'SECRET-DATA' };
-        else data = { batch_id: 'batch-123', secret: 'SECRET-DATA' };
+        else data = createResult || { batch_id: 'batch-123', secret: 'SECRET-DATA' };
       } else if (body.params.name === 'get_task_status') {
         assert.deepEqual(body.params.arguments, { task_id: 'batch-123' });
         data = taskResult || { status: 'completed', items: [{ video_url: 'https://cdn.example/video.mp4' }, { video_url: 'javascript:alert(1)' }, { video_url: 'https://user:pass@example.com/img' }], billing: { charged: 23, refunded: null, net: 23, refund_state: 'none', secret: 'SECRET' }, token: 'SECRET' };
@@ -274,4 +278,57 @@ test('unknown video dispatch blocks another model until reconciled', async () =>
     assert.equal((await submit(cookie, next.approval)).status, 409);
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
   } finally { globalThis.fetch = original; }
+});
+
+test('initial create diagnostics are opt-in, transient, redacted, and keep the approved cap', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const capture of [false, true]) {
+      const f = fixture(); globalThis.fetch = f.fetch;
+      const cookie = await connect();
+      f.setCreateResult({ batch_id: 'batch-123', message: 'Batch notice https://private.example/image?token=SECRET', items: [{ error_code: 'invalid_image', message: 'Bearer SENSITIVE contact admin@example.com', error_message: 'Invalid input' }], token: 'PROVIDER-SECRET' });
+      const { approval } = await (await prepare(cookie)).json();
+      assert.equal((await submit(cookie, approval, { private_diagnostics: 'yes' })).status, 400);
+      assert.equal((await submit(cookie, approval, { confirm: false, private_diagnostics: true })).status, 400);
+      assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+      const res = await submit(cookie, approval, { private_diagnostics: capture });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+      assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+      const text = await res.text();
+      assert.doesNotMatch(text, /private\.example|SENSITIVE|admin@example|PROVIDER-SECRET|token=SECRET/);
+      const result = JSON.parse(text); assert.equal(result.status, 'submitted');
+      if (capture) assert.deepEqual(result.initial_diagnostics, { received: true, messages: ['Batch notice [URL disembunyikan]', 'invalid_image', 'Invalid input', 'Bearer [disembunyikan] contact [email disembunyikan]'] });
+      else assert.equal(Object.hasOwn(result, 'initial_diagnostics'), false);
+      assert.doesNotMatch(JSON.stringify([...f.rows.values()]), /Batch notice|Invalid input|SENSITIVE|private\.example/);
+      assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+    }
+  } finally { globalThis.fetch = original; }
+});
+
+test('unrecognized, RPC error, and lost initial responses remain uncertain and keep the dispatch lock', async () => {
+  const original = globalThis.fetch, warn = console.warn; console.warn = () => {};
+  try {
+    for (const mode of ['rejected', 'rpc-error', 'sse-error', 'tool-error', 'lost']) {
+      const f = fixture(); globalThis.fetch = f.fetch;
+      const cookie = await connect();
+      const { approval } = await (await prepare(cookie)).json();
+      if (mode === 'rejected') f.setCreateResult({ message: 'All items rejected', items: [{ error_message: 'Unsupported input' }] });
+      else f.setGenerateMode(mode);
+      const res = await submit(cookie, approval, { private_diagnostics: true });
+      const text = await res.text();
+      assert.doesNotMatch(text, /secret\.example|token=VALUE|BADTOKEN|admin@example|PRIVATE-NETWORK-ERROR/);
+      const result = JSON.parse(text);
+      assert.equal(result.status, 'unknown');
+      assert.equal(result.initial_diagnostics.received, mode !== 'lost');
+      if (mode === 'rejected') assert.deepEqual(result.initial_diagnostics.messages, ['All items rejected', 'Unsupported input']);
+      if (mode === 'rpc-error' || mode === 'sse-error') assert.deepEqual(result.initial_diagnostics.messages, ['Rejected [URL disembunyikan] Bearer [disembunyikan]']);
+      if (mode === 'tool-error') assert.deepEqual(result.initial_diagnostics.messages, ['Invalid image; contact [email disembunyikan]']);
+      assert.equal(f.rows.get(result.id).status, 'unknown');
+      f.setGenerateMode('success');
+      const next = await (await prepare(cookie)).json();
+      assert.equal((await submit(cookie, next.approval)).status, 409);
+      assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+    }
+  } finally { globalThis.fetch = original; console.warn = warn; }
 });
