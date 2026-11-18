@@ -84,10 +84,16 @@ export async function saveSingleProviderModel({ provider, model, active = true }
   return edgeRequest('/save-models', { mode: 'upsert_one', provider, model, active });
 }
 
-// AI Studio — model aktif yang dipilih admin (berjalan ke UnoRouter).
+// AI Studio — model aktif yang dipilih admin.
 export async function fetchEnabledModels() {
   const { data } = await edgeRequest('/enabled-models', {});
   return Array.isArray(data?.models) ? data.models : [];
+}
+
+export async function fetchEnabledModelItems() {
+  const { data } = await edgeRequest('/enabled-models', {});
+  if (Array.isArray(data?.modelItems) && data.modelItems.length) return data.modelItems;
+  return Array.isArray(data?.models) ? data.models.map((id) => ({ id, provider: 'unorouter' })) : [];
 }
 
 // Generate Video — daftar model video & status provider.
@@ -110,8 +116,8 @@ export async function fetchVideoHistory() {
   return edgeRequest('/video/history', {});
 }
 
-export async function chatCompletion({ conversationId, model, messages, github, repository }) {
-  return edgeRequest('/chat', { conversationId, model, messages, github, repository });
+export async function chatCompletion({ conversationId, model, provider, messages, github, repository, autoFallback = true }) {
+  return edgeRequest('/chat', { conversationId, model, provider, messages, github, repository, autoFallback });
 }
 
 // AI Studio — repo terhubung (GitHub) untuk panel koneksi di bawah input.

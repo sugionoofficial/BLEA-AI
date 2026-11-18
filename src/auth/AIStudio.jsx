@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, MessageSquarePlus, Network, Paperclip, Plus, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, MessageSquarePlus, Network, Paperclip, Plus, RefreshCw, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatCompletion, fetchConnectedRepos, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
+import { chatCompletion, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -102,6 +102,17 @@ function StudioMessageBody({ content, copiedCodeKey, onCopyCode }) {
   return parts;
 }
 
+function formatChatErrorMessage(chatData, status) {
+  const retrySec = Number(chatData?.retryAfterSec) || null;
+  const raw = String(chatData?.detail || chatData?.error || '');
+  if (status === 429 || chatData?.code === 'rate_limit_exceeded' || /rate_limit_exceeded|429/i.test(raw)) {
+    return retrySec
+      ? `Batas permintaan model tercapai (429). Coba lagi dalam ${retrySec} detik atau langsung ganti ke model lain.`
+      : 'Batas permintaan model tercapai (429). Tunggu sebentar atau langsung ganti ke model lain.';
+  }
+  return chatData?.error || 'Respons AI gagal. Coba lagi sebentar.';
+}
+
 export function AIStudio() {
   const { user } = useAuth();
   const [conversations, setConversations] = useState([]);
@@ -112,9 +123,13 @@ export function AIStudio() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [fallbackNotice, setFallbackNotice] = useState('');
+  const [retryState, setRetryState] = useState(null);
+  const [retryCountdown, setRetryCountdown] = useState(0);
   const [providerStatus, setProviderStatus] = useState(null);
   const [models, setModels] = useState([]);
   const [enabledModels, setEnabledModels] = useState([]);
+  const [modelItems, setModelItems] = useState([]);
   const [selectedModel, setSelectedModel] = useState('gpt-oss-120b:free');
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -221,12 +236,15 @@ export function AIStudio() {
         }
         setProviderStatus(status);
         if (status?.configured) {
-          const [enabled, freeModels] = await Promise.all([fetchEnabledModels(), fetchFreeModels()]);
+          const [items, freeModels] = await Promise.all([fetchEnabledModelItems(), fetchFreeModels()]);
           if (cancelled) return;
-          if (Array.isArray(enabled) && enabled.length) {
-            setEnabledModels(enabled);
-            setSelectedModel((current) => enabled.includes(current) ? current : enabled[0]);
+          if (Array.isArray(items) && items.length) {
+            const ids = items.map((m) => m.id);
+            setModelItems(items);
+            setEnabledModels(ids);
+            setSelectedModel((current) => ids.includes(current) ? current : ids[0]);
           } else if (Array.isArray(freeModels) && freeModels.length) {
+            setModelItems(freeModels.map((id) => ({ id, provider: 'unorouter' })));
             setModels(freeModels);
             setSelectedModel((current) => freeModels.includes(current) ? current : freeModels[0]);
           }
@@ -237,6 +255,14 @@ export function AIStudio() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (retryCountdown <= 0) return undefined;
+    const timer = window.setInterval(() => {
+      setRetryCountdown((sec) => (sec > 1 ? sec - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [retryCountdown]);
 
   useEffect(() => {
     if (sendingRef.current) return;
@@ -252,6 +278,9 @@ export function AIStudio() {
     setMessages([]);
     setDraft('');
     setError('');
+    setFallbackNotice('');
+    setRetryState(null);
+    setRetryCountdown(0);
     draftRef.current?.focus();
   }
 
@@ -296,6 +325,90 @@ export function AIStudio() {
     setAttachments((current) => current.filter((attachment) => attachment.id !== id));
   }
 
+  const availableModels = useMemo(() => (enabledModels.length ? enabledModels : models), [enabledModels, models]);
+
+  const resolveProviderForModel = useCallback((modelId) => {
+    const found = modelItems.find((item) => item.id === modelId);
+    return found?.provider || 'unorouter';
+  }, [modelItems]);
+
+  const executeChatCompletion = useCallback(async ({ conversationId, history, modelOverride }) => {
+    const targetModel = modelOverride || selectedModel;
+    const targetProvider = resolveProviderForModel(targetModel);
+    const { ok: chatOk, status: chatStatus, data: chatData } = await chatCompletion({
+      conversationId,
+      model: targetModel,
+      provider: targetProvider,
+      messages: history,
+      github: !!githubConnected?.connected && !!selectedRepo,
+      repository: selectedRepo,
+      autoFallback: true,
+    });
+
+    if (chatOk && chatData?.reply) {
+      setRetryState(null);
+      setRetryCountdown(0);
+      if (chatData.fallbackFrom && chatData.model && chatData.model !== targetModel) {
+        setSelectedModel(chatData.model);
+        setFallbackNotice(`Batas permintaan pada ${chatData.fallbackFrom} tercapai — dialihkan otomatis ke ${chatData.model}.`);
+      } else {
+        setFallbackNotice('');
+      }
+      const replyMessage = {
+        id: chatData.messageId || `reply-${Date.now()}`,
+        conversation_id: conversationId,
+        user_id: user.id,
+        role: 'assistant',
+        content: chatData.reply,
+        created_at: new Date().toISOString(),
+        model: chatData.model || targetModel,
+      };
+      setMessages((current) => [...current, { ...replyMessage, actions: chatData?.actions || [] }]);
+      const { error: metaError } = await supabase
+        .from('ai_conversations')
+        .update({ updated_at: replyMessage.created_at })
+        .eq('id', conversationId)
+        .eq('user_id', user.id);
+      if (metaError) console.error('Conversation meta update failed:', metaError);
+      setConversations((current) => current.map((item) => item.id === conversationId
+        ? { ...item, updated_at: replyMessage.created_at }
+        : item).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
+      return;
+    }
+
+    const waitSec = Number(chatData?.retryAfterSec) || 0;
+    setRetryState({ conversationId, history, failedModel: targetModel });
+    setRetryCountdown(waitSec);
+    setError(formatChatErrorMessage(chatData, chatStatus));
+  }, [selectedModel, resolveProviderForModel, githubConnected?.connected, selectedRepo, user?.id]);
+
+  async function retryLastCompletion(overrideModel) {
+    if (!retryState || sending) return;
+    setSending(true);
+    sendingRef.current = true;
+    setError('');
+    try {
+      if (overrideModel) setSelectedModel(overrideModel);
+      await executeChatCompletion({
+        conversationId: retryState.conversationId,
+        history: retryState.history,
+        modelOverride: overrideModel || selectedModel,
+      });
+    } catch (retryErr) {
+      console.error('Retry chat failed:', retryErr);
+      setError('Gagal menghubungi model AI. Coba lagi sebentar.');
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  }
+
+  function pickAlternativeModel(currentModel) {
+    const candidates = availableModels.filter((m) => m && m !== currentModel);
+    if (!candidates.length) return '';
+    return candidates.find((m) => /gemini-2\.5-flash|deepseek|qwen|glm-5|mistral/i.test(m)) || candidates[0];
+  }
+
   async function saveMessage(event) {
     event.preventDefault();
     const content = draft.trim();
@@ -303,6 +416,9 @@ export function AIStudio() {
     setSending(true);
     sendingRef.current = true;
     setError('');
+    setFallbackNotice('');
+    setRetryState(null);
+    setRetryCountdown(0);
 
     try {
       let conversation = activeConversation;
@@ -364,38 +480,7 @@ export function AIStudio() {
         .filter((message) => message.role === 'user' || message.role === 'assistant')
         .map((message) => ({ role: message.role, content: message.content }));
 
-      const { ok: chatOk, data: chatData } = await chatCompletion({
-        conversationId: conversation.id,
-        model: selectedModel,
-        messages: history,
-        github: !!githubConnected?.connected && !!selectedRepo,
-        repository: selectedRepo,
-      });
-
-      if (chatOk && chatData?.reply) {
-        // append lokal + update timestamp percakapan. Edge function sudah
-        // menyimpan pesan assistant ke DB — riwayat konsisten pada reload berikutnya.
-        const replyMessage = {
-          id: chatData.messageId || `reply-${Date.now()}`,
-          conversation_id: conversation.id,
-          user_id: user.id,
-          role: 'assistant',
-          content: chatData.reply,
-          created_at: new Date().toISOString(),
-        };
-        setMessages((current) => [...current, { ...replyMessage, actions: chatData?.actions || [] }]);
-        const { error: metaError } = await supabase
-          .from('ai_conversations')
-          .update({ updated_at: replyMessage.created_at })
-          .eq('id', conversation.id)
-          .eq('user_id', user.id);
-        if (metaError) console.error('Conversation meta update failed:', metaError);
-        setConversations((current) => current.map((item) => item.id === conversation.id
-          ? { ...item, updated_at: replyMessage.created_at }
-          : item).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
-      } else {
-        setError(chatData?.error || 'Respons AI gagal. Coba lagi sebentar.');
-      }
+      await executeChatCompletion({ conversationId: conversation.id, history });
     } catch (saveError) {
       console.error('Saving chat message failed:', saveError);
       setError('Pesan belum berhasil disimpan. Coba lagi sebentar.');
@@ -569,7 +654,28 @@ export function AIStudio() {
             {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'BLEA AI adalah agen mandiri — cerdas, tanggap, punya akses internet, dan bisa terhubung ke berbagai app seperti Notion, Slack, dan GitHub. Kode, script, dan prompt akan tampil dalam blok merah yang dapat disalin.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}>{message.role === 'assistant' && <span className="studio-message-avatar"><Sparkles size={13} /></span>}<div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div>{message.role === 'assistant' ? <StudioMessageBody content={message.content} copiedCodeKey={copiedCodeKey} onCopyCode={copyCode} /> : <p className="studio-message-text">{message.content}</p>}</div>{message.actions?.length > 0 && <div className="studio-message-actions">{message.actions.map((action, actionIndex) => <span key={actionIndex} className={`studio-action-pill ${action.ok ? 'is-ok' : 'is-fail'}`}>{action.tool} {action.ok ? '✓' : '✗'}</span>)}</div>}</article>)}<div ref={endOfMessages} /></div>}
           </div>
           {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
-          {error && <div className="studio-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Tutup pesan"><X size={13} /></button></div>}
+          {fallbackNotice && <div className="studio-fallback-notice" role="status"><Sparkles size={13} /><span>{fallbackNotice}</span><button type="button" onClick={() => setFallbackNotice('')} aria-label="Tutup pemberitahuan"><X size={13} /></button></div>}
+          {error && (
+            <div className="studio-error" role="alert">
+              <div className="studio-error-copy">
+                <span>{error}</span>
+                {retryCountdown > 0 && <small>Tunggu {retryCountdown} detik sebelum mencoba ulang model yang sama, atau langsung ganti model.</small>}
+              </div>
+              {retryState && (
+                <div className="studio-error-actions">
+                  <button type="button" className="studio-error-retry" onClick={() => retryLastCompletion()} disabled={sending || retryCountdown > 0}>
+                    <RefreshCw size={12} /> {retryCountdown > 0 ? `Coba lagi (${retryCountdown}d)` : 'Coba Lagi'}
+                  </button>
+                  {pickAlternativeModel(selectedModel) && (
+                    <button type="button" className="studio-error-switch" onClick={() => retryLastCompletion(pickAlternativeModel(selectedModel))} disabled={sending}>
+                      Ganti ke {pickAlternativeModel(selectedModel).split(':')[0]}
+                    </button>
+                  )}
+                </div>
+              )}
+              <button type="button" className="studio-error-close" onClick={() => { setError(''); setRetryState(null); setRetryCountdown(0); }} aria-label="Tutup pesan"><X size={13} /></button>
+            </div>
+          )}
           <div className="studio-composer-area">
             {attachments.length > 0 && (
               <div className="studio-attachments">
@@ -580,7 +686,7 @@ export function AIStudio() {
                 </div>)}
               </div>
             )}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /> {selectedModel} <ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif · UnoRouter` : `${models.length} model gratis · UnoRouter`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{enabledModels.length ? enabledModels.map((model) => <option key={model} value={model}>{model}</option>) : models.map((model) => <option key={model} value={model}>{model}</option>)}</select></div>}</div>}{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> Koneksi</button><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /> {selectedModel} <ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif` : `${models.length} model gratis`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{(modelItems.length ? modelItems : availableModels.map((id) => ({ id, provider: 'unorouter' }))).map((item) => <option key={`${item.provider}:${item.id}`} value={item.id}>{item.provider && item.provider !== 'unorouter' ? `${item.id} (${item.provider})` : item.id}</option>)}</select></div>}</div>}{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> Koneksi</button><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
             {connectionsOpen && <div className="studio-connections">
               <div className="studio-connections-head">
                 <span>Koneksi agen</span>

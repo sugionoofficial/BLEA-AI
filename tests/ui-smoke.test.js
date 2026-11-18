@@ -108,3 +108,25 @@ test('DropXDashboard and AdminPage render video generation metrics instead of Pr
   assert.ok(adminHtml.includes('API Key'));
   assert.equal(adminHtml.includes('Semua proyek'), false);
 });
+
+test('AIStudio renders composer, chat history shell, and model status cleanly', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { AIStudio } = await vite.ssrLoadModule('/src/auth/AIStudio.jsx');
+
+  const session = {
+    access_token: 'user-token',
+    user: { id: 'u1', email: 'creator@example.com', user_metadata: { full_name: 'Kreator' }, app_metadata: {} },
+  };
+
+  const studioHtml = renderToStaticMarkup(
+    React.createElement(
+      MemoryRouter,
+      { initialEntries: ['/ai'] },
+      React.createElement(AuthProvider, { initialSession: session }, React.createElement(AIStudio)),
+    ),
+  );
+  assert.ok(studioHtml.includes('BLEA AI STUDIO'));
+  assert.ok(studioHtml.includes('Percakapan baru'));
+  assert.ok(studioHtml.includes('Tulis pesan'));
+});

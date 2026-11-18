@@ -391,11 +391,114 @@ async function handleGithubCallback(request, url, env) {
   return new Response(null, { status: 303, headers });
 }
 
-async function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...extraHeaders },
   });
+}
+
+function isChatCapableModelId(modelId) {
+  const id = String(modelId || '').trim();
+  if (!id || isVideoModelId(id)) return false;
+  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation)/i.test(id);
+}
+
+function parseChatUpstreamError(rawText, status, retryAfterHeader) {
+  let parsed = {};
+  try { parsed = JSON.parse(rawText); } catch {}
+  const message = String(
+    parsed?.error?.message
+    || (typeof parsed?.error === 'string' ? parsed.error : '')
+    || parsed?.message
+    || rawText
+    || '',
+  ).trim();
+  const code = String(parsed?.error?.code || parsed?.code || '').trim();
+
+  let retryAfterSec = null;
+  if (retryAfterHeader && /^\d+$/.test(String(retryAfterHeader).trim())) {
+    retryAfterSec = Number(retryAfterHeader);
+  } else {
+    const match = message.match(/retry\s+in\s+(\d+)\s*s/i) || message.match(/(\d+)\s*(?:seconds?|detik)/i);
+    if (match) retryAfterSec = Number(match[1]);
+  }
+
+  let friendlyMessage;
+  if (status === 429 || code === 'rate_limit_exceeded') {
+    friendlyMessage = retryAfterSec
+      ? `Batas permintaan model tercapai (429). Coba lagi dalam ${retryAfterSec} detik atau pilih model lain.`
+      : 'Batas permintaan model tercapai (429). Silakan tunggu sebentar atau pilih model lain.';
+  } else if (status === 402) {
+    friendlyMessage = 'Saldo atau kuota API provider tidak mencukupi untuk model ini.';
+  } else if (status === 401 || status === 403) {
+    friendlyMessage = 'API key provider tidak valid atau ditolak. Periksa pengaturan di Admin Panel.';
+  } else if (status === 503 || status === 504 || status === 502) {
+    friendlyMessage = 'Server model AI sedang sibuk atau sementara tidak tersedia. Coba lagi sebentar.';
+  } else {
+    friendlyMessage = message || `Permintaan AI gagal (HTTP ${status}).`;
+  }
+
+  return {
+    code: code || `http_${status}`,
+    retryAfterSec,
+    friendlyMessage,
+    rawDetail: message.slice(0, 500),
+  };
+}
+
+function scoreFallbackModel(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  if (/gemini-2\.5-flash:free|gemini-3.*flash.*:free|deepseek-v3|deepseek-v4|qwen3\.6|glm-5/.test(id)) return 100;
+  if (/gemini|deepseek|qwen|mistral|nemotron|gpt-5|gpt-4/.test(id)) return 60;
+  if (/coder|math|thinking|darksoul|meromero/.test(id)) return 20;
+  return 40;
+}
+
+function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows }) {
+  const seen = new Set([`${primaryProvider}:${primaryModel}`]);
+  const candidates = [];
+  for (const row of dbModelRows || []) {
+    const prov = String(row.provider || 'unorouter').trim().toLowerCase();
+    const model = String(row.model || '').trim();
+    if (!model || !isChatCapableModelId(model)) continue;
+    const key = `${prov}:${model}`;
+    if (seen.has(key)) continue;
+    const keyRow = keyByProvider.get(prov);
+    const apiKey = keyRow?.api_key || (prov === 'unorouter' && model.endsWith(':free') ? 'use-free' : '');
+    if (!apiKey) continue;
+    seen.add(key);
+    candidates.push({
+      provider: prov,
+      model,
+      apiKey,
+      baseUrl: keyRow?.base_url || '',
+      score: (prov !== primaryProvider ? 10 : 0) + (model.endsWith(':free') ? 5 : 0) + scoreFallbackModel(model),
+    });
+  }
+  return candidates.sort((a, b) => b.score - a.score);
+}
+
+async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000 }) {
+  const chatUrl = `${resolveProviderApiBase(provider, baseUrl)}/chat/completions`;
+  const upstream = await fetch(chatUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev',
+      'X-Title': 'BLEA AI',
+    },
+    body: JSON.stringify({ ...payload, model, stream: false }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!upstream.ok) {
+    const rawText = await upstream.text().catch(() => '');
+    const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'));
+    return { ok: false, status: upstream.status, errorInfo };
+  }
+  const data = await upstream.json().catch(() => ({}));
+  return { ok: true, status: upstream.status, data };
 }
 
 // ---------- Signed short-lived video content proxy URLs ----------
@@ -790,8 +893,19 @@ async function handleApi(request, url, env) {
       const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
-      const models = (rows ?? []).filter((m) => !isVideoModelId(m.model)).map((m) => m.model);
-      return jsonResponse({ models });
+      const chatRows = (rows ?? []).filter((m) => isChatCapableModelId(m.model));
+      const seen = new Set();
+      const models = [];
+      const modelItems = [];
+      for (const m of chatRows) {
+        const prov = m.provider || 'unorouter';
+        const key = `${prov}:${m.model}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!models.includes(m.model)) models.push(m.model);
+        modelItems.push({ id: m.model, provider: prov });
+      }
+      return jsonResponse({ models, modelItems });
     }
 
     // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid) or OpenRouter ----
@@ -1330,41 +1444,113 @@ async function handleApi(request, url, env) {
       }
     }
 
-    // ---- /chat: call UnoRouter / provider, save assistant reply to DB, return JSON (auth required) ----
+    // ---- /chat: call UnoRouter / configured provider with automatic 429 fallback, save assistant reply to DB ----
     if (path === 'chat' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       if (!token) return jsonResponse({ error: 'Missing token' }, 401);
       const user = await getUser(env, token);
       if (!user) return jsonResponse({ error: 'Invalid token' }, 401);
       const body = await request.json().catch(() => ({}));
-      const keyRes = await servicePostgrest(env, '/provider_api_keys?select=api_key,base_url&provider=eq.unorouter&limit=1');
+      const keyRes = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url');
       const keyRows = await keyRes.json().catch(() => []);
-      const apiKey = keyRows?.[0]?.api_key || 'use-free';
-      const chatUrl = `${resolveProviderApiBase('unorouter', keyRows?.[0]?.base_url)}/chat/completions`;
+      const keyByProvider = new Map((keyRows || []).map((r) => [String(r.provider || 'unorouter').toLowerCase(), r]));
+      const primaryProvider = String(body.provider || 'unorouter').trim().toLowerCase();
+      const requestedModel = String(body.model || 'gpt-oss-120b:free').trim();
+      const primaryKeyRow = keyByProvider.get(primaryProvider);
+      const primaryApiKey = primaryKeyRow?.api_key || (primaryProvider === 'unorouter' ? 'use-free' : '');
+      if (!primaryApiKey) {
+        return jsonResponse({ error: `API key untuk provider "${primaryProvider}" belum dikonfigurasi.` }, 400);
+      }
+
       const repository = typeof body.repository === 'string' && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(body.repository) ? body.repository : '';
       const githubEnabled = !!(body.github && repository && await githubToken(request, env, user));
       const [selectedOwner, selectedName] = repository.split('/');
       const systemPrompt = githubEnabled ? `${AGENT_SYSTEM_PROMPT}\n\n${GITHUB_TOOLS_PROMPT}\nRepository yang dipilih pengguna: ${repository}. Gunakan hanya repository ini.` : AGENT_SYSTEM_PROMPT;
-      const fetchBody = { ...body, model: body.model, messages: [...(body.messages || []), { role: 'system', content: systemPrompt }], stream: false };
+      const fetchBody = { ...body, model: requestedModel, messages: [...(body.messages || []), { role: 'system', content: systemPrompt }], stream: false };
       delete fetchBody.github;
       delete fetchBody.repository;
       delete fetchBody.apiKey;
       delete fetchBody.apiUrl;
+      delete fetchBody.provider;
+      delete fetchBody.autoFallback;
+      delete fetchBody.conversationId;
+
       try {
-        const upstream = await fetch(chatUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey, 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' },
-          body: JSON.stringify(fetchBody),
-          signal: AbortSignal.timeout(120_000),
+        let activeProvider = primaryProvider;
+        let activeModel = requestedModel;
+        let activeApiKey = primaryApiKey;
+        let activeBaseUrl = primaryKeyRow?.base_url || '';
+        let fallbackFrom = '';
+        let fallbackReason = '';
+        let cachedDbModels = null;
+
+        const triedModels = [requestedModel];
+        let attempt = await sendChatCompletionRequest({
+          provider: activeProvider,
+          model: activeModel,
+          apiKey: activeApiKey,
+          baseUrl: activeBaseUrl,
+          payload: fetchBody,
+          timeoutMs: 120_000,
         });
-        if (!upstream.ok) {
-          const text = await upstream.text().catch(() => '');
-          return jsonResponse({ error: 'Upstream error', status: upstream.status, detail: text.slice(0, 500) }, 502);
+
+        const canRetryFallback = [404, 429, 502, 503, 504].includes(attempt.status) && body.autoFallback !== false;
+        if (!attempt.ok && canRetryFallback) {
+          const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+          cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
+          const candidates = buildChatFallbackCandidates({
+            primaryProvider,
+            primaryModel: requestedModel,
+            keyByProvider,
+            dbModelRows: cachedDbModels,
+          }).slice(0, 3);
+
+          const primaryReason = attempt.errorInfo?.code || `http_${attempt.status}`;
+          for (const cand of candidates) {
+            triedModels.push(cand.model);
+            const altRes = await sendChatCompletionRequest({
+              provider: cand.provider,
+              model: cand.model,
+              apiKey: cand.apiKey,
+              baseUrl: cand.baseUrl,
+              payload: fetchBody,
+              timeoutMs: 30_000,
+            });
+            if (altRes.ok && altRes.data?.choices?.[0]?.message?.content) {
+              attempt = altRes;
+              activeProvider = cand.provider;
+              activeModel = cand.model;
+              activeApiKey = cand.apiKey;
+              activeBaseUrl = cand.baseUrl;
+              fallbackFrom = requestedModel;
+              fallbackReason = primaryReason;
+              break;
+            }
+          }
         }
-        const upstreamData = await upstream.json().catch(() => ({}));
-        let finalReply = upstreamData?.choices?.[0]?.message?.content ?? '';
+
+        if (!attempt.ok) {
+          const errInfo = attempt.errorInfo || parseChatUpstreamError('', attempt.status);
+          const finalStatus = [401, 402, 403, 404, 429].includes(attempt.status) ? attempt.status : 502;
+          return jsonResponse(
+            {
+              ok: false,
+              error: errInfo.friendlyMessage,
+              code: errInfo.code,
+              status: attempt.status,
+              retryAfterSec: errInfo.retryAfterSec,
+              detail: errInfo.rawDetail,
+              triedModels,
+            },
+            finalStatus,
+            errInfo.retryAfterSec ? { 'retry-after': String(errInfo.retryAfterSec) } : {},
+          );
+        }
+
+        let finalReply = attempt.data?.choices?.[0]?.message?.content ?? '';
         const actions = [];
         if (githubEnabled) {
+          let roundMessages = [...fetchBody.messages];
           for (let round = 0; round < 4; round += 1) {
             const toolCalls = parseToolCalls(finalReply);
             if (!toolCalls.length) break;
@@ -1379,14 +1565,47 @@ async function handleApi(request, url, env) {
               toolResults.push({ name: call.name, ok: result.ok, result: summary });
             }
             const toolMessage = `Alat telah dijalankan:\n${toolResults.map((r) => `- ${r.name}: ${r.ok ? 'berhasil' : 'gagal'} — ${r.result}`).join('\n')}\n\nLanjutkan: jelaskan hasilnya secara natural. Jika perlu tindakan lanjutan, gunakan blok alat lagi.`;
-            const upstream2 = await fetch(chatUrl, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey, 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' },
-              body: JSON.stringify({ ...fetchBody, messages: [...fetchBody.messages, { role: 'assistant', content: finalReply }, { role: 'user', content: toolMessage }], stream: false }),
-              signal: AbortSignal.timeout(120_000),
+            roundMessages = [...roundMessages, { role: 'assistant', content: finalReply }, { role: 'user', content: toolMessage }];
+            let roundRes = await sendChatCompletionRequest({
+              provider: activeProvider,
+              model: activeModel,
+              apiKey: activeApiKey,
+              baseUrl: activeBaseUrl,
+              payload: { ...fetchBody, messages: roundMessages },
+              timeoutMs: 60_000,
             });
-            const upstreamData2 = await upstream2.json().catch(() => ({}));
-            finalReply = upstreamData2?.choices?.[0]?.message?.content ?? '';
+            if (!roundRes.ok && [429, 503, 502].includes(roundRes.status) && body.autoFallback !== false) {
+              if (!cachedDbModels) {
+                const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+                cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
+              }
+              const alt = buildChatFallbackCandidates({
+                primaryProvider: activeProvider,
+                primaryModel: activeModel,
+                keyByProvider,
+                dbModelRows: cachedDbModels,
+              })[0];
+              if (alt) {
+                const altRoundRes = await sendChatCompletionRequest({
+                  provider: alt.provider,
+                  model: alt.model,
+                  apiKey: alt.apiKey,
+                  baseUrl: alt.baseUrl,
+                  payload: { ...fetchBody, messages: roundMessages },
+                  timeoutMs: 40_000,
+                });
+                if (altRoundRes.ok) {
+                  roundRes = altRoundRes;
+                  fallbackFrom = fallbackFrom || activeModel;
+                  activeProvider = alt.provider;
+                  activeModel = alt.model;
+                  activeApiKey = alt.apiKey;
+                  activeBaseUrl = alt.baseUrl;
+                }
+              }
+            }
+            if (!roundRes.ok) break;
+            finalReply = roundRes.data?.choices?.[0]?.message?.content ?? '';
           }
         }
         const reply = finalReply;
@@ -1405,7 +1624,15 @@ async function handleApi(request, url, env) {
           const inserted = await insertRes.json().catch(() => []);
           messageId = inserted?.[0]?.id ?? '';
         }
-        return jsonResponse({ ok: true, reply, messageId, actions });
+        return jsonResponse({
+          ok: true,
+          reply,
+          messageId,
+          actions,
+          model: activeModel,
+          provider: activeProvider,
+          ...(fallbackFrom ? { fallbackFrom, fallbackReason } : {}),
+        });
       } catch (e) {
         return jsonResponse({ error: String(e) }, 502);
       }
