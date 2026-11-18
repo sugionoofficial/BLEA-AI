@@ -862,3 +862,63 @@ test('/api/chat stream mode buffers a search request, researches, then streams t
     globalThis.fetch = realFetch;
   }
 });
+
+test('/api/tempmail is server-gated to admins, keeps mailbox credentials private, and serves isolated per-user inbox data', async () => {
+  const realFetch = globalThis.fetch;
+  let savedAlias;
+  const mailboxCalls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const isAdmin = init.headers.authorization === 'Bearer admin-token';
+      return Response.json({ id: isAdmin ? 'admin-user-1' : 'regular-user-1', app_metadata: { role: isAdmin ? 'admin' : 'user' } });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/tempmail_user_aliases')) {
+      if (init.method === 'POST') {
+        savedAlias = JSON.parse(init.body)[0];
+        return new Response(null, { status: 201 });
+      }
+      return Response.json(savedAlias ? [savedAlias] : []);
+    }
+    const parsed = new URL(url);
+    if (parsed.hostname === 'api.mail.tm') {
+      mailboxCalls.push({ url, method: init.method || 'GET' });
+      if (parsed.pathname === '/domains') return Response.json({ 'hydra:member': [{ domain: 'mailtm.test', isActive: true, isPrivate: false }] });
+      if (parsed.pathname === '/accounts') return Response.json({ id: 'account-id' }, { status: 201 });
+      if (parsed.pathname === '/token') return Response.json({ token: 'private-mailbox-token' });
+      if (parsed.pathname === '/messages' && !parsed.pathname.endsWith('/message-id-1')) return Response.json({ 'hydra:member': [{ id: 'message-id-1', subject: 'Verification code', from: { address: 'sender@example.com', name: 'Sender' }, intro: 'Your code is 123456', createdAt: '2026-11-18T00:00:00Z' }] });
+      if (parsed.pathname === '/messages/message-id-1') return Response.json({ id: 'message-id-1', subject: 'Verification code', from: { address: 'sender@example.com' }, to: [{ address: savedAlias.email }], text: 'Your code is 123456', html: ['<p>Your code is 123456</p>'] });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const denied = await worker.fetch(apiRequest('/api/tempmail?action=alias', { token: 'regular-token' }), createEnv());
+    assert.equal(denied.status, 403);
+    assert.match(denied.headers.get('cache-control'), /no-store/);
+
+    const created = await worker.fetch(apiRequest('/api/tempmail?action=create', { token: 'admin-token', body: {} }), createEnv());
+    assert.equal(created.status, 200, await created.clone().text());
+    const createdData = await created.json();
+    assert.match(createdData.email, /@mailtm\.test$/);
+    assert.equal(createdData.reused, false);
+    assert.equal(JSON.stringify(createdData).includes('private-mailbox-token'), false);
+    assert.equal(savedAlias.user_id, 'admin-user-1');
+    assert.match(savedAlias.token, /private-mailbox-token/);
+
+    const inbox = await worker.fetch(apiRequest(`/api/tempmail?action=messages&email=${encodeURIComponent(createdData.email)}`, { token: 'admin-token' }), createEnv());
+    const inboxData = await inbox.json();
+    assert.equal(inboxData.messages[0].subject, 'Verification code');
+    assert.equal(inboxData.messages[0].preview, 'Your code is 123456');
+
+    const message = await worker.fetch(apiRequest(`/api/tempmail?action=message&email=${encodeURIComponent(createdData.email)}&messageId=message-id-1`, { token: 'admin-token' }), createEnv());
+    const messageData = await message.json();
+    assert.equal(messageData.message.bodyText, 'Your code is 123456');
+    assert.equal(messageData.message.bodyHtml, '<p>Your code is 123456</p>');
+
+    const crossAccount = await worker.fetch(apiRequest('/api/tempmail?action=messages&email=other@mailtm.test', { token: 'admin-token' }), createEnv());
+    assert.equal(crossAccount.status, 404);
+    assert.ok(mailboxCalls.some((call) => call.url.includes('/messages?page=1')));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

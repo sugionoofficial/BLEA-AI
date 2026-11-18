@@ -188,3 +188,24 @@ test('AIStudio renders composer, chat history shell, and model status cleanly', 
   assert.ok(streamingCode.includes('const x = 42;'));
   assert.ok(streamingCode.includes('studio-typing-cursor'));
 });
+
+test('TempMail admin page renders privately and isolates untrusted email HTML', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { TempMailPage } = await vite.ssrLoadModule('/src/auth/TempMailPage.jsx');
+  const adminSession = {
+    access_token: 'admin-token',
+    user: { id: 'admin-1', email: 'admin@example.com', user_metadata: { full_name: 'Admin' }, app_metadata: { role: 'admin' } },
+  };
+  const html = renderToStaticMarkup(React.createElement(
+    MemoryRouter,
+    { initialEntries: ['/tempmail'] },
+    React.createElement(AuthProvider, { initialSession: adminSession }, React.createElement(TempMailPage)),
+  ));
+  assert.ok(html.includes('TempMail'));
+  assert.ok(html.includes('ADMIN ONLY'));
+  assert.ok(html.includes('Buat alamat email'));
+  const source = (await import('node:fs')).readFileSync(new URL('../src/auth/TempMailPage.jsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('sandbox=""'), 'Email HTML must be rendered in a sandboxed iframe without scripts or same-origin access');
+  assert.ok(source.includes("default-src 'none'"), 'Email HTML iframe must apply a restrictive CSP');
+});

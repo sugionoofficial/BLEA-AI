@@ -41,6 +41,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'Chat AI', href: '/studio' },
       { title: 'Generate', href: '/generate' },
       { title: 'Admin Panel', href: '/admin' },
+      { title: 'TempMail', href: '/tempmail' },
       { title: 'Setting', href: '/settings' },
     ],
   );
@@ -65,6 +66,10 @@ test('navigation contains only working app routes and gates Admin Panel to admin
   assert.equal(userGroups.some((g) => g.label === 'Admin'), false);
   const adminGroups = nav.getNavigation({ isAdmin: true });
   assert.equal(adminGroups.some((g) => g.label === 'Admin'), true);
+  assert.equal(userItems.some((item) => item.href === '/tempmail'), false, 'TempMail must not appear for non-admins');
+  assert.equal(adminItems.find((item) => item.href === '/tempmail')?.adminOnly, true);
+  assert.ok(mainSource.includes('<Route path="/tempmail" element={<TempMailPage />} />'));
+  assert.ok(mainSource.indexOf('<Route element={<AdminRoute />}>') < mainSource.indexOf('<Route path="/tempmail" element={<TempMailPage />} />'));
 });
 
 test('activeNavHref highlights the exact matching route and respects admin role', () => {
