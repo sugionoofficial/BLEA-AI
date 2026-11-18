@@ -625,8 +625,7 @@ function safeVideoFailure(value) {
     retryable: typeof value.retryable === 'boolean' ? value.retryable : null,
   };
 }
-async function pollVideo(env, user, session, request) {
-  const input = await imageJson(request);
+async function videoTaskContent(env, user, session, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID uji tidak valid.', 400);
   const rows = await videoDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash&limit=1`);
   const row = rows[0];
@@ -634,8 +633,34 @@ async function pollVideo(env, user, session, request) {
   const headers = await openMcp(session.accessToken);
   const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_task_status', arguments: { task_id: row.task_id } } }, 'task', headers, 262144);
   const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('task', 'response');
+  return content;
+}
+async function pollVideo(env, user, session, request) {
+  const content = await videoTaskContent(env, user, session, await imageJson(request));
   const summary = safeTask(content);
   return { status: summary.status, billing: summary.billing, videos: Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.video_url)).filter(Boolean) : [], failure: safeVideoFailure(content.failure), item_failures: Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeVideoFailure(item?.failure)).filter(Boolean) : [] };
+}
+// Best-effort redaction only. Free-form provider text may still include sensitive
+// data; reveal to the submitting admin only, on explicit request, never log it.
+function privateFailureReason(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  return value.slice(0, 2000)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL disembunyikan]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email disembunyikan]')
+    .replace(/\bBearer\s+[^\s,;"']+/gi, 'Bearer [disembunyikan]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[token disembunyikan]')
+    .replace(/\b(?:fbk_|sk_|sb_secret_)[A-Za-z0-9_-]+\b/gi, '[kunci disembunyikan]')
+    .replace(/\b(token|api[_-]?key|authorization|cookie|secret|password)(["'\s]*[:=]["'\s]*)[^\s,;"']+/gi, '$1$2[disembunyikan]');
+}
+async function privateVideoFailure(env, user, session, request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
+  const content = await videoTaskContent(env, user, session, { id: input.id });
+  if (!['failed', 'partial_failed', 'action_required'].includes(content.status)) throw fail('Pesan kegagalan tidak tersedia untuk status ini.', 409);
+  const reasons = [content.failure?.reason, ...(Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => item?.failure?.reason) : [])].map(privateFailureReason).filter(Boolean);
+  return { reasons };
 }
 
 export async function handleFreebeat(request, url, env, user) {
@@ -672,13 +697,14 @@ export async function handleFreebeat(request, url, env, user) {
       }
       return response({ ok: true, quote: await videoDiagnostic(session.accessToken, action, await parseVideoQuote(request)) });
     }
-    if (['video-prepare', 'video-submit', 'video-tests', 'video-task'].includes(action)) {
+    if (['video-prepare', 'video-submit', 'video-tests', 'video-task', 'video-private-failure'].includes(action)) {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       if (action === 'video-tests' && request.method === 'GET') return response({ ok: true, tests: await videoTests(env, user, session) });
       if (action === 'video-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareVideo(env, user, session, await parseVideoQuote(request))) });
       if (action === 'video-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVideo(env, user, session, request)) });
       if (action === 'video-task' && request.method === 'POST') return response({ ok: true, task: await pollVideo(env, user, session, request) });
+      if (action === 'video-private-failure' && request.method === 'POST') return response({ ok: true, ...(await privateVideoFailure(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['image-prepare', 'image-submit', 'image-tests', 'image-task'].includes(action)) {
       const session = await readSession(request, env, user.id);
