@@ -1,4 +1,5 @@
 // Read-only Freebeat MCP connection test. No generation tools are exposed here.
+import { siteBalance } from './freebeatSiteBalance.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const REGISTER = 'https://freebeat.ai/oauth/register';
 const AUTH = 'https://freebeat.ai/oauth/authorize';
@@ -201,6 +202,7 @@ export async function handleFreebeat(request, url, env, user) {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
     if (user.app_metadata?.role !== 'admin') return response({ error: 'Koneksi Freebeat hanya untuk admin.' }, 403);
     const action = url.pathname.split('/').pop();
+    if (action === 'site-balance' && request.method === 'POST') return await siteBalance(request);
     if (action === 'start' && request.method === 'POST') {
       if (url.origin !== new URL(redirectUri(env)).origin) return response({ error: 'Buka BLEA melalui domain callback Freebeat yang dikonfigurasi sebelum menghubungkan akun.' }, 400);
       return await startFreebeat(env, user.id);
