@@ -449,15 +449,56 @@ function parseChatUpstreamError(rawText, status, retryAfterHeader) {
 
 function scoreFallbackModel(modelId) {
   const id = String(modelId || '').toLowerCase();
-  if (/gemini-2\.5-flash:free|gemini-3.*flash.*:free|deepseek-v3|deepseek-v4|qwen3\.6|glm-5/.test(id)) return 100;
-  if (/gemini|deepseek|qwen|mistral|nemotron|gpt-5|gpt-4/.test(id)) return 60;
-  if (/coder|math|thinking|darksoul|meromero/.test(id)) return 20;
-  return 40;
+  if (/gemini-2\.5-flash:free|gemini-2\.5-flash-lite:free|gpt-oss-120b:free|mistral-small:free|llama-3\.3-70b:free/.test(id)) return 120;
+  if (/qwen3\.6-27b:free|glm-5\.3-flash:free|nemotron-3-super-120b|gemini-3\.1-flash-lite:free/.test(id)) return 105;
+  if (!id.endsWith(':free')) return 110;
+  if (/alpha|uncensored|-0731|meromero|darksoul|chimerax|phonellm|qwen3\.7-flash:free|villanova|apnea/.test(id)) return 15;
+  if (/coder|math|thinking|reasoning/.test(id)) return 30;
+  if (/gemini|deepseek|qwen|mistral|nemotron|gpt-5|gpt-4|llama|glm/.test(id)) return 75;
+  return 45;
+}
+
+function getModelFamily(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  if (/gemini/.test(id)) return 'gemini';
+  if (/deepseek/.test(id)) return 'deepseek';
+  if (/qwen|qwq/.test(id)) return 'qwen';
+  if (/mistral|codestral/.test(id)) return 'mistral';
+  if (/llama/.test(id)) return 'llama';
+  if (/glm/.test(id)) return 'glm';
+  if (/nemotron/.test(id)) return 'nemotron';
+  if (/gpt-/.test(id)) return 'gpt';
+  if (/claude/.test(id)) return 'claude';
+  if (/minimax/.test(id)) return 'minimax';
+  return id.split(/[:-]/)[0] || 'other';
+}
+
+function extractAssistantReply(data) {
+  const choice = data?.choices?.[0];
+  const msg = choice?.message;
+  const rawContent = msg?.content;
+  let text = '';
+  if (typeof rawContent === 'string') {
+    text = rawContent;
+  } else if (Array.isArray(rawContent)) {
+    text = rawContent
+      .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (!text.trim() && typeof msg?.reasoning_content === 'string') {
+    text = msg.reasoning_content;
+  } else if (!text.trim() && typeof msg?.reasoning === 'string') {
+    text = msg.reasoning;
+  } else if (!text.trim() && typeof choice?.text === 'string') {
+    text = choice.text;
+  }
+  return text.trim();
 }
 
 function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows }) {
   const seen = new Set([`${primaryProvider}:${primaryModel}`]);
-  const candidates = [];
+  const raw = [];
   for (const row of dbModelRows || []) {
     const prov = String(row.provider || 'unorouter').trim().toLowerCase();
     const model = String(row.model || '').trim();
@@ -468,15 +509,44 @@ function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvi
     const apiKey = keyRow?.api_key || (prov === 'unorouter' && model.endsWith(':free') ? 'use-free' : '');
     if (!apiKey) continue;
     seen.add(key);
-    candidates.push({
+    raw.push({
       provider: prov,
       model,
+      family: getModelFamily(model),
       apiKey,
       baseUrl: keyRow?.base_url || '',
-      score: (prov !== primaryProvider ? 10 : 0) + (model.endsWith(':free') ? 5 : 0) + scoreFallbackModel(model),
+      score: (prov !== primaryProvider ? 30 : 0) + scoreFallbackModel(model),
     });
   }
-  return candidates.sort((a, b) => b.score - a.score);
+  raw.sort((a, b) => b.score - a.score);
+
+  // Round-robin by provider:family so fallback spreads across distinct model backends first
+  const primaryFamily = getModelFamily(primaryModel);
+  const byBucket = new Map();
+  for (const item of raw) {
+    const bucketKey = `${item.provider}:${item.family}`;
+    if (!byBucket.has(bucketKey)) byBucket.set(bucketKey, []);
+    byBucket.get(bucketKey).push(item);
+  }
+  const bucketEntries = [...byBucket.entries()].sort((a, b) => {
+    const aSame = a[0] === `${primaryProvider}:${primaryFamily}` ? 1 : 0;
+    const bSame = b[0] === `${primaryProvider}:${primaryFamily}` ? 1 : 0;
+    if (aSame !== bSame) return aSame - bSame;
+    return (b[1][0]?.score || 0) - (a[1][0]?.score || 0);
+  });
+
+  const diversified = [];
+  let remaining = true;
+  while (remaining) {
+    remaining = false;
+    for (const [, list] of bucketEntries) {
+      if (list.length) {
+        diversified.push(list.shift());
+        if (list.length) remaining = true;
+      }
+    }
+  }
+  return diversified;
 }
 
 async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000 }) {
@@ -895,15 +965,20 @@ async function handleApi(request, url, env) {
       const rows = await res.json().catch(() => []);
       const chatRows = (rows ?? []).filter((m) => isChatCapableModelId(m.model));
       const seen = new Set();
-      const models = [];
-      const modelItems = [];
+      const deduped = [];
       for (const m of chatRows) {
         const prov = m.provider || 'unorouter';
         const key = `${prov}:${m.model}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        if (!models.includes(m.model)) models.push(m.model);
-        modelItems.push({ id: m.model, provider: prov });
+        deduped.push({ id: m.model, provider: prov, score: scoreFallbackModel(m.model) + (prov !== 'unorouter' ? 5 : 0) });
+      }
+      deduped.sort((a, b) => b.score - a.score);
+      const models = [];
+      const modelItems = [];
+      for (const item of deduped) {
+        if (!models.includes(item.id)) models.push(item.id);
+        modelItems.push({ id: item.id, provider: item.provider });
       }
       return jsonResponse({ models, modelItems });
     }
@@ -1466,7 +1541,8 @@ async function handleApi(request, url, env) {
       const githubEnabled = !!(body.github && repository && await githubToken(request, env, user));
       const [selectedOwner, selectedName] = repository.split('/');
       const systemPrompt = githubEnabled ? `${AGENT_SYSTEM_PROMPT}\n\n${GITHUB_TOOLS_PROMPT}\nRepository yang dipilih pengguna: ${repository}. Gunakan hanya repository ini.` : AGENT_SYSTEM_PROMPT;
-      const fetchBody = { ...body, model: requestedModel, messages: [...(body.messages || []), { role: 'system', content: systemPrompt }], stream: false };
+      const incomingMessages = Array.isArray(body.messages) ? body.messages.filter((m) => m && m.role && m.content !== undefined) : [];
+      const fetchBody = { ...body, model: requestedModel, messages: [{ role: 'system', content: systemPrompt }, ...incomingMessages], stream: false };
       delete fetchBody.github;
       delete fetchBody.repository;
       delete fetchBody.apiKey;
@@ -1485,6 +1561,7 @@ async function handleApi(request, url, env) {
         let cachedDbModels = null;
 
         const triedModels = [requestedModel];
+        const triedDetails = [];
         let attempt = await sendChatCompletionRequest({
           provider: activeProvider,
           model: activeModel,
@@ -1493,9 +1570,22 @@ async function handleApi(request, url, env) {
           payload: fetchBody,
           timeoutMs: 120_000,
         });
+        let finalReply = attempt.ok ? extractAssistantReply(attempt.data) : '';
+        if (!attempt.ok || !finalReply) {
+          const reasonCode = attempt.ok ? 'empty_reply' : (attempt.errorInfo?.code || `http_${attempt.status}`);
+          const detailText = attempt.ok ? 'Model mengembalikan respons kosong.' : (attempt.errorInfo?.rawDetail || '');
+          triedDetails.push({
+            model: activeModel,
+            provider: activeProvider,
+            status: attempt.ok ? 502 : attempt.status,
+            code: reasonCode,
+            retryAfterSec: attempt.errorInfo?.retryAfterSec ?? null,
+            detail: detailText,
+          });
+        }
 
-        const canRetryFallback = [404, 429, 502, 503, 504].includes(attempt.status) && body.autoFallback !== false;
-        if (!attempt.ok && canRetryFallback) {
+        const canRetryFallback = (!attempt.ok ? [400, 404, 429, 502, 503, 504].includes(attempt.status) : !finalReply) && body.autoFallback !== false;
+        if ((!attempt.ok || !finalReply) && canRetryFallback) {
           const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
           cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
           const candidates = buildChatFallbackCandidates({
@@ -1503,9 +1593,9 @@ async function handleApi(request, url, env) {
             primaryModel: requestedModel,
             keyByProvider,
             dbModelRows: cachedDbModels,
-          }).slice(0, 3);
+          }).slice(0, 6);
 
-          const primaryReason = attempt.errorInfo?.code || `http_${attempt.status}`;
+          const primaryReason = attempt.ok ? 'empty_reply' : (attempt.errorInfo?.code || `http_${attempt.status}`);
           for (const cand of candidates) {
             triedModels.push(cand.model);
             const altRes = await sendChatCompletionRequest({
@@ -1514,10 +1604,12 @@ async function handleApi(request, url, env) {
               apiKey: cand.apiKey,
               baseUrl: cand.baseUrl,
               payload: fetchBody,
-              timeoutMs: 30_000,
+              timeoutMs: 18_000,
             });
-            if (altRes.ok && altRes.data?.choices?.[0]?.message?.content) {
+            const altReply = altRes.ok ? extractAssistantReply(altRes.data) : '';
+            if (altRes.ok && altReply) {
               attempt = altRes;
+              finalReply = altReply;
               activeProvider = cand.provider;
               activeModel = cand.model;
               activeApiKey = cand.apiKey;
@@ -1526,28 +1618,44 @@ async function handleApi(request, url, env) {
               fallbackReason = primaryReason;
               break;
             }
+            triedDetails.push({
+              model: cand.model,
+              provider: cand.provider,
+              status: altRes.ok ? 502 : altRes.status,
+              code: altRes.ok ? 'empty_reply' : (altRes.errorInfo?.code || `http_${altRes.status}`),
+              retryAfterSec: altRes.errorInfo?.retryAfterSec ?? null,
+              detail: altRes.ok ? 'Model mengembalikan respons kosong.' : (altRes.errorInfo?.rawDetail || ''),
+            });
           }
         }
 
-        if (!attempt.ok) {
-          const errInfo = attempt.errorInfo || parseChatUpstreamError('', attempt.status);
-          const finalStatus = [401, 402, 403, 404, 429].includes(attempt.status) ? attempt.status : 502;
+        if (!attempt.ok || !finalReply) {
+          const errInfo = attempt.errorInfo || parseChatUpstreamError('', attempt.status || 502);
+          const rateLimitedEntries = triedDetails.filter((d) => d.status === 429 || d.code === 'rate_limit_exceeded');
+          const allRateLimited = triedDetails.length > 1 && rateLimitedEntries.length === triedDetails.length;
+          const retryCandidates = rateLimitedEntries.map((d) => d.retryAfterSec).filter((n) => Number.isFinite(n) && n > 0);
+          const bestRetryAfter = retryCandidates.length ? Math.min(...retryCandidates) : errInfo.retryAfterSec;
+          const finalStatus = [401, 402, 403, 404, 429].includes(attempt.status) ? attempt.status : (rateLimitedEntries.length ? 429 : 502);
+          const errorMessage = allRateLimited
+            ? (bestRetryAfter
+              ? `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Coba lagi dalam ${bestRetryAfter} detik, pilih model lain, atau tambah saldo/provider di Admin.`
+              : `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Tunggu sebentar atau tambah saldo/provider di Admin.`)
+            : errInfo.friendlyMessage;
           return jsonResponse(
             {
               ok: false,
-              error: errInfo.friendlyMessage,
+              error: errorMessage,
               code: errInfo.code,
-              status: attempt.status,
-              retryAfterSec: errInfo.retryAfterSec,
+              status: finalStatus,
+              retryAfterSec: bestRetryAfter,
               detail: errInfo.rawDetail,
               triedModels,
+              triedDetails,
             },
             finalStatus,
-            errInfo.retryAfterSec ? { 'retry-after': String(errInfo.retryAfterSec) } : {},
+            bestRetryAfter ? { 'retry-after': String(bestRetryAfter) } : {},
           );
         }
-
-        let finalReply = attempt.data?.choices?.[0]?.message?.content ?? '';
         const actions = [];
         if (githubEnabled) {
           let roundMessages = [...fetchBody.messages];
@@ -1605,7 +1713,7 @@ async function handleApi(request, url, env) {
               }
             }
             if (!roundRes.ok) break;
-            finalReply = roundRes.data?.choices?.[0]?.message?.content ?? '';
+            finalReply = extractAssistantReply(roundRes.data) || '';
           }
         }
         const reply = finalReply;
