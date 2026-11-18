@@ -660,3 +660,47 @@ test('Wan video help and quote are admin-only, bounded read-only diagnostics wit
     assert.deepEqual(calls.map((c) => c.name), ['get_model_help', 'quote_generation']);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('Gemini video model help and quote use fixed read-only settings and remain admin isolated', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    calls.push(body.params);
+    if (body.params.name === 'get_model_help') {
+      assert.deepEqual(body.params.arguments, { type: 'video', model_id: 192 });
+      return Response.json({ id: body.id, result: { structuredContent: { available: true, generation_types: ['image'], token: 'SECRET', message: 'SECRET' } } });
+    }
+    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 192, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'Kucing berjalan', images: ['https://images.example/a.png?signature=SECRET'] } } });
+    return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: 25, prompt: 'SECRET', image_url: 'SECRET', message: 'SECRET' } } });
+  };
+  const invoke = (action, { cookie, token = 'admin-token', origin = 'https://blea-ai.blea-ai.workers.dev', data = {} } = {}) => worker.fetch(new Request(`https://blea-ai.blea-ai.workers.dev/api/freebeat/${action}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}), 'content-type': 'application/json' }, body: JSON.stringify(data) }), env);
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await invoke('video-gemini-help', { cookie, token: 'user' })).status, 403);
+    assert.equal((await invoke('video-gemini-help', { cookie, token: 'other-admin' })).status, 401);
+    assert.equal((await invoke('video-gemini-help', { cookie, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await invoke('video-gemini-help', { cookie, data: { model_id: 182 } })).status, 400);
+    assert.equal((await invoke('video-gemini-quote', { cookie, data: { prompt: 'x', image_url: 'https://images.example/a.png', max_credits: 100 } })).status, 400);
+    assert.equal((await invoke('video-gemini-quote', { cookie, data: { prompt: 'x', image_url: 'http://images.example/a.png' } })).status, 400);
+    assert.equal(calls.length, 0);
+    const help = await invoke('video-gemini-help', { cookie });
+    assert.equal(help.status, 200); assert.equal(help.headers.get('cache-control'), 'no-store');
+    const helpText = await help.text(); assert.doesNotMatch(helpText, /SECRET/);
+    assert.equal(JSON.parse(helpText).model_id, 192);
+    const quote = await invoke('video-gemini-quote', { cookie, data: { prompt: 'Kucing berjalan', image_url: 'https://images.example/a.png?signature=SECRET' } });
+    const text = await quote.text();
+    assert.equal(quote.status, 200); assert.doesNotMatch(text, /SECRET|Kucing berjalan/);
+    assert.equal(JSON.parse(text).quote.credits, 25);
+    assert.deepEqual(calls.map((c) => c.name), ['get_model_help', 'quote_generation']);
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
-import { FREEBEAT_VIDEO_TEST } from '../lib/freebeatVideoTestSettings';
+import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC } from '../lib/freebeatVideoTestSettings';
 
 export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, request, userId, storage }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [help, setHelp] = useState(null);
   const [quote, setQuote] = useState(null);
+  const [geminiHelp, setGeminiHelp] = useState(null);
+  const [geminiQuote, setGeminiQuote] = useState(null);
   const [prompt, setPrompt] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [approval, setApproval] = useState(null);
@@ -18,7 +20,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [privacyConsent, setPrivacyConsent] = useState({});
   const visibilityVersion = useRef(0);
   useEffect(() => {
-    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); }
+    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setGeminiHelp(null); setGeminiQuote(null); }
     return () => { visibilityVersion.current += 1; };
   }, [connected]);
   const [testNotice, setTestNotice] = useState('');
@@ -37,7 +39,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     try {
       const item = await uploadFreebeatImage(storage, userId, file);
       setUploaded(item);
-      if (item.url) { setImageUrl(item.url); setQuote(null); clearApproval(); setUploadNotice('Gambar tersimpan dan URL publik terisi di bawah.'); }
+      if (item.url) { setImageUrl(item.url); setQuote(null); setGeminiQuote(null); clearApproval(); setUploadNotice('Gambar tersimpan dan URL publik terisi di bawah.'); }
       else setUploadError('Gambar tersimpan, tetapi URL tidak tersedia. Anda dapat menghapusnya di bawah.');
     } catch (err) { setUploadError(err.message || 'Upload tidak berhasil; periksa Supabase Storage.'); }
     finally { setUploadBusy(false); }
@@ -47,7 +49,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     setUploadBusy(true); setUploadError(''); setUploadNotice('');
     try {
       await deleteFreebeatImage(storage, uploaded.path);
-      if (imageUrl === uploaded.url) { setImageUrl(''); setQuote(null); clearApproval(); }
+      if (imageUrl === uploaded.url) { setImageUrl(''); setQuote(null); setGeminiQuote(null); clearApproval(); }
       setUploaded(null); setFile(null); setPublicConfirmed(false);
       if (fileInput.current) fileInput.current.value = '';
       setUploadNotice('Gambar dihapus dari Supabase. Salinan atau cache pihak lain mungkin masih ada.');
@@ -67,6 +69,16 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       const result = await request(action, 'POST', action === 'video-help' ? {} : { prompt, image_url: imageUrl });
       if (action === 'video-help') setHelp(result.help); else setQuote(result.quote);
     } catch (err) { setError(err.message || 'Pemeriksaan video gagal.'); }
+    finally { setBusy(false); }
+  }
+  async function inspectGemini(action) {
+    if (busy || uploadBusy) return;
+    setBusy(true); setError(''); clearApproval();
+    if (action === 'video-gemini-help') setGeminiHelp(null); else setGeminiQuote(null);
+    try {
+      const result = await request(action, 'POST', action === 'video-gemini-help' ? {} : { prompt, image_url: imageUrl });
+      if (action === 'video-gemini-help') setGeminiHelp(result.help); else setGeminiQuote(result.quote);
+    } catch (err) { setError(err.message || 'Pemeriksaan Gemini gagal.'); }
     finally { setBusy(false); }
   }
   async function refreshTests() {
@@ -139,18 +151,29 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     <p>Untuk memeriksa quote, gunakan URL hasil upload atau masukkan URL HTTPS lain yang dapat diakses Freebeat. Menekan tombol quote mengirim prompt dan URL tersebut ke Freebeat; jangan gunakan gambar pribadi atau URL bertanda tangan yang tidak ingin Anda bagikan.</p>
     <p>Parameter quote: <strong>Wan 3.0 · gambar ke video · {FREEBEAT_VIDEO_TEST.duration} detik · {FREEBEAT_VIDEO_TEST.resolution}</strong>. Opsi lain memakai default Freebeat. Dukungan durasi dan resolusi ini belum terkonfirmasi; Freebeat dapat menolak atau tidak memberikan quote. Jangan menganggapnya pilihan termurah tanpa membandingkan quote.</p>
     <p>Angka quote bukan biaya akhir dan tidak menjamin generasi berhasil. Tidak ada generasi atau pengeluaran kredit pada pemeriksaan ini.</p>
-    <label className="freebeat-field">Prompt video<input type="text" value={prompt} maxLength={2000} disabled={busy || uploadBusy} onChange={(event) => { setPrompt(event.target.value); setQuote(null); clearApproval(); }} /></label>
-    <label className="freebeat-field">URL HTTPS gambar<input type="url" value={imageUrl} maxLength={2048} disabled={busy || uploadBusy} autoComplete="off" onChange={(event) => { setImageUrl(event.target.value); setQuote(null); clearApproval(); }} /></label>
+    <label className="freebeat-field">Prompt video<input type="text" value={prompt} maxLength={2000} disabled={busy || uploadBusy} onChange={(event) => { setPrompt(event.target.value); setQuote(null); setGeminiQuote(null); clearApproval(); }} /></label>
+    <label className="freebeat-field">URL HTTPS gambar<input type="url" value={imageUrl} maxLength={2048} disabled={busy || uploadBusy} autoComplete="off" onChange={(event) => { setImageUrl(event.target.value); setQuote(null); setGeminiQuote(null); clearApproval(); }} /></label>
     <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={!imageUrl || busy || uploadBusy} onClick={copyUrl}>Salin URL gambar</button><button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy || !prompt.trim() || !imageUrl.trim()} onClick={() => inspect('video-quote')}>Periksa quote Wan 3.0</button></div>
     {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
     {quote !== null && <FreebeatCopyResult title="Quote video yang disaring" value={{ ...FREEBEAT_VIDEO_TEST, quote }} description="Hasil ini tidak memuat prompt atau URL gambar. Quote bukan biaya akhir maupun persetujuan generasi." />}
     <div className="freebeat-result">
-      <h3>Uji generasi video khusus admin</h3>
+      <h3>Gemini Omni Flash V1.1 · ID 192 · baca saja</h3>
+      <p>Periksa informasi model ini dan quote untuk gambar ke video, 5 detik, 480p menggunakan prompt dan URL gambar di atas. Dukungan pengaturan ini belum terkonfirmasi; hasil yang disaring bisa tidak lengkap. Quote bukan biaya akhir dan dapat ditolak atau tidak tersedia.</p>
+      <p>Menekan quote mengirim prompt dan URL ke Freebeat, tanpa membuat video atau memakai kredit. Uji berbayar Gemini belum tersedia; tombol persetujuan di bawah tetap hanya untuk Wan 3.0.</p>
+      <div className="freebeat-actions">
+        <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy} onClick={() => inspectGemini('video-gemini-help')}>Periksa informasi Gemini Omni Flash V1.1</button>
+        <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy || !prompt.trim() || !imageUrl.trim()} onClick={() => inspectGemini('video-gemini-quote')}>Periksa quote Gemini Omni Flash V1.1</button>
+      </div>
+      {geminiHelp !== null && <FreebeatCopyResult title="Informasi Gemini Omni Flash V1.1 yang disaring" value={{ model_id: FREEBEAT_GEMINI_DIAGNOSTIC.model_id, help: geminiHelp }} />}
+      {geminiQuote !== null && <FreebeatCopyResult title="Quote Gemini Omni Flash V1.1 yang disaring" value={{ ...FREEBEAT_GEMINI_DIAGNOSTIC, quote: geminiQuote }} description="Hasil tidak memuat prompt atau URL gambar dan bukan persetujuan generasi." />}
+    </div>
+    <div className="freebeat-result">
+      <h3>Uji generasi video khusus admin · Wan 3.0</h3>
       <p>Ini memakai kredit akun Freebeat admin, bukan kredit BLEA. Gunakan hanya sesuai ketentuan plan Freebeat. Biaya aktual dan refund tidak dijamin, termasuk jika tugas gagal. Jika hasil pengiriman tidak pasti, jangan ulangi sebelum memeriksa Freebeat dan catatan.</p>
       <p>Menyiapkan quote tidak membuat video. Pengiriman memerlukan konfirmasi terpisah, dengan batas maksimum sama dengan quote yang baru. URL gambar dan prompt dikirim ke Freebeat; isi di URL dapat berubah setelah persetujuan.</p>
       {!imageAccess && <p>Hubungkan izin gambar/generasi terlebih dahulu di atas.</p>}
       <div className="freebeat-actions">
-        <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || busy || uploadBusy || !prompt.trim() || !imageUrl.trim()} onClick={prepare}>Siapkan quote video untuk persetujuan</button>
+        <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || busy || uploadBusy || !prompt.trim() || !imageUrl.trim()} onClick={prepare}>Siapkan quote Wan 3.0 untuk persetujuan</button>
         <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy} onClick={inspectTests}>Periksa catatan uji video</button>
       </div>
       {approval && <div className="freebeat-result">

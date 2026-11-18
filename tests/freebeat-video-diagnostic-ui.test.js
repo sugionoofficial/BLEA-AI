@@ -109,14 +109,14 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
   try {
     await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request })));
     await change('input[type=text]', 'Kucing berjalan'); await change('input[type=url]', 'https://images.example/cat.png');
-    await React.act(async () => button('Siapkan quote video untuk persetujuan').click());
+    await React.act(async () => button('Siapkan quote Wan 3.0 untuk persetujuan').click());
     assert.deepEqual(calls.map((c) => c[0]), ['video-prepare', 'video-tests']);
     assert.equal(button('Setujui dan kirim satu video').disabled, true);
     await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
     assert.equal(button('Setujui dan kirim satu video').disabled, false);
     await change('input[type=text]', 'Kucing tidur');
     assert.equal(button('Setujui dan kirim satu video'), undefined);
-    await React.act(async () => button('Siapkan quote video untuk persetujuan').click());
+    await React.act(async () => button('Siapkan quote Wan 3.0 untuk persetujuan').click());
     await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
     await React.act(async () => button('Setujui dan kirim satu video').click());
     assert.equal(calls.filter((c) => c[0] === 'video-submit').length, 1);
@@ -164,6 +164,42 @@ test('failed video status presents shareable filtered details without retrying g
     await React.act(async () => button('Sembunyikan pesan pribadi').click());
     assert.doesNotMatch(document.body.textContent, /Example private message/);
     assert.equal(button('Tampilkan pesan kegagalan pribadi').disabled, true);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('Gemini help and quote are read-only and use the current image and prompt', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => { calls.push(args); return args[0] === 'video-gemini-help' ? { help: { available: true } } : { quote: { status: 'quoted', credits: 25 } }; };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const change = async (selector, value) => { const input = document.querySelector(selector); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); };
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request })));
+    assert.match(document.body.textContent, /tombol persetujuan di bawah tetap hanya untuk Wan 3.0/);
+    assert.equal(button('Periksa quote Gemini Omni Flash V1.1').disabled, true);
+    await React.act(async () => button('Periksa informasi Gemini Omni Flash V1.1').click());
+    assert.deepEqual(calls[0], ['video-gemini-help', 'POST', {}]);
+    const help = JSON.parse(document.querySelector('[aria-label="Informasi Gemini Omni Flash V1.1 yang disaring"]').value);
+    assert.equal(help.model_id, 192);
+    await change('input[type=text]', 'Kucing bergerak'); await change('input[type=url]', 'https://images.example/cat.png');
+    await React.act(async () => button('Periksa quote Gemini Omni Flash V1.1').click());
+    assert.deepEqual(calls[1], ['video-gemini-quote', 'POST', { prompt: 'Kucing bergerak', image_url: 'https://images.example/cat.png' }]);
+    const quoteText = document.querySelector('[aria-label="Quote Gemini Omni Flash V1.1 yang disaring"]').value;
+    assert.deepEqual(JSON.parse(quoteText), { model_id: 192, generation_type: 'image', duration: 5, resolution: '480p', quote: { status: 'quoted', credits: 25 } });
+    assert.doesNotMatch(quoteText, /Kucing|images.example/);
+    await change('input[type=text]', 'Kucing tidur');
+    assert.equal(document.querySelector('[aria-label="Quote Gemini Omni Flash V1.1 yang disaring"]'), null);
+    assert.deepEqual(calls.map((c) => c[0]), ['video-gemini-help', 'video-gemini-quote']);
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
