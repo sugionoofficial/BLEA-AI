@@ -280,8 +280,9 @@ async function getBalance(accessToken) {
 // Only structural metadata for these image tools is returned; provider descriptions,
 // examples, URLs, default values and unrelated tools are deliberately omitted.
 const IMAGE_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_image', 'get_task_status']);
+const VIDEO_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_video', 'get_task_status']);
 const SAFE_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']);
-const SAFE_SCHEMA_ENUMS = new Set(['image', 'image_edit', 'generate_image', 'text', 'video']);
+const SAFE_SCHEMA_ENUMS = new Set(['image', 'image_edit', 'generate_image', 'generate_video', 'text', 'video', 'transition', 'reference']);
 function schemaName(value) { return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value); }
 function imageSchema(schema, depth = 0) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 5) return {};
@@ -294,13 +295,13 @@ function imageSchema(schema, depth = 0) {
   if (schema.items && typeof schema.items === 'object') out.items = imageSchema(schema.items, depth + 1);
   for (const name of ['anyOf', 'oneOf', 'allOf']) if (Array.isArray(schema[name])) out[name] = schema[name].slice(0, 8).map((child) => imageSchema(child, depth + 1));
   if (Array.isArray(schema.enum)) {
-    out.known_enum_values = schema.enum.filter((item) => SAFE_SCHEMA_ENUMS.has(item)).slice(0, 5);
+    out.known_enum_values = schema.enum.filter((item) => SAFE_SCHEMA_ENUMS.has(item)).slice(0, 20);
     out.enum_incomplete = out.known_enum_values.length !== schema.enum.length;
   }
   return out;
 }
 
-async function getImageSchemas(accessToken) {
+async function getToolSchemas(accessToken, allowedTools) {
   const headers = await openMcp(accessToken);
   const tools = new Map();
   const cursors = new Set();
@@ -309,7 +310,7 @@ async function getImageSchemas(accessToken) {
   for (let page = 0; page < 5; page += 1) {
     const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: page + 2, method: 'tools/list', params: cursor ? { cursor } : {} }, 'inspect', headers, 262144);
     if (!Array.isArray(result.tools)) throw mcpFailure('inspect', 'response');
-    for (const tool of result.tools) if (tool && IMAGE_TOOLS.has(tool.name) && !tools.has(tool.name)) tools.set(tool.name, imageSchema(tool.inputSchema));
+    for (const tool of result.tools) if (tool && allowedTools.has(tool.name) && !tools.has(tool.name)) tools.set(tool.name, imageSchema(tool.inputSchema));
     if (!result.nextCursor) break;
     if (typeof result.nextCursor !== 'string' || result.nextCursor.length > 1024 || cursors.has(result.nextCursor)) throw mcpFailure('inspect', 'response');
     cursors.add(result.nextCursor);
@@ -328,9 +329,10 @@ function modelContent(result) {
 function safeModelId(id) {
   return (Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(id));
 }
-async function getImageModels(accessToken) {
+async function getModels(accessToken, type) {
+  if (!['image', 'video'].includes(type)) throw mcpFailure('models', 'response');
   const headers = await openMcp(accessToken);
-  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_models', arguments: { type: 'image' } } }, 'models', headers, 262144);
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_models', arguments: { type } } }, 'models', headers, 262144);
   const content = modelContent(result);
   const list = Array.isArray(content) ? content : content?.models ?? content?.items ?? content?.data?.models ?? content?.data?.items ?? (Array.isArray(content?.data) ? content.data : null);
   if (!Array.isArray(list)) throw mcpFailure('models', 'response');
@@ -407,7 +409,7 @@ async function modelHelp(accessToken, modelId) {
 }
 async function prepareImage(env, user, session, input) {
   await requireImageSession(session);
-  const catalog = await getImageModels(session.accessToken);
+  const catalog = await getModels(session.accessToken, 'image');
   if (!catalog.models.some((m) => m.model_id === input.model_id)) throw fail('ID model tidak ditemukan dalam daftar gambar saat ini.', 400);
   await modelHelp(session.accessToken, input.model_id);
   const credits = quotedCredits(await rawImageQuote(session.accessToken, input));
@@ -530,12 +532,14 @@ export async function handleFreebeat(request, url, env, user) {
       const session = await readSession(request, env, user.id);
       return response({ connected: Boolean(session), imageAccess: session?.imageAccess === true, expiresAt: session?.expiresAt || null });
     }
-    if (['balance', 'image-schemas', 'image-models', 'image-quote'].includes(action) && request.method === 'POST') {
+    if (['balance', 'image-schemas', 'image-models', 'image-quote', 'video-schemas', 'video-models'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       if (action === 'balance') return response({ ok: true, balance: await getBalance(session.accessToken) });
-      if (action === 'image-schemas') return response({ ok: true, ...(await getImageSchemas(session.accessToken)) });
-      if (action === 'image-models') return response({ ok: true, ...(await getImageModels(session.accessToken)) });
+      if (action === 'image-schemas') return response({ ok: true, ...(await getToolSchemas(session.accessToken, IMAGE_TOOLS)) });
+      if (action === 'video-schemas') return response({ ok: true, ...(await getToolSchemas(session.accessToken, VIDEO_TOOLS)) });
+      if (action === 'image-models') return response({ ok: true, ...(await getModels(session.accessToken, 'image')) });
+      if (action === 'video-models') return response({ ok: true, ...(await getModels(session.accessToken, 'video')) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
     }
     if (['image-prepare', 'image-submit', 'image-tests', 'image-task'].includes(action)) {

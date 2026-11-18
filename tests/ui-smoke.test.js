@@ -250,6 +250,10 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Periksa respons quote'));
   assert.ok(html.includes('Siapkan quote untuk persetujuan'));
   assert.ok(html.includes('Uji generasi gambar admin'));
+  assert.ok(html.includes('Persiapan uji video'));
+  assert.ok(html.includes('Lihat model video'));
+  assert.ok(html.includes('Periksa skema tool video'));
+  assert.ok(html.includes('Uji generasi video belum tersedia'));
   assert.ok(html.includes('tidak pasti'));
   assert.ok(html.includes('type="password"'));
   assert.ok(html.includes('Ini bukan koneksi MCP') === false, 'site result is hidden before a successful test');
