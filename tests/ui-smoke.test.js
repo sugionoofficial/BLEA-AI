@@ -211,3 +211,14 @@ test('TempMail admin page renders privately and isolates untrusted email HTML', 
   assert.ok(source.includes('sandbox=""'), 'Email HTML must be rendered in a sandboxed iframe without scripts or same-origin access');
   assert.ok(source.includes("default-src 'none'"), 'Email HTML iframe must apply a restrictive CSP');
 });
+
+test('History page is available to signed-in users and starts with a loading state', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { HistoryPage } = await vite.ssrLoadModule('/src/auth/HistoryPage.jsx');
+  const session = { access_token: 'test-token', user: { id: 'u1', email: 'creator@example.com', user_metadata: {}, app_metadata: {} } };
+  const html = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: ['/history'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(HistoryPage))));
+  assert.ok(html.includes('Riwayat generasi milik Anda.'));
+  assert.ok(html.includes('History'));
+  assert.ok(html.includes('Memuat riwayat'));
+});

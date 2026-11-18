@@ -112,8 +112,8 @@ export async function fetchVideoStatus(id) {
 }
 
 // Generate Video — ambil riwayat generasi milik pengguna dengan URL putar bertanda tangan.
-export async function fetchVideoHistory() {
-  return edgeRequest('/video/history', {});
+export async function fetchVideoHistory({ offset = 0 } = {}) {
+  return edgeRequest('/video/history', { offset });
 }
 
 export async function chatCompletion({ conversationId, model, provider, messages, github, repository, autoFallback = true }) {

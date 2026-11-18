@@ -11,6 +11,7 @@ const AuthPage = lazy(() => import('./auth/AuthPages').then((module) => ({ defau
 const AccountSettings = lazy(() => import('./auth/AccountSettings').then((module) => ({ default: module.AccountSettings })));
 const ForgotPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ForgotPasswordPage })));
 const ResetPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ResetPasswordPage })));
+const HistoryPage = lazy(() => import('./auth/HistoryPage').then((module) => ({ default: module.HistoryPage })));
 const GeneratePage = lazy(() => import('./auth/GeneratePage').then((module) => ({ default: module.GeneratePage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const TempMailPage = lazy(() => import('./auth/TempMailPage').then((module) => ({ default: module.TempMailPage })));
@@ -41,6 +42,7 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
             <Route path="/generate" element={<GeneratePage />} />
+            <Route path="/history" element={<HistoryPage />} />
             <Route path="/projects" element={<Navigate to="/generate" replace />} />
             <Route path="/studio" element={<StudioErrorBoundary><AIStudio /></StudioErrorBoundary>} />
             <Route path="/settings" element={<AccountSettings />} />
