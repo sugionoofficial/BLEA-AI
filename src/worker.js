@@ -909,12 +909,12 @@ async function handleApi(request, url, env) {
       });
     }
 
-    // ---- /status: configured providers & UnoRouter status ----
+    // ---- /status: configured providers & readiness ----
     if (path === 'status' && (method === 'GET' || method === 'POST')) {
       const res = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label');
       const rows = await res.json().catch(() => []);
       const configuredProviders = (rows || []).filter((r) => !!r.api_key).map((r) => r.provider);
-      const configured = configuredProviders.includes('unorouter');
+      const configured = configuredProviders.length > 0;
       return jsonResponse({ ok: true, configured, providers: configuredProviders });
     }
 
@@ -1019,6 +1019,44 @@ async function handleApi(request, url, env) {
             priceLabel: m.priceLabel,
           })),
         });
+      }
+
+      if (provider !== 'unorouter' && provider !== 'openrouter') {
+        try {
+          const keyRow = await fetchProviderKeyRecord(env, provider);
+          const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
+          const headers = keyRow?.api_key ? { authorization: `Bearer ${keyRow.api_key}` } : {};
+          const upstream = await fetch(`${apiBase}/models`, {
+            headers,
+            signal: AbortSignal.timeout(20_000),
+          });
+          if (!upstream.ok) return jsonResponse({ error: `Catalog ${provider} gagal dimuat (HTTP ${upstream.status}).`, status: upstream.status }, 502);
+          const payload = await upstream.json().catch(() => ({}));
+          const rawList = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload?.models) ? payload.models : []);
+          const models = rawList
+            .map((item) => {
+              const id = typeof item === 'string' ? item : (item?.id || item?.model || '');
+              if (!id) return null;
+              const isVid = isVideoModelId(id);
+              const isEmb = /embedding|embed/i.test(id);
+              const isImg = /dall-e|imagen|flux|image/i.test(id);
+              const category = isVid ? 'Video' : (isEmb ? 'Embedding' : (isImg ? 'Image' : 'Text'));
+              return {
+                id,
+                provider,
+                category,
+                tags: [category, provider.toUpperCase()],
+                description: item?.description || item?.owned_by || '',
+                isFree: id.endsWith(':free') || provider === 'pekpik',
+                online: true,
+                priceLabel: id.endsWith(':free') ? 'Gratis' : (provider === 'pekpik' ? 'Free Tier' : 'API'),
+              };
+            })
+            .filter(Boolean);
+          return jsonResponse({ models });
+        } catch (e) {
+          return jsonResponse({ error: String(e) }, 502);
+        }
       }
 
       try {

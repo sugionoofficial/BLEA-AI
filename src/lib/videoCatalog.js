@@ -78,6 +78,14 @@ export const PROVIDER_PRESETS = {
     protocol: 'openai_video',
     description: 'MiniMax Hailuo 2.3 / H3',
   },
+  pekpik: {
+    id: 'pekpik',
+    label: 'PEKPIK (Free / OpenAI-Compatible)',
+    defaultBaseUrl: 'https://aiapiv2.pekpik.com',
+    baseUrl: 'https://aiapiv2.pekpik.com',
+    protocol: 'openai_video',
+    description: 'PEKPIK API gateway (/v1/chat/completions & /v1/models)',
+  },
   custom: {
     id: 'custom',
     label: 'Custom Gateway',

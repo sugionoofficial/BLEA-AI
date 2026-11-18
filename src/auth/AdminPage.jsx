@@ -43,6 +43,7 @@ const tabs = [
 ];
 
 const QUICK_PROVIDER_PRESETS = [
+  PROVIDER_PRESETS.pekpik,
   PROVIDER_PRESETS.openrouter,
   PROVIDER_PRESETS.xai,
   PROVIDER_PRESETS.openai,
@@ -569,6 +570,11 @@ export function AdminPage() {
                   >
                     <option value="unorouter">Katalog UnoRouter</option>
                     <option value="openrouter">Katalog OpenRouter Video</option>
+                    {displayedProviderRows
+                      .filter((p) => p.provider !== 'unorouter' && p.provider !== 'openrouter' && p.api_key)
+                      .map((p) => (
+                        <option key={p.provider} value={p.provider}>Katalog {p.label || p.provider}</option>
+                      ))}
                   </select>
                   <button
                     className="admin-api-verify"
@@ -645,10 +651,10 @@ export function AdminPage() {
 
               <section className="admin-api-card">
                 <div className="admin-api-heading">
-                  <div><span className="admin-eyebrow">MODEL VIDEO KUSTOM</span><h2>Tambah model video manual</h2></div>
+                  <div><span className="admin-eyebrow">MODEL KUSTOM · CHAT &amp; VIDEO</span><h2>Tambah model manual</h2></div>
                 </div>
                 <p className="admin-api-note">
-                  Aktifkan ID model video spesifik untuk provider mana pun (misal <code>google/veo-3.1</code> di OpenRouter, <code>grok-imagine-video</code> di xAI, atau <code>sora-2</code> di OpenAI / gateway kustom).
+                  Aktifkan ID model Chat atau Video spesifik untuk provider mana pun (misal <code>gemini-2.5-flash</code> / <code>gpt-5.5</code> di PEKPIK, <code>google/veo-3.1</code> di OpenRouter, atau <code>sora-2</code> di OpenAI).
                 </p>
                 <form className="admin-api-input-row" onSubmit={addCustomVideoModel}>
                   <select
@@ -663,7 +669,7 @@ export function AdminPage() {
                   <input
                     value={newCustomModel.model}
                     onChange={(e) => setNewCustomModel((cur) => ({ ...cur, model: e.target.value }))}
-                    placeholder="ID model (misal: google/veo-3.1 atau sora-2)"
+                    placeholder="ID model (misal: gemini-2.5-flash, gpt-5.5, atau google/veo-3.1)"
                   />
                   <button type="submit" className="admin-api-save" disabled={modelBusy === 'add-custom' || !newCustomModel.model.trim()}>
                     <Plus size={14} /> Tambah model
