@@ -189,16 +189,20 @@ function mcpFailure(stage, kind, status) {
   return Object.assign(fail(`${message} ${tag}`, kind === 'http' && status === 401 ? 401 : 502), { isMcpFailure: true });
 }
 
-function rpcObject(text, expectedId, stage) {
+function rpcObject(text, expectedId, stage, captureToolError = false) {
   let object;
   try { object = JSON.parse(text); } catch { return null; }
   if (!object || typeof object !== 'object' || Array.isArray(object) || object.id !== expectedId) return null;
-  if (object.error || !object.result || typeof object.result !== 'object' || object.result.isError) throw mcpFailure(stage, 'rpc');
+  if (object.error) {
+    if (captureToolError) return { isError: true, error: object.error };
+    throw mcpFailure(stage, 'rpc');
+  }
+  if (!object.result || typeof object.result !== 'object' || (object.result.isError && !captureToolError)) throw mcpFailure(stage, 'rpc');
   return object.result;
 }
 
 // Bound memory while reading, and stop at the expected SSE response even if the stream stays open.
-async function readRpc(res, expectedId, stage, signal, maxBytes = 65536) {
+async function readRpc(res, expectedId, stage, signal, maxBytes = 65536, captureToolError = false) {
   const type = (res.headers.get('content-type') || '').toLowerCase();
   const isSse = type.includes('text/event-stream');
   if (!isSse && !type.includes('application/json')) throw mcpFailure(stage, 'response');
@@ -211,14 +215,14 @@ async function readRpc(res, expectedId, stage, signal, maxBytes = 65536) {
   let text = '', bytes = 0;
   function parseEvent(event) {
     const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).replace(/^ /, '')).join('\n');
-    return data ? rpcObject(data, expectedId, stage) : null;
+    return data ? rpcObject(data, expectedId, stage, captureToolError) : null;
   }
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) {
         text += decoder.decode();
-        const result = isSse ? parseEvent(text) : rpcObject(text, expectedId, stage);
+        const result = isSse ? parseEvent(text) : rpcObject(text, expectedId, stage, captureToolError);
         if (result) return result;
         throw mcpFailure(stage, 'response');
       }
@@ -244,7 +248,7 @@ async function readRpc(res, expectedId, stage, signal, maxBytes = 65536) {
   }
 }
 
-async function rpc(accessToken, body, stage, extraHeaders = {}, maxBytes = 65536) {
+async function rpc(accessToken, body, stage, extraHeaders = {}, maxBytes = 65536, captureToolError = false) {
   const signal = AbortSignal.timeout(15000);
   let res;
   try {
@@ -260,7 +264,7 @@ async function rpc(accessToken, body, stage, extraHeaders = {}, maxBytes = 65536
     throw mcpFailure(stage, 'http', res.status);
   }
   if (body.id === undefined) { try { await res.body?.cancel(); } catch { /* notification response ignored */ } return {}; }
-  return { result: await readRpc(res, body.id, stage, signal, maxBytes), sessionId: res.headers.get('mcp-session-id') };
+  return { result: await readRpc(res, body.id, stage, signal, maxBytes, captureToolError), sessionId: res.headers.get('mcp-session-id') };
 }
 async function openMcp(accessToken) {
   const init = await rpc(accessToken, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'blea-ai-readonly-test', version: '1.0.0' } } }, 'init');
@@ -590,7 +594,7 @@ async function prepareVideo(env, user, session, input) {
 async function submitVideo(env, user, session, request) {
   await requireImageSession(session);
   const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['approval', 'confirm'].includes(key)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 12000) throw fail('Persetujuan uji tidak valid.', 400);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['approval', 'confirm', 'private_diagnostics'].includes(key)) || input.confirm !== true || (input.private_diagnostics !== undefined && typeof input.private_diagnostics !== 'boolean') || typeof input.approval !== 'string' || input.approval.length > 12000) throw fail('Persetujuan uji tidak valid.', 400);
   const ticket = await unseal(input.approval, env, 'video-approval', 12000);
   if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !validVideoSettings(ticket.settings) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME || typeof ticket.credits !== 'number' || !Number.isFinite(ticket.credits) || ticket.credits < 0 || ticket.credits > 1000000) throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
   const exact = validateVideoInput({ prompt: ticket.prompt, image_url: ticket.image_url });
@@ -607,18 +611,21 @@ async function submitVideo(env, user, session, request) {
     throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada video dikirim. Periksa catatan.', 409);
   }
   let taskId;
+  let initialDiagnostics = null;
   try {
-    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { ...ticket.settings, prompt: exact.prompt, images: [exact.image_url], max_credits: ticket.credits } } }, 'generate', headers, 262144);
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { ...ticket.settings, prompt: exact.prompt, images: [exact.image_url], max_credits: ticket.credits } } }, 'generate', headers, 262144, input.private_diagnostics === true);
+    if (input.private_diagnostics === true) initialDiagnostics = { received: true, messages: initialVideoMessages(result) };
+    if (result.isError) throw new Error('unrecognized');
     const content = modelContent(result);
     if (!content || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) throw new Error('unrecognized');
     taskId = content.batch_id;
   } catch {
     try { await videoMark(env, user.id, ticket.id, 'unknown'); } catch { /* retain lock */ }
-    return { id: ticket.id, status: 'unknown' };
+    return { id: ticket.id, status: 'unknown', ...(input.private_diagnostics === true ? { initial_diagnostics: initialDiagnostics || { received: false, messages: [] } } : {}) };
   }
   try { await videoMark(env, user.id, ticket.id, 'submitted', taskId); }
-  catch { return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId }; }
-  return { id: ticket.id, status: 'submitted' };
+  catch { return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId, ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}) }; }
+  return { id: ticket.id, status: 'submitted', ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}) };
 }
 async function videoTests(env, user, session) {
   const rows = await videoDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,model_id,quote_credits,max_credits,status,created_at,session_hash&order=created_at.desc&limit=20`);
@@ -701,6 +708,29 @@ function privateModelHelp(value) {
   return { help: visit(value, 0), truncated };
 }
 
+// Extract only selected batch/item message fields from the original create
+// response. The provider body is not stored or logged; redaction is best effort.
+function initialVideoMessages(result) {
+  const candidates = [];
+  const fields = (value) => [value?.failure?.reason, value?.error_code, value?.error_message, value?.message, value?.error?.message];
+  function collect(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    candidates.push(...fields(value));
+    if (Array.isArray(value.items)) for (const item of value.items.slice(0, 10)) candidates.push(...fields(item));
+  }
+  collect(result);
+  const structured = modelContent(result);
+  collect(structured);
+  if (!result.structuredContent && Array.isArray(result.content)) {
+    for (const entry of result.content.slice(0, 10)) {
+      if (entry?.type !== 'text' || typeof entry.text !== 'string') continue;
+      try { const parsed = JSON.parse(entry.text); if (parsed && typeof parsed === 'object') collect(parsed); else if (typeof parsed === 'string') candidates.push(parsed); }
+      catch { candidates.push(entry.text); }
+    }
+  }
+  return [...new Set(candidates.map(privateFailureReason).filter(Boolean))].slice(0, 50);
+}
+
 async function privateVideoFailure(env, user, session, request) {
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
@@ -774,7 +804,7 @@ export async function handleFreebeat(request, url, env, user) {
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       if (action === 'video-tests' && request.method === 'GET') return response({ ok: true, tests: await videoTests(env, user, session) });
       if (action === 'video-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareVideo(env, user, session, await parseVideoPrepare(request))) });
-      if (action === 'video-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVideo(env, user, session, request)) });
+      if (action === 'video-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVideo(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'video-task' && request.method === 'POST') return response({ ok: true, task: await pollVideo(env, user, session, request) });
       if (action === 'video-private-failure' && request.method === 'POST') return response({ ok: true, ...(await privateVideoFailure(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
     }

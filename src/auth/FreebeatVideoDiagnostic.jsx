@@ -15,6 +15,8 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [imageUrl, setImageUrl] = useState('');
   const [approval, setApproval] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [initialConsent, setInitialConsent] = useState(false);
+  const [initialDiagnostics, setInitialDiagnostics] = useState(null);
   const [tests, setTests] = useState([]);
   const [taskResults, setTaskResults] = useState({});
   const [privateFailure, setPrivateFailure] = useState({});
@@ -22,12 +24,12 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const visibilityVersion = useRef(0);
   const catalogVersion = useRef(0);
   useEffect(() => {
-    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setModel(''); setApproval(null); setConfirmed(false); }
+    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setModel(''); setApproval(null); setConfirmed(false); setInitialConsent(false); setInitialDiagnostics(null); }
     return () => { visibilityVersion.current += 1; };
   }, [connected]);
-  useEffect(() => { catalogVersion.current += 1; setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setApproval(null); setConfirmed(false); }, [videoModels, videoBusy]);
+  useEffect(() => { catalogVersion.current += 1; setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setApproval(null); setConfirmed(false); setInitialConsent(false); }, [videoModels, videoBusy]);
   const [testNotice, setTestNotice] = useState('');
-  function clearApproval() { setApproval(null); setConfirmed(false); }
+  function clearApproval() { setApproval(null); setConfirmed(false); setInitialConsent(false); }
   function updatePrompt(value) { setPrompt(value); setQuote(null); clearApproval(); }
   function updateImageUrl(value) { setImageUrl(value); setQuote(null); clearApproval(); }
   const [file, setFile] = useState(null);
@@ -109,7 +111,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   async function prepare() {
     if (busy || uploadBusy || videoBusy || loading || !connected || !imageAccess || !selected || !prompt.trim() || !imageUrl.trim()) return;
     const version = catalogVersion.current, connectionVersion = visibilityVersion.current;
-    setBusy(true); setError(''); setTestNotice(''); clearApproval();
+    setBusy(true); setError(''); setTestNotice(''); setInitialDiagnostics(null); clearApproval();
     try {
       const result = await request('video-prepare', 'POST', { model_id: Number(model), prompt, image_url: imageUrl });
       if (result.settings?.model_id !== Number(model) || result.settings?.generation_type !== FREEBEAT_VIDEO_TEST.generation_type || result.settings?.duration !== FREEBEAT_VIDEO_TEST.duration || result.settings?.resolution !== FREEBEAT_VIDEO_TEST.resolution || result.prompt !== prompt.trim() || result.image_url !== imageUrl.trim() || typeof result.credits !== 'number' || !Number.isFinite(result.credits) || result.credits < 0 || typeof result.approval !== 'string') throw new Error('Persetujuan tidak cocok dengan input yang dipilih. Tidak ada video dikirim; buat quote baru.');
@@ -122,12 +124,17 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   async function submit() {
     if (!approval || !confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || approval.settings?.model_id !== Number(model)) return;
     const receipt = approval.approval;
-    clearApproval(); setBusy(true); setError(''); setTestNotice('');
+    const capture = initialConsent, version = visibilityVersion.current;
+    clearApproval(); setBusy(true); setError(''); setTestNotice(''); setInitialDiagnostics(null);
     try {
-      const result = await request('video-submit', 'POST', { approval: receipt, confirm: true });
+      const result = await request('video-submit', 'POST', { approval: receipt, confirm: true, ...(capture ? { private_diagnostics: true } : {}) });
+      if (capture && version === visibilityVersion.current) setInitialDiagnostics(result.initial_diagnostics || { received: false, messages: [] });
       if (result.status === 'submitted') setTestNotice('Permintaan diterima untuk dipantau, bukan konfirmasi video selesai atau biaya akhir.');
       else setError(`Hasil pengiriman tidak pasti dan mungkin sudah memakai kredit. Jangan ulangi; periksa Freebeat dan catatan uji.${result.recoveryTaskId ? ` ID tugas untuk pemulihan pribadi: ${result.recoveryTaskId}` : ''}`);
-    } catch (err) { setError(`${err.message || 'Permintaan gagal.'} Jika pengiriman sempat terjadi, hasil dan biaya mungkin tidak pasti. Jangan ulangi sebelum memeriksa catatan.`); }
+    } catch (err) {
+      if (capture && version === visibilityVersion.current) setInitialDiagnostics({ received: false, messages: [] });
+      setError(`${err.message || 'Permintaan gagal.'} Jika pengiriman sempat terjadi, hasil dan biaya mungkin tidak pasti. Jangan ulangi sebelum memeriksa catatan.`);
+    }
     try { await refreshTests(); } catch { /* warning above still applies */ }
     setBusy(false);
   }
@@ -172,7 +179,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     <h3>Pemeriksaan video · baca saja</h3>
     <p>Pilih model dari daftar Freebeat. Quote menggunakan gambar ke video, {FREEBEAT_VIDEO_TEST.duration} detik, {FREEBEAT_VIDEO_TEST.resolution}; dukungan dan harga belum dijamin. Pemeriksaan tidak membuat video atau memakai kredit.</p>
     <label className="freebeat-field">Model video
-      <select id="freebeat-video-model" value={selected ? model : ''} disabled={loading || !connected || videoBusy || busy || uploadBusy || !modelOptions.length} onChange={(event) => { setModel(event.target.value); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setError(''); clearApproval(); }}>
+      <select id="freebeat-video-model" value={selected ? model : ''} disabled={loading || !connected || videoBusy || busy || uploadBusy || !modelOptions.length} onChange={(event) => { setModel(event.target.value); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setInitialDiagnostics(null); setQuote(null); setError(''); clearApproval(); }}>
         <option value="">{videoBusy ? 'Memuat model…' : 'Pilih model video'}</option>
         {modelOptions.map((item) => <option key={item.id} value={String(item.id)}>{item.name} · ID {item.id}</option>)}
       </select>
@@ -231,9 +238,16 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
         <p>Model {modelOptions.find((item) => item.id === approval.settings.model_id)?.name || 'video'} · ID {approval.settings.model_id} · gambar ke video · {approval.settings.duration} detik · {approval.settings.resolution} · quote dan batas maksimum <strong>{approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
         <p>Prompt dan URL gambar yang akan dikirim:</p><pre>{approval.prompt}</pre><pre>{approval.image_url}</pre>
         <label className="freebeat-confirm"><input type="checkbox" checked={confirmed} disabled={busy || !connected || !imageAccess} onChange={(event) => setConfirmed(event.target.checked)} /> Saya menyetujui satu kali generasi video ini dengan batas maksimum {approval.credits} kredit Freebeat. Biaya aktual dan refund belum dipastikan.</label>
+        <label className="freebeat-confirm"><input type="checkbox" checked={initialConsent} disabled={busy || !connected || !imageAccess} onChange={(event) => setInitialConsent(event.target.checked)} /> Opsional: tampilkan pesan respons awal secara privat setelah pengiriman ini. Pesan mungkin mengandung data sensitif; penyamaran tidak dijamin lengkap. Jangan bagikan pesan mentah, URL atau kredensial.</label>
         <div className="freebeat-actions"><button type="button" disabled={!confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || approval.settings?.model_id !== Number(model)} onClick={submit}>Setujui dan kirim satu video</button></div>
       </div>}
       {testNotice && <div className="freebeat-alert" role="status">{testNotice}</div>}
+      {initialDiagnostics && <div className="freebeat-result" aria-label="Diagnostik respons awal privat">
+        <h3>Pesan respons awal privat</h3>
+        <p>Hanya untuk Anda. Jangan bagikan pesan mentah; jelaskan dengan kata sendiri tanpa URL, token atau data pribadi. Pesan ini tidak disimpan dan hilang saat halaman ditutup. Pesan bukan kepastian biaya atau hasil tugas.</p>
+        <div className="freebeat-actions"><button type="button" className="is-secondary" onClick={() => setInitialDiagnostics(null)}>Sembunyikan respons awal</button></div>
+        {!initialDiagnostics.received ? <p>Respons awal tidak tersedia. Hasil pengiriman mungkin tidak pasti; jangan ulangi sebelum memeriksa catatan.</p> : initialDiagnostics.messages?.length ? initialDiagnostics.messages.map((message, index) => <pre key={index}>{message}</pre>) : <p>Tidak ada pesan awal dalam field yang dapat ditampilkan.</p>}
+      </div>}
       {tests.length > 0 && <div className="freebeat-result"><h3>Catatan uji video admin</h3>{tests.map((test) => <div key={test.id} className="freebeat-test-row">
         <p>Model {test.model_id} · Batas {test.max_credits} kredit · {new Date(test.created_at).toLocaleString('id-ID')} · {test.status}</p>
         {(test.status === 'unknown' || test.status === 'dispatching') && <p>Hasil tidak pasti; pengiriman video baru diblokir. Jangan ulangi. Periksa aktivitas Freebeat dan minta operator meninjau catatan.</p>}
