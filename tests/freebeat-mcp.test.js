@@ -761,3 +761,52 @@ test('other video model help and quote are read-only, validate input, and use th
     assert.ok(calls.every((item) => ['get_model_help', 'quote_generation'].includes(item.name)));
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('private model help requires explicit admin consent and masks likely sensitive fields without generating', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    calls.push(body.params);
+    assert.deepEqual(body.params, { name: 'get_model_help', arguments: { type: 'video', model_id: 186 } });
+    return Response.json({ id: body.id, result: { structuredContent: {
+      model: { model_id: 186, name: 'Video model', available: true, api_key: 'KEY-SECRET', owner_email: 'test@example.com' },
+      options: [{ type: 'image', durations: [5], resolutions: ['480p'] }],
+      pricing: [{ prices: { map: { '480p|5': 135, 'https://private.example/secret': 1, token_field: 'TOKEN-VALUE' } } }],
+      description: 'See https://private.example/a?token=SECRET. Bearer ABCDE contact user@example.com',
+      token: 'TOKEN-SECRET', prompt: 'PRIVATE-PROMPT', nested: { password: 'PASSWORD-SECRET' },
+      long: 'a'.repeat(2100),
+    } } });
+  };
+  const invoke = ({ cookie, token = 'admin-token', origin = 'https://blea-ai.blea-ai.workers.dev', data = { model_id: 186, acknowledge: true }, method = 'POST' } = {}) => worker.fetch(new Request('https://blea-ai.blea-ai.workers.dev/api/freebeat/video-model-private-help', { method, headers: { authorization: `Bearer ${token}`, ...(cookie ? { cookie } : {}), origin, 'content-type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify(data) } : {}) }), env);
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await invoke({ cookie, token: 'user' })).status, 403);
+    assert.equal((await invoke({ cookie, token: 'other-admin' })).status, 401);
+    assert.equal((await invoke({ cookie, origin: 'https://evil.example' })).status, 403);
+    for (const data of [{ model_id: 186 }, { model_id: 186, acknowledge: false }, { model_id: '186', acknowledge: true }, { model_id: -1, acknowledge: true }, { model_id: 186, acknowledge: true, prompt: 'x' }]) assert.equal((await invoke({ cookie, data })).status, 400);
+    assert.equal(calls.length, 0);
+    const res = await invoke({ cookie });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+    const text = await res.text();
+    assert.doesNotMatch(text, /KEY-SECRET|test@example|TOKEN-VALUE|private\.example|TOKEN-SECRET|PRIVATE-PROMPT|PASSWORD-SECRET|ABCDE|user@example|token=SECRET/);
+    const parsed = JSON.parse(text);
+    assert.equal(parsed.model_id, 186);
+    assert.deepEqual(parsed.help.options, [{ type: 'image', durations: [5], resolutions: ['480p'] }]);
+    assert.deepEqual(parsed.help.pricing[0].prices.map, { '480p|5': 135 });
+    assert.equal(parsed.help.long.length, 2000);
+    assert.equal(parsed.truncated, true);
+    assert.deepEqual(calls.map((c) => c.name), ['get_model_help']);
+  } finally { globalThis.fetch = originalFetch; }
+});

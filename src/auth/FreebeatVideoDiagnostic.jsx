@@ -7,6 +7,8 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [help, setHelp] = useState(null);
+  const [privateHelp, setPrivateHelp] = useState(null);
+  const [privateHelpConsent, setPrivateHelpConsent] = useState(false);
   const [quote, setQuote] = useState(null);
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -20,10 +22,10 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const visibilityVersion = useRef(0);
   const catalogVersion = useRef(0);
   useEffect(() => {
-    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setHelp(null); setQuote(null); setModel(''); setApproval(null); setConfirmed(false); }
+    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setModel(''); setApproval(null); setConfirmed(false); }
     return () => { visibilityVersion.current += 1; };
   }, [connected]);
-  useEffect(() => { catalogVersion.current += 1; setHelp(null); setQuote(null); setApproval(null); setConfirmed(false); }, [videoModels, videoBusy]);
+  useEffect(() => { catalogVersion.current += 1; setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setApproval(null); setConfirmed(false); }, [videoModels, videoBusy]);
   const [testNotice, setTestNotice] = useState('');
   function clearApproval() { setApproval(null); setConfirmed(false); }
   function updatePrompt(value) { setPrompt(value); setQuote(null); clearApproval(); }
@@ -88,6 +90,16 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       if (action === 'video-model-help') setHelp({ model_id: result.model_id, help: result.help });
       else setQuote({ ...result.settings, quote: result.quote });
     } catch (err) { setError(err.message || 'Pemeriksaan video gagal.'); }
+    finally { setBusy(false); }
+  }
+  async function inspectPrivateHelp() {
+    if (loading || !connected || videoBusy || busy || uploadBusy || !selected || !privateHelpConsent) return;
+    const version = catalogVersion.current, connectionVersion = visibilityVersion.current;
+    setBusy(true); setError(''); setPrivateHelp(null); clearApproval();
+    try {
+      const result = await request('video-model-private-help', 'POST', { model_id: Number(model), acknowledge: true });
+      if (version === catalogVersion.current && connectionVersion === visibilityVersion.current && result.model_id === Number(model)) setPrivateHelp(result);
+    } catch (err) { setError(err.message || 'Informasi model privat tidak tersedia.'); }
     finally { setBusy(false); }
   }
   async function refreshTests() {
@@ -160,7 +172,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     <h3>Pemeriksaan video · baca saja</h3>
     <p>Pilih model dari daftar Freebeat. Quote menggunakan gambar ke video, {FREEBEAT_VIDEO_TEST.duration} detik, {FREEBEAT_VIDEO_TEST.resolution}; dukungan dan harga belum dijamin. Pemeriksaan tidak membuat video atau memakai kredit.</p>
     <label className="freebeat-field">Model video
-      <select id="freebeat-video-model" value={selected ? model : ''} disabled={loading || !connected || videoBusy || busy || uploadBusy || !modelOptions.length} onChange={(event) => { setModel(event.target.value); setHelp(null); setQuote(null); setError(''); clearApproval(); }}>
+      <select id="freebeat-video-model" value={selected ? model : ''} disabled={loading || !connected || videoBusy || busy || uploadBusy || !modelOptions.length} onChange={(event) => { setModel(event.target.value); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setError(''); clearApproval(); }}>
         <option value="">{videoBusy ? 'Memuat model…' : 'Pilih model video'}</option>
         {modelOptions.map((item) => <option key={item.id} value={String(item.id)}>{item.name} · ID {item.id}</option>)}
       </select>
@@ -191,6 +203,18 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     <div id="video-quote-help" className="freebeat-prepare-help" role="status" aria-live="polite">{blockers.length ? <>Untuk memeriksa quote:<ul>{blockers.map((message) => <li key={message}>{message}</li>)}</ul></> : 'Siap memeriksa quote tanpa membuat video atau memakai kredit.'}</div>
     {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
     {help !== null && <FreebeatCopyResult title="Informasi model video yang disaring" value={help} />}
+    <details className="freebeat-upload">
+      <summary>Informasi model lebih lengkap (privat)</summary>
+      <p>Data Freebeat mungkin mengandung informasi pribadi atau rahasia. Penyaringan dilakukan sebisa mungkin tetapi tidak dijamin lengkap. Jangan salin atau bagikan data mentah, URL, token atau kredensial. Pemeriksaan hanya membaca informasi model dan tidak memakai kredit.</p>
+      {privateHelp === null ? <>
+        <label className="freebeat-confirm"><input type="checkbox" checked={privateHelpConsent} disabled={busy || videoBusy || !connected || !selected} onChange={(event) => setPrivateHelpConsent(event.target.checked)} /> Saya memahami data mungkin sensitif dan hanya akan melihatnya secara pribadi.</label>
+        <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={loading || !connected || videoBusy || busy || uploadBusy || !selected || !privateHelpConsent} onClick={inspectPrivateHelp}>Tampilkan informasi model privat</button></div>
+      </> : <>
+        <div className="freebeat-actions"><button type="button" className="is-secondary" onClick={() => { setPrivateHelp(null); setPrivateHelpConsent(false); }}>Sembunyikan informasi privat</button></div>
+        {privateHelp.truncated && <p>Hasil mungkin terpotong atau sebagian field disembunyikan demi privasi.</p>}
+        <pre aria-label="Informasi model privat">{JSON.stringify(privateHelp.help, null, 2)}</pre>
+      </>}
+    </details>
     {quote !== null && <FreebeatCopyResult title="Quote video yang disaring" value={quote} description="Hasil tidak memuat prompt atau URL gambar; quote bukan biaya akhir atau persetujuan generasi." />}
     <div className="freebeat-result">
       <h3>Uji generasi video khusus admin</h3>

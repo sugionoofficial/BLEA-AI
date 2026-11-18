@@ -82,18 +82,18 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
     assert.match(document.body.textContent, /Model 186 · ID 186/);
     assert.match(document.body.textContent, /135 kredit Freebeat/);
     assert.equal(button('Setujui dan kirim satu video').disabled, true);
-    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[2].click());
     assert.equal(button('Setujui dan kirim satu video').disabled, false);
     await selectModel(React, dom, '184');
     assert.equal(button('Setujui dan kirim satu video'), undefined);
     assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
     await selectModel(React, dom, '186');
     await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
-    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[2].click());
     await change('input[type=text]', 'Kucing tidur');
     assert.equal(button('Setujui dan kirim satu video'), undefined);
     await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
-    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[2].click());
     await React.act(async () => button('Setujui dan kirim satu video').click());
     assert.equal(calls.filter((c) => c[0] === 'video-submit').length, 1);
     assert.deepEqual(calls.find((c) => c[0] === 'video-submit'), ['video-submit', 'POST', { approval: 'encrypted-ticket', confirm: true }]);
@@ -132,7 +132,7 @@ test('failed video status presents shareable filtered details without retrying g
     assert.doesNotMatch(output.value, /test-id/);
     assert.deepEqual(calls, ['video-tests', 'video-task']);
     assert.equal(button('Tampilkan pesan kegagalan pribadi').disabled, true);
-    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[2].click());
     await React.act(async () => button('Tampilkan pesan kegagalan pribadi').click());
     assert.match(document.body.textContent, /Example private message/);
     assert.doesNotMatch(output.value, /Example private message/);
@@ -297,6 +297,47 @@ test('a prepare response for a different model cannot show a consent button', as
     assert.match(document.querySelector('[role=alert]').textContent, /Persetujuan tidak cocok/);
     assert.equal([...document.querySelectorAll('button')].some((b) => b.textContent === 'Setujui dan kirim satu video'), false);
     assert.deepEqual(calls.map(([name]) => name), ['video-prepare']);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('private model help needs acknowledgement and is cleared on model change or disconnect', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => { calls.push(args); return { model_id: 186, help: { options: ['image', '480p'], description: 'private model information' }, truncated: true }; };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const render = async (props = {}) => React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog, ...props })));
+  try {
+    await render();
+    assert.equal(button('Tampilkan informasi model privat').disabled, true);
+    await selectModel(React, dom, '186');
+    assert.equal(button('Tampilkan informasi model privat').disabled, true);
+    const consent = [...document.querySelectorAll('label')].find((label) => label.textContent.includes('hanya akan melihatnya secara pribadi')).querySelector('input');
+    await React.act(async () => consent.click());
+    assert.equal(button('Tampilkan informasi model privat').disabled, false);
+    await React.act(async () => button('Tampilkan informasi model privat').click());
+    assert.deepEqual(calls, [['video-model-private-help', 'POST', { model_id: 186, acknowledge: true }]]);
+    assert.match(document.querySelector('[aria-label="Informasi model privat"]').textContent, /private model information/);
+    assert.equal(document.querySelector('textarea[aria-label="Informasi model privat"]'), null);
+    assert.match(document.body.textContent, /Hasil mungkin terpotong/);
+    await selectModel(React, dom, '184');
+    assert.equal(document.querySelector('[aria-label="Informasi model privat"]'), null);
+    assert.equal(button('Tampilkan informasi model privat').disabled, true);
+    await selectModel(React, dom, '186');
+    await React.act(async () => [...document.querySelectorAll('label')].find((label) => label.textContent.includes('hanya akan melihatnya secara pribadi')).querySelector('input').click());
+    await React.act(async () => button('Tampilkan informasi model privat').click());
+    await render({ connected: false });
+    assert.equal(document.querySelector('[aria-label="Informasi model privat"]'), null);
+    assert.ok(calls.every(([action]) => action === 'video-model-private-help'));
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
