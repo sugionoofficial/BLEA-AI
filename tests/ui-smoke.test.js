@@ -243,7 +243,7 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Hubungkan Freebeat'));
   assert.ok(html.includes('Periksa saldo'));
   assert.ok(html.includes('Pemeriksaan saldo tidak memakai kredit'));
-  assert.ok(html.includes('Uji saldo situs dengan cookie'));
+  assert.equal(html.includes('Uji saldo situs dengan cookie'), false);
   assert.ok(html.includes('Lihat model gambar'));
   assert.ok(html.includes('Periksa skema tool gambar'));
   assert.ok(html.includes('Hubungkan izin gambar'));
@@ -256,8 +256,9 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Uji generasi video khusus admin'));
   assert.ok(html.includes('Siapkan quote Wan 3.0 untuk persetujuan'));
   assert.ok(html.includes('tidak pasti'));
-  assert.ok(html.includes('type="password"'));
-  assert.ok(html.includes('Ini bukan koneksi MCP') === false, 'site result is hidden before a successful test');
+  assert.equal(html.includes('Nilai header Cookie dari permintaan saldo'), false);
+  assert.ok(html.includes('Prompt video Gemini'));
+  assert.ok(html.includes('gemini-quote-help'));
 });
 
 test('Freebeat image preparation explains every blocking condition and enables only with valid inputs and permission', async () => {

@@ -1,5 +1,5 @@
 // Admin-only Freebeat MCP diagnostics. No generation or credit spending is exposed.
-import { boundedJson, siteBalance } from './freebeatSiteBalance.js';
+import { boundedJson } from './boundedJson.js';
 import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC } from './freebeatVideoTestSettings.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
@@ -668,7 +668,6 @@ export async function handleFreebeat(request, url, env, user) {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
     if (user.app_metadata?.role !== 'admin') return response({ error: 'Koneksi Freebeat hanya untuk admin.' }, 403);
     const action = url.pathname.split('/').pop();
-    if (action === 'site-balance' && request.method === 'POST') return await siteBalance(request);
     if (['start', 'start-image'].includes(action) && request.method === 'POST') {
       if (url.origin !== new URL(redirectUri(env)).origin) return response({ error: 'Buka BLEA melalui domain callback Freebeat yang dikonfigurasi sebelum menghubungkan akun.' }, 400);
       return await startFreebeat(env, user.id, action === 'start-image');
