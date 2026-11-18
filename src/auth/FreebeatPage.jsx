@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import './freebeat.css';
 
-async function request(action, method = 'GET') {
+async function request(action, method = 'GET', body) {
   const { data } = await supabase.auth.getSession();
   let session = data?.session;
   if (session?.expires_at && session.expires_at * 1000 < Date.now() + 60000) session = (await supabase.auth.refreshSession()).data?.session;
   if (!session?.access_token) throw new Error('Sesi login berakhir. Silakan login kembali.');
-  const res = await fetch(`/api/freebeat/${action}`, { method, headers: { authorization: `Bearer ${session.access_token}` }, credentials: 'same-origin', cache: 'no-store' });
+  const res = await fetch(`/api/freebeat/${action}`, { method, headers: { authorization: `Bearer ${session.access_token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), credentials: 'same-origin', cache: 'no-store' });
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(payload.error || 'Freebeat tidak dapat dihubungi.');
   return payload;
@@ -35,6 +35,11 @@ export function FreebeatPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const cookieInput = useRef(null);
+  const [siteBusy, setSiteBusy] = useState(false);
+  const [siteError, setSiteError] = useState('');
+  const [siteBalance, setSiteBalance] = useState(null);
+  const [siteAcknowledged, setSiteAcknowledged] = useState(false);
   const load = useCallback(async () => {
     try { const result = await request('status'); setConnected(result.connected); setExpiresAt(result.expiresAt); }
     catch (err) { setError(err.message); }
@@ -73,6 +78,18 @@ export function FreebeatPage() {
     } catch (err) { setError(err.message || 'Koneksi gagal.'); }
     finally { setBusy(false); }
   }
+  async function checkSiteBalance(event) {
+    event.preventDefault();
+    if (siteBusy || !siteAcknowledged) return;
+    const cookie = cookieInput.current?.value || '';
+    if (cookieInput.current) cookieInput.current.value = '';
+    setSiteBusy(true); setSiteError(''); setSiteBalance(null);
+    try {
+      const result = await request('site-balance', 'POST', { cookie });
+      setSiteBalance(result.balance);
+    } catch (err) { setSiteError(err.message || 'Uji saldo situs gagal.'); }
+    finally { setSiteBusy(false); }
+  }
   return <DropXLayout title="Freebeat MCP" description="Uji koneksi Freebeat khusus admin.">
     <div className="freebeat-page">
       <section className="freebeat-card">
@@ -89,6 +106,22 @@ export function FreebeatPage() {
           {connected && <button type="button" className="is-secondary" disabled={busy} onClick={() => run('disconnect')}><Unplug size={15} /> Putuskan</button>}
         </div>
         {balance !== null && <div className="freebeat-result"><h3>Respons saldo dari Freebeat</h3><pre>{typeof balance === 'string' ? balance : JSON.stringify(balance, null, 2)}</pre></div>}
+      </section>
+      <section className="freebeat-card freebeat-site-test">
+        <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>
+        <h2>Uji saldo situs dengan cookie</h2>
+        <p>Terpisah dari MCP: pengujian sekali pakai ini mengirim cookie sesi situs Anda melalui BLEA ke endpoint saldo Freebeat yang tidak didokumentasikan sebagai API publik. Tidak ada generasi atau pembelian. Keberhasilan dan izin penggunaan belum terjamin.</p>
+        <p><strong>Cookie dapat memberikan akses penuh ke akun.</strong> Gunakan hanya akun Anda sendiri dan pastikan plan serta ketentuan Freebeat mengizinkan pengujian ini. Jangan bagikan cookie melalui chat. Cookie dikirim lewat infrastruktur BLEA dan Freebeat, tetapi fitur ini tidak menyimpannya; input dikosongkan saat dikirim.</p>
+        <p>Di situs Freebeat yang sudah login, buka Network pada Developer Tools, pilih permintaan <code>findCredits</code>, lalu salin hanya nilai <code>Cookie</code> pada Request Headers. Jangan salin header lain atau seluruh perintah cURL. Bersihkan clipboard setelahnya. Cookie yang kedaluwarsa atau membutuhkan autentikasi lain mungkin tidak berhasil.</p>
+        <form onSubmit={checkSiteBalance} autoComplete="off">
+          <label className="freebeat-field">Nilai header Cookie dari permintaan saldo situs Freebeat
+            <input ref={cookieInput} type="password" autoComplete="off" spellCheck={false} maxLength={8192} required placeholder="nama=nilai; nama_lain=nilai" />
+          </label>
+          <label className="freebeat-confirm"><input type="checkbox" checked={siteAcknowledged} onChange={(event) => setSiteAcknowledged(event.target.checked)} /> Saya memahami risikonya dan memastikan saya berhak menggunakan sesi serta menguji akses ini.</label>
+          <div className="freebeat-actions"><button type="submit" disabled={siteBusy || !siteAcknowledged}>{siteBusy ? 'Memeriksa…' : 'Uji saldo situs sekali'}</button></div>
+        </form>
+        {siteError && <div className="freebeat-alert is-error" role="alert">{siteError}</div>}
+        {siteBalance && <div className="freebeat-result"><h3>Saldo situs Freebeat</h3><pre>{JSON.stringify(siteBalance, null, 2)}</pre><p>Ini bukan koneksi MCP dan tidak mengaktifkan akun bersama.</p></div>}
       </section>
     </div>
   </DropXLayout>;
