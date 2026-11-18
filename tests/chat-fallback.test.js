@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
-import { resolveProviderApiBase } from '../src/lib/videoCatalog.js';
+import { resolveProviderApiBase, validateProviderBaseUrl } from '../src/lib/videoCatalog.js';
 
 function createEnv() {
   return {
@@ -585,6 +585,62 @@ test('Cloudflare Workers AI supports REST Account ID endpoint and cross-provider
     assert.equal(fbData.model, '@cf/meta/llama-3.1-8b-instruct-fp8-fast');
     assert.equal(fbData.fallbackFrom, 'gpt-oss-120b:free');
     assert.equal(fbData.reply, 'Cadangan gratis dari Cloudflare Workers AI!');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('Malformed or autofilled email base_url never throws TypeError: Invalid URL in resolveProviderApiBase or /api/chat', async () => {
+  assert.equal(resolveProviderApiBase('cloudflare', 'creator@example.com'), '');
+  assert.equal(resolveProviderApiBase('unorouter', 'creator@example.com'), 'https://api.unorouter.com/v1');
+  assert.equal(resolveProviderApiBase('custom', 'creator@example.com'), '');
+  assert.equal(validateProviderBaseUrl('creator@example.com', 'cloudflare').ok, false);
+  assert.equal(validateProviderBaseUrl('https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1', 'cloudflare').ok, true);
+
+  const realFetch = globalThis.fetch;
+  const envWithAi = {
+    ...createEnv(),
+    AI: { run: async () => ({ response: 'Tetap jalan lewat env.AI binding!' }) },
+  };
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'cloudflare', api_key: 'autofilled-secret', base_url: 'creator@example.com' },
+        { provider: 'custom', api_key: 'sk-custom', base_url: 'creator@example.com' },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json([]);
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'msg-safe-1' }]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const cfRes = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-safe-cf',
+        provider: 'cloudflare',
+        model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast',
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), envWithAi);
+    assert.equal(cfRes.status, 200);
+    const cfData = await cfRes.json();
+    assert.equal(cfData.reply, 'Tetap jalan lewat env.AI binding!');
+
+    const badRes = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-safe-custom',
+        provider: 'custom',
+        model: 'custom-model',
+        autoFallback: false,
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    assert.equal(badRes.status, 502);
+    const badData = await badRes.json();
+    assert.equal(badData.ok, false);
+    assert.match(badData.error, /Base URL.*tidak valid/i);
   } finally {
     globalThis.fetch = realFetch;
   }

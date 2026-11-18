@@ -27,6 +27,7 @@ import {
   PROVIDER_PRESETS,
   computeVideoSize,
   getVideoModelProfile,
+  isValidHttpBaseUrl,
   isVideoCatalogModel,
   isVideoModelId,
   normalizeVideoStatus,
@@ -405,7 +406,13 @@ function hasWorkersAiBinding(env) {
 
 function hasValidCloudflareRestBase(baseUrl) {
   const base = resolveProviderApiBase('cloudflare', baseUrl);
-  return Boolean(base && !/[<{]account[_-]?id[>}]/i.test(base));
+  if (!base || !isValidHttpBaseUrl(base)) return false;
+  try {
+    const parsed = new URL(base);
+    return !/[<{]account[_-]?id[>}]/i.test(base) && /\/accounts\/[^/]+\/ai/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function hasCloudflareRestConfig(keyRow) {
@@ -607,7 +614,18 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
       };
     }
   }
-  const chatUrl = `${resolveProviderApiBase(provider, baseUrl)}/chat/completions`;
+  const resolvedBase = resolveProviderApiBase(provider, baseUrl);
+  if (!resolvedBase || !isValidHttpBaseUrl(resolvedBase)) {
+    return {
+      ok: false,
+      status: 400,
+      errorInfo: parseChatUpstreamError(
+        `Base URL untuk provider "${provider}" tidak valid. Periksa pengaturan di Admin Panel → Provider & API Key.`,
+        400,
+      ),
+    };
+  }
+  const chatUrl = `${resolvedBase}/chat/completions`;
   const upstream = await fetch(chatUrl, {
     method: 'POST',
     headers: {
@@ -1086,6 +1104,14 @@ async function handleApi(request, url, env) {
       }
 
       const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
+      if (!apiBase || !isValidHttpBaseUrl(apiBase)) {
+        return jsonResponse({
+          ok: false,
+          valid: false,
+          status: 400,
+          error: `Base URL untuk provider "${provider}" tidak valid. Gunakan URL lengkap dimulai dengan https://.`,
+        });
+      }
       const apiKey = body.apiKey ?? '';
       try {
         // Prefer standard GET /models (supported by OpenRouter, OpenAI, xAI, UnoRouter)
