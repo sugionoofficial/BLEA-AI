@@ -255,7 +255,7 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Muat ulang model video'));
   assert.ok(html.includes('Periksa skema tool video'));
   assert.ok(html.includes('Uji generasi video khusus admin'));
-  assert.ok(html.includes('Siapkan quote Wan 3.0 untuk persetujuan'));
+  assert.ok(html.includes('Siapkan quote untuk persetujuan video'));
   assert.ok(html.includes('tidak pasti'));
   assert.equal(html.includes('Nilai header Cookie dari permintaan saldo'), false);
   assert.ok(html.includes('Model video'));

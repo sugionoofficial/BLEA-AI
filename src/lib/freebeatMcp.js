@@ -401,6 +401,15 @@ async function videoDiagnostic(accessToken, action, input, raw = false, settings
 async function parseVideoQuote(request) {
   return validateVideoInput(await imageJson(request));
 }
+async function parseVideoPrepare(request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'prompt', 'image_url'].includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Pilih ID model video yang valid.', 400);
+  return { model_id: input.model_id, ...validateVideoInput({ prompt: input.prompt, image_url: input.image_url }) };
+}
+function videoSettings(modelId) { return { ...FREEBEAT_VIDEO_TEST, model_id: modelId }; }
+function validVideoSettings(settings) {
+  return settings && Number.isSafeInteger(settings.model_id) && settings.model_id >= 0 && JSON.stringify(settings) === JSON.stringify(videoSettings(settings.model_id));
+}
 function validateVideoInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000 || typeof input.image_url !== 'string' || input.image_url.trim().length > 2048) throw fail('Masukkan prompt 1–2000 karakter dan satu URL gambar HTTPS.', 400);
   const imageUrl = input.image_url.trim();
@@ -563,24 +572,30 @@ async function videoMark(env, uid, id, status, taskId = null) {
 async function prepareVideo(env, user, session, input) {
   await requireImageSession(session);
   const models = await getModels(session.accessToken, 'video');
-  if (!models.models.some((model) => model.model_id === FREEBEAT_VIDEO_TEST.model_id)) throw fail('Wan 3.0 tidak ditemukan dalam katalog video saat ini.', 400);
-  await videoDiagnostic(session.accessToken, 'video-help', null, true);
-  const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', input, true));
+  const found = models.models.some((model) => {
+    const id = model.model_id;
+    return (typeof id === 'number' && id === input.model_id) || (typeof id === 'string' && /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) === input.model_id);
+  });
+  if (!found) throw fail('Model tidak ditemukan dalam daftar video Freebeat saat ini. Muat ulang daftar model.', 400);
+  const settings = videoSettings(input.model_id);
+  const exact = { prompt: input.prompt, image_url: input.image_url };
+  await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
+  const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, settings));
   if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
   const expires = Date.now() + APPROVAL_LIFETIME;
-  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings: FREEBEAT_VIDEO_TEST, ...input, credits, expires }, env, 'video-approval');
+  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, ...exact, credits, expires }, env, 'video-approval');
   if (approval.length > 12000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
-  return { approval, settings: FREEBEAT_VIDEO_TEST, prompt: input.prompt, image_url: input.image_url, credits, expiresAt: expires };
+  return { approval, settings, ...exact, credits, expiresAt: expires };
 }
 async function submitVideo(env, user, session, request) {
   await requireImageSession(session);
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['approval', 'confirm'].includes(key)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 12000) throw fail('Persetujuan uji tidak valid.', 400);
   const ticket = await unseal(input.approval, env, 'video-approval', 12000);
-  if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || JSON.stringify(ticket.settings) !== JSON.stringify(FREEBEAT_VIDEO_TEST) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME || typeof ticket.credits !== 'number' || !Number.isFinite(ticket.credits) || ticket.credits < 0 || ticket.credits > 1000000) throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
+  if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !validVideoSettings(ticket.settings) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME || typeof ticket.credits !== 'number' || !Number.isFinite(ticket.credits) || ticket.credits < 0 || ticket.credits > 1000000) throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
   const exact = validateVideoInput({ prompt: ticket.prompt, image_url: ticket.image_url });
   if (exact.prompt !== ticket.prompt || exact.image_url !== ticket.image_url) throw fail('Persetujuan tidak valid.', 400);
-  const current = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true));
+  const current = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, ticket.settings));
   if (current === null || current !== ticket.credits) throw fail('Quote berubah atau tidak tersedia. Tidak ada video dikirim; buat quote baru.', 409);
   if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
   const headers = await openMcp(session.accessToken);
@@ -713,7 +728,7 @@ export async function handleFreebeat(request, url, env, user) {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       if (action === 'video-tests' && request.method === 'GET') return response({ ok: true, tests: await videoTests(env, user, session) });
-      if (action === 'video-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareVideo(env, user, session, await parseVideoQuote(request))) });
+      if (action === 'video-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareVideo(env, user, session, await parseVideoPrepare(request))) });
       if (action === 'video-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVideo(env, user, session, request)) });
       if (action === 'video-task' && request.method === 'POST') return response({ ok: true, task: await pollVideo(env, user, session, request) });
       if (action === 'video-private-failure' && request.method === 'POST') return response({ ok: true, ...(await privateVideoFailure(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });

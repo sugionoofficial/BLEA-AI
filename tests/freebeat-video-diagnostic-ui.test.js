@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 
-const catalog = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: 184, name: 'Wan 3.0 Prime' }, { model_id: 192, name: 'Gemini Omni Flash' }, { model_id: 'non-numeric', name: 'Unsupported ID' }], truncated: false };
+const catalog = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: 184, name: 'Wan 3.0 Prime' }, { model_id: 186, name: 'Model 186' }, { model_id: 192, name: 'Gemini Omni Flash' }, { model_id: 'non-numeric', name: 'Unsupported ID' }], truncated: false };
 async function selectModel(React, dom, value) { await React.act(async () => { const select = document.querySelector('#freebeat-video-model'); select.value = value; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); }); }
 
 test('admin explicitly uploads a public image, uses its link for quote and deletes it', async () => {
@@ -63,7 +63,7 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
   const calls = [];
   const request = async (...args) => {
     calls.push(args);
-    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 50, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
     if (args[0] === 'video-tests') return { tests: [] };
     if (args[0] === 'video-submit') return { status: 'submitted' };
     throw new Error('unexpected action');
@@ -74,23 +74,25 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
   try {
     await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog })));
     await change('input[type=text]', 'Kucing berjalan'); await change('input[type=url]', 'https://images.example/cat.png');
-    await selectModel(React, dom, '192');
-    assert.equal(button('Siapkan quote Wan 3.0 untuk persetujuan').disabled, true);
-    await selectModel(React, dom, '182');
-    await React.act(async () => button('Siapkan quote Wan 3.0 untuk persetujuan').click());
+    await selectModel(React, dom, '186');
+    assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
     assert.deepEqual(calls.map((c) => c[0]), ['video-prepare', 'video-tests']);
+    assert.deepEqual(calls[0][2], { model_id: 186, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png' });
+    assert.match(document.body.textContent, /Model 186 · ID 186/);
+    assert.match(document.body.textContent, /135 kredit Freebeat/);
     assert.equal(button('Setujui dan kirim satu video').disabled, true);
     await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
     assert.equal(button('Setujui dan kirim satu video').disabled, false);
     await selectModel(React, dom, '184');
     assert.equal(button('Setujui dan kirim satu video'), undefined);
-    assert.equal(button('Siapkan quote Wan 3.0 untuk persetujuan').disabled, true);
-    await selectModel(React, dom, '182');
-    await React.act(async () => button('Siapkan quote Wan 3.0 untuk persetujuan').click());
+    assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
+    await selectModel(React, dom, '186');
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
     await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
     await change('input[type=text]', 'Kucing tidur');
     assert.equal(button('Setujui dan kirim satu video'), undefined);
-    await React.act(async () => button('Siapkan quote Wan 3.0 untuk persetujuan').click());
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
     await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
     await React.act(async () => button('Setujui dan kirim satu video').click());
     assert.equal(calls.filter((c) => c[0] === 'video-submit').length, 1);
@@ -164,7 +166,7 @@ test('one dropdown uses the live model list for help and quote and invalidates o
     assert.equal(document.querySelector('#freebeat-video-model').disabled, true);
     assert.match(document.querySelector('#video-quote-help').textContent, /Menunggu daftar model/);
     await render({});
-    assert.equal(document.querySelectorAll('#freebeat-video-model option').length, 4);
+    assert.equal(document.querySelectorAll('#freebeat-video-model option').length, 5);
     assert.match(document.body.textContent, /ID lain atau duplikat tidak ditampilkan/);
     assert.equal(document.querySelectorAll('input[type=text]').length, 1);
     assert.equal(document.querySelectorAll('input[type=url]').length, 1);
@@ -178,7 +180,7 @@ test('one dropdown uses the live model list for help and quote and invalidates o
     assert.deepEqual(calls[1], ['video-model-quote', 'POST', { model_id: 192, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png' }]);
     const text = document.querySelector('[aria-label="Quote video yang disaring"]').value;
     assert.equal(JSON.parse(text).model_id, 192); assert.doesNotMatch(text, /Kucing|images.example/);
-    assert.equal(button('Siapkan quote Wan 3.0 untuk persetujuan').disabled, true);
+    assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
     await selectModel(React, dom, '184');
     assert.equal(document.querySelector('[aria-label="Quote video yang disaring"]'), null);
     assert.equal(document.querySelector('[aria-label="Informasi model video yang disaring"]'), null);
@@ -234,7 +236,7 @@ test('admin page automatically loads the model dropdown and can retry after a ca
     await React.act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent === 'Muat ulang model video').click());
     const select = document.querySelector('#freebeat-video-model');
     assert.equal(select.disabled, false);
-    assert.equal(select.options.length, 4);
+    assert.equal(select.options.length, 5);
     assert.match(select.textContent, /Wan 3.0 Prime/);
     assert.equal(calls.filter(([path]) => path === '/api/freebeat/video-models').length, 2);
     assert.equal(calls.some(([path]) => path.includes('submit')), false);
@@ -269,6 +271,32 @@ test('catalog refresh while a model quote is in flight cannot restore stale resu
     await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { ...props, videoModels: null, videoBusy: true })));
     await React.act(async () => resolveQuote({ settings: { model_id: 192 }, quote: { status: 'quoted', credits: 20 } }));
     assert.equal(document.querySelector('[aria-label="Quote video yang disaring"]'), null);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('a prepare response for a different model cannot show a consent button', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => { calls.push(args); return { approval: 'ticket', settings: { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: 'A prompt', image_url: 'https://example.com/image.png', credits: 135 }; };
+  const root = createRoot(document.getElementById('root'));
+  async function change(selector, value) { const input = document.querySelector(selector); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); }
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog })));
+    await selectModel(React, dom, '186');
+    await change('input[type=text]', 'A prompt'); await change('input[type=url]', 'https://example.com/image.png');
+    await React.act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent === 'Siapkan quote untuk persetujuan video').click());
+    assert.match(document.querySelector('[role=alert]').textContent, /Persetujuan tidak cocok/);
+    assert.equal([...document.querySelectorAll('button')].some((b) => b.textContent === 'Setujui dan kirim satu video'), false);
+    assert.deepEqual(calls.map(([name]) => name), ['video-prepare']);
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;

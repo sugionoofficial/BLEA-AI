@@ -1,4 +1,4 @@
-// User-selected diagnostics only; provider support and final pricing remain unverified.
+// Default Wan diagnostic; video tests use the selected model with these fixed options.
 export const FREEBEAT_VIDEO_TEST = Object.freeze({
   model_id: 182,
   generation_type: 'image',
@@ -6,7 +6,7 @@ export const FREEBEAT_VIDEO_TEST = Object.freeze({
   resolution: '480p',
 });
 
-// Read-only exploration only. Do not use these settings for the paid test.
+// Legacy Gemini read-only diagnostic endpoint.
 export const FREEBEAT_GEMINI_DIAGNOSTIC = Object.freeze({
   model_id: 192,
   generation_type: 'image',
