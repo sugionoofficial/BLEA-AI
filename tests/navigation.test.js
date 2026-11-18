@@ -28,7 +28,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     [
       { title: 'Dashboard', href: '/app' },
       { title: 'Chat AI', href: '/studio' },
-      { title: 'Proyek', href: '/projects' },
+      { title: 'Generate', href: '/generate' },
       { title: 'Setting', href: '/settings' },
     ],
   );
@@ -39,7 +39,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     [
       { title: 'Dashboard', href: '/app' },
       { title: 'Chat AI', href: '/studio' },
-      { title: 'Proyek', href: '/projects' },
+      { title: 'Generate', href: '/generate' },
       { title: 'Admin Panel', href: '/admin' },
       { title: 'Setting', href: '/settings' },
     ],
@@ -54,6 +54,12 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     assert.equal(nav.resolveRoute(item.href), item.href);
   }
 
+  // Legacy /projects URL must cleanly redirect to /generate
+  assert.ok(
+    mainSource.includes('<Route path="/projects" element={<Navigate to="/generate" replace />}'),
+    'Expected /projects redirect to /generate in src/main.jsx',
+  );
+
   // Admin group is omitted when user is not an admin
   const userGroups = nav.getNavigation({ isAdmin: false });
   assert.equal(userGroups.some((g) => g.label === 'Admin'), false);
@@ -64,7 +70,8 @@ test('navigation contains only working app routes and gates Admin Panel to admin
 test('activeNavHref highlights the exact matching route and respects admin role', () => {
   assert.equal(nav.activeNavHref('/app'), '/app');
   assert.equal(nav.activeNavHref('/studio'), '/studio');
-  assert.equal(nav.activeNavHref('/projects'), '/projects');
+  assert.equal(nav.activeNavHref('/generate'), '/generate');
+  assert.equal(nav.activeNavHref('/projects'), null);
   assert.equal(nav.activeNavHref('/settings'), '/settings');
   assert.equal(nav.activeNavHref('/admin', { isAdmin: false }), null);
   assert.equal(nav.activeNavHref('/admin', { isAdmin: true }), '/admin');
@@ -73,7 +80,7 @@ test('activeNavHref highlights the exact matching route and respects admin role'
 
 test('no fake template items remain in navigation', () => {
   const titles = nav.navigation.flatMap((group) => group.items.map((item) => item.title.toLowerCase()));
-  for (const forbidden of ['crm', 'e-commerce', 'kanban', 'calendar', 'accordion', 'utilities', 'components', 'layouts', 'documentation']) {
-    assert.equal(titles.includes(forbidden), false, `Unexpected template item: ${forbidden}`);
+  for (const forbidden of ['proyek', 'crm', 'e-commerce', 'kanban', 'calendar', 'accordion', 'utilities', 'components', 'layouts', 'documentation']) {
+    assert.equal(titles.includes(forbidden), false, `Unexpected template or legacy item: ${forbidden}`);
   }
 });

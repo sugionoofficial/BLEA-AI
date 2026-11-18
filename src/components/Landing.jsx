@@ -38,17 +38,17 @@ const works = [
 ];
 
 const disciplines = [
-  ['01 / AI Studio', 'Chat dengan AI tentang idemu, proyek, atau apa pun. Riwayat tersimpan di akunmu — bukan di cloud yang hilang.', 'Sparkles'],
-  ['02 / Proyek', 'Kelompokkan ide dalam proyek. Maju langkah demi langkah, dengan progress yang tetap kamu punya.', 'Layers3'],
+  ['01 / AI Studio', 'Chat dengan AI tentang idemu, naskah, atau apa pun. Riwayat tersimpan di akunmu — bukan di cloud yang hilang.', 'Sparkles'],
+  ['02 / Generate Video', 'Ubah teks, gambar, video, dan audio menjadi video AI dengan pilihan rasio, resolusi, dan durasi lengkap.', 'Layers3'],
   ['03 / Upload', 'Kirim foto, video, atau file — PDF, DOCX, ZIP, sampai 30MB per pesan. AI melihat apa yang kamu kirim.', 'Upload'],
-  ['04 / Riwayat', 'Setiap percakapan tersimpan privat. Hanya kamu yang bisa mengakses — enkripsi dari ujung ke ujung.', 'ShieldCheck'],
-  ['05 / Model', 'Pilih dari 10 model AI gratis UnoRouter. Ganti model kapan saja — dari opsi, bukan untung.', 'Cpu'],
+  ['04 / Riwayat', 'Setiap percakapan dan generasi video tersimpan privat. Hanya kamu yang bisa mengakses di ruang kerjamu.', 'ShieldCheck'],
+  ['05 / Model', 'Pilih model AI chat maupun video dari berbagai provider. Ganti model kapan saja sesuai kebutuhan karyamu.', 'Cpu'],
 ];
 
 const steps = [
-  ['Step 01', 'Tulis idemu', 'Satu pesan bisa disertai foto atau file. Tidak ada setup — langsung kirim.'],
-  ['Step 02', 'AI membalas', 'Model gratis UnoRouter menjawab dalam hitungan detik.'],
-  ['Step 03', 'Simpan ke proyek', 'Ide tersimpan otomatis. Lanjut kapan saja dari riwayatmu.'],
+  ['Step 01', 'Tulis idemu', 'Satu pesan atau prompt video bisa disertai gambar, video, atau audio referensi.'],
+  ['Step 02', 'AI memproses', 'Model pilihanmu merespons dalam hitungan detik untuk chat maupun generasi video.'],
+  ['Step 03', 'Tersimpan otomatis', 'Riwayat percakapan dan hasil video tersimpan rapi di akunmu.'],
   ['Step 04', 'Kembangkan', 'Ulangi, perbaiki, eksekusi — langkah demi langkah, di ruangmu sendiri.'],
 ];
 
@@ -72,9 +72,9 @@ const testimonials = [
 ];
 
 const journal = [
-  ['Gunakan prompt spesifik', 'Beri konteks: audiens, tujuan, nada. Jawaban AI jadi jauh lebih tepat dan personal.', 'Prompt · 11 Nov 2026'],
-  ['Simpan ide ke proyek', 'Jangan biarkan ide hilang. Proyek menjaga momentum kreasimu tetap hidup.', 'Proyek · 09 Nov 2026'],
-  ['Coba model berbeda', 'Setiap model punya karakter. Ganti model untuk hasil yang berbeda dari yang biasa.', 'Model · 04 Nov 2026'],
+  ['Gunakan prompt spesifik', 'Beri konteks: audiens, tujuan, gerakan kamera, dan nada. Hasil chat dan video jadi jauh lebih tepat.', 'Prompt · 11 Nov 2026'],
+  ['Generate video dari referensi', 'Gabungkan gambar awal, klip referensi, dan audio untuk hasil video AI yang lebih konsisten.', 'Generate · 09 Nov 2026'],
+  ['Coba model berbeda', 'Setiap model punya karakter. Ganti model chat atau video untuk hasil yang berbeda dari yang biasa.', 'Model · 04 Nov 2026'],
 ];
 
 const iconMap = { Sparkles, Layers3, Upload, ShieldCheck, Cpu, FileText, WandSparkles, Command, MessageCircle, Globe2, Zap };
@@ -232,7 +232,7 @@ export function LandingPage() {
           <div className="briv-container">
             <span className="briv-chapter-mark">HOW WE WORK</span>
             <h2>Dari ide pertama<br />ke karya jadi.</h2>
-            <p>Tidak ada setup yang rumit. Tulis, kirim, AI membalas, simpan ke proyek — dan kembangkan lebih lanjut kapan saja.</p>
+            <p>Tidak ada setup yang rumit. Tulis, kirim, AI memproses — dan riwayatmu langsung tersimpan rapi kapan saja.</p>
             <div className="briv-steps">
               {steps.map(([step, title, desc]) => <div key={step} className="briv-step">
                 <span className="briv-step-num">{step}</span>
@@ -281,7 +281,7 @@ export function LandingPage() {
             <div className="briv-section-head">
               <span className="briv-eyebrow"><span /> CATATAN DARI STUDIO</span>
               <h2>Tips dari lantai studio.</h2>
-              <p>Catatan singkat dari tim BLEA — kadang tentang prompt, kadang tentang proyek, kadang tentang model.</p>
+              <p>Catatan singkat dari tim BLEA — kadang tentang prompt, kadang tentang generate video, kadang tentang model.</p>
             </div>
             <div className="briv-journal">
               {journal.map(([title, desc, meta]) => <article key={title} className="briv-journal-card">

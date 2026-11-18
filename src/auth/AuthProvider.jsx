@@ -3,9 +3,9 @@ import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext(null);
 
-export function AuthProvider({ children }) {
-  const [session, setSession] = useState(null);
-  const [loading, setLoading] = useState(true);
+export function AuthProvider({ children, initialSession = null }) {
+  const [session, setSession] = useState(initialSession);
+  const [loading, setLoading] = useState(!initialSession);
 
   useEffect(() => {
     let active = true;

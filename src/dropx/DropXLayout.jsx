@@ -269,14 +269,14 @@ export function DropXLayout({ children, title, description, actions, footer = tr
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyDown={handleSearchKeyDown}
-                  placeholder="Cari menu (Dashboard, Chat AI, Proyek...)"
+                  placeholder="Cari menu (Dashboard, Chat AI, Generate...)"
                   aria-label="Cari menu navigasi"
                   autoFocus
                 />
               ) : (
                 <>
                   <span className="dropx-search-placeholder">
-                    Cari menu (Dashboard, Chat AI, Proyek...)
+                    Cari menu (Dashboard, Chat AI, Generate...)
                   </span>
                   <kbd>Ctrl K</kbd>
                 </>

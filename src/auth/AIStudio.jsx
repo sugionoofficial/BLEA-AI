@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, FolderOpen, Github, MessageSquarePlus, Network, Paperclip, Plus, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, MessageSquarePlus, Network, Paperclip, Plus, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import { chatCompletion, fetchConnectedRepos, fetchEnabledModels, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
@@ -9,7 +9,7 @@ import { useAuth } from './AuthProvider';
 const prompts = [
   'Bantu aku mencari arah untuk ide baru',
   'Buat kerangka konten yang terasa personal',
-  'Pecah proyek besar jadi langkah kecil',
+  'Pecah rencana besar jadi langkah kecil yang nyata',
 ];
 
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
@@ -104,11 +104,9 @@ function StudioMessageBody({ content, copiedCodeKey, onCopyCode }) {
 
 export function AIStudio() {
   const { user } = useAuth();
-  const [projects, setProjects] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [selectedProject, setSelectedProject] = useState('');
   const [draft, setDraft] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -149,16 +147,17 @@ export function AIStudio() {
   const loadSidebarData = useCallback(async () => {
     if (!user?.id) return;
     setLoadingHistory(true);
-    const [conversationResult, projectResult] = await Promise.all([
-      supabase.from('ai_conversations').select('id,user_id,project_id,title,created_at,updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(100),
-      supabase.from('projects').select('id,name').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(100),
-    ]);
-    if (conversationResult.error || projectResult.error) {
-      console.error('Loading AI Studio sidebar failed:', conversationResult.error || projectResult.error);
-      setError('Riwayat atau proyek belum bisa dimuat. Coba muat ulang.');
+    const conversationResult = await supabase
+      .from('ai_conversations')
+      .select('id,user_id,title,created_at,updated_at')
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false })
+      .limit(100);
+    if (conversationResult.error) {
+      console.error('Loading AI Studio sidebar failed:', conversationResult.error);
+      setError('Riwayat percakapan belum bisa dimuat. Coba muat ulang.');
     } else {
       setConversations(conversationResult.data ?? []);
-      setProjects(projectResult.data ?? []);
     }
     setLoadingHistory(false);
   }, [user?.id]);
@@ -242,11 +241,7 @@ export function AIStudio() {
   useEffect(() => {
     if (sendingRef.current) return;
     loadMessages(activeId);
-    if (activeId) {
-      const conversation = conversations.find((item) => item.id === activeId);
-      setSelectedProject(conversation?.project_id || '');
-    }
-  }, [activeId, conversations, loadMessages]);
+  }, [activeId, loadMessages]);
 
   useEffect(() => {
     endOfMessages.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -256,7 +251,6 @@ export function AIStudio() {
     setActiveId(null);
     setMessages([]);
     setDraft('');
-    setSelectedProject('');
     setError('');
     draftRef.current?.focus();
   }
@@ -283,12 +277,13 @@ export function AIStudio() {
           setError(`"${file.name}" gagal diunggah: ${uploadError.message}`);
           continue;
         }
+        const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
         uploaded.push({
           id: data.path,
           name: file.name,
           size: file.size,
           type: file.type || '',
-          url: data.publicUrl,
+          url: pub.publicUrl,
         });
       }
       if (uploaded.length) setAttachments((current) => [...current, ...uploaded]);
@@ -314,8 +309,8 @@ export function AIStudio() {
       if (!conversation) {
         const { data, error: createError } = await supabase
           .from('ai_conversations')
-          .insert({ user_id: user.id, project_id: selectedProject || null, title: shortTitle(content) || 'Percakapan baru' })
-          .select('id,user_id,project_id,title,created_at,updated_at')
+          .insert({ user_id: user.id, title: shortTitle(content) || 'Percakapan baru' })
+          .select('id,user_id,title,created_at,updated_at')
           .single();
         if (createError) throw createError;
         conversation = data;
@@ -576,7 +571,6 @@ export function AIStudio() {
           {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
           {error && <div className="studio-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Tutup pesan"><X size={13} /></button></div>}
           <div className="studio-composer-area">
-            {activeConversation?.project_id && <div className="studio-context-pill"><FolderOpen size={13} /> {projects.find((project) => project.id === activeConversation.project_id)?.name || 'Proyek terkait'}</div>}
             {attachments.length > 0 && (
               <div className="studio-attachments">
                 {attachments.map((attachment) => <div className="studio-attachment-chip" key={attachment.id}>

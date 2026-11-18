@@ -1,5 +1,5 @@
 import {
-  FolderKanban,
+  Clapperboard,
   LayoutDashboard,
   MessageSquare,
   Settings,
@@ -25,11 +25,11 @@ export const navigation = [
         keywords: ['chat', 'ai', 'studio', 'riwayat', 'history', 'percakapan'],
       },
       {
-        title: 'Proyek',
-        href: '/projects',
-        icon: FolderKanban,
-        description: 'Kelola daftar proyek & ide',
-        keywords: ['proyek', 'project', 'ide', 'karya'],
+        title: 'Generate',
+        href: '/generate',
+        icon: Clapperboard,
+        description: 'Generate video AI dari teks, gambar, video & audio',
+        keywords: ['generate', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
       },
     ],
   },
