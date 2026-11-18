@@ -411,6 +411,39 @@ async function parseVideoPrepare(request) {
   return { model_id: input.model_id, ...validateVideoInput({ prompt: input.prompt, image_url: input.image_url }) };
 }
 function videoSettings(modelId) { return { ...FREEBEAT_VIDEO_TEST, model_id: modelId }; }
+
+// Do not dispatch an upload unless the live tool exposes a zero-credit ceiling
+// and Freebeat quotes the exact URL at zero. Unknown is not free.
+async function freebeatUploadPreflight(session, imageUrl) {
+  const { tools } = await getToolSchemas(session.accessToken, new Set(['upload_image']));
+  const schema = tools.upload_image;
+  const cap = schema?.properties?.max_credits?.type;
+  if (schema?.type !== 'object' || schema?.properties?.urls?.type !== 'array' || !['integer', 'number'].includes(cap) || (schema.required || []).some((key) => !['urls', 'max_credits'].includes(key))) return { eligible: false, reason: 'cap_unavailable' };
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'quote_generation', arguments: { tool: 'upload_image', parameters: { urls: [imageUrl] } } } }, 'quote', headers, 262144);
+  const quote = modelContent(result);
+  if (quotedCredits(quote) !== 0) return { eligible: false, reason: 'zero_quote_unavailable' };
+  return { eligible: true };
+}
+async function freebeatUploadDiagnostic(session, request, submit) {
+  await requireImageSession(session);
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['image_url', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
+  const imageUrl = validateVideoInput({ prompt: 'diagnostic', image_url: input.image_url }).image_url;
+  const preflight = await freebeatUploadPreflight(session, imageUrl);
+  if (!submit || !preflight.eligible) return preflight;
+  // No retries: a lost response may still mean a copy was stored remotely.
+  const headers = await openMcp(session.accessToken);
+  let result;
+  try {
+    ({ result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'upload_image', arguments: { urls: [imageUrl], max_credits: 0 } } }, 'upload', headers, 262144));
+    const content = modelContent(result);
+    if (content?.success !== true || !Array.isArray(content.image_urls) || content.image_urls.length !== 1 || !safeImageUrl(content.image_urls[0])) throw new Error('unrecognized');
+  } catch {
+    return { eligible: true, outcome: 'unknown' };
+  }
+  return { eligible: true, outcome: 'uploaded' };
+}
 function validVideoSettings(settings) {
   return settings && Number.isSafeInteger(settings.model_id) && settings.model_id >= 0 && JSON.stringify(settings) === JSON.stringify(videoSettings(settings.model_id));
 }
@@ -767,6 +800,11 @@ export async function handleFreebeat(request, url, env, user) {
       if (action === 'image-models') return response({ ok: true, ...(await getModels(session.accessToken, 'image')) });
       if (action === 'video-models') return response({ ok: true, ...(await getModels(session.accessToken, 'video')) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
+    }
+    if (['video-upload-check', 'video-upload-image'].includes(action) && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      return response({ ok: true, ...(await freebeatUploadDiagnostic(session, request, action === 'video-upload-image')) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (action === 'video-model-private-help' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
