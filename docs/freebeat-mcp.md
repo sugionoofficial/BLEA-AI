@@ -44,6 +44,10 @@ Admin dapat memeriksa `get_model_help(type=video, model_id=192)` dan quote `gene
 
 **Uji berbayar tetap hanya Wan 3.0 (182)**. Memeriksa Gemini tidak mengubah model pada tombol persetujuan Wan. Integrasi generasi Gemini belum diaktifkan dan tidak ada pengiriman berbayar pada pemeriksaan ini.
 
+### Pemeriksaan model video lain
+
+Admin dapat memasukkan ID model dari daftar Freebeat; ID awal adalah Wan 3.0 Prime (184), tercatat pada daftar sebelumnya, bukan jaminan ketersediaan. Tombol informasi dan quote hanya memanggil `get_model_help` dan `quote_generation`, masing-masing menggunakan ID yang dipilih. Quote memakai prompt dan satu URL HTTPS bersama form video untuk mode gambar, 5 detik, 480p. Respons disaring, bisa tidak lengkap atau unavailable; dukungan dan harga tidak dijamin. Pemeriksaan ini tidak membuat video atau memakai kredit. Prompt dan URL dikirim ke Freebeat tetapi tidak ditampilkan pada hasil salin. Perubahan input membatalkan hasil quote. Uji berbayar tetap terkunci pada Wan 3.0 ID 182, bukan model yang dipilih di bagian ini; generasi model lain belum diimplementasikan dan memerlukan persetujuan terpisah.
+
 ## Uji video berbayar khusus admin
 
 Fitur memerlukan migrasi `20261118000005_create_freebeat_admin_video_tests.sql` dan service-role Worker. Pada project BLEA-AI `lwknqvgnxgecptkvtkfb`, migrasi ini sudah diterapkan sebagai versi `20261118152213`; jangan menerapkannya lagi hanya karena versi berbeda dari nama berkas. Tanpa tabel atau izin, pengiriman gagal sebelum pemanggilan berbayar. Uji hanya untuk akun OAuth admin, bukan pengguna lain atau kredit BLEA. Freebeat menandai model member-only; dukungan 5 detik/480p dan perilaku aktual generasi belum dikonfirmasi. Periksa ketentuan penggunaan dan plan; manfaat yang hanya untuk web tidak otomatis berlaku untuk MCP.

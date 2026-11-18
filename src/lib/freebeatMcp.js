@@ -686,6 +686,17 @@ export async function handleFreebeat(request, url, env, user) {
       if (action === 'video-models') return response({ ok: true, ...(await getModels(session.accessToken, 'video')) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
     }
+    if (['video-model-help', 'video-model-quote'].includes(action) && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      const input = await imageJson(request);
+      const allowed = action === 'video-model-help' ? ['model_id'] : ['model_id', 'prompt', 'image_url'];
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Masukkan ID model video yang valid.', 400);
+      const settings = { ...FREEBEAT_VIDEO_TEST, model_id: input.model_id };
+      if (action === 'video-model-help') return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
+      const videoInput = validateVideoInput({ prompt: input.prompt, image_url: input.image_url });
+      return response({ ok: true, settings, quote: await videoDiagnostic(session.accessToken, 'video-quote', videoInput, false, settings) });
+    }
     if (['video-help', 'video-quote', 'video-gemini-help', 'video-gemini-quote'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);

@@ -712,3 +712,52 @@ test('Gemini video model help and quote use fixed read-only settings and remain 
     assert.deepEqual(calls.map((c) => c.name), ['get_model_help', 'quote_generation']);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('other video model help and quote are read-only, validate input, and use the chosen ID', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    calls.push(body.params);
+    const content = body.params.name === 'get_model_help'
+      ? { available: true, message: 'SECRET' }
+      : { status: 'unavailable', message: 'SECRET', url: 'https://private.example/SECRET' };
+    return Response.json({ id: body.id, result: { structuredContent: content } });
+  };
+  const invoke = (action, { cookie, token = 'admin-token', origin = 'https://blea-ai.blea-ai.workers.dev', data = {} } = {}) => worker.fetch(new Request(`https://blea-ai.blea-ai.workers.dev/api/freebeat/${action}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, ...(cookie ? { cookie } : {}), origin, 'content-type': 'application/json' }, body: JSON.stringify(data) }), env);
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await invoke('video-model-help', { cookie, token: 'user', data: { model_id: 184 } })).status, 403);
+    assert.equal((await invoke('video-model-help', { cookie, token: 'other-admin', data: { model_id: 184 } })).status, 401);
+    assert.equal((await invoke('video-model-help', { cookie, origin: 'https://evil.example', data: { model_id: 184 } })).status, 403);
+    for (const model_id of [-1, 1.5, '184', null, Number.MAX_SAFE_INTEGER + 1]) assert.equal((await invoke('video-model-help', { cookie, data: { model_id } })).status, 400);
+    assert.equal((await invoke('video-model-help', { cookie, data: { model_id: 184, max_credits: 100 } })).status, 400);
+    assert.equal((await invoke('video-model-quote', { cookie, data: { model_id: 184, prompt: 'x', image_url: 'http://example.com/x' } })).status, 400);
+    assert.equal((await invoke('video-model-quote', { cookie, data: { model_id: 184, prompt: 'x', image_url: 'https://example.com/x', max_credits: 100 } })).status, 400);
+    assert.equal(calls.length, 0);
+    const help = await invoke('video-model-help', { cookie, data: { model_id: 184 } });
+    assert.equal(help.status, 200); assert.equal(help.headers.get('cache-control'), 'no-store');
+    assert.equal((await help.json()).model_id, 184);
+    const quote = await invoke('video-model-quote', { cookie, data: { model_id: 184, prompt: ' Kucing berjalan ', image_url: ' https://images.example/a.png?signature=SECRET ' } });
+    const text = await quote.text();
+    assert.equal(quote.status, 200); assert.doesNotMatch(text, /SECRET|Kucing berjalan|images.example/);
+    assert.deepEqual(JSON.parse(text).settings, { model_id: 184, generation_type: 'image', duration: 5, resolution: '480p' });
+    assert.deepEqual(calls, [
+      { name: 'get_model_help', arguments: { type: 'video', model_id: 184 } },
+      { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 184, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'Kucing berjalan', images: ['https://images.example/a.png?signature=SECRET'] } } },
+    ]);
+    const other = await invoke('video-model-help', { cookie, data: { model_id: 200 } });
+    assert.equal((await other.json()).model_id, 200);
+    assert.equal(calls[2].arguments.model_id, 200);
+    assert.ok(calls.every((item) => ['get_model_help', 'quote_generation'].includes(item.name)));
+  } finally { globalThis.fetch = originalFetch; }
+});
