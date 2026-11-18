@@ -6,9 +6,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,10 +13,9 @@ import {
 } from 'recharts';
 import {
   ArrowUpRight,
-  Briefcase,
-  CreditCard,
+  Clapperboard,
   FileText,
-  FolderKanban,
+  Film,
   GraduationCap,
   Mail,
   MessageSquare,
@@ -29,6 +25,7 @@ import {
   ShieldCheck,
   Sparkles,
   Users,
+  Video,
   WandSparkles,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -63,7 +60,7 @@ const tooltipProps = {
 
 const baseQuickLinks = [
   { title: 'Chat AI', href: '/studio', icon: MessageSquare, color: 'var(--chart-1)', description: 'Chat & ide' },
-  { title: 'Proyek', href: '/projects', icon: FolderKanban, color: 'var(--chart-3)', description: 'Karya kamu' },
+  { title: 'Generate', href: '/generate', icon: Clapperboard, color: 'var(--chart-3)', description: 'Generate video AI' },
   { title: 'Setting', href: '/settings', icon: Settings2, color: 'var(--chart-2)', description: 'Akun & profil' },
   { title: 'Beranda', href: '/', icon: Rocket, color: 'var(--chart-4)', description: 'Website publik' },
 ];
@@ -74,6 +71,13 @@ const adminQuickLink = {
   icon: ShieldCheck,
   color: 'var(--chart-5)',
   description: 'Kelola aplikasi',
+};
+
+const VIDEO_STATUS_BADGE = {
+  completed: { label: 'Selesai', cls: 'is-success' },
+  in_progress: { label: 'Diproses', cls: 'is-info' },
+  queued: { label: 'Antrean', cls: '' },
+  failed: { label: 'Gagal', cls: 'is-danger' },
 };
 
 function formatNumber(value) {
@@ -97,7 +101,7 @@ function last7Days() {
       chats: 0,
       messages: 0,
       users: 0,
-      projects: 0,
+      videos: 0,
     });
   }
   return days;
@@ -113,17 +117,17 @@ function last6Months() {
     const d = new Date();
     d.setDate(1);
     d.setMonth(d.getMonth() - i);
-    months.push({ key: monthKey(d), label: d.toLocaleDateString('id-ID', { month: 'short' }), users: 0, projects: 0 });
+    months.push({ key: monthKey(d), label: d.toLocaleDateString('id-ID', { month: 'short' }), users: 0, videos: 0 });
   }
   return months;
 }
 
 export function DropXDashboard() {
   const { user } = useAuth();
-  const [stats, setStats] = useState({ users: 0, projects: 0, conversations: 0, waitlist: 0 });
+  const [stats, setStats] = useState({ users: 0, videos: 0, completedVideos: 0, conversations: 0, waitlist: 0 });
   const [weekly, setWeekly] = useState(() => last7Days());
   const [monthly, setMonthly] = useState(() => last6Months());
-  const [recent, setRecent] = useState({ conversations: [], profiles: [], projects: [], waitlist: [] });
+  const [recent, setRecent] = useState({ conversations: [], profiles: [], videos: [], waitlist: [], feed: [] });
   const [messageCounts, setMessageCounts] = useState({});
   const [loading, setLoading] = useState(true);
 
@@ -132,19 +136,19 @@ export function DropXDashboard() {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const [profilesRes, projectsRes, conversationsRes, waitlistRes, messagesRes] = await Promise.all([
+      const [profilesRes, videosRes, conversationsRes, waitlistRes, messagesRes] = await Promise.all([
         supabase.from('profiles').select('id,email,full_name,created_at').order('created_at', { ascending: false }).limit(500),
-        supabase.from('projects').select('id,user_id,name,description,created_at,updated_at').order('created_at', { ascending: false }).limit(500),
-        supabase.from('ai_conversations').select('id,user_id,project_id,title,created_at,updated_at').order('updated_at', { ascending: false }).limit(200),
+        supabase.from('video_generations').select('id,user_id,provider,model,prompt,aspect_ratio,resolution,duration,status,created_at,updated_at').order('created_at', { ascending: false }).limit(500),
+        supabase.from('ai_conversations').select('id,user_id,title,created_at,updated_at').order('updated_at', { ascending: false }).limit(200),
         supabase.from('waitlist_signups').select('id,email,created_at').order('created_at', { ascending: false }).limit(200),
         supabase.from('ai_messages').select('conversation_id,created_at').order('created_at', { ascending: false }).limit(2000),
       ]);
       if (cancelled) return;
-      const errors = [profilesRes.error, projectsRes.error, conversationsRes.error, waitlistRes.error, messagesRes.error].filter(Boolean);
+      const errors = [profilesRes.error, videosRes.error, conversationsRes.error, waitlistRes.error, messagesRes.error].filter(Boolean);
       if (errors.length) console.error('Dashboard load failed:', errors);
 
       const profiles = profilesRes.data ?? [];
-      const projects = projectsRes.data ?? [];
+      const videos = videosRes.data ?? [];
       const conversations = conversationsRes.data ?? [];
       const waitlist = waitlistRes.data ?? [];
       const messages = messagesRes.data ?? [];
@@ -163,9 +167,9 @@ export function DropXDashboard() {
         const key = dayKey(new Date(p.created_at));
         if (byDay.has(key)) byDay.get(key).users += 1;
       });
-      projects.forEach((p) => {
-        const key = dayKey(new Date(p.created_at));
-        if (byDay.has(key)) byDay.get(key).projects += 1;
+      videos.forEach((v) => {
+        const key = dayKey(new Date(v.created_at));
+        if (byDay.has(key)) byDay.get(key).videos += 1;
       });
 
       const m = last6Months();
@@ -174,9 +178,9 @@ export function DropXDashboard() {
         const key = monthKey(new Date(p.created_at));
         if (byMonth.has(key)) byMonth.get(key).users += 1;
       });
-      projects.forEach((p) => {
-        const key = monthKey(new Date(p.created_at));
-        if (byMonth.has(key)) byMonth.get(key).projects += 1;
+      videos.forEach((v) => {
+        const key = monthKey(new Date(v.created_at));
+        if (byMonth.has(key)) byMonth.get(key).videos += 1;
       });
 
       const counts = {};
@@ -185,7 +189,6 @@ export function DropXDashboard() {
       });
 
       const nameByUser = new Map(profiles.map((p) => [p.id, p.full_name || p.email]));
-      const nameByProject = new Map(projects.map((p) => [p.id, p.name]));
 
       const feed = [
         ...profiles.map((p) => ({
@@ -198,13 +201,13 @@ export function DropXDashboard() {
             </>
           ),
         })),
-        ...projects.map((p) => ({
-          time: p.created_at,
-          icon: Briefcase,
+        ...videos.map((v) => ({
+          time: v.created_at,
+          icon: Video,
           cls: 'is-success',
           text: (
             <>
-              <b>Proyek baru:</b> {p.name} dibuat oleh {nameByUser.get(p.user_id) || 'kreator'}
+              <b>Generate video:</b> {v.model} oleh {nameByUser.get(v.user_id) || 'kreator'}
             </>
           ),
         })),
@@ -218,13 +221,13 @@ export function DropXDashboard() {
             </>
           ),
         })),
-        ...waitlist.map((w) => ({
-          time: w.created_at,
+        ...waitlist.map((wl) => ({
+          time: wl.created_at,
           icon: Mail,
           cls: 'is-warning',
           text: (
             <>
-              <b>Waitlist:</b> {w.email} mendaftar untuk rilis
+              <b>Waitlist:</b> {wl.email} mendaftar untuk rilis
             </>
           ),
         })),
@@ -235,7 +238,8 @@ export function DropXDashboard() {
       if (cancelled) return;
       setStats({
         users: profiles.length,
-        projects: projects.length,
+        videos: videos.length,
+        completedVideos: videos.filter((v) => v.status === 'completed').length,
         conversations: conversations.length,
         waitlist: waitlist.length,
       });
@@ -245,11 +249,13 @@ export function DropXDashboard() {
         conversations: conversations.slice(0, 6).map((c) => ({
           ...c,
           userName: nameByUser.get(c.user_id),
-          projectName: c.project_id ? nameByProject.get(c.project_id) : null,
           messageCount: counts[c.id] || 0,
         })),
         profiles: profiles.slice(0, 5),
-        projects: projects.slice(0, 5),
+        videos: videos.slice(0, 5).map((v) => ({
+          ...v,
+          userName: nameByUser.get(v.user_id),
+        })),
         waitlist: waitlist.slice(0, 5),
         feed,
       });
@@ -274,17 +280,6 @@ export function DropXDashboard() {
   );
 
   const totalMessages = Object.values(messageCounts).reduce((sum, count) => sum + count, 0);
-  const projectProgress = useMemo(() => {
-    const max = Math.max(1, ...recent.projects.map((p) => messageCounts[p.id] || 0));
-    return recent.projects
-      .slice(0, 5)
-      .map((p) => ({
-        name: p.name,
-        progress: Math.round(((messageCounts[p.id] || 0) / max) * 100),
-        messages: messageCounts[p.id] || 0,
-      }))
-      .sort((a, b) => b.progress - a.progress);
-  }, [recent.projects, messageCounts]);
 
   return (
     <div className="dx-space-y-6 dropx-fade-in">
@@ -302,8 +297,8 @@ export function DropXDashboard() {
           </div>
         </div>
         <div className="dropx-page-actions">
-          <Link to="/projects?new=1" className="dropx-btn dropx-btn-primary dropx-btn-sm">
-            <Sparkles size={15} /> Proyek baru
+          <Link to="/generate" className="dropx-btn dropx-btn-primary dropx-btn-sm">
+            <Clapperboard size={15} /> Generate Video
           </Link>
           <Link to="/studio" className="dropx-btn dropx-btn-outline dropx-btn-sm">
             <MessageSquare size={15} /> Chat AI
@@ -326,13 +321,13 @@ export function DropXDashboard() {
         </div>
         <div className="dropx-stat">
           <div className="dropx-stat-top">
-            <span className="dropx-stat-icon" style={{ background: 'rgb(16 185 129 / 0.1)', color: 'var(--success)' }}><Briefcase size={18} className="icon" /></span>
+            <span className="dropx-stat-icon" style={{ background: 'rgb(16 185 129 / 0.1)', color: 'var(--success)' }}><Clapperboard size={18} className="icon" /></span>
           </div>
-          <span className="dropx-stat-title">Proyek Aktif</span>
-          <span className="dropx-stat-value">{formatNumber(stats.projects)}</span>
+          <span className="dropx-stat-title">Video Dihasilkan</span>
+          <span className="dropx-stat-value">{formatNumber(stats.videos)}</span>
           <span className="dropx-stat-foot">
-            <span className="dropx-stat-change is-up">+{stats.projects}</span>
-            <span>karya tersimpan</span>
+            <span className="dropx-stat-change is-up">{stats.completedVideos} selesai</span>
+            <span>generasi video</span>
           </span>
         </div>
         <div className="dropx-stat">
@@ -373,7 +368,7 @@ export function DropXDashboard() {
         })}
       </div>
 
-      {/* Charts: chats per day (area) + users/projects per month (bar) */}
+      {/* Charts: chats per day (area) + users/videos per month (bar) */}
       <div className="dx-grid dx-grid-7">
         <div className="dropx-card dx-col-span-4">
           <div className="dropx-card-header">
@@ -411,9 +406,9 @@ export function DropXDashboard() {
           <div className="dropx-card-header">
             <span className="dropx-card-title">
               <Users size={16} className="icon" style={{ color: 'var(--chart-3)' }} />
-              Pengguna &amp; proyek baru
+              Pengguna &amp; video baru
             </span>
-            <Link to={isAdmin ? '/admin' : '/projects'} className="dropx-card-link">
+            <Link to={isAdmin ? '/admin' : '/generate'} className="dropx-card-link">
               Lihat semua <ArrowUpRight size={13} />
             </Link>
           </div>
@@ -426,7 +421,7 @@ export function DropXDashboard() {
                   <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
                   <Tooltip {...tooltipProps} />
                   <Bar dataKey="users" fill={chartColors.success} radius={[3, 3, 0, 0]} name="Pengguna" />
-                  <Bar dataKey="projects" fill={chartColors.violet} radius={[3, 3, 0, 0]} name="Proyek" />
+                  <Bar dataKey="videos" fill={chartColors.violet} radius={[3, 3, 0, 0]} name="Video" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -434,43 +429,57 @@ export function DropXDashboard() {
         </div>
       </div>
 
-      {/* Project progress + recent conversations */}
+      {/* Recent video generations + recent conversations */}
       <div className="dx-grid dx-grid-2">
         <div className="dropx-card">
           <div className="dropx-card-header">
             <span className="dropx-card-title">
-              <Briefcase size={16} className="icon" style={{ color: 'var(--chart-7)' }} />
-              Progres proyek
+              <Film size={16} className="icon" style={{ color: 'var(--chart-7)' }} />
+              Generasi video terbaru
             </span>
-            <Link to="/projects" className="dropx-card-link">
-              Lihat semua <ArrowUpRight size={13} />
+            <Link to="/generate" className="dropx-card-link">
+              Buka studio video <ArrowUpRight size={13} />
             </Link>
           </div>
-          <div className="dropx-card-body dx-space-y-4">
+          <div className="dropx-card-body">
             {loading ? (
               <p style={{ fontSize: 13, color: 'var(--muted-foreground)' }}>Memuat...</p>
-            ) : projectProgress.length === 0 ? (
+            ) : recent.videos.length === 0 ? (
               <div className="dropx-empty">
-                <FolderKanban className="icon" />
-                <h3>Belum ada proyek</h3>
-                <p>Buat proyek pertama untuk mulai mencatat progres karyamu.</p>
-                <Link to="/projects?new=1" className="dropx-btn dropx-btn-primary dropx-btn-sm">Buat proyek</Link>
+                <Clapperboard className="icon" />
+                <h3>Belum ada video</h3>
+                <p>Mulai buat video pertamamu dari teks, gambar, video, atau audio referensi.</p>
+                <Link to="/generate" className="dropx-btn dropx-btn-primary dropx-btn-sm">Generate video</Link>
               </div>
             ) : (
-              projectProgress.map((project) => (
-                <div key={project.name}>
-                  <div className="dropx-progress-label">
-                    <span>{project.name}</span>
-                    <span style={{ color: 'var(--muted-foreground)' }}>{project.messages} pesan</span>
-                  </div>
-                  <div className="dropx-progress-track">
-                    <div
-                      className="dropx-progress-fill"
-                      style={{ width: `${project.progress}%`, '--progress-accent': 'linear-gradient(135deg, var(--chart-1) 0%, var(--chart-2) 100%)' }}
-                    />
-                  </div>
-                </div>
-              ))
+              <div className="dx-space-y-3">
+                {recent.videos.map((video) => {
+                  const status = VIDEO_STATUS_BADGE[video.status] || { label: video.status, cls: '' };
+                  return (
+                    <Link
+                      key={video.id}
+                      to={`/generate?id=${encodeURIComponent(video.id)}`}
+                      className="flex items-center gap-3 py-1.5"
+                      style={{ textDecoration: 'none', color: 'inherit' }}
+                    >
+                      <span className="dropx-avatar" style={{ width: 32, height: 32 }}>
+                        <Video size={14} />
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {video.prompt || '(Video berbasis media)'}
+                        </p>
+                        <p style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>
+                          {video.model} · {video.aspect_ratio} · {video.resolution} · {video.duration}s
+                        </p>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <span className={`dropx-badge ${status.cls}`}>{status.label}</span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
@@ -513,8 +522,7 @@ export function DropXDashboard() {
                           {conversation.title || 'Percakapan tanpa judul'}
                         </p>
                         <p style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>
-                          {conversation.userName || conversation.user_id} · {conversation.projectName ? `${conversation.projectName}, ` : ''}
-                          {new Date(conversation.updated_at || conversation.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
+                          {conversation.userName || conversation.user_id} · {new Date(conversation.updated_at || conversation.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
                         </p>
                       </div>
                       <div style={{ textAlign: 'right' }}>
@@ -577,11 +585,11 @@ export function DropXDashboard() {
             </div>
           </div>
           <div className="dropx-metric">
-            <span className="dropx-metric-icon" style={{ background: 'rgb(16 185 129 / 0.1)', color: 'var(--success)' }}><CreditCard size={20} className="icon" /></span>
+            <span className="dropx-metric-icon" style={{ background: 'rgb(16 185 129 / 0.1)', color: 'var(--success)' }}><Video size={20} className="icon" /></span>
             <div>
-              <p className="dropx-metric-label">Proyek terisi</p>
+              <p className="dropx-metric-label">Tingkat sukses video</p>
               <p className="dropx-metric-value">
-                {stats.projects ? Math.round((Object.values(messageCounts).filter((c) => c > 0).length / stats.projects) * 100) : 0}%
+                {stats.videos ? Math.round((stats.completedVideos / stats.videos) * 100) : 0}%
               </p>
             </div>
           </div>

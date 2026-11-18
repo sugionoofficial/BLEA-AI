@@ -1,15 +1,11 @@
 import { supabase } from '../lib/supabase';
 
 // API routes served by the Cloudflare Worker (same origin — no CORS).
-// These replace the Supabase edge function "ai-chat" (edge runtime on this
-// project returns BOOT_ERROR for all functions — see dashboard logs).
 // Env vars for the Worker: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
 const EDGE_BASE = '/api';
 const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz';
 
-async function edgeRequest(path, body) {
-  // getSession() mengembalikan cache — bisa sudah expired (JWT 1 jam).
-  // Refresh dulu agar edge function menerima token valid.
+async function getAccessToken() {
   const { data: sessionData } = await supabase.auth.getSession();
   const session = sessionData?.session;
   let token = session?.access_token;
@@ -17,20 +13,43 @@ async function edgeRequest(path, body) {
     const refreshed = await supabase.auth.refreshSession();
     token = refreshed?.data?.session?.access_token;
   }
+  return token || '';
+}
+
+async function edgeRequest(path, body) {
+  const token = await getAccessToken();
   if (!token) {
     return { ok: false, status: 401, data: { error: 'authentication required' } };
   }
-  const res = await fetch(`${EDGE_BASE}${path}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      apikey: PUBLISHABLE_KEY,
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body ?? {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
+  try {
+    const res = await fetch(`${EDGE_BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        apikey: PUBLISHABLE_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body ?? {}),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return {
+        ok: false,
+        status: res.status,
+        workerUnavailable: true,
+        data: { error: 'API worker belum aktif pada pratinjau lokal ini.' },
+      };
+    }
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      workerUnavailable: true,
+      data: { error: String(error?.message || error) },
+    };
+  }
 }
 
 export async function fetchProviderStatus() {
@@ -43,16 +62,16 @@ export async function fetchFreeModels() {
   return data.models || [];
 }
 
-// Admin panel — daftar model UnoRouter (model gratis) dengan status aktif.
+// Admin panel — daftar model per provider dengan status aktif.
 export async function fetchAdminModels({ apiKey } = {}) {
   const { data, status } = await edgeRequest('/admin-models', { apiKey });
   return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
 }
 
-// Admin panel — catalog lengkap model gratis dari UnoRouter (di-fetch server-side via worker).
-export async function fetchCatalog() {
-  const { data, status } = await edgeRequest('/catalog', {});
-  return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
+// Admin panel — catalog model dari UnoRouter / OpenRouter (di-fetch server-side via worker).
+export async function fetchCatalog({ provider = 'unorouter' } = {}) {
+  const { data, status } = await edgeRequest('/catalog', { provider });
+  return { models: Array.isArray(data?.models) ? data.models : null, error: data?.error || '', status };
 }
 
 // Admin panel — simpan pilihan model aktif untuk provider.
@@ -60,10 +79,35 @@ export async function saveProviderModels({ provider, models }) {
   return edgeRequest('/save-models', { provider, models });
 }
 
+// Admin panel — tambah / ubah satu model untuk provider mana pun.
+export async function saveSingleProviderModel({ provider, model, active = true }) {
+  return edgeRequest('/save-models', { mode: 'upsert_one', provider, model, active });
+}
+
 // AI Studio — model aktif yang dipilih admin (berjalan ke UnoRouter).
 export async function fetchEnabledModels() {
   const { data } = await edgeRequest('/enabled-models', {});
   return Array.isArray(data?.models) ? data.models : [];
+}
+
+// Generate Video — daftar model video & status provider.
+export async function fetchVideoModels() {
+  return edgeRequest('/video/models', {});
+}
+
+// Generate Video — kirim tugas generasi video asinkron.
+export async function generateVideo(payload) {
+  return edgeRequest('/video/generate', payload);
+}
+
+// Generate Video — periksa status job video.
+export async function fetchVideoStatus(id) {
+  return edgeRequest('/video/status', { id });
+}
+
+// Generate Video — ambil riwayat generasi milik pengguna dengan URL putar bertanda tangan.
+export async function fetchVideoHistory() {
+  return edgeRequest('/video/history', {});
 }
 
 export async function chatCompletion({ conversationId, model, messages, github, repository }) {
@@ -106,6 +150,6 @@ export async function githubTool(name, args = {}) {
   return data;
 }
 
-export async function verifyKey({ apiKey, baseUrl }) {
-  return edgeRequest('/verify', { apiKey, baseUrl });
+export async function verifyKey({ provider = 'unorouter', apiKey, baseUrl }) {
+  return edgeRequest('/verify', { provider, apiKey, baseUrl });
 }

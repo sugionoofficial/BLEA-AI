@@ -4,16 +4,33 @@
 // "ai-chat" (edge runtime on this project returns BOOT_ERROR for all functions).
 //
 // Routes (all accept POST, some GET):
-//   /api/status        -> { ok, configured }            — provider_api_keys has unorouter key
-//   /api/verify        -> { valid }                     — UnoRouter gateway key validation
-//   /api/models        -> { models: [{id, label}] }     — provider_models where active
-//   /api/enabled-models -> { models: [id] }             — active model IDs
-//   /api/admin-models  -> { models: [...] }             — all provider_models
-//   /api/save-models   -> { ok, saved, activeCount }    — upsert provider_models
-//   /api/chat          -> { ok, reply, messageId }      — UnoRouter gateway proxy + DB save (auth required)
+//   /api/status            -> { ok, configured, providers }
+//   /api/verify            -> { ok, valid, ... }
+//   /api/models            -> { models: [id] }
+//   /api/enabled-models    -> { models: [id] }
+//   /api/catalog           -> { models: [...] }
+//   /api/admin-models      -> { models: [...] }
+//   /api/save-models       -> { ok, saved, activeCount }
+//   /api/chat              -> { ok, reply, messageId }
+//   /api/video/models      -> { ok, models, providers }
+//   /api/video/generate    -> { ok, generation }
+//   /api/video/status      -> { ok, generation }
+//   /api/video/history     -> { ok, generations }
+//   /api/video/content/:id -> proxied video stream (signed URL or auth token)
 //
 // Env vars (set in Wrangler):
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+
+import {
+  BUILTIN_VIDEO_MODELS,
+  PROVIDER_PRESETS,
+  computeVideoSize,
+  getVideoModelProfile,
+  isVideoCatalogModel,
+  isVideoModelId,
+  normalizeVideoStatus,
+  resolveProviderApiBase,
+} from './lib/videoCatalog.js';
 
 const SUPABASE_URL_ENV = (env) => (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
 
@@ -25,12 +42,11 @@ async function supabaseFetch(env, path, { method = 'GET', token, body, headers =
     ...headers,
   };
   if (body !== undefined) finalHeaders['content-type'] = 'application/json';
-  const res = await fetch(url, {
+  return fetch(url, {
     method,
     headers: finalHeaders,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return res;
 }
 
 async function getUser(env, token) {
@@ -45,7 +61,7 @@ async function isAdmin(env, token) {
   return user?.app_metadata?.role === 'admin';
 }
 
-// Service-role PostgREST client (bypasses RLS — admin panel needs this)
+// Service-role PostgREST client (bypasses RLS — admin panel & server jobs need this)
 async function servicePostgrest(env, path, options = {}) {
   const url = `${SUPABASE_URL_ENV(env)}/rest/v1${path}`;
   const headers = {
@@ -124,15 +140,9 @@ async function webSearch(query) {
   return [];
 }
 
-// GitHub OAuth — OAuth App dibuat manual di
-// https://github.com/settings/developers (name: BLEA AI Studio,
-// callback: https://blea-ai.blea-ai.workers.dev/auth/github/callback).
-// Client ID di wrangler vars; client secret di Cloudflare secret
-// GITHUB_CLIENT_SECRET. Scope repo includes private repository read/write;
-// BLEA currently permits only read-only operations.
+// GitHub OAuth
 const GITHUB_SCOPE = 'repo';
 
-// Prompt alat GitHub untuk agen — dikirim bila chat dengan github=true.
 const GITHUB_TOOLS_PROMPT = [
   'Kamu memiliki alat GitHub hanya baca. Gunakan hanya bila diminta pengguna.',
   'Format: blok kode tool berisi JSON, misalnya {"name":"github_read","arguments":{"path":"README.md"}}.',
@@ -140,7 +150,6 @@ const GITHUB_TOOLS_PROMPT = [
   'Hasil alat hanya berupa ringkasan metadata, bukan isi file. Tindakan yang mengubah data belum tersedia.',
 ].join(' ');
 
-// Encrypted, user-bound browser session. The OAuth secret never leaves the Worker.
 const GH_COOKIE = '__Host-blea_github';
 const STATE_COOKIE = '__Host-blea_github_state';
 const cookieOptions = 'Path=/; Secure; HttpOnly; SameSite=Lax';
@@ -153,6 +162,14 @@ function base64url(bytes) {
 function unbase64url(value) {
   const s = value.replace(/-/g, '+').replace(/_/g, '/');
   return Uint8Array.from(atob(s + '='.repeat((4 - s.length % 4) % 4)), (c) => c.charCodeAt(0));
+}
+function bytesToBase64(bytes) {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 async function sessionKey(env) {
   if (!env.GITHUB_CLIENT_SECRET) throw new Error('GitHub belum dikonfigurasi oleh administrator');
@@ -211,7 +228,6 @@ async function exchangeGithubCode(code, env) {
   return res.json().catch(() => ({}));
 }
 
-// Eksekusi alat GitHub agen. toolPath = nama alat.
 async function executeGithubTool(request, toolPath, args, env, user) {
   const gh = (p, opts) => githubApi(request, p, opts, env, user);
   try {
@@ -370,7 +386,6 @@ async function handleGithubCallback(request, url, env) {
   if (!tokenData?.access_token) return fail();
   const session = await seal({ uid: state.uid, token: tokenData.access_token, exp: Date.now() + 30 * 86400_000 }, env);
   headers.append('set-cookie', `${GH_COOKIE}=${session}; ${cookieOptions}; Max-Age=2592000`);
-  // Remove a legacy unencrypted token left by older deployments.
   headers.append('set-cookie', 'blea_github_token=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0');
   headers.set('location', '/studio');
   return new Response(null, { status: 303, headers });
@@ -383,6 +398,253 @@ async function jsonResponse(data, status = 200) {
   });
 }
 
+// ---------- Signed short-lived video content proxy URLs ----------
+async function videoMediaKey(env) {
+  const secret = env.SUPABASE_SERVICE_ROLE_KEY || env.GITHUB_CLIENT_SECRET || env.SUPABASE_ANON_KEY || 'blea-video-media-dev';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('blea-video-media-v1:' + secret));
+  return crypto.subtle.importKey('raw', digest, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function signVideoContentUrl(id, env, ttlMs = 2 * 60 * 60 * 1000) {
+  const exp = String(Date.now() + ttlMs);
+  const msg = new TextEncoder().encode(`${id}:${exp}`);
+  const sigBytes = new Uint8Array(await crypto.subtle.sign('HMAC', await videoMediaKey(env), msg));
+  const sig = base64url(sigBytes);
+  return `/api/video/content/${encodeURIComponent(id)}?exp=${encodeURIComponent(exp)}&sig=${encodeURIComponent(sig)}`;
+}
+
+async function verifyVideoContentSig(id, exp, sig, env) {
+  try {
+    if (!id || !exp || !sig) return false;
+    const expNum = Number(exp);
+    if (!Number.isFinite(expNum) || Date.now() > expNum) return false;
+    const msg = new TextEncoder().encode(`${id}:${exp}`);
+    return await crypto.subtle.verify('HMAC', await videoMediaKey(env), unbase64url(sig), msg);
+  } catch {
+    return false;
+  }
+}
+
+async function sanitizeGenerationRow(row, env) {
+  if (!row) return null;
+  const clean = {
+    id: row.id,
+    user_id: row.user_id,
+    provider: row.provider,
+    model: row.model,
+    prompt: row.prompt,
+    aspect_ratio: row.aspect_ratio,
+    resolution: row.resolution,
+    duration: row.duration,
+    generate_audio: row.generate_audio,
+    image_url: row.image_url,
+    video_url: row.video_url,
+    audio_url: row.audio_url,
+    external_job_id: row.external_job_id,
+    status: row.status,
+    progress: row.progress ?? 0,
+    result_url: row.result_url,
+    error_message: row.error_message,
+    metadata: row.metadata || {},
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+  if (clean.status === 'completed' && clean.id) {
+    clean.result_url = await signVideoContentUrl(clean.id, env);
+  }
+  return clean;
+}
+
+// Inline external HTTPS image into data:<mime>;base64,... for models (Google Veo / Gemini Omni)
+// whose UnoRouter plugin requires base64/data URL instead of an HTTPS URL.
+async function maybeInlineImage(imageUrl) {
+  const url = String(imageUrl || '').trim();
+  if (!url || url.startsWith('data:')) return url;
+  if (!/^https:\/\//i.test(url)) return url;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return url;
+    const contentType = (res.headers.get('content-type') || 'image/png').split(';')[0].trim().toLowerCase();
+    const mime = ['image/jpeg', 'image/png', 'image/webp'].includes(contentType) ? contentType : 'image/png';
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength === 0 || buf.byteLength > 15 * 1024 * 1024) return url;
+    return `data:${mime};base64,${bytesToBase64(buf)}`;
+  } catch {
+    return url;
+  }
+}
+
+async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload }) {
+  const model = String(payload.model || '').trim();
+  const prompt = String(payload.prompt || '').trim();
+  const aspectRatio = String(payload.aspect_ratio || '16:9');
+  const resolution = String(payload.resolution || '720p');
+  const duration = Math.max(1, Math.min(120, Number(payload.duration) || 5));
+  const generateAudio = payload.generate_audio !== false;
+  const size = computeVideoSize(aspectRatio, resolution);
+  const apiBase = resolveProviderApiBase(provider, baseUrl);
+  const lowerModel = model.toLowerCase();
+
+  let imageUrl = String(payload.image_url || '').trim();
+  const imageLastUrl = String(payload.image_last_url || '').trim();
+  const videoUrl = String(payload.video_url || '').trim();
+  const audioUrl = String(payload.audio_url || '').trim();
+
+  // Google Veo & Gemini Omni on UnoRouter/Google/Vertex plugins require inline data URLs
+  if (imageUrl && provider !== 'openrouter' && (provider === 'google' || lowerModel.includes('veo') || lowerModel.includes('gemini-omni'))) {
+    imageUrl = await maybeInlineImage(imageUrl);
+  }
+
+  const headers = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${apiKey}`,
+    ...(provider === 'unorouter' ? { 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' } : {}),
+    ...(provider === 'openrouter' ? { 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' } : {}),
+  };
+
+  if (provider === 'openrouter') {
+    const body = {
+      model,
+      prompt: prompt || 'Generate a smooth, natural video guided by the attached media references.',
+      duration,
+      resolution: resolution.toLowerCase(),
+      aspect_ratio: aspectRatio,
+      generate_audio: generateAudio,
+    };
+    if (imageUrl) {
+      body.frame_images = [
+        { type: 'image_url', image_url: { url: imageUrl }, frame_type: 'first_frame' },
+        ...(imageLastUrl ? [{ type: 'image_url', image_url: { url: imageLastUrl }, frame_type: 'last_frame' }] : []),
+      ];
+    }
+    const refs = [];
+    if (videoUrl) refs.push({ type: 'video_url', video_url: { url: videoUrl } });
+    if (audioUrl) refs.push({ type: 'audio_url', audio_url: { url: audioUrl } });
+    if (refs.length) body.input_references = refs;
+    return {
+      submitUrl: `${apiBase}/videos`,
+      headers,
+      body,
+      pollBaseUrl: `${apiBase}/videos`,
+    };
+  }
+
+  if (provider === 'xai') {
+    const isEdit = Boolean(videoUrl && !imageUrl);
+    const body = {
+      model,
+      prompt: prompt || 'Create a cinematic video based on the provided media.',
+      aspect_ratio: aspectRatio,
+      resolution: resolution.toLowerCase(),
+      duration,
+      generate_audio: generateAudio,
+      ...(imageUrl ? { image: { url: imageUrl } } : {}),
+      ...(videoUrl ? { video: { url: videoUrl } } : {}),
+      ...(audioUrl ? { reference_audios: [{ url: audioUrl }] } : {}),
+    };
+    return {
+      submitUrl: `${apiBase}/videos/${isEdit ? 'edits' : 'generations'}`,
+      headers,
+      body,
+      pollBaseUrl: `${apiBase}/videos`,
+    };
+  }
+
+  // Unified OpenAI-Video / UnoRouter new-api (/v1/videos) protocol
+  const metadata = {
+    aspect_ratio: aspectRatio,
+    resolution: resolution.toLowerCase(),
+  };
+  if (imageUrl) metadata.first_frame_image = imageUrl;
+  if (imageLastUrl) metadata.last_frame_image = imageLastUrl;
+  if (videoUrl) metadata.reference_video = videoUrl;
+  if (audioUrl) metadata.reference_audio = audioUrl;
+
+  const images = [];
+  if (imageUrl) images.push(imageUrl);
+  if (imageLastUrl) images.push(imageLastUrl);
+
+  const body = {
+    model,
+    prompt: prompt || 'Generate a smooth video matching the attached reference media.',
+    aspect_ratio: aspectRatio,
+    resolution: resolution.toLowerCase(),
+    duration,
+    seconds: duration,
+    size,
+    generate_audio: generateAudio,
+    ...(imageUrl ? { input_reference: imageUrl, image: imageUrl, images } : {}),
+    ...(videoUrl ? { video_url: videoUrl } : {}),
+    ...(audioUrl ? { audio_url: audioUrl, reference_audios: [{ url: audioUrl }] } : {}),
+    metadata,
+  };
+
+  return {
+    submitUrl: `${apiBase}/videos`,
+    headers,
+    body,
+    pollBaseUrl: `${apiBase}/videos`,
+  };
+}
+
+function extractVideoJobId(data) {
+  return String(
+    data?.id
+    || data?.task_id
+    || data?.request_id
+    || data?.data?.id
+    || data?.data?.task_id
+    || '',
+  ).trim();
+}
+
+function extractUpstreamVideoUrl(data, apiBase, jobId) {
+  const direct = (
+    (Array.isArray(data?.urls) && data.urls[0])
+    || (Array.isArray(data?.unsigned_urls) && data.unsigned_urls[0])
+    || data?.video?.url
+    || data?.url
+    || data?.video_url
+    || data?.output?.video_url
+    || data?.data?.video_url
+    || data?.data?.url
+    || (Array.isArray(data?.data) && data.data[0]?.url)
+    || ''
+  );
+  if (direct) return String(direct).trim();
+  if (jobId && apiBase) return `${apiBase}/videos/${encodeURIComponent(jobId)}/content`;
+  return '';
+}
+
+function extractUpstreamError(data) {
+  if (!data) return '';
+  if (typeof data.error === 'string') return data.error;
+  if (data.error?.message) return String(data.error.message);
+  if (data.fail_reason) return String(data.fail_reason);
+  if (data.message && !data.id && !data.task_id) return String(data.message);
+  return '';
+}
+
+function extractProgressPercent(data, normalizedStatus) {
+  if (normalizedStatus === 'completed') return 100;
+  const raw = data?.progress ?? data?.data?.progress;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.min(100, Math.round(raw)));
+  if (typeof raw === 'string') {
+    const parsed = Number(raw.replace('%', '').trim());
+    if (Number.isFinite(parsed)) return Math.max(0, Math.min(100, Math.round(parsed)));
+  }
+  return normalizedStatus === 'in_progress' ? 45 : 10;
+}
+
+async function fetchProviderKeyRecord(env, provider) {
+  const res = await servicePostgrest(
+    env,
+    `/provider_api_keys?select=provider,api_key,base_url,label&provider=eq.${encodeURIComponent(provider)}&limit=1`,
+  );
+  const rows = await res.json().catch(() => []);
+  return rows?.[0] || null;
+}
+
 async function handleApi(request, url, env) {
   const path = url.pathname.replace(/^\/api\/?/, '');
   const method = request.method;
@@ -392,56 +654,184 @@ async function handleApi(request, url, env) {
       return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
 
-    // ---- /status: is UnoRouter configured? ----
-    if (path === 'status' && (method === 'GET' || method === 'POST')) {
-      const res = await servicePostgrest(env, '/provider_api_keys?select=api_key&provider=eq.unorouter&limit=1');
-      const rows = await res.json().catch(() => []);
-      const configured = !!rows?.[0]?.api_key;
-      return jsonResponse({ ok: true, configured });
+    // ---- GET/HEAD /api/video/content/:id: signed or authorized video stream proxy ----
+    if (path.startsWith('video/content/') && (method === 'GET' || method === 'HEAD')) {
+      const id = decodeURIComponent(path.slice('video/content/'.length));
+      if (!id) return jsonResponse({ error: 'Missing generation id' }, 400);
+
+      const exp = url.searchParams.get('exp');
+      const sig = url.searchParams.get('sig');
+      const sigOk = await verifyVideoContentSig(id, exp, sig, env);
+      let user = null;
+      if (!sigOk) {
+        const bearer = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+        user = bearer ? await getUser(env, bearer) : null;
+        if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      const rowRes = await servicePostgrest(
+        env,
+        `/video_generations?select=id,user_id,provider,external_job_id,polling_url,upstream_result_url,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+      );
+      const rows = await rowRes.json().catch(() => []);
+      const row = rows?.[0];
+      if (!row) return jsonResponse({ error: 'Video not found' }, 404);
+      if (!sigOk && row.user_id !== user.id && user?.app_metadata?.role !== 'admin') {
+        return jsonResponse({ error: 'Forbidden' }, 403);
+      }
+
+      const keyRow = await fetchProviderKeyRecord(env, row.provider || 'unorouter');
+      const apiBase = resolveProviderApiBase(row.provider || 'unorouter', keyRow?.base_url);
+      let targetUrl = row.upstream_result_url;
+      if (!targetUrl && row.external_job_id) {
+        targetUrl = `${apiBase}/videos/${encodeURIComponent(row.external_job_id)}/content`;
+      }
+      if (!targetUrl) return jsonResponse({ error: 'Video content URL unavailable' }, 404);
+
+      if (targetUrl.startsWith('data:')) {
+        const comma = targetUrl.indexOf(',');
+        const header = targetUrl.slice(5, comma);
+        const mime = header.split(';')[0] || 'video/mp4';
+        const raw = Uint8Array.from(atob(targetUrl.slice(comma + 1)), (c) => c.charCodeAt(0));
+        return new Response(method === 'HEAD' ? null : raw, {
+          status: 200,
+          headers: {
+            'content-type': mime,
+            'content-length': String(raw.byteLength),
+            'cache-control': 'private, no-store',
+          },
+        });
+      }
+
+      const upstreamHeaders = {};
+      const range = request.headers.get('range');
+      if (range) upstreamHeaders.range = range;
+      try {
+        const targetHost = new URL(targetUrl).host;
+        const apiHost = new URL(apiBase).host;
+        if (keyRow?.api_key && targetHost === apiHost) {
+          upstreamHeaders.authorization = `Bearer ${keyRow.api_key}`;
+        }
+      } catch {}
+
+      const upstream = await fetch(targetUrl, {
+        method,
+        headers: upstreamHeaders,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!upstream.ok && upstream.status !== 206) {
+        const text = await upstream.text().catch(() => '');
+        return jsonResponse({ error: 'Failed to stream upstream video', status: upstream.status, detail: text.slice(0, 300) }, 502);
+      }
+      const respHeaders = new Headers();
+      for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+        const v = upstream.headers.get(h);
+        if (v) respHeaders.set(h, v);
+      }
+      if (!respHeaders.has('content-type')) respHeaders.set('content-type', 'video/mp4');
+      respHeaders.set('cache-control', 'private, no-store');
+      return new Response(method === 'HEAD' ? null : upstream.body, {
+        status: upstream.status,
+        headers: respHeaders,
+      });
     }
 
-    // ---- /verify: chat-completions validate API key ----
+    // ---- /status: configured providers & UnoRouter status ----
+    if (path === 'status' && (method === 'GET' || method === 'POST')) {
+      const res = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label');
+      const rows = await res.json().catch(() => []);
+      const configuredProviders = (rows || []).filter((r) => !!r.api_key).map((r) => r.provider);
+      const configured = configuredProviders.includes('unorouter');
+      return jsonResponse({ ok: true, configured, providers: configuredProviders });
+    }
+
+    // ---- /verify: validate API key for UnoRouter, OpenRouter, or custom provider ----
     if (path === 'verify' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      // UnoRouter gateway (OpenAI-compatible) — key yang disimpan provider
-      // 'unorouter' adalah gateway key, bukan OpenRouter key.
-      const baseUrl = (body.baseUrl || 'https://api.unorouter.com/v1/chat/completions').replace(/\/+$/, '');
+      const provider = String(body.provider || 'unorouter').trim().toLowerCase();
+      const keyRow = await fetchProviderKeyRecord(env, provider);
+      const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
+      const apiKey = body.apiKey ?? '';
       try {
-        const r = await fetch(baseUrl, {
+        // Prefer standard GET /models (supported by OpenRouter, OpenAI, xAI, UnoRouter)
+        const modelsRes = await fetch(`${apiBase}/models`, {
+          method: 'GET',
+          headers: { authorization: 'Bearer ' + apiKey },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (modelsRes.ok) {
+          const parsed = await modelsRes.json().catch(() => ({}));
+          const count = Array.isArray(parsed?.data) ? parsed.data.length : (Array.isArray(parsed?.models) ? parsed.models.length : 0);
+          return jsonResponse({ ok: true, valid: true, verifiedVia: 'models', modelsCount: count });
+        }
+        if (modelsRes.status === 401 || modelsRes.status === 403) {
+          const text = await modelsRes.text().catch(() => '');
+          return jsonResponse({ ok: false, valid: false, status: modelsRes.status, error: text.slice(0, 200) });
+        }
+        // Fallback chat ping for gateways without GET /v1/models
+        const pingUrl = `${apiBase}/chat/completions`;
+        const r = await fetch(pingUrl, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (body.apiKey ?? '') },
-          body: JSON.stringify({ model: 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey },
+          body: JSON.stringify({ model: provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
           signal: AbortSignal.timeout(30_000),
         });
         if (r.ok) return jsonResponse({ ok: true, valid: true, verifiedVia: 'chat', modelsCount: 0 });
         const text = await r.text().catch(() => '');
-        // 401 = key ditolak (invalid); 404 = key diterima tapi model tidak ada di gateway.
-        const valid = r.status !== 401;
+        const valid = r.status !== 401 && r.status !== 403;
         return jsonResponse({ ok: valid, valid, status: r.status, error: text.slice(0, 200) });
       } catch (e) {
         return jsonResponse({ ok: false, valid: false, error: String(e) });
       }
     }
 
-    // ---- /models: active models for the chat dropdown (array of model IDs) ----
-    if (path === 'models' && (method === 'GET' || method === 'POST')) {
-      const res = await servicePostgrest(env, '/provider_models?select=model&active=eq.true&order=created_at.desc');
+    // ---- /models & /enabled-models: active models for Chat AI ----
+    if ((path === 'models' || path === 'enabled-models') && (method === 'GET' || method === 'POST')) {
+      const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
-      const models = (rows ?? []).map((m) => m.model);
+      const models = (rows ?? []).filter((m) => !isVideoModelId(m.model)).map((m) => m.model);
       return jsonResponse({ models });
     }
 
-    // ---- /enabled-models: active model IDs ----
-    if (path === 'enabled-models' && (method === 'GET' || method === 'POST')) {
-      const res = await servicePostgrest(env, '/provider_models?select=model&active=eq.true&order=created_at.desc');
-      if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
-      const rows = await res.json().catch(() => []);
-      return jsonResponse({ models: (rows ?? []).map((m) => m.model) });
-    }
-
-    // ---- /catalog: full free model list from UnoRouter (server-side, no API key needed) ----
+    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid) or OpenRouter ----
     if (path === 'catalog' && (method === 'GET' || method === 'POST')) {
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const provider = String(body.provider || url.searchParams.get('provider') || 'unorouter').toLowerCase();
+
+      if (provider === 'openrouter') {
+        try {
+          const upstream = await fetch('https://openrouter.ai/api/v1/videos/models', {
+            signal: AbortSignal.timeout(20_000),
+          });
+          const payload = upstream.ok ? await upstream.json().catch(() => ({})) : {};
+          const list = Array.isArray(payload?.data) ? payload.data : [];
+          const models = list.map((item) => ({
+            id: item.id,
+            provider: 'openrouter',
+            category: 'Video',
+            tags: ['Video', 'OpenRouter'],
+            description: item.description || item.name || '',
+            isFree: false,
+            online: true,
+            priceLabel: item.pricing_skus?.['per-video-second'] ? `$${item.pricing_skus['per-video-second']}/s` : 'Berbayar',
+          }));
+          if (models.length) return jsonResponse({ models });
+        } catch {}
+        return jsonResponse({
+          models: BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'openrouter').map((m) => ({
+            id: m.id,
+            provider: 'openrouter',
+            category: 'Video',
+            tags: ['Video', m.vendor],
+            description: m.description,
+            isFree: m.isFree,
+            online: true,
+            priceLabel: m.priceLabel,
+          })),
+        });
+      }
+
       try {
         const upstream = await fetch('https://api.unorouter.com/api/pricing', {
           signal: AbortSignal.timeout(30_000),
@@ -450,28 +840,41 @@ async function handleApi(request, url, env) {
         const catalog = await upstream.json().catch(() => ({}));
         const rows = Array.isArray(catalog?.data) ? catalog.data : [];
         const models = rows
-          .filter((row) => row.is_free && row.online)
           .map((row) => {
             let meta = {};
             try { meta = JSON.parse(row.metadata || '{}'); } catch {}
             const tags = String(row.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
-            const mode = meta.mode;
+            const isVideo = isVideoCatalogModel(row, meta);
+            if (!isVideo && !(row.is_free && row.online)) return null;
+            const mode = String(meta.mode || '').toLowerCase();
             let category;
-            if (mode === 'image') category = 'Image';
+            if (isVideo) category = 'Video';
+            else if (mode === 'image') category = 'Image';
             else if (mode === 'embedding') category = 'Embedding';
             else if (mode === 'speech') category = 'Speech';
-            else if (mode === 'video') category = 'Video';
             else if (tags.some((t) => t.toLowerCase() === 'text')) category = 'Text';
             else category = 'Other';
-            return { id: row.model_name, category, tags, description: row.description || '' };
-          });
+            const price = Number(row.model_price);
+            const priceLabel = row.is_free ? 'Gratis' : (Number.isFinite(price) && price > 0 ? `$${price}/s` : 'Berbayar');
+            return {
+              id: row.model_name,
+              provider: 'unorouter',
+              category,
+              tags,
+              description: row.description || '',
+              isFree: Boolean(row.is_free),
+              online: Boolean(row.online),
+              priceLabel,
+            };
+          })
+          .filter(Boolean);
         return jsonResponse({ models });
       } catch (e) {
         return jsonResponse({ error: String(e) }, 502);
       }
     }
 
-    // ---- /admin-models: full model list (admin) ----
+    // ---- /admin-models: full model list across all providers (admin) ----
     if (path === 'admin-models' && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       if (!(await isAdmin(env, token))) return jsonResponse({ error: 'admin required' }, 403);
@@ -482,20 +885,34 @@ async function handleApi(request, url, env) {
       return jsonResponse({ models });
     }
 
-    // ---- /save-models: upsert model enablement (admin) ----
+    // ---- /save-models: upsert model enablement per provider (admin) ----
     if (path === 'save-models' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       if (!(await isAdmin(env, token))) return jsonResponse({ error: 'admin required' }, 403);
       const body = await request.json().catch(() => ({}));
-      const provider = body.provider ?? 'unorouter';
+      const provider = String(body.provider ?? 'unorouter').trim().toLowerCase();
+
+      if (body.mode === 'upsert_one' && body.model) {
+        const modelId = String(body.model).trim();
+        const active = body.active !== false;
+        const upRes = await servicePostgrest(env, '/provider_models', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+          body: [{ provider, model: modelId, active }],
+        });
+        if (!upRes.ok) {
+          const detail = await upRes.text().catch(() => '');
+          return jsonResponse({ error: 'DB write failed', status: upRes.status, detail: detail.slice(0, 200) }, 500);
+        }
+        return jsonResponse({ ok: true, saved: 1, model: modelId, provider, active });
+      }
+
       const activeIds = Array.isArray(body.models) ? body.models : [];
-      // Bulk upsert active models — PostgREST upsert to the resource root
-      // (filters are NOT allowed on POST; match happens on PK provider+model).
       const rows = activeIds.map((model) => ({ provider, model, active: true }));
       if (rows.length) {
         const upRes = await servicePostgrest(env, '/provider_models', {
           method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
+          headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
           body: rows,
         });
         if (!upRes.ok) {
@@ -503,17 +920,368 @@ async function handleApi(request, url, env) {
           return jsonResponse({ error: 'DB write failed', status: upRes.status, detail: detail.slice(0, 200) }, 500);
         }
       }
-      // Deactivate models not in the active list
-      const listRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.${provider}`);
+      const listRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.${encodeURIComponent(provider)}`);
       const existing = await listRes.json().catch(() => []);
       const stale = (existing ?? []).map((m) => m.model).filter((m) => !activeIds.includes(m));
       for (const model of stale) {
-        await servicePostgrest(env, `/provider_models?provider=eq.${provider}&model=eq.${encodeURIComponent(model)}`, {
+        await servicePostgrest(env, `/provider_models?provider=eq.${encodeURIComponent(provider)}&model=eq.${encodeURIComponent(model)}`, {
           method: 'PATCH',
           body: { active: false },
         });
       }
       return jsonResponse({ ok: true, saved: activeIds.length, activeCount: activeIds.length });
+    }
+
+    // ---- /video/models: multi-provider video generation models & provider statuses ----
+    if (path === 'video/models' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+
+      const [keysRes, modelsRes] = await Promise.all([
+        servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label'),
+        servicePostgrest(env, '/provider_models?select=provider,model,active&active=eq.true&order=created_at.desc&limit=500'),
+      ]);
+      const keyRows = await keysRes.json().catch(() => []);
+      const dbModelRows = await modelsRes.json().catch(() => []);
+
+      const configuredByProvider = new Map();
+      for (const row of keyRows || []) {
+        configuredByProvider.set(row.provider, {
+          id: row.provider,
+          label: row.label || PROVIDER_PRESETS[row.provider]?.label || row.provider,
+          configured: Boolean(row.api_key),
+          hasBaseUrl: Boolean(row.base_url),
+        });
+      }
+
+      // Optional live catalog enrichment from UnoRouter & OpenRouter (best-effort)
+      const liveCatalogMap = new Map();
+      try {
+        const unoRes = await fetch('https://api.unorouter.com/api/pricing', { signal: AbortSignal.timeout(8_000) });
+        if (unoRes.ok) {
+          const catalog = await unoRes.json().catch(() => ({}));
+          for (const row of Array.isArray(catalog?.data) ? catalog.data : []) {
+            let meta = {};
+            try { meta = JSON.parse(row.metadata || '{}'); } catch {}
+            if (!isVideoCatalogModel(row, meta)) continue;
+            const price = Number(row.model_price);
+            liveCatalogMap.set(`unorouter:${row.model_name}`, {
+              online: Boolean(row.online),
+              isFree: Boolean(row.is_free),
+              priceLabel: row.is_free ? 'Gratis' : (Number.isFinite(price) && price > 0 ? `$${price}/s` : 'Berbayar'),
+              description: row.description || '',
+            });
+          }
+        }
+      } catch {}
+
+      const merged = new Map();
+      // 1. Active video models configured in Admin Panel (provider_models)
+      for (const row of dbModelRows || []) {
+        const provider = row.provider || 'unorouter';
+        const key = `${provider}:${row.model}`;
+        const isVideo = isVideoModelId(row.model) || liveCatalogMap.has(key) || provider !== 'unorouter';
+        if (!isVideo) continue;
+        // Skip clearly non-video chat/embedding models on other providers if obvious
+        if (provider !== 'unorouter' && /(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama)/i.test(row.model)) continue;
+        const profile = getVideoModelProfile(row.model, provider);
+        const live = liveCatalogMap.get(key);
+        merged.set(key, {
+          ...profile,
+          provider,
+          providerLabel: configuredByProvider.get(provider)?.label || PROVIDER_PRESETS[provider]?.label || provider,
+          providerConfigured: Boolean(configuredByProvider.get(provider)?.configured),
+          activeInAdmin: true,
+          online: live ? live.online : true,
+          isFree: live ? live.isFree : profile.isFree,
+          priceLabel: live ? live.priceLabel : profile.priceLabel,
+          description: live?.description || profile.description,
+        });
+      }
+
+      // 2. Discoverable OpenRouter video models if OpenRouter is configured
+      if (configuredByProvider.get('openrouter')?.configured) {
+        try {
+          const orRes = await fetch('https://openrouter.ai/api/v1/videos/models', { signal: AbortSignal.timeout(8_000) });
+          if (orRes.ok) {
+            const orData = await orRes.json().catch(() => ({}));
+            for (const item of Array.isArray(orData?.data) ? orData.data : []) {
+              const key = `openrouter:${item.id}`;
+              const profile = getVideoModelProfile(item.id, 'openrouter');
+              const existing = merged.get(key);
+              merged.set(key, {
+                ...profile,
+                ...(existing || {}),
+                id: item.id,
+                name: item.name || profile.name,
+                provider: 'openrouter',
+                providerLabel: configuredByProvider.get('openrouter')?.label || 'OpenRouter',
+                providerConfigured: true,
+                activeInAdmin: Boolean(existing?.activeInAdmin),
+                online: true,
+                aspectRatios: Array.isArray(item.supported_aspect_ratios) && item.supported_aspect_ratios.length
+                  ? item.supported_aspect_ratios : profile.aspectRatios,
+                resolutions: Array.isArray(item.supported_resolutions) && item.supported_resolutions.length
+                  ? item.supported_resolutions : profile.resolutions,
+                durations: Array.isArray(item.supported_durations) && item.supported_durations.length
+                  ? item.supported_durations : profile.durations,
+                priceLabel: item.pricing_skus?.['per-video-second']
+                  ? `$${item.pricing_skus['per-video-second']}/s` : profile.priceLabel,
+                description: item.description || profile.description,
+              });
+            }
+          }
+        } catch {}
+      }
+
+      // 3. Built-in video catalog entries (ensures dropdown always has video options & capabilities)
+      for (const item of BUILTIN_VIDEO_MODELS) {
+        const key = `${item.provider}:${item.id}`;
+        if (merged.has(key)) continue;
+        const live = liveCatalogMap.get(key);
+        const provInfo = configuredByProvider.get(item.provider);
+        merged.set(key, {
+          ...item,
+          providerLabel: provInfo?.label || PROVIDER_PRESETS[item.provider]?.label || item.provider,
+          providerConfigured: Boolean(provInfo?.configured),
+          activeInAdmin: false,
+          online: live ? live.online : true,
+          isFree: live ? live.isFree : item.isFree,
+          priceLabel: live ? live.priceLabel : item.priceLabel,
+          description: live?.description || item.description,
+        });
+      }
+
+      const models = Array.from(merged.values()).sort((a, b) => {
+        if (a.activeInAdmin !== b.activeInAdmin) return a.activeInAdmin ? -1 : 1;
+        if (a.providerConfigured !== b.providerConfigured) return a.providerConfigured ? -1 : 1;
+        if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      const providers = Array.from(configuredByProvider.values());
+      for (const preset of Object.values(PROVIDER_PRESETS)) {
+        if (preset.id === 'custom') continue;
+        if (!configuredByProvider.has(preset.id)) {
+          providers.push({ id: preset.id, label: preset.label, configured: false, hasBaseUrl: false });
+        }
+      }
+
+      return jsonResponse({ ok: true, models, providers });
+    }
+
+    // ---- /video/history: list current user's video generations with fresh signed playback URLs ----
+    if (path === 'video/history' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+
+      const res = await servicePostgrest(
+        env,
+        `/video_generations?select=*&user_id=eq.${encodeURIComponent(user.id)}&order=created_at.desc&limit=40`,
+      );
+      if (!res.ok) return jsonResponse({ error: 'Failed to load video history' }, 500);
+      const rows = await res.json().catch(() => []);
+      const generations = await Promise.all((rows || []).map((row) => sanitizeGenerationRow(row, env)));
+      return jsonResponse({ ok: true, generations });
+    }
+
+    // ---- /video/generate: submit async video generation job & persist in Supabase ----
+    if (path === 'video/generate' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+
+      const payload = await request.json().catch(() => ({}));
+      const provider = String(payload.provider || 'unorouter').trim().toLowerCase();
+      const model = String(payload.model || '').trim();
+      const prompt = String(payload.prompt || '').trim();
+      const imageUrl = String(payload.image_url || '').trim();
+      const videoUrl = String(payload.video_url || '').trim();
+      const audioUrl = String(payload.audio_url || '').trim();
+
+      if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
+      if (!prompt && !imageUrl && !videoUrl && !audioUrl) {
+        return jsonResponse({ error: 'Masukkan prompt atau unggah minimal satu media (gambar, video, atau audio).' }, 400);
+      }
+
+      const keyRow = await fetchProviderKeyRecord(env, provider);
+      if (!keyRow?.api_key) {
+        return jsonResponse({
+          error: `Provider "${PROVIDER_PRESETS[provider]?.label || provider}" belum memiliki API key. Konfigurasikan di Admin Panel -> API Key.`,
+        }, 400);
+      }
+
+      const upstreamReq = await buildUpstreamVideoRequest({
+        provider,
+        baseUrl: keyRow.base_url,
+        apiKey: keyRow.api_key,
+        payload,
+      });
+
+      let upstreamRes;
+      try {
+        upstreamRes = await fetch(upstreamReq.submitUrl, {
+          method: 'POST',
+          headers: upstreamReq.headers,
+          body: JSON.stringify(upstreamReq.body),
+          signal: AbortSignal.timeout(60_000),
+        });
+      } catch (e) {
+        return jsonResponse({ error: `Gagal menghubungi provider (${provider}): ${String(e)}` }, 502);
+      }
+
+      const rawText = await upstreamRes.text().catch(() => '');
+      let upstreamData = {};
+      try { upstreamData = JSON.parse(rawText); } catch {}
+
+      if (!upstreamRes.ok) {
+        const detail = extractUpstreamError(upstreamData) || rawText.slice(0, 300);
+        const statusMsg = upstreamRes.status === 402
+          ? 'Saldo / kuota provider tidak mencukupi untuk model ini.'
+          : upstreamRes.status === 429
+            ? 'Provider sedang sibuk atau terkena batas rate limit. Coba beberapa saat lagi.'
+            : upstreamRes.status === 401 || upstreamRes.status === 403
+              ? `API key untuk provider "${provider}" tidak valid atau tidak memiliki izin.`
+              : (detail || `Permintaan generate gagal (HTTP ${upstreamRes.status}).`);
+        return jsonResponse({
+          ok: false,
+          error: statusMsg,
+          upstreamStatus: upstreamRes.status,
+          detail,
+        }, upstreamRes.status >= 400 && upstreamRes.status < 500 ? upstreamRes.status : 502);
+      }
+
+      const externalJobId = extractVideoJobId(upstreamData);
+      const status = normalizeVideoStatus(upstreamData?.status || upstreamData?.data?.status || 'queued');
+      const progress = extractProgressPercent(upstreamData, status);
+      const pollingUrl = String(
+        upstreamData?.polling_url
+        || (externalJobId ? `${upstreamReq.pollBaseUrl}/${encodeURIComponent(externalJobId)}` : ''),
+      ).trim();
+      const apiBase = resolveProviderApiBase(provider, keyRow.base_url);
+      const immediateContentUrl = status === 'completed'
+        ? extractUpstreamVideoUrl(upstreamData, apiBase, externalJobId)
+        : '';
+
+      const insertBody = {
+        user_id: user.id,
+        provider,
+        model,
+        prompt,
+        aspect_ratio: String(payload.aspect_ratio || '16:9'),
+        resolution: String(payload.resolution || '720p'),
+        duration: Math.max(1, Math.min(120, Number(payload.duration) || 5)),
+        generate_audio: payload.generate_audio !== false,
+        image_url: imageUrl || null,
+        video_url: videoUrl || null,
+        audio_url: audioUrl || null,
+        external_job_id: externalJobId || null,
+        polling_url: pollingUrl || null,
+        status,
+        progress,
+        upstream_result_url: immediateContentUrl || null,
+        error_message: status === 'failed' ? (extractUpstreamError(upstreamData) || 'Generasi gagal') : null,
+        metadata: {
+          mode: videoUrl ? 'video_to_video' : imageUrl ? 'image_to_video' : audioUrl ? 'audio_to_video' : 'text_to_video',
+          ...(payload.image_last_url ? { image_last_url: payload.image_last_url } : {}),
+        },
+      };
+
+      const insertRes = await servicePostgrest(env, '/video_generations', {
+        method: 'POST',
+        headers: { Prefer: 'return=representation' },
+        body: insertBody,
+      });
+      if (!insertRes.ok) {
+        const detail = await insertRes.text().catch(() => '');
+        return jsonResponse({ error: 'Gagal menyimpan riwayat generate', detail: detail.slice(0, 200) }, 500);
+      }
+      const inserted = await insertRes.json().catch(() => []);
+      const row = inserted?.[0] || insertBody;
+      const generation = await sanitizeGenerationRow(row, env);
+      return jsonResponse({ ok: true, generation });
+    }
+
+    // ---- /video/status: poll upstream job status & update Supabase row ----
+    if (path === 'video/status' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const id = String(body.id || url.searchParams.get('id') || '').trim();
+      if (!id) return jsonResponse({ error: 'id required' }, 400);
+
+      const rowRes = await servicePostgrest(
+        env,
+        `/video_generations?select=*&id=eq.${encodeURIComponent(id)}&limit=1`,
+      );
+      const rows = await rowRes.json().catch(() => []);
+      const row = rows?.[0];
+      if (!row) return jsonResponse({ error: 'Generation not found' }, 404);
+      if (row.user_id !== user.id && user?.app_metadata?.role !== 'admin') {
+        return jsonResponse({ error: 'Forbidden' }, 403);
+      }
+
+      if (['completed', 'failed', 'cancelled', 'expired'].includes(row.status)) {
+        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+      }
+
+      const keyRow = await fetchProviderKeyRecord(env, row.provider || 'unorouter');
+      if (!keyRow?.api_key) {
+        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+      }
+
+      const apiBase = resolveProviderApiBase(row.provider || 'unorouter', keyRow.base_url);
+      const pollUrl = row.polling_url || (row.external_job_id ? `${apiBase}/videos/${encodeURIComponent(row.external_job_id)}` : '');
+      if (!pollUrl) {
+        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+      }
+
+      const pollRes = await fetch(pollUrl, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${keyRow.api_key}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!pollRes.ok) {
+        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: `HTTP ${pollRes.status}` });
+      }
+
+      const pollData = await pollRes.json().catch(() => ({}));
+      const nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || row.status);
+      const nextProgress = extractProgressPercent(pollData, nextStatus);
+      const upstreamUrl = nextStatus === 'completed'
+        ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
+        : row.upstream_result_url;
+      const errMsg = nextStatus === 'failed'
+        ? (extractUpstreamError(pollData) || 'Generasi video gagal di server provider.')
+        : row.error_message;
+
+      const patchRes = await servicePostgrest(
+        env,
+        `/video_generations?id=eq.${encodeURIComponent(row.id)}`,
+        {
+          method: 'PATCH',
+          headers: { Prefer: 'return=representation' },
+          body: {
+            status: nextStatus,
+            progress: nextProgress,
+            ...(upstreamUrl ? { upstream_result_url: upstreamUrl } : {}),
+            ...(errMsg ? { error_message: errMsg } : {}),
+          },
+        },
+      );
+      const patched = patchRes.ok ? await patchRes.json().catch(() => []) : [];
+      const updated = patched?.[0] || {
+        ...row,
+        status: nextStatus,
+        progress: nextProgress,
+        upstream_result_url: upstreamUrl,
+        error_message: errMsg,
+      };
+      return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(updated, env) });
     }
 
     // ---- /search: web search untuk mode agen (internet access) ----
@@ -525,7 +1293,7 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, results, query });
     }
 
-    // GitHub routes require a valid BLEA session and a same-origin request.
+    // GitHub routes
     if (path === 'repos' || path.startsWith('auth/github/') || path === 'github/status' || path.startsWith('github/tools/')) {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       const user = await requestUser(request, env);
@@ -553,7 +1321,6 @@ async function handleApi(request, url, env) {
         const result = await githubApi(request, '/user/repos?per_page=100&sort=updated', {}, env, user);
         return jsonResponse(result.ok ? { ok: true, repos: result.data.map((r) => ({ fullName: r.full_name, defaultBranch: r.default_branch })) } : { ok: false, repos: [] }, result.ok ? 200 : result.status);
       }
-      // Mutating operations need a separate, explicit approval flow; disabled for now.
       if (path.startsWith('github/tools/') && method === 'POST') {
         const tool = path.slice('github/tools/'.length);
         if (!['repos', 'read', 'prs'].includes(tool)) return jsonResponse({ error: 'Tindakan yang mengubah GitHub belum tersedia.' }, 403);
@@ -563,25 +1330,17 @@ async function handleApi(request, url, env) {
       }
     }
 
-    // ---- /chat: call openrouter, save assistant reply to DB, return JSON (auth required) ----
+    // ---- /chat: call UnoRouter / provider, save assistant reply to DB, return JSON (auth required) ----
     if (path === 'chat' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       if (!token) return jsonResponse({ error: 'Missing token' }, 401);
       const user = await getUser(env, token);
       if (!user) return jsonResponse({ error: 'Invalid token' }, 401);
       const body = await request.json().catch(() => ({}));
-      // Read admin-configured API key + gateway base URL (UnoRouter gateway —
-      // OpenAI-compatible; TIDAK memanggil openrouter.ai langsung karena key
-      // yang disimpan adalah UnoRouter gateway key).
       const keyRes = await servicePostgrest(env, '/provider_api_keys?select=api_key,base_url&provider=eq.unorouter&limit=1');
       const keyRows = await keyRes.json().catch(() => []);
       const apiKey = keyRows?.[0]?.api_key || 'use-free';
-      const gatewayBase = (keyRows?.[0]?.base_url || 'https://api.unorouter.com').replace(/\/+$/, '');
-      // base_url bisa berupa host (https://api.unorouter.com) atau URL lengkap
-      // (https://api.unorouter.com/v1/chat/completions) — jangan dobel /v1/chat/completions.
-      const chatUrl = gatewayBase.endsWith('/chat/completions')
-        ? gatewayBase
-        : `${gatewayBase}/v1/chat/completions`;
+      const chatUrl = `${resolveProviderApiBase('unorouter', keyRows?.[0]?.base_url)}/chat/completions`;
       const repository = typeof body.repository === 'string' && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(body.repository) ? body.repository : '';
       const githubEnabled = !!(body.github && repository && await githubToken(request, env, user));
       const [selectedOwner, selectedName] = repository.split('/');
@@ -604,8 +1363,6 @@ async function handleApi(request, url, env) {
         }
         const upstreamData = await upstream.json().catch(() => ({}));
         let finalReply = upstreamData?.choices?.[0]?.message?.content ?? '';
-        // Tool loop: parse \`\`\`tool dari reply model, eksekusi alat
-        // GitHub, lalu lanjut percakapan dengan hasil alat (maks 4 iterasi).
         const actions = [];
         if (githubEnabled) {
           for (let round = 0; round < 4; round += 1) {
@@ -633,10 +1390,9 @@ async function handleApi(request, url, env) {
           }
         }
         const reply = finalReply;
-        // Save assistant message to DB
         const insertRes = await servicePostgrest(env, '/ai_messages', {
           method: 'POST',
-          headers: { 'Prefer': 'return=representation' },
+          headers: { Prefer: 'return=representation' },
           body: {
             conversation_id: body.conversationId,
             user_id: user.id,
@@ -670,7 +1426,6 @@ export default {
     if (url.pathname === '/auth/github/callback') {
       return handleGithubCallback(request, url, env);
     }
-    // Static assets (SPA)
     return env.ASSETS.fetch(request);
   },
 };

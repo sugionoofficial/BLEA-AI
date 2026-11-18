@@ -11,7 +11,7 @@ const AuthPage = lazy(() => import('./auth/AuthPages').then((module) => ({ defau
 const AccountSettings = lazy(() => import('./auth/AccountSettings').then((module) => ({ default: module.AccountSettings })));
 const ForgotPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ForgotPasswordPage })));
 const ResetPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ResetPasswordPage })));
-const ProjectsPage = lazy(() => import('./auth/ProjectsPage').then((module) => ({ default: module.ProjectsPage })));
+const GeneratePage = lazy(() => import('./auth/GeneratePage').then((module) => ({ default: module.GeneratePage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
 import './dropx/dropx.css';
@@ -19,7 +19,7 @@ import './auth/studio.css';
 import './auth/studio-fallback.css';
 import './auth/auth.css';
 import './auth/settings.css';
-import './auth/projects.css';
+import './auth/generate.css';
 import './auth/admin.css';
 import './auth/drawer.css';
 import './landing.css';
@@ -39,7 +39,8 @@ function App() {
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
-            <Route path="/projects" element={<ProjectsPage />} />
+            <Route path="/generate" element={<GeneratePage />} />
+            <Route path="/projects" element={<Navigate to="/generate" replace />} />
             <Route path="/studio" element={<StudioErrorBoundary><AIStudio /></StudioErrorBoundary>} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
