@@ -33,6 +33,7 @@ import {
   normalizeVideoStatus,
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
+import { parseUpstreamSsePayload } from './lib/chatStream.js';
 
 const SUPABASE_URL_ENV = (env) => (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
 
@@ -513,16 +514,36 @@ function normalizeMessagesForWorkersAi(messages, modelId) {
   });
 }
 
-async function sendCloudflareBindingChat({ ai, model, payload }) {
+async function sendCloudflareBindingChat({ ai, model, payload, stream = false }) {
   try {
     const messages = normalizeMessagesForWorkersAi(payload.messages, model);
     const input = {
       messages,
-      stream: false,
+      stream: Boolean(stream),
       ...(Number.isFinite(payload.temperature) ? { temperature: payload.temperature } : {}),
       ...(Number.isFinite(payload.max_tokens) ? { max_tokens: payload.max_tokens } : {}),
     };
     const data = await ai.run(model, input);
+    if (stream && data && typeof data.getReader === 'function') {
+      return { ok: true, status: 200, stream: data };
+    }
+    if (stream && data && typeof data[Symbol.asyncIterator] === 'function') {
+      const encoder = new TextEncoder();
+      const asyncStream = new ReadableStream({
+        async start(controller) {
+          try {
+            for await (const chunk of data) {
+              const line = typeof chunk === 'string' ? chunk : JSON.stringify(chunk);
+              controller.enqueue(encoder.encode(`data: ${line}\n\n`));
+            }
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          } finally {
+            controller.close();
+          }
+        },
+      });
+      return { ok: true, status: 200, stream: asyncStream };
+    }
     return { ok: true, status: 200, data: data || {} };
   } catch (e) {
     const msg = String(e?.message || e || 'Workers AI binding request failed');
@@ -597,12 +618,12 @@ function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvi
   return diversified;
 }
 
-async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000, env }) {
+async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000, env, stream = false }) {
   if (provider === 'cloudflare') {
     const restReady = apiKey && apiKey !== 'binding:AI' && hasValidCloudflareRestBase(baseUrl);
     if (!restReady) {
       if (hasWorkersAiBinding(env)) {
-        return sendCloudflareBindingChat({ ai: env.AI, model, payload });
+        return sendCloudflareBindingChat({ ai: env.AI, model, payload, stream });
       }
       return {
         ok: false,
@@ -634,7 +655,7 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
       'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev',
       'X-Title': 'BLEA AI',
     },
-    body: JSON.stringify({ ...payload, model, stream: false }),
+    body: JSON.stringify({ ...payload, model, stream: Boolean(stream) }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!upstream.ok) {
@@ -642,8 +663,240 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
     const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'));
     return { ok: false, status: upstream.status, errorInfo };
   }
+  const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
+  if (stream && contentType.includes('text/event-stream') && upstream.body) {
+    return { ok: true, status: upstream.status, stream: upstream.body };
+  }
   const data = await upstream.json().catch(() => ({}));
   return { ok: true, status: upstream.status, data };
+}
+
+function extractSseEventsFromLines(lines) {
+  const events = [];
+  let done = false;
+  let streamError = null;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith(':')) continue;
+    if (!line.startsWith('data:')) continue;
+    const payloadStr = line.slice(5).trim();
+    if (!payloadStr) continue;
+    if (payloadStr === '[DONE]') {
+      done = true;
+      break;
+    }
+    let parsed = null;
+    try { parsed = JSON.parse(payloadStr); } catch {}
+    if (!parsed) continue;
+    if (parsed.error) {
+      streamError = parsed.error;
+      continue;
+    }
+    const { contentDelta, reasoningDelta } = parseUpstreamSsePayload(parsed);
+    if (reasoningDelta) events.push({ type: 'thinking', text: reasoningDelta });
+    if (contentDelta) events.push({ type: 'delta', text: contentDelta });
+  }
+  return { events, done, streamError };
+}
+
+async function probeChatStreamAttempt(attempt) {
+  if (!attempt.ok) return attempt;
+  if (attempt.data) {
+    const reply = extractAssistantReply(attempt.data);
+    const msg = attempt.data?.choices?.[0]?.message;
+    const reasoning = String(msg?.reasoning_content || msg?.reasoning || '').trim();
+    if (!reply && !reasoning) {
+      return {
+        ok: false,
+        status: 502,
+        errorInfo: parseChatUpstreamError('Model mengembalikan respons kosong.', 502),
+      };
+    }
+    return { ok: true, mode: 'json', reply: reply || reasoning, reasoning: reply ? reasoning : '' };
+  }
+  if (!attempt.stream || typeof attempt.stream.getReader !== 'function') {
+    return {
+      ok: false,
+      status: 502,
+      errorInfo: parseChatUpstreamError('Stream upstream tidak tersedia.', 502),
+    };
+  }
+
+  const reader = attempt.stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const initialEvents = [];
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          const tail = extractSseEventsFromLines(buffer.split(/\r?\n/));
+          initialEvents.push(...tail.events);
+          buffer = '';
+          if (tail.streamError && !initialEvents.length) {
+            const msg = typeof tail.streamError === 'string' ? tail.streamError : (tail.streamError.message || JSON.stringify(tail.streamError));
+            return { ok: false, status: 502, errorInfo: parseChatUpstreamError(msg, 502) };
+          }
+        }
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/\r?\n/);
+      buffer = parts.pop() || '';
+      const parsed = extractSseEventsFromLines(parts);
+      initialEvents.push(...parsed.events);
+      if (parsed.streamError && !initialEvents.length) {
+        const msg = typeof parsed.streamError === 'string' ? parsed.streamError : (parsed.streamError.message || JSON.stringify(parsed.streamError));
+        await reader.cancel().catch(() => {});
+        return { ok: false, status: 502, errorInfo: parseChatUpstreamError(msg, 502) };
+      }
+      if (initialEvents.length > 0 || parsed.done) {
+        return {
+          ok: true,
+          mode: 'stream',
+          reader,
+          decoder,
+          buffer,
+          initialEvents,
+          streamDone: parsed.done,
+        };
+      }
+    }
+  } catch (e) {
+    await reader.cancel().catch(() => {});
+    return { ok: false, status: 502, errorInfo: parseChatUpstreamError(String(e), 502) };
+  }
+
+  if (initialEvents.length > 0) {
+    return {
+      ok: true,
+      mode: 'stream',
+      reader,
+      decoder,
+      buffer: '',
+      initialEvents,
+      streamDone: true,
+    };
+  }
+  return {
+    ok: false,
+    status: 502,
+    errorInfo: parseChatUpstreamError('Model mengembalikan stream kosong.', 502),
+  };
+}
+
+function sseEncode(obj) {
+  return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+function createChatSseResponse({
+  probed,
+  meta,
+  env,
+  conversationId,
+  userId,
+}) {
+  const stream = new ReadableStream({
+    async start(controller) {
+      let fullReply = '';
+      let fullReasoning = '';
+      try {
+        controller.enqueue(sseEncode({ type: 'meta', ...meta }));
+
+        if (probed.mode === 'json') {
+          if (probed.reasoning) {
+            fullReasoning = probed.reasoning;
+            controller.enqueue(sseEncode({ type: 'thinking', text: probed.reasoning }));
+          }
+          fullReply = probed.reply || '';
+          if (fullReply) {
+            controller.enqueue(sseEncode({ type: 'delta', text: fullReply }));
+          }
+        } else {
+          for (const ev of probed.initialEvents) {
+            if (ev.type === 'thinking') fullReasoning += ev.text;
+            if (ev.type === 'delta') fullReply += ev.text;
+            controller.enqueue(sseEncode(ev));
+          }
+          let { buffer, streamDone } = probed;
+          const { reader, decoder } = probed;
+          while (!streamDone) {
+            const { value, done } = await reader.read();
+            if (done) {
+              buffer += decoder.decode();
+              if (buffer.trim()) {
+                const tail = extractSseEventsFromLines(buffer.split(/\r?\n/));
+                for (const ev of tail.events) {
+                  if (ev.type === 'thinking') fullReasoning += ev.text;
+                  if (ev.type === 'delta') fullReply += ev.text;
+                  controller.enqueue(sseEncode(ev));
+                }
+              }
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split(/\r?\n/);
+            buffer = parts.pop() || '';
+            const parsed = extractSseEventsFromLines(parts);
+            for (const ev of parsed.events) {
+              if (ev.type === 'thinking') fullReasoning += ev.text;
+              if (ev.type === 'delta') fullReply += ev.text;
+              controller.enqueue(sseEncode(ev));
+            }
+            if (parsed.done) streamDone = true;
+          }
+        }
+
+        const savedContent = fullReply.trim() || fullReasoning.trim();
+        let messageId = '';
+        if (savedContent && conversationId) {
+          const insertRes = await servicePostgrest(env, '/ai_messages', {
+            method: 'POST',
+            headers: { Prefer: 'return=representation' },
+            body: {
+              conversation_id: conversationId,
+              user_id: userId,
+              role: 'assistant',
+              content: savedContent,
+            },
+          });
+          if (insertRes.ok) {
+            const inserted = await insertRes.json().catch(() => []);
+            messageId = inserted?.[0]?.id ?? '';
+          }
+        }
+
+        controller.enqueue(sseEncode({
+          type: 'done',
+          ok: true,
+          reply: savedContent,
+          reasoning: fullReasoning.trim(),
+          messageId,
+          actions: meta.actions || [],
+          model: meta.model,
+          provider: meta.provider,
+          ...(meta.fallbackFrom ? { fallbackFrom: meta.fallbackFrom, fallbackReason: meta.fallbackReason } : {}),
+        }));
+      } catch (err) {
+        controller.enqueue(sseEncode({ type: 'error', error: String(err?.message || err) }));
+      } finally {
+        if (probed.mode === 'stream' && probed.reader) {
+          await probed.reader.cancel().catch(() => {});
+        }
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+    },
+  });
 }
 
 function parseChatUpstreamError(rawText, status, retryAfterHeader) {
@@ -1844,6 +2097,8 @@ async function handleApi(request, url, env) {
       delete fetchBody.autoFallback;
       delete fetchBody.conversationId;
 
+      const wantStream = Boolean(body.stream) && !githubEnabled;
+
       try {
         let activeProvider = primaryProvider;
         let activeModel = requestedModel;
@@ -1855,6 +2110,116 @@ async function handleApi(request, url, env) {
 
         const triedModels = [requestedModel];
         const triedDetails = [];
+
+        if (wantStream) {
+          const primaryAttempt = await sendChatCompletionRequest({
+            provider: activeProvider,
+            model: activeModel,
+            apiKey: activeApiKey,
+            baseUrl: activeBaseUrl,
+            payload: fetchBody,
+            timeoutMs: 120_000,
+            env,
+            stream: true,
+          });
+          let probed = await probeChatStreamAttempt(primaryAttempt);
+          if (!probed.ok) {
+            const reasonCode = probed.errorInfo?.code || `http_${probed.status}`;
+            triedDetails.push({
+              model: activeModel,
+              provider: activeProvider,
+              status: probed.status,
+              code: reasonCode,
+              retryAfterSec: probed.errorInfo?.retryAfterSec ?? null,
+              detail: probed.errorInfo?.rawDetail || '',
+            });
+            const canRetryStreamFallback = [400, 404, 429, 502, 503, 504].includes(probed.status) && body.autoFallback !== false;
+            if (canRetryStreamFallback) {
+              const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+              cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
+              const candidates = buildChatFallbackCandidates({
+                primaryProvider,
+                primaryModel: requestedModel,
+                keyByProvider,
+                dbModelRows: cachedDbModels,
+                env,
+              }).slice(0, 6);
+              for (const cand of candidates) {
+                triedModels.push(cand.model);
+                const altAttempt = await sendChatCompletionRequest({
+                  provider: cand.provider,
+                  model: cand.model,
+                  apiKey: cand.apiKey,
+                  baseUrl: cand.baseUrl,
+                  payload: fetchBody,
+                  timeoutMs: 18_000,
+                  env,
+                  stream: true,
+                });
+                const altProbed = await probeChatStreamAttempt(altAttempt);
+                if (altProbed.ok) {
+                  probed = altProbed;
+                  activeProvider = cand.provider;
+                  activeModel = cand.model;
+                  activeApiKey = cand.apiKey;
+                  activeBaseUrl = cand.baseUrl;
+                  fallbackFrom = requestedModel;
+                  fallbackReason = reasonCode;
+                  break;
+                }
+                triedDetails.push({
+                  model: cand.model,
+                  provider: cand.provider,
+                  status: altProbed.status,
+                  code: altProbed.errorInfo?.code || `http_${altProbed.status}`,
+                  retryAfterSec: altProbed.errorInfo?.retryAfterSec ?? null,
+                  detail: altProbed.errorInfo?.rawDetail || '',
+                });
+              }
+            }
+          }
+
+          if (probed.ok) {
+            return createChatSseResponse({
+              probed,
+              meta: {
+                model: activeModel,
+                provider: activeProvider,
+                ...(fallbackFrom ? { fallbackFrom, fallbackReason } : {}),
+              },
+              env,
+              conversationId: body.conversationId,
+              userId: user.id,
+            });
+          }
+
+          const errInfo = probed.errorInfo || parseChatUpstreamError('', probed.status || 502);
+          const rateLimitedEntries = triedDetails.filter((d) => d.status === 429 || d.code === 'rate_limit_exceeded');
+          const allRateLimited = triedDetails.length > 1 && rateLimitedEntries.length === triedDetails.length;
+          const retryCandidates = rateLimitedEntries.map((d) => d.retryAfterSec).filter((n) => Number.isFinite(n) && n > 0);
+          const bestRetryAfter = retryCandidates.length ? Math.min(...retryCandidates) : errInfo.retryAfterSec;
+          const finalStatus = [401, 402, 403, 404, 429].includes(probed.status) ? probed.status : (rateLimitedEntries.length ? 429 : 502);
+          const errorMessage = allRateLimited
+            ? (bestRetryAfter
+              ? `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Coba lagi dalam ${bestRetryAfter} detik, pilih model lain, atau tambah saldo/provider di Admin.`
+              : `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Tunggu sebentar atau tambah saldo/provider di Admin.`)
+            : errInfo.friendlyMessage;
+          return jsonResponse(
+            {
+              ok: false,
+              error: errorMessage,
+              code: errInfo.code,
+              status: finalStatus,
+              retryAfterSec: bestRetryAfter,
+              detail: errInfo.rawDetail,
+              triedModels,
+              triedDetails,
+            },
+            finalStatus,
+            bestRetryAfter ? { 'retry-after': String(bestRetryAfter) } : {},
+          );
+        }
+
         let attempt = await sendChatCompletionRequest({
           provider: activeProvider,
           model: activeModel,

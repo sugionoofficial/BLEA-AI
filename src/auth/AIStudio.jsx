@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, MessageSquarePlus, Network, Paperclip, Plus, RefreshCw, Send, Slack, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, MessageSquarePlus, Network, Paperclip, Plus, RefreshCw, Send, Slack, Sparkles, Square, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatCompletion, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
+import { chatCompletionStream, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
+import { splitThinkingContent, thinkingStageLabel } from '../lib/chatStream';
 import { useAuth } from './AuthProvider';
 
 const prompts = [
@@ -56,49 +57,119 @@ function codeLabel(lang) {
   return `BLOCK · ${(lang || 'TEXT').toUpperCase()}`;
 }
 
-// Blok merah: kode / script / prompt dari AI tetap dapat disalin.
-function StudioCodeBlock({ lang, code, copied, onCopy }) {
+function StudioThoughtAccordion({ thinking, durationSec = 0, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (!thinking) return null;
   return (
-    <div className="studio-code-block">
-      <div className="studio-code-head">
-        <span className="studio-code-lang">{codeLabel(lang)}</span>
-        <button type="button" className={`studio-code-copy ${copied ? 'is-copied' : ''}`} onClick={onCopy} aria-label="Salin kode">
-          {copied ? <Check size={11} /> : <Copy size={11} />} Salin
-        </button>
-      </div>
-      <pre className="studio-code-pre"><code>{code}</code></pre>
+    <div className="studio-thought-box">
+      <button
+        type="button"
+        className={`studio-thought-toggle ${open ? 'is-open' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <Sparkles size={11} />
+        <span>Proses berpikir{durationSec > 0 ? ` · ${durationSec}d` : ''}</span>
+        <ChevronDown size={12} />
+      </button>
+      {open && <pre className="studio-thought-body">{thinking}</pre>}
     </div>
   );
 }
 
-// Render pesan AI: teks biasa tetap plain tanpa blok; blok kode (```...```)
-// ditampilkan sebagai blok merah.
-function StudioMessageBody({ content, copiedCodeKey, onCopyCode }) {
-  const parts = [];
-  String(content || '').split(/(```[\s\S]*?```)/g).forEach((segment, index) => {
-    if (segment.startsWith('```')) {
-      const match = segment.match(/^```(\w*)\r?\n([\s\S]*?)\r?\n?```$/);
-      if (match) {
-        const key = `code-${index}`;
-        parts.push(
-          <StudioCodeBlock
-            key={key}
-            lang={match[1]}
-            code={match[2]}
-            copied={copiedCodeKey === key}
-            onCopy={() => onCopyCode(match[2], key)}
-          />,
-        );
-        return;
-      }
+// Render pesan AI: ekstrak blok <think> secara rapi, teks biasa tetap plain,
+// dan blok kode (```...```) — termasuk blok yang masih diketik sebagian — tampil sebagai blok kode.
+function StudioMessageBody({ content, reasoning = '', thinkingDurationSec = 0, isTyping = false, copiedCodeKey, onCopyCode }) {
+  const parsed = splitThinkingContent(content);
+  const combinedThinking = [reasoning, parsed.thinking].filter(Boolean).join('\n\n').trim();
+  const displayText = parsed.answer;
+
+  const segments = [];
+  const raw = String(displayText || '');
+  const fenceRegex = /```(\w*)\r?\n([\s\S]*?)(?:\r?\n?```|$)/g;
+  let lastIndex = 0;
+  let match;
+  let idx = 0;
+  while ((match = fenceRegex.exec(raw)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: 'text', value: raw.slice(lastIndex, match.index), key: `seg-${idx++}` });
     }
-    segment
-      .split(/\n{2,}/)
-      .filter((paragraph) => paragraph.trim())
-      .forEach((paragraph, pIndex) => {
-        parts.push(<p key={`t-${index}-${pIndex}`} className="studio-message-text">{paragraph}</p>);
-      });
+    const isClosed = match[0].endsWith('```') && match[0].length > 3;
+    segments.push({
+      type: 'code',
+      lang: match[1],
+      code: match[2],
+      isClosed,
+      key: `code-${idx++}`,
+    });
+    lastIndex = fenceRegex.lastIndex;
+  }
+  if (lastIndex < raw.length) {
+    segments.push({ type: 'text', value: raw.slice(lastIndex), key: `seg-${idx++}` });
+  }
+
+  const parts = [];
+  if (combinedThinking) {
+    parts.push(
+      <StudioThoughtAccordion
+        key="thought-accordion"
+        thinking={combinedThinking}
+        durationSec={thinkingDurationSec}
+      />,
+    );
+  }
+
+  const lastSegIndex = segments.length - 1;
+  segments.forEach((seg, segIdx) => {
+    const isLastSegment = segIdx === lastSegIndex;
+    if (seg.type === 'code') {
+      parts.push(
+        <div className="studio-code-block" key={seg.key}>
+          <div className="studio-code-head">
+            <span className="studio-code-lang">{codeLabel(seg.lang)}</span>
+            <button type="button" className={`studio-code-copy ${copiedCodeKey === seg.key ? 'is-copied' : ''}`} onClick={() => onCopyCode(seg.code, seg.key)} aria-label="Salin kode">
+              {copiedCodeKey === seg.key ? <Check size={11} /> : <Copy size={11} />} Salin
+            </button>
+          </div>
+          <pre className="studio-code-pre">
+            <code>
+              {seg.code}
+              {isTyping && isLastSegment && !seg.isClosed && <span className="studio-typing-cursor" aria-hidden="true" />}
+            </code>
+          </pre>
+        </div>,
+      );
+      return;
+    }
+
+    const paragraphs = seg.value.split(/\n{2,}/).filter((p) => p.length > 0 && p.trim().length > 0);
+    if (!paragraphs.length && isTyping && isLastSegment) {
+      parts.push(
+        <p key={`${seg.key}-cursor`} className="studio-message-text">
+          <span className="studio-typing-cursor" aria-hidden="true" />
+        </p>,
+      );
+      return;
+    }
+    paragraphs.forEach((paragraph, pIndex) => {
+      const isVeryLast = isLastSegment && pIndex === paragraphs.length - 1;
+      parts.push(
+        <p key={`${seg.key}-${pIndex}`} className="studio-message-text">
+          {paragraph}
+          {isTyping && isVeryLast && <span className="studio-typing-cursor" aria-hidden="true" />}
+        </p>,
+      );
+    });
   });
+
+  if (!segments.length && isTyping) {
+    parts.push(
+      <p key="cursor-only" className="studio-message-text">
+        <span className="studio-typing-cursor" aria-hidden="true" />
+      </p>,
+    );
+  }
+
   return parts;
 }
 
@@ -151,9 +222,13 @@ export function AIStudio() {
   // untuk koneksikan, approval dari pemilik akun.
   const [consentApp, setConsentApp] = useState(null);
   const [githubConnected, setGithubConnected] = useState(null);
+  const [liveReply, setLiveReply] = useState(null);
   const endOfMessages = useRef(null);
+  const conversationScrollRef = useRef(null);
   const draftRef = useRef(null);
   const sendingRef = useRef(false);
+  const abortControllerRef = useRef(null);
+  const liveReplyRef = useRef(null);
   const fileInputRef = useRef(null);
   const activeConversation = useMemo(() => conversations.find((conversation) => conversation.id === activeId) || null, [conversations, activeId]);
   const fullName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Kreator';
@@ -269,15 +344,99 @@ export function AIStudio() {
   }, [retryCountdown]);
 
   useEffect(() => {
+    liveReplyRef.current = liveReply;
+  }, [liveReply]);
+
+  useEffect(() => {
+    if (!liveReply) return undefined;
+    const ticker = window.setInterval(() => {
+      setLiveReply((cur) => {
+        if (!cur) return cur;
+        const rawSource = cur.rawContent || cur.finalReplyOverride || '';
+        const parsed = splitThinkingContent(rawSource);
+        const targetLen = parsed.answer.length;
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - cur.startedAt) / 1000));
+
+        let nextShown = cur.shownChars;
+        if (nextShown < targetLen) {
+          const remaining = targetLen - nextShown;
+          const step = remaining > 700
+            ? Math.ceil(remaining / 42)
+            : remaining > 220
+              ? 5
+              : remaining > 80
+                ? 3
+                : remaining > 24
+                  ? 2
+                  : 1;
+          nextShown = Math.min(targetLen, nextShown + step);
+        }
+
+        if (nextShown === cur.shownChars && elapsedSec === cur.elapsedSec) {
+          return cur;
+        }
+        return { ...cur, shownChars: nextShown, elapsedSec };
+      });
+    }, 18);
+    return () => window.clearInterval(ticker);
+  }, [Boolean(liveReply)]);
+
+  useEffect(() => {
+    if (!liveReply?.streamFinished) return;
+    const rawSource = liveReply.rawContent || liveReply.finalReplyOverride || '';
+    const parsed = splitThinkingContent(rawSource);
+    if (liveReply.shownChars < parsed.answer.length) return;
+
+    const finalContent = parsed.answer || parsed.thinking || liveReply.explicitThinking;
+    const combinedThinking = [liveReply.explicitThinking, parsed.thinking].filter(Boolean).join('\n\n').trim();
+    const durationSec = Math.max(0, Math.floor((Date.now() - liveReply.startedAt) / 1000));
+    const replyMessage = {
+      id: liveReply.messageId || `reply-${Date.now()}`,
+      conversation_id: liveReply.conversationId,
+      user_id: user.id,
+      role: 'assistant',
+      content: finalContent,
+      reasoning: combinedThinking,
+      thinkingDurationSec: durationSec,
+      created_at: liveReply.createdAt || new Date().toISOString(),
+      model: liveReply.model,
+      actions: liveReply.actions || [],
+    };
+    setLiveReply(null);
+    setMessages((current) => [...current, replyMessage]);
+    supabase
+      .from('ai_conversations')
+      .update({ updated_at: replyMessage.created_at })
+      .eq('id', liveReply.conversationId)
+      .eq('user_id', user.id)
+      .then(({ error: metaError }) => {
+        if (metaError) console.error('Conversation meta update failed:', metaError);
+      });
+    setConversations((current) => current.map((item) => item.id === liveReply.conversationId
+      ? { ...item, updated_at: replyMessage.created_at }
+      : item).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
+  }, [liveReply, user?.id]);
+
+  useEffect(() => {
     if (sendingRef.current) return;
     loadMessages(activeId);
   }, [activeId, loadMessages]);
 
   useEffect(() => {
-    endOfMessages.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, loadingMessages]);
+    const el = conversationScrollRef.current;
+    if (!el) {
+      endOfMessages.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      return;
+    }
+    const nearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 160;
+    if (nearBottom || !liveReply) {
+      endOfMessages.current?.scrollIntoView({ behavior: liveReply ? 'auto' : 'smooth', block: 'end' });
+    }
+  }, [messages, loadingMessages, liveReply?.shownChars, liveReply?.rawContent, liveReply?.explicitThinking, liveReply?.searchingWeb]);
 
   function startNewConversation() {
+    abortControllerRef.current?.abort();
+    setLiveReply(null);
     setActiveId(null);
     setMessages([]);
     setDraft('');
@@ -336,10 +495,66 @@ export function AIStudio() {
     return found?.provider || 'unorouter';
   }, [modelItems]);
 
-  const executeChatCompletion = useCallback(async ({ conversationId, history, modelOverride }) => {
+  function stopGeneration() {
+    abortControllerRef.current?.abort();
+    const cur = liveReplyRef.current;
+    if (!cur) return;
+    const rawSource = cur.rawContent || cur.finalReplyOverride || '';
+    const parsed = splitThinkingContent(rawSource);
+    const partialAnswer = parsed.answer.slice(0, cur.shownChars).trim();
+    const combinedThinking = [cur.explicitThinking, parsed.thinking].filter(Boolean).join('\n\n').trim();
+    if (partialAnswer) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: cur.messageId || `stopped-${Date.now()}`,
+          conversation_id: cur.conversationId,
+          user_id: user.id,
+          role: 'assistant',
+          content: partialAnswer,
+          reasoning: combinedThinking,
+          thinkingDurationSec: cur.elapsedSec,
+          created_at: new Date().toISOString(),
+          model: cur.model,
+        },
+      ]);
+    }
+    setLiveReply(null);
+    sendingRef.current = false;
+    setSending(false);
+    setSendingWeb(false);
+  }
+
+  const executeChatCompletion = useCallback(async ({ conversationId, history, modelOverride, reuseLiveReply = false }) => {
     const targetModel = modelOverride || selectedModel;
     const targetProvider = resolveProviderForModel(targetModel);
-    const { ok: chatOk, status: chatStatus, data: chatData } = await chatCompletion({
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    if (!reuseLiveReply) {
+      setLiveReply({
+        id: `live-${Date.now()}`,
+        conversationId,
+        model: targetModel,
+        provider: targetProvider,
+        startedAt: Date.now(),
+        elapsedSec: 0,
+        searchingWeb: false,
+        streamFinished: false,
+        explicitThinking: '',
+        rawContent: '',
+        finalReplyOverride: '',
+        shownChars: 0,
+        actions: [],
+        messageId: '',
+        createdAt: '',
+        fallbackFrom: '',
+      });
+    } else {
+      setLiveReply((cur) => (cur ? { ...cur, model: targetModel, provider: targetProvider, searchingWeb: false } : cur));
+    }
+
+    const { ok: chatOk, status: chatStatus, aborted, data: chatData } = await chatCompletionStream({
       conversationId,
       model: targetModel,
       provider: targetProvider,
@@ -347,44 +562,59 @@ export function AIStudio() {
       github: !!githubConnected?.connected && !!selectedRepo,
       repository: selectedRepo,
       autoFallback: true,
+      signal: controller.signal,
+      onMeta: (meta) => {
+        if (meta?.fallbackFrom && meta?.model && meta.model !== targetModel) {
+          setSelectedModel(meta.model);
+          setFallbackNotice(`Batas permintaan pada ${meta.fallbackFrom} tercapai — dialihkan otomatis ke ${meta.model}.`);
+        } else {
+          setFallbackNotice('');
+        }
+        setLiveReply((cur) => (cur ? {
+          ...cur,
+          model: meta?.model || cur.model,
+          provider: meta?.provider || cur.provider,
+          fallbackFrom: meta?.fallbackFrom || cur.fallbackFrom,
+        } : cur));
+      },
+      onThinking: (chunk) => {
+        setLiveReply((cur) => (cur ? { ...cur, explicitThinking: cur.explicitThinking + chunk } : cur));
+      },
+      onDelta: (chunk) => {
+        setLiveReply((cur) => (cur ? { ...cur, rawContent: cur.rawContent + chunk } : cur));
+      },
     });
 
-    if (chatOk && chatData?.reply) {
+    if (aborted) return;
+
+    if (chatOk && (chatData?.reply || liveReplyRef.current?.rawContent)) {
       setRetryState(null);
       setRetryCountdown(0);
-      if (chatData.fallbackFrom && chatData.model && chatData.model !== targetModel) {
+      if (chatData?.fallbackFrom && chatData?.model && chatData.model !== targetModel) {
         setSelectedModel(chatData.model);
         setFallbackNotice(`Batas permintaan pada ${chatData.fallbackFrom} tercapai — dialihkan otomatis ke ${chatData.model}.`);
-      } else {
-        setFallbackNotice('');
       }
-      const replyMessage = {
-        id: chatData.messageId || `reply-${Date.now()}`,
-        conversation_id: conversationId,
-        user_id: user.id,
-        role: 'assistant',
-        content: chatData.reply,
-        created_at: new Date().toISOString(),
-        model: chatData.model || targetModel,
-      };
-      setMessages((current) => [...current, { ...replyMessage, actions: chatData?.actions || [] }]);
-      const { error: metaError } = await supabase
-        .from('ai_conversations')
-        .update({ updated_at: replyMessage.created_at })
-        .eq('id', conversationId)
-        .eq('user_id', user.id);
-      if (metaError) console.error('Conversation meta update failed:', metaError);
-      setConversations((current) => current.map((item) => item.id === conversationId
-        ? { ...item, updated_at: replyMessage.created_at }
-        : item).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
+      setLiveReply((cur) => (cur ? {
+        ...cur,
+        streamFinished: true,
+        rawContent: cur.rawContent || chatData?.reply || '',
+        finalReplyOverride: chatData?.reply || '',
+        explicitThinking: chatData?.reasoning || cur.explicitThinking,
+        messageId: chatData?.messageId || `reply-${Date.now()}`,
+        createdAt: new Date().toISOString(),
+        model: chatData?.model || cur.model,
+        provider: chatData?.provider || cur.provider,
+        actions: chatData?.actions || [],
+      } : cur));
       return;
     }
 
+    setLiveReply(null);
     const waitSec = Number(chatData?.retryAfterSec) || 0;
     setRetryState({ conversationId, history, failedModel: targetModel });
     setRetryCountdown(waitSec);
     setError(formatChatErrorMessage(chatData, chatStatus));
-  }, [selectedModel, resolveProviderForModel, githubConnected?.connected, selectedRepo, user?.id]);
+  }, [selectedModel, resolveProviderForModel, githubConnected?.connected, selectedRepo]);
 
   async function retryLastCompletion(overrideModel) {
     if (!retryState || sending) return;
@@ -400,6 +630,7 @@ export function AIStudio() {
       });
     } catch (retryErr) {
       console.error('Retry chat failed:', retryErr);
+      setLiveReply(null);
       setError('Gagal menghubungi model AI. Coba lagi sebentar.');
     } finally {
       sendingRef.current = false;
@@ -416,7 +647,7 @@ export function AIStudio() {
   async function saveMessage(event) {
     event.preventDefault();
     const content = draft.trim();
-    if ((!content && !attachments.length) || sending) return;
+    if ((!content && !attachments.length) || sending || liveReply) return;
     setSending(true);
     sendingRef.current = true;
     setError('');
@@ -463,6 +694,26 @@ export function AIStudio() {
 
       if (!providerStatus?.configured) return;
 
+      // Mulai animasi berpikir segera setelah pesan pengguna dikirim.
+      setLiveReply({
+        id: `live-${Date.now()}`,
+        conversationId: conversation.id,
+        model: selectedModel,
+        provider: resolveProviderForModel(selectedModel),
+        startedAt: Date.now(),
+        elapsedSec: 0,
+        searchingWeb: webSearchEnabled,
+        streamFinished: false,
+        explicitThinking: '',
+        rawContent: '',
+        finalReplyOverride: '',
+        shownChars: 0,
+        actions: [],
+        messageId: '',
+        createdAt: '',
+        fallbackFrom: '',
+      });
+
       // Mode agen: akses internet — cari web sebelum menghubungi model.
       let webResults = [];
       if (webSearchEnabled && providerStatus?.configured) {
@@ -484,9 +735,10 @@ export function AIStudio() {
         .filter((message) => message.role === 'user' || message.role === 'assistant')
         .map((message) => ({ role: message.role, content: message.content }));
 
-      await executeChatCompletion({ conversationId: conversation.id, history });
+      await executeChatCompletion({ conversationId: conversation.id, history, reuseLiveReply: true });
     } catch (saveError) {
       console.error('Saving chat message failed:', saveError);
+      setLiveReply(null);
       setError('Pesan belum berhasil disimpan. Coba lagi sebentar.');
       await loadSidebarData();
     } finally {
@@ -647,15 +899,63 @@ export function AIStudio() {
         <button className="studio-new-chat" onClick={startNewConversation}><MessageSquarePlus size={15} /> Percakapan baru <Plus size={15} /></button>
         <div className="studio-history-heading"><span>RIWAYAT</span><span>{conversations.length}</span></div>
         <div className="studio-history-list">
-          {loadingHistory ? <div className="studio-history-loading">Memuat riwayat...</div> : conversations.length ? conversations.map((conversation) => <div key={conversation.id} className={`studio-history-item ${activeId === conversation.id ? 'active' : ''}`}><button className="studio-history-select" onClick={() => { setActiveId(conversation.id); setError(''); }}><span className="history-message-icon"><MessageSquarePlus size={14} /></span><span><b>{conversation.title}</b><small>{new Date(conversation.updated_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}</small></span></button><button className="studio-history-delete" onClick={() => setDeleteTarget(conversation)} aria-label={`Hapus percakapan ${conversation.title}`}><Trash2 size={13} /></button></div>) : <p className="studio-history-empty">Percakapan yang kamu simpan akan muncul di sini.</p>}
+          {loadingHistory ? <div className="studio-history-loading">Memuat riwayat...</div> : conversations.length ? conversations.map((conversation) => <div key={conversation.id} className={`studio-history-item ${activeId === conversation.id ? 'active' : ''}`}><button className="studio-history-select" onClick={() => { abortControllerRef.current?.abort(); setLiveReply(null); setActiveId(conversation.id); setError(''); }}><span className="history-message-icon"><MessageSquarePlus size={14} /></span><span><b>{conversation.title}</b><small>{new Date(conversation.updated_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}</small></span></button><button className="studio-history-delete" onClick={() => setDeleteTarget(conversation)} aria-label={`Hapus percakapan ${conversation.title}`}><Trash2 size={13} /></button></div>) : <p className="studio-history-empty">Percakapan yang kamu simpan akan muncul di sini.</p>}
         </div>
         </div>
 
       <main className="studio-main">
         <header className="studio-topbar"><div className="studio-breadcrumb"><span>BLEA AI</span><span>/</span><b>Chat AI</b>{activeConversation && <><span>/</span><b className="studio-current-title">{activeConversation.title}</b></>}</div><div className="studio-top-actions"><span className={`studio-status ${providerStatus?.configured ? 'is-live' : 'is-preview'}`}><i /> {providerStatus?.configured ? `AGEN · WEB${githubConnected?.connected ? ' · GH' : ''} · ${selectedModel}` : 'MODEL BELUM TERHUBUNG'}</span><Link to="/app" aria-label="Kembali ke dashboard"><ArrowUpRight size={15} /></Link></div></header>
         <div className="studio-content">
-          <div className={`studio-conversation ${messages.length ? 'has-messages' : ''}`}>
-            {messages.length === 0 && !loadingMessages ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'BLEA AI adalah agen mandiri — cerdas, tanggap, punya akses internet, dan bisa terhubung ke berbagai app seperti Notion, Slack, dan GitHub. Kode, script, dan prompt akan tampil dalam blok merah yang dapat disalin.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}>{message.role === 'assistant' && <span className="studio-message-avatar"><Sparkles size={13} /></span>}<div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div>{message.role === 'assistant' ? <StudioMessageBody content={message.content} copiedCodeKey={copiedCodeKey} onCopyCode={copyCode} /> : <p className="studio-message-text">{message.content}</p>}</div>{message.actions?.length > 0 && <div className="studio-message-actions">{message.actions.map((action, actionIndex) => <span key={actionIndex} className={`studio-action-pill ${action.ok ? 'is-ok' : 'is-fail'}`}>{action.tool} {action.ok ? '✓' : '✗'}</span>)}</div>}</article>)}<div ref={endOfMessages} /></div>}
+          <div ref={conversationScrollRef} className={`studio-conversation ${(messages.length || liveReply) ? 'has-messages' : ''}`}>
+            {messages.length === 0 && !loadingMessages && !liveReply ? <div className="studio-welcome"><div className="studio-welcome-icon"><WandSparkles size={22} /></div><span className="studio-eyebrow">BLEA AI STUDIO</span><h1>{activeConversation ? 'Lanjutkan idemu.' : <>Satu ruang untuk<br /><em>pikiran besarmu.</em></>}</h1><p>{providerStatus?.configured ? 'BLEA AI adalah agen mandiri — cerdas, tanggap, punya akses internet, dan bisa terhubung ke berbagai app seperti Notion, Slack, dan GitHub. Kode, script, dan prompt akan tampil dalam blok merah yang dapat disalin.' : 'Catat prompt dan ide di sini. Riwayat tersimpan di akunmu; jawaban AI aktif setelah admin menghubungkan API key di panel admin.'}</p><div className="studio-prompt-chips">{prompts.map((prompt) => <button key={prompt} onClick={() => insertPrompt(prompt)}>{prompt}<ArrowUpRight size={13} /></button>)}</div></div> : <div className="studio-message-list">{loadingMessages && <div className="studio-message-loading">Memuat percakapan...</div>}{messages.map((message) => <article className={`studio-message ${message.role === 'user' ? 'from-user' : 'from-assistant'}`} key={message.id}>{message.role === 'assistant' && <span className="studio-message-avatar"><Sparkles size={13} /></span>}<div className="studio-message-body"><div className="studio-message-meta"><b>{message.role === 'user' ? fullName : 'BLEA AI'}</b><time>{formatTime(message.created_at)}</time><button type="button" className={`studio-copy-button ${copiedId === message.id ? 'is-copied' : ''}`} onClick={() => copyMessage(message)} aria-label={`Salin pesan ${message.role === 'user' ? 'kamu' : 'AI'}`}>{copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}</button></div>{message.role === 'assistant' ? <StudioMessageBody content={message.content} reasoning={message.reasoning} thinkingDurationSec={message.thinkingDurationSec} copiedCodeKey={copiedCodeKey} onCopyCode={copyCode} /> : <p className="studio-message-text">{message.content}</p>}</div>{message.actions?.length > 0 && <div className="studio-message-actions">{message.actions.map((action, actionIndex) => <span key={actionIndex} className={`studio-action-pill ${action.ok ? 'is-ok' : 'is-fail'}`}>{action.tool} {action.ok ? '✓' : '✗'}</span>)}</div>}</article>)}{liveReply && (() => {
+              const rawSource = liveReply.rawContent || liveReply.finalReplyOverride || '';
+              const parsedLive = splitThinkingContent(rawSource);
+              const combinedThinking = [liveReply.explicitThinking, parsedLive.thinking].filter(Boolean).join('\n\n').trim();
+              const visibleAnswer = parsedLive.answer.slice(0, liveReply.shownChars);
+              const isStillThinking = !visibleAnswer;
+              const stageLabel = thinkingStageLabel(liveReply.elapsedSec, {
+                searchingWeb: liveReply.searchingWeb,
+                hasReasoning: Boolean(combinedThinking) || parsedLive.isThinkingOpen,
+              });
+              return (
+                <article className="studio-message from-assistant" key={liveReply.id} aria-live="polite">
+                  <span className={`studio-message-avatar ${(!liveReply.streamFinished || visibleAnswer.length < parsedLive.answer.length) ? 'is-thinking' : ''}`}>
+                    <Sparkles size={13} />
+                  </span>
+                  <div className="studio-message-body">
+                    <div className="studio-message-meta">
+                      <b>BLEA AI</b>
+                      <time>{liveReply.model}</time>
+                    </div>
+                    {isStillThinking ? (
+                      <div className="studio-thinking-panel" role="status">
+                        <div className="studio-thinking-head">
+                          <span className="studio-thinking-dots" aria-hidden="true"><i /><i /><i /></span>
+                          <span className="studio-thinking-label">{stageLabel}</span>
+                          {liveReply.elapsedSec > 0 && <span className="studio-thinking-timer">{liveReply.elapsedSec}d</span>}
+                        </div>
+                        {combinedThinking ? (
+                          <StudioThoughtAccordion thinking={combinedThinking} durationSec={liveReply.elapsedSec} defaultOpen />
+                        ) : (
+                          <div className="studio-thinking-shimmer" aria-hidden="true">
+                            <span /><span /><span />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <StudioMessageBody
+                        content={visibleAnswer}
+                        reasoning={combinedThinking}
+                        thinkingDurationSec={liveReply.elapsedSec}
+                        isTyping={!liveReply.streamFinished || liveReply.shownChars < parsedLive.answer.length}
+                        copiedCodeKey={copiedCodeKey}
+                        onCopyCode={copyCode}
+                      />
+                    )}
+                  </div>
+                </article>
+              );
+            })()}<div ref={endOfMessages} /></div>}
           </div>
           {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={14} /><span><b>Mode pratinjau.</b> Pesanmu tersimpan, tetapi AI belum membalas karena provider model belum dihubungkan.</span></div>}
           {fallbackNotice && <div className="studio-fallback-notice" role="status"><Sparkles size={13} /><span>{fallbackNotice}</span><button type="button" onClick={() => setFallbackNotice('')} aria-label="Tutup pemberitahuan"><X size={13} /></button></div>}
@@ -690,7 +990,7 @@ export function AIStudio() {
                 </div>)}
               </div>
             )}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /> {selectedModel} <ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif` : `${models.length} model gratis`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{(modelItems.length ? modelItems : availableModels.map((id) => ({ id, provider: 'unorouter' }))).map((item) => <option key={`${item.provider}:${item.id}`} value={item.id}>{item.provider && item.provider !== 'unorouter' ? `${item.id} (${item.provider})` : item.id}</option>)}</select></div>}</div>}{sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> Koneksi</button><button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}>{sending ? <span className="studio-send-loader" /> : <><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></>}</button></div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya tentang idemu...' : 'Tulis ide atau prompt untuk disimpan...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading || Boolean(liveReply)} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /> {selectedModel} <ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif` : `${models.length} model gratis`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{(modelItems.length ? modelItems : availableModels.map((id) => ({ id, provider: 'unorouter' }))).map((item) => <option key={`${item.provider}:${item.id}`} value={item.id}>{item.provider && item.provider !== 'unorouter' ? `${item.id} (${item.provider})` : item.id}</option>)}</select></div>}</div>}{sendingWeb ? <><span className="studio-send-loader" /> Mencari di web...</> : liveReply ? <><span className="studio-send-loader" /> {!liveReply.rawContent && !liveReply.finalReplyOverride ? 'Sedang berpikir...' : 'Mengetik balasan...'}</> : sending ? <><span className="studio-send-loader" /> Menghubungkan AI...</> : providerStatus?.configured ? 'Tekan Enter untuk kirim · foto/video/file sampai 30MB' : <><Sparkles size={12} /> Mode pratinjau — pesan disimpan, jawaban AI belum aktif</>}</span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> Koneksi</button>{(sending || liveReply) ? <button type="button" className="studio-stop-button" onClick={stopGeneration} aria-label="Hentikan respons AI"><Square size={12} /> <span>Hentikan</span></button> : <button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></button>}</div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
             {connectionsOpen && <div className="studio-connections">
               <div className="studio-connections-head">
                 <span>Koneksi agen</span>
