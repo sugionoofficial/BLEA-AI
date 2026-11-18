@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
+import { FreebeatTaskResult } from './FreebeatTaskResult';
 import { supabase } from '../lib/supabase';
 import './freebeat.css';
 
@@ -226,7 +227,7 @@ export function FreebeatPage() {
           {(test.status === 'unknown' || test.status === 'dispatching') && <p>Hasil tidak pasti; pengiriman baru diblokir. Jangan mencoba ulang. Periksa aktivitas Freebeat dan minta operator meninjau catatan.</p>}
           {test.status === 'submitted' && !test.canPoll && <p>Status hanya dapat diperiksa dari sesi Freebeat yang digunakan saat pengiriman.</p>}
           {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={testBusy} onClick={() => pollTest(test.id)}>Periksa status</button></div>}
-          {taskResults[test.id] && <div><p>Status tugas: {taskResults[test.id].status}. Biaya/refund yang tidak dilaporkan adalah tidak diketahui.</p><pre>{JSON.stringify(taskResults[test.id].billing, null, 2)}</pre>{taskResults[test.id].images.map((image, index) => <p key={image}><a href={image} target="_blank" rel="noopener noreferrer">Buka hasil gambar {index + 1} di tautan Freebeat</a></p>)}{taskResults[test.id].images.length > 0 && <p>Membuka tautan menghubungkan browser Anda ke host gambar penyedia.</p>}</div>}
+          {taskResults[test.id] && <FreebeatTaskResult task={taskResults[test.id]} />}
         </div>)}</div>}
       </section>
       <section className="freebeat-card freebeat-site-test">

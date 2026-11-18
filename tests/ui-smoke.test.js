@@ -285,3 +285,31 @@ test('Freebeat image preparation explains every blocking condition and enables o
   assert.ok(html.indexOf('ID model gambar') < html.indexOf('Siapkan quote untuk persetujuan'));
   assert.ok(html.indexOf('Prompt percobaan') < html.indexOf('Siapkan quote untuk persetujuan'));
 });
+
+test('Freebeat completed image result is an obvious external link, not an automatic image load', async () => {
+  const { FreebeatTaskResult } = await vite.ssrLoadModule('/src/auth/FreebeatTaskResult.jsx');
+  const { JSDOM } = await import('jsdom');
+  const fs = await import('node:fs/promises');
+  const task = { status: 'completed', images: ['https://cdn.example/test.png?signature=private'], billing: { charged: 10, refunded: null, net: null, refund_state: null } };
+  const html = renderToStaticMarkup(React.createElement(FreebeatTaskResult, { task }));
+  const dom = new JSDOM(html);
+  const anchor = dom.window.document.querySelector('a.freebeat-result-link');
+  assert.ok(anchor, 'completed image must expose a recognizable link');
+  assert.equal(anchor.href, task.images[0]);
+  assert.match(anchor.textContent, /Buka hasil gambar 1/);
+  assert.equal(anchor.target, '_blank');
+  assert.equal(anchor.rel, 'noopener noreferrer');
+  assert.equal(dom.window.document.querySelectorAll('img').length, 0);
+  assert.match(dom.window.document.body.textContent, /Jangan bagikan tautan pribadi/);
+  const css = await fs.readFile(new URL('../src/auth/freebeat.css', import.meta.url), 'utf8');
+  assert.match(css, /\.dropx-shell \.freebeat-page a\.freebeat-result-link\{/);
+  assert.match(css, /a\.freebeat-result-link\{[^}]*background:var\(--primary-600\);color:#fff/);
+  assert.match(css, /a\.freebeat-result-link:focus-visible\{/);
+  const missing = renderToStaticMarkup(React.createElement(FreebeatTaskResult, { task: { ...task, images: [] } }));
+  assert.match(missing, /belum ada tautan gambar yang dapat ditampilkan/);
+  assert.match(missing, /jangan mengirim generasi ulang/);
+  assert.doesNotMatch(missing, /class="freebeat-result-link"/);
+  const running = renderToStaticMarkup(React.createElement(FreebeatTaskResult, { task: { ...task, status: 'processing', images: [] } }));
+  assert.doesNotMatch(running, /belum ada tautan gambar/);
+  dom.window.close();
+});
