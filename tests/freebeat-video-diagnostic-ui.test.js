@@ -127,3 +127,35 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('failed video status presents shareable filtered details without retrying generation', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (action, ...args) => {
+    calls.push(action);
+    if (action === 'video-tests') return { tests: [{ id: 'test-id', model_id: 182, max_credits: 50, status: 'submitted', created_at: new Date().toISOString(), canPoll: true }] };
+    if (action === 'video-task') return { task: { status: 'failed', billing: { charged: 0, refunded: null, net: null, refund_state: null }, videos: [], failure: { stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: false }, item_failures: [] } };
+    throw new Error('Unexpected request');
+  };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request })));
+    await React.act(async () => button('Periksa catatan uji video').click());
+    await React.act(async () => button('Periksa status video').click());
+    const output = document.querySelector('[aria-label="Status video dan rincian kegagalan yang disaring"]');
+    assert.equal(JSON.parse(output.value).failure.reason_hidden, true);
+    assert.equal(JSON.parse(output.value).billing.charged, 0);
+    assert.doesNotMatch(output.value, /test-id/);
+    assert.deepEqual(calls, ['video-tests', 'video-task']);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
