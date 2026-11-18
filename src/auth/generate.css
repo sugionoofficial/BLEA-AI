@@ -587,3 +587,9 @@
     align-items: stretch;
   }
 }
+
+.dropx-shell .generate-mode-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.dropx-shell .generate-mode-tabs button{min-height:40px;padding:9px 16px;border:1px solid var(--border);border-radius:9px;background:var(--card);color:var(--foreground);font-weight:700;cursor:pointer}
+.dropx-shell .generate-mode-tabs button[aria-selected="true"]{background:var(--primary-600);border-color:var(--primary-600);color:#fff}
+.dropx-shell .generate-mode-tabs button:focus-visible{outline:3px solid var(--ring);outline-offset:2px}
+.dropx-shell .generate-image-panel{width:100%;max-width:900px;box-sizing:border-box;margin:0;}

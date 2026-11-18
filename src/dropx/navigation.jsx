@@ -32,8 +32,8 @@ export const navigation = [
         title: 'Generate',
         href: '/generate',
         icon: Clapperboard,
-        description: 'Generate video AI dari teks, gambar, video & audio',
-        keywords: ['generate', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
+        description: 'Generate gambar dan video AI',
+        keywords: ['generate', 'gambar', 'image', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
       },
       {
         title: 'Kredit',

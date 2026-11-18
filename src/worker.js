@@ -1899,54 +1899,33 @@ async function handleApi(request, url, env) {
         configuredByProvider.set(row.provider, {
           id: row.provider,
           label: row.label || PROVIDER_PRESETS[row.provider]?.label || row.provider,
-          configured: Boolean(row.api_key),
+          configured: Boolean(row.api_key) && Boolean(resolveProviderApiBase(row.provider, row.base_url)),
           hasBaseUrl: Boolean(row.base_url),
         });
       }
 
-      // Optional live catalog enrichment from UnoRouter & OpenRouter (best-effort)
-      const liveCatalogMap = new Map();
-      try {
-        const unoRes = await fetch('https://api.unorouter.com/api/pricing', { signal: AbortSignal.timeout(8_000) });
-        if (unoRes.ok) {
-          const catalog = await unoRes.json().catch(() => ({}));
-          for (const row of Array.isArray(catalog?.data) ? catalog.data : []) {
-            let meta = {};
-            try { meta = JSON.parse(row.metadata || '{}'); } catch {}
-            if (!isVideoCatalogModel(row, meta)) continue;
-            const price = Number(row.model_price);
-            liveCatalogMap.set(`unorouter:${row.model_name}`, {
-              online: Boolean(row.online),
-              isFree: Boolean(row.is_free),
-              priceLabel: row.is_free ? 'Gratis' : (Number.isFinite(price) && price > 0 ? `$${price}/s` : 'Berbayar'),
-              description: row.description || '',
-            });
-          }
-        }
-      } catch {}
-
       const merged = new Map();
       // 1. Active video models configured in Admin Panel (provider_models)
       for (const row of dbModelRows || []) {
-        const provider = row.provider || 'unorouter';
+        const provider = String(row.provider || '').trim().toLowerCase();
+        if (!provider || provider === 'unorouter' || provider === 'freebeat') continue;
         const key = `${provider}:${row.model}`;
         if (provider === 'cloudflare' && !isVideoModelId(row.model)) continue;
-        const isVideo = isVideoModelId(row.model) || liveCatalogMap.has(key) || (provider !== 'unorouter' && provider !== 'cloudflare');
+        const isVideo = isVideoModelId(row.model) || provider !== 'cloudflare';
         if (!isVideo) continue;
         // Skip clearly non-video chat/embedding models on other providers if obvious
-        if (provider !== 'unorouter' && /(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama|gemma|qwen|glm|mistral|granite)/i.test(row.model)) continue;
+        if (/(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama|gemma|qwen|glm|mistral|granite)/i.test(row.model)) continue;
         const profile = getVideoModelProfile(row.model, provider);
-        const live = liveCatalogMap.get(key);
         merged.set(key, {
           ...profile,
           provider,
           providerLabel: configuredByProvider.get(provider)?.label || PROVIDER_PRESETS[provider]?.label || provider,
           providerConfigured: Boolean(configuredByProvider.get(provider)?.configured),
           activeInAdmin: true,
-          online: live ? live.online : true,
-          isFree: live ? live.isFree : profile.isFree,
-          priceLabel: live ? live.priceLabel : profile.priceLabel,
-          description: live?.description || profile.description,
+          online: true,
+          isFree: profile.isFree,
+          priceLabel: profile.priceLabel,
+          description: profile.description,
         });
       }
 
@@ -1987,19 +1966,19 @@ async function handleApi(request, url, env) {
 
       // 3. Built-in video catalog entries (ensures dropdown always has video options & capabilities)
       for (const item of BUILTIN_VIDEO_MODELS) {
+        if (item.provider === 'unorouter') continue;
         const key = `${item.provider}:${item.id}`;
         if (merged.has(key)) continue;
-        const live = liveCatalogMap.get(key);
         const provInfo = configuredByProvider.get(item.provider);
         merged.set(key, {
           ...item,
           providerLabel: provInfo?.label || PROVIDER_PRESETS[item.provider]?.label || item.provider,
           providerConfigured: Boolean(provInfo?.configured),
           activeInAdmin: false,
-          online: live ? live.online : true,
-          isFree: live ? live.isFree : item.isFree,
-          priceLabel: live ? live.priceLabel : item.priceLabel,
-          description: live?.description || item.description,
+          online: true,
+          isFree: item.isFree,
+          priceLabel: item.priceLabel,
+          description: item.description,
         });
       }
 
@@ -2010,9 +1989,9 @@ async function handleApi(request, url, env) {
         return a.name.localeCompare(b.name);
       });
 
-      const providers = Array.from(configuredByProvider.values()).filter((p) => p.id !== 'cloudflare');
+      const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
       for (const preset of Object.values(PROVIDER_PRESETS)) {
-        if (preset.id === 'custom' || preset.id === 'cloudflare') continue;
+        if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;
         if (!configuredByProvider.has(preset.id)) {
           providers.push({ id: preset.id, label: preset.label, configured: false, hasBaseUrl: false });
         }
@@ -2049,13 +2028,14 @@ async function handleApi(request, url, env) {
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
 
       const payload = await request.json().catch(() => ({}));
-      const provider = String(payload.provider || 'unorouter').trim().toLowerCase();
+      const provider = String(payload.provider || '').trim().toLowerCase();
       const model = String(payload.model || '').trim();
       const prompt = String(payload.prompt || '').trim();
       const imageUrl = String(payload.image_url || '').trim();
       const videoUrl = String(payload.video_url || '').trim();
       const audioUrl = String(payload.audio_url || '').trim();
 
+      if (!provider || provider === 'unorouter' || provider === 'freebeat') return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
       if (!prompt && !imageUrl && !videoUrl && !audioUrl) {
         return jsonResponse({ error: 'Masukkan prompt atau unggah minimal satu media (gambar, video, atau audio).' }, 400);
@@ -2067,6 +2047,8 @@ async function handleApi(request, url, env) {
           error: `Provider "${PROVIDER_PRESETS[provider]?.label || provider}" belum memiliki API key. Konfigurasikan di Admin Panel -> API Key.`,
         }, 400);
       }
+
+      if (!resolveProviderApiBase(provider, keyRow.base_url)) return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
 
       const upstreamReq = await buildUpstreamVideoRequest({
         provider,

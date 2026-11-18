@@ -557,3 +557,50 @@ test('quote diagnostic reveals only fixed recognized status words and never auth
     assert.ok(calls.filter((call) => call.method === 'tools/call').every((call) => call.params.name === 'quote_generation'));
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('video discovery is read-only and admin-isolated, filtering tool schemas and model catalog', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body); calls.push(body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    if (body.method === 'tools/list') return Response.json({ id: body.id, result: { tools: [
+      { name: 'generate_video', inputSchema: { type: 'object', description: 'SECRET-PRIVATE', required: ['model_id', 'prompt'], properties: { model_id: { type: 'integer' }, prompt: { type: 'string', default: 'SECRET' }, generation_type: { type: 'string', enum: ['text', 'image', 'transition', 'reference', 'SECRET-VALUE'] }, max_credits: { type: 'number' } } } },
+      { name: 'quote_generation', inputSchema: { type: 'object', properties: { tool: { type: 'string', enum: ['generate_video', 'generate_image', 'SECRET-VALUE'] } } } },
+      { name: 'generate_image', inputSchema: { type: 'object' } },
+    ] } });
+    assert.deepEqual(body.params, { name: 'list_models', arguments: { type: 'video' } });
+    return Response.json({ id: body.id, result: { structuredContent: { models: [{ model_id: 50, name: 'Example Video', secret: 'SECRET' }] } } });
+  };
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await call('/api/freebeat/video-models', { token: 'user', cookie, method: 'POST' })).status, 403);
+    assert.equal((await call('/api/freebeat/video-schemas', { token: 'other-admin', cookie, method: 'POST' })).status, 401);
+    assert.equal((await call('/api/freebeat/video-models', { method: 'POST' })).status, 401);
+    assert.equal(calls.length, 0);
+    const models = await call('/api/freebeat/video-models', { token: 'admin-token', cookie, method: 'POST' });
+    assert.equal(models.status, 200);
+    const modelText = await models.text();
+    assert.deepEqual(JSON.parse(modelText).models, [{ model_id: 50, name: 'Example Video' }]);
+    assert.doesNotMatch(modelText, /SECRET/);
+    const schemas = await call('/api/freebeat/video-schemas', { token: 'admin-token', cookie, method: 'POST' });
+    assert.equal(schemas.status, 200);
+    const schemaText = await schemas.text();
+    const tools = JSON.parse(schemaText).tools;
+    assert.deepEqual(Object.keys(tools), ['generate_video', 'quote_generation']);
+    assert.deepEqual(tools.generate_video.properties.generation_type.known_enum_values, ['text', 'image', 'transition', 'reference']);
+    assert.equal(tools.generate_video.properties.generation_type.enum_incomplete, true);
+    assert.deepEqual(tools.quote_generation.properties.tool.known_enum_values, ['generate_video', 'generate_image']);
+    assert.doesNotMatch(schemaText, /SECRET|generate_image\":\{/);
+    assert.deepEqual(calls.map((c) => c.method), ['initialize', 'notifications/initialized', 'tools/call', 'initialize', 'notifications/initialized', 'tools/list']);
+    assert.equal(calls.filter((c) => c.method === 'tools/call').every((c) => c.params.name === 'list_models'), true);
+  } finally { globalThis.fetch = originalFetch; }
+});

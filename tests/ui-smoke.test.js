@@ -250,6 +250,10 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Periksa respons quote'));
   assert.ok(html.includes('Siapkan quote untuk persetujuan'));
   assert.ok(html.includes('Uji generasi gambar admin'));
+  assert.ok(html.includes('Persiapan uji video'));
+  assert.ok(html.includes('Lihat model video'));
+  assert.ok(html.includes('Periksa skema tool video'));
+  assert.ok(html.includes('Uji generasi video belum tersedia'));
   assert.ok(html.includes('tidak pasti'));
   assert.ok(html.includes('type="password"'));
   assert.ok(html.includes('Ini bukan koneksi MCP') === false, 'site result is hidden before a successful test');
@@ -312,4 +316,26 @@ test('Freebeat completed image result is an obvious external link, not an automa
   const running = renderToStaticMarkup(React.createElement(FreebeatTaskResult, { task: { ...task, status: 'processing', images: [] } }));
   assert.doesNotMatch(running, /belum ada tautan gambar/);
   dom.window.close();
+});
+
+test('Generate page offers both modes without defaulting to UnoRouter', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { GeneratePage } = await vite.ssrLoadModule('/src/auth/GeneratePage.jsx');
+  const user = { access_token: 'user-token', user: { id: 'user', app_metadata: {}, user_metadata: {} } };
+  const admin = { access_token: 'admin-token', user: { id: 'admin', app_metadata: { role: 'admin' }, user_metadata: {} } };
+  const view = (entry, session) => renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: [entry] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(GeneratePage))));
+  const video = view('/generate', user);
+  assert.match(video, /Generate gambar/);
+  assert.match(video, /Generate video/);
+  assert.match(video, /Tidak ada model video aktif/);
+  assert.doesNotMatch(video, /UnoRouter/i);
+  const imageUser = view('/generate?mode=image', user);
+  assert.match(imageUser, /Generasi gambar untuk pengguna belum tersedia/);
+  assert.doesNotMatch(imageUser, /Setujui dan buat gambar/);
+  const imageAdmin = view('/generate?mode=image', admin);
+  assert.match(imageAdmin, /Freebeat · uji admin/);
+  assert.match(imageAdmin, /Siapkan quote/);
+  assert.doesNotMatch(imageAdmin, /Setujui dan buat gambar/);
+  assert.doesNotMatch(imageAdmin, /UnoRouter/i);
 });

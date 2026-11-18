@@ -3,19 +3,8 @@ import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
-import { supabase } from '../lib/supabase';
+import { freebeatRequest as request } from '../api/freebeat';
 import './freebeat.css';
-
-async function request(action, method = 'GET', body) {
-  const { data } = await supabase.auth.getSession();
-  let session = data?.session;
-  if (session?.expires_at && session.expires_at * 1000 < Date.now() + 60000) session = (await supabase.auth.refreshSession()).data?.session;
-  if (!session?.access_token) throw new Error('Sesi login berakhir. Silakan login kembali.');
-  const res = await fetch(`/api/freebeat/${action}`, { method, headers: { authorization: `Bearer ${session.access_token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), credentials: 'same-origin', cache: 'no-store' });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(payload.error || 'Freebeat tidak dapat dihubungi.');
-  return payload;
-}
 
 const resultMessage = {
   connected: 'Otorisasi Freebeat berhasil. Tekan Periksa saldo untuk menguji MCP.',
@@ -48,6 +37,10 @@ export function FreebeatPage() {
   const [imageError, setImageError] = useState('');
   const [imageModels, setImageModels] = useState(null);
   const [imageSchemas, setImageSchemas] = useState(null);
+  const [videoModels, setVideoModels] = useState(null);
+  const [videoSchemas, setVideoSchemas] = useState(null);
+  const [videoError, setVideoError] = useState('');
+  const [videoBusy, setVideoBusy] = useState(false);
   const [quoteModel, setQuoteModel] = useState('');
   const [quotePrompt, setQuotePrompt] = useState('');
   const [imageQuote, setImageQuote] = useState(null);
@@ -91,7 +84,7 @@ export function FreebeatPage() {
         setNotice('Permintaan baca saldo selesai tanpa menjalankan generasi.');
       } else {
         const result = await request('disconnect', 'POST');
-        setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setImageQuote(null); setApproval(null); setSpendConfirmed(false); setTests([]); setTaskResults({});
+        setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setVideoModels(null); setVideoSchemas(null); setVideoError(''); setImageQuote(null); setApproval(null); setSpendConfirmed(false); setTests([]); setTaskResults({});
         setNotice(result.revoked ? 'Koneksi lokal dihapus dan token dicabut di Freebeat.' : 'Koneksi lokal dihapus. Pencabutan token di Freebeat belum dapat dikonfirmasi; periksa pengaturan akses di akun Freebeat.');
       }
     } catch (err) { setError(err.message || 'Koneksi gagal.'); }
@@ -106,6 +99,16 @@ export function FreebeatPage() {
       if (action === 'image-models') setImageModels(result); else setImageSchemas(result);
     } catch (err) { setImageError(err.message || 'Pemeriksaan gambar gagal.'); }
     finally { setImageBusy(false); }
+  }
+  async function inspectVideos(action) {
+    if (videoBusy) return;
+    setVideoBusy(true); setVideoError('');
+    if (action === 'video-models') setVideoModels(null); else setVideoSchemas(null);
+    try {
+      const result = await request(action, 'POST');
+      if (action === 'video-models') setVideoModels(result); else setVideoSchemas(result);
+    } catch (err) { setVideoError(err.message || 'Pemeriksaan video gagal.'); }
+    finally { setVideoBusy(false); }
   }
   async function inspectQuote(event) {
     event.preventDefault();
@@ -229,6 +232,18 @@ export function FreebeatPage() {
           {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={testBusy} onClick={() => pollTest(test.id)}>Periksa status</button></div>}
           {taskResults[test.id] && <FreebeatTaskResult task={taskResults[test.id]} />}
         </div>)}</div>}
+      </section>
+      <section className="freebeat-card freebeat-site-test">
+        <span className="freebeat-kicker">VIDEO · KHUSUS ADMIN · BACA SAJA</span>
+        <h2>Persiapan uji video</h2>
+        <p>Periksa model dan skema video Freebeat tanpa membuat video atau memakai kredit. Uji generasi video belum tersedia; quote dan persetujuan batas kredit diperlukan sebelum pengiriman berbayar dapat ditambahkan.</p>
+        <div className="freebeat-actions">
+          <button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Lihat model video</button>
+          <button type="button" className="is-secondary" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-schemas')}>Periksa skema tool video</button>
+        </div>
+        {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
+        {videoModels && <div className="freebeat-result"><h3>Model video dari Freebeat</h3><pre>{JSON.stringify(videoModels.models, null, 2)}</pre>{videoModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
+        {videoSchemas && <div className="freebeat-result"><h3>Struktur tool video</h3><p>Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.</p><pre>{JSON.stringify(videoSchemas.tools, null, 2)}</pre>{videoSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>
