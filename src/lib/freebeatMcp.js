@@ -32,10 +32,10 @@ async function seal(value, env, purpose) {
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: encoder.encode(purpose) }, await key(env), encoder.encode(JSON.stringify(value)));
   return `${b64(iv)}.${b64(ciphertext)}`;
 }
-async function unseal(value, env, purpose) {
+async function unseal(value, env, purpose, maxLength = 3800) {
   try {
     const parts = String(value || '').split('.');
-    if (parts.length !== 2 || value.length > 3800) return null;
+    if (parts.length !== 2 || value.length > maxLength) return null;
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(parts[0]), additionalData: encoder.encode(purpose) }, await key(env), unb64(parts[1]));
     return JSON.parse(new TextDecoder().decode(plaintext));
   } catch { return null; }
@@ -363,14 +363,16 @@ function safeQuote(value, depth = 0, field = '') {
   if (typeof value !== 'object') return null;
   return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeQuote(child, depth + 1, name)]));
 }
-async function quoteImage(accessToken, input) {
+async function rawImageQuote(accessToken, input) {
   const headers = await openMcp(accessToken);
-  // This provider operation is read-only. Never invoke generate_image here.
   const parameters = { model_id: input.model_id, prompt: input.prompt };
   const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'quote_generation', arguments: { tool: 'generate_image', parameters } } }, 'quote', headers, 262144);
   const content = modelContent(result);
-  if (!content || typeof content !== 'object') throw mcpFailure('quote', 'response');
-  return safeQuote(content);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');
+  return content;
+}
+async function quoteImage(accessToken, input) {
+  return safeQuote(await rawImageQuote(accessToken, input));
 }
 async function parseImageQuote(request) {
   if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
@@ -379,6 +381,139 @@ async function parseImageQuote(request) {
   try { input = await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'prompt'].includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0 || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan ID model angka dan prompt sepanjang 1–2000 karakter.', 400);
   return { model_id: input.model_id, prompt: input.prompt.trim() };
+}
+
+
+// A quote receipt is encrypted and bound to the admin, Freebeat token and exact
+// inputs. The durable insert below is the point of no return: after it, every
+// error is treated as possibly charged and no automatic retry is attempted.
+const APPROVAL_LIFETIME = 5 * 60 * 1000;
+const TEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TASK_ID = /^[A-Za-z0-9_.:-]{1,256}$/;
+async function sessionHash(session) {
+  return b64(await crypto.subtle.digest('SHA-256', encoder.encode(`blea-freebeat-image-session-v1:${session.accessToken}`)));
+}
+function quotedCredits(content) {
+  return content?.status === 'quoted' && typeof content.credits === 'number' && Number.isFinite(content.credits) && content.credits >= 0 && content.credits <= 1000000 ? content.credits : null;
+}
+async function requireImageSession(session) {
+  if (!session?.imageAccess) throw fail('Hubungkan izin gambar terlebih dahulu.', 403);
+}
+async function modelHelp(accessToken, modelId) {
+  const headers = await openMcp(accessToken);
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_model_help', arguments: { type: 'image', model_id: modelId } } }, 'help', headers, 262144);
+  const data = modelContent(result);
+  if (!data || typeof data !== 'object') throw mcpFailure('help', 'response');
+}
+async function prepareImage(env, user, session, input) {
+  await requireImageSession(session);
+  const catalog = await getImageModels(session.accessToken);
+  if (!catalog.models.some((m) => m.model_id === input.model_id)) throw fail('ID model tidak ditemukan dalam daftar gambar saat ini.', 400);
+  await modelHelp(session.accessToken, input.model_id);
+  const credits = quotedCredits(await rawImageQuote(session.accessToken, input));
+  if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
+  const expires = Date.now() + APPROVAL_LIFETIME;
+  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), model_id: input.model_id, prompt: input.prompt, credits, expires }, env, 'image-approval');
+  if (approval.length > 12000) throw fail('Prompt terlalu besar untuk persetujuan uji ini.', 400);
+  return { approval, model_id: input.model_id, prompt: input.prompt, credits, expiresAt: expires };
+}
+async function imageJson(request) {
+  if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
+  if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail('Format permintaan tidak valid.', 400);
+  try { return await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
+}
+async function imageDb(env, path, options = {}) {
+  if (!env.SUPABASE_SERVICE_ROLE_KEY || !env.SUPABASE_URL) throw fail('Penyimpanan uji gambar belum dikonfigurasi; tidak ada generasi yang dikirim.', 503);
+  const base = new URL(env.SUPABASE_URL);
+  if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw fail('Konfigurasi penyimpanan uji gambar tidak valid.', 503);
+  let res;
+  try {
+    res = await fetch(`${base.toString().replace(/\/$/, '')}/rest/v1/freebeat_admin_image_tests${path}`, {
+      method: options.method || 'GET', redirect: 'manual', signal: AbortSignal.timeout(15000),
+      headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, 'content-type': 'application/json', prefer: 'return=representation' },
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    });
+  } catch { throw fail('Penyimpanan uji gambar tidak dapat dihubungi. Periksa catatan sebelum mencoba lagi.', 503); }
+  if (!res.ok) {
+    try { await res.body?.cancel(); } catch { /* ignore */ }
+    if (res.status === 409) throw fail('Persetujuan sudah digunakan atau ada uji dengan hasil belum pasti. Jangan ulangi; periksa catatan uji.', 409);
+    throw fail('Penyimpanan uji gambar menolak permintaan. Periksa catatan sebelum mencoba lagi.', 503);
+  }
+  try {
+    const data = await boundedJson(res);
+    if (!Array.isArray(data)) throw new Error('invalid');
+    return data;
+  } catch { throw fail('Respons penyimpanan uji gambar tidak dapat dipastikan. Periksa catatan sebelum mencoba lagi.', 503); }
+}
+async function markTest(env, userId, id, status, taskId = null) {
+  const rows = await imageDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(userId)}&status=eq.dispatching`, { method: 'PATCH', body: { status, task_id: taskId, updated_at: new Date().toISOString() } });
+  if (rows.length !== 1) throw fail('Status penyimpanan uji gambar tidak dapat dipastikan.', 503);
+}
+async function submitImage(env, user, session, request) {
+  await requireImageSession(session);
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !['approval', 'confirm'].includes(k)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 12000) throw fail('Persetujuan uji tidak valid.', 400);
+  const ticket = await unseal(input.approval, env, 'image-approval', 12000);
+  if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !Number.isSafeInteger(ticket.model_id) || ticket.model_id < 0 || typeof ticket.prompt !== 'string' || !ticket.prompt.trim() || ticket.prompt.length > 2000 || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME || typeof ticket.credits !== 'number' || !Number.isFinite(ticket.credits) || ticket.credits < 0 || ticket.credits > 1000000) throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
+  // Quote again for the exact original inputs; no input or cap may be changed.
+  const current = quotedCredits(await rawImageQuote(session.accessToken, ticket));
+  if (current === null || current !== ticket.credits) throw fail('Quote berubah atau tidak tersedia. Tidak ada generasi dikirim; buat quote baru.', 409);
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa. Tidak ada generasi dikirim; buat quote baru.', 400);
+  const headers = await openMcp(session.accessToken);
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa. Tidak ada generasi dikirim; buat quote baru.', 400);
+  const inserted = await imageDb(env, '', { method: 'POST', body: { id: ticket.id, admin_id: user.id, session_hash: ticket.sessionHash, model_id: ticket.model_id, quote_credits: ticket.credits, max_credits: ticket.credits, status: 'dispatching' } });
+  if (inserted.length !== 1 || inserted[0]?.id !== ticket.id) throw fail('Penyimpanan belum dapat memastikan pencatatan. Jangan ulangi sebelum memeriksa catatan.', 503);
+  if (ticket.expires <= Date.now()) {
+    try { await markTest(env, user.id, ticket.id, 'reviewed'); } catch { /* leave the conservative lock in place */ }
+    throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada generasi dikirim. Periksa catatan sebelum mencoba lagi.', 409);
+  }
+  let taskId;
+  try {
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_image', arguments: { model_id: ticket.model_id, prompt: ticket.prompt, max_credits: ticket.credits } } }, 'generate', headers, 262144);
+    const content = modelContent(result);
+    if (!content || typeof content !== 'object' || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) throw new Error('unrecognized');
+    taskId = content.batch_id;
+  } catch {
+    try { await markTest(env, user.id, ticket.id, 'unknown'); } catch { /* dispatching stays locked */ }
+    return { id: ticket.id, status: 'unknown' };
+  }
+  try { await markTest(env, user.id, ticket.id, 'submitted', taskId); }
+  catch { return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId }; }
+  return { id: ticket.id, status: 'submitted' };
+}
+function safeImageUrl(value) {
+  if (typeof value !== 'string' || value.length > 4096) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    return url.toString();
+  } catch { return null; }
+}
+function safeTask(content) {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('task', 'response');
+  const statuses = new Set(['pending', 'queued', 'processing', 'running', 'completed', 'failed', 'partial_failed', 'action_required']);
+  const status = statuses.has(content.status) ? content.status : 'unknown';
+  const images = Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.image_url)).filter(Boolean) : [];
+  const billing = {};
+  for (const field of ['charged', 'refunded', 'net']) billing[field] = typeof content.billing?.[field] === 'number' && Number.isFinite(content.billing[field]) ? content.billing[field] : null;
+  const refunds = new Set(['none', 'pending', 'completed', 'failed', 'not_applicable']);
+  billing.refund_state = refunds.has(content.billing?.refund_state) ? content.billing.refund_state : null;
+  return { status, images, billing };
+}
+async function imageTests(env, user, session) {
+  const rows = await imageDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,model_id,quote_credits,max_credits,status,created_at,session_hash&order=created_at.desc&limit=20`);
+  const hash = await sessionHash(session);
+  return rows.map((row) => ({ id: row.id, model_id: row.model_id, quote_credits: row.quote_credits, max_credits: row.max_credits, status: row.status, created_at: row.created_at, canPoll: row.status === 'submitted' && row.session_hash === hash }));
+}
+async function pollImage(env, user, session, request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID uji tidak valid.', 400);
+  const rows = await imageDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash&limit=1`);
+  const row = rows[0];
+  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || row.session_hash !== await sessionHash(session)) throw fail('Uji tidak tersedia pada sesi Freebeat ini.', 404);
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_task_status', arguments: { task_id: row.task_id } } }, 'task', headers, 262144);
+  return safeTask(modelContent(result));
 }
 
 export async function handleFreebeat(request, url, env, user) {
@@ -402,6 +537,14 @@ export async function handleFreebeat(request, url, env, user) {
       if (action === 'image-schemas') return response({ ok: true, ...(await getImageSchemas(session.accessToken)) });
       if (action === 'image-models') return response({ ok: true, ...(await getImageModels(session.accessToken)) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
+    }
+    if (['image-prepare', 'image-submit', 'image-tests', 'image-task'].includes(action)) {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      if (action === 'image-tests' && request.method === 'GET') return response({ ok: true, tests: await imageTests(env, user, session) });
+      if (action === 'image-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareImage(env, user, session, await parseImageQuote(request))) });
+      if (action === 'image-submit' && request.method === 'POST') return response({ ok: true, ...(await submitImage(env, user, session, request)) });
+      if (action === 'image-task' && request.method === 'POST') return response({ ok: true, task: await pollImage(env, user, session, request) });
     }
     if (action === 'disconnect' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
