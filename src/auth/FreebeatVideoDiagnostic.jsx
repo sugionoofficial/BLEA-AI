@@ -185,7 +185,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       <h3>Uji generasi video khusus admin · Wan 3.0</h3>
       <p>Ini memakai kredit akun Freebeat admin, bukan kredit BLEA. Gunakan hanya sesuai ketentuan plan Freebeat. Biaya aktual dan refund tidak dijamin, termasuk jika tugas gagal. Jika hasil pengiriman tidak pasti, jangan ulangi sebelum memeriksa Freebeat dan catatan.</p>
       <p>Menyiapkan quote tidak membuat video. Pengiriman memerlukan konfirmasi terpisah, dengan batas maksimum sama dengan quote yang baru. URL gambar dan prompt dikirim ke Freebeat; isi di URL dapat berubah setelah persetujuan.</p>
-      {!imageAccess && <p>Hubungkan izin gambar/generasi terlebih dahulu di atas.</p>}
+      {!imageAccess && <p>Hubungkan Freebeat dan setujui izin generasi terlebih dahulu di atas.</p>}
       <div className="freebeat-actions">
         <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || busy || uploadBusy || !prompt.trim() || !imageUrl.trim()} onClick={prepare}>Siapkan quote Wan 3.0 untuk persetujuan</button>
         <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy} onClick={inspectTests}>Periksa catatan uji video</button>

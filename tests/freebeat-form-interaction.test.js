@@ -43,7 +43,7 @@ test('preparation form becomes clickable after entering input and never submits 
     assert.equal(inspected, 0);
     await React.act(async () => root.render(React.createElement(Harness, { imageAccess: false })));
     assert.equal(button().disabled, true);
-    assert.match(document.querySelector('#freebeat-prepare-help').textContent, /Hubungkan izin gambar/);
+    assert.match(document.querySelector('#freebeat-prepare-help').textContent, /Hubungkan Freebeat/);
     await React.act(async () => button().click());
     assert.equal(prepared, 1);
   } finally {

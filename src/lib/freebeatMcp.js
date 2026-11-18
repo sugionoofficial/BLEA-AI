@@ -1,4 +1,4 @@
-// Admin-only Freebeat MCP diagnostics. No generation or credit spending is exposed.
+// Admin-only Freebeat MCP diagnostics and explicitly approved generation tests.
 import { boundedJson } from './boundedJson.js';
 import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC } from './freebeatVideoTestSettings.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
@@ -116,10 +116,10 @@ async function jsonFetch(url, options, stage) {
   return data;
 }
 
-export async function startFreebeat(env, userId, requestImage = false) {
+export async function startFreebeat(env, userId) {
   await key(env);
   const redirect = redirectUri(env);
-  const requestedScope = requestImage === true ? `${READ_SCOPE} ${IMAGE_SCOPE}` : READ_SCOPE;
+  const requestedScope = `${READ_SCOPE} ${IMAGE_SCOPE}`;
   // Freebeat accepted this combination in a live registration test. Requesting
   // the refresh grant does not mean we retain or use any returned refresh token.
   const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: requestedScope }) }, 'register');
@@ -432,7 +432,7 @@ function quotedCredits(content) {
   return content?.status === 'quoted' && typeof content.credits === 'number' && Number.isFinite(content.credits) && content.credits >= 0 && content.credits <= 1000000 ? content.credits : null;
 }
 async function requireImageSession(session) {
-  if (!session?.imageAccess) throw fail('Hubungkan izin gambar terlebih dahulu.', 403);
+  if (!session?.imageAccess) throw fail('Hubungkan ulang Freebeat dan setujui izin generasi terlebih dahulu.', 403);
 }
 async function modelHelp(accessToken, modelId) {
   const headers = await openMcp(accessToken);
@@ -670,7 +670,7 @@ export async function handleFreebeat(request, url, env, user) {
     const action = url.pathname.split('/').pop();
     if (['start', 'start-image'].includes(action) && request.method === 'POST') {
       if (url.origin !== new URL(redirectUri(env)).origin) return response({ error: 'Buka BLEA melalui domain callback Freebeat yang dikonfigurasi sebelum menghubungkan akun.' }, 400);
-      return await startFreebeat(env, user.id, action === 'start-image');
+      return await startFreebeat(env, user.id);
     }
     if (action === 'status' && request.method === 'GET') {
       const session = await readSession(request, env, user.id);

@@ -6,7 +6,7 @@ const env = { SUPABASE_URL: 'https://supabase.example', SUPABASE_ANON_KEY: 'anon
 const request = (path, { token, cookie, method = 'GET' } = {}) => new Request(`https://blea-ai.blea-ai.workers.dev${path}`, { method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}) } });
 const call = (path, options) => worker.fetch(request(path, options), env);
 
-test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls only balance', async () => {
+test('Freebeat OAuth requests read and generation, enforces admin, PKCE and browser state; balance only reads', async () => {
   const realFetch = globalThis.fetch;
   const calls = [];
   let verifier;
@@ -27,7 +27,7 @@ test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls
         token_endpoint_auth_method: 'none',
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
-        scope: 'freebeat:read',
+        scope: 'freebeat:read freebeat:generate',
       });
       return Response.json({ client_id: 'client-123' });
     }
@@ -63,7 +63,7 @@ test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls
     const pendingCookie = pendingHeader.split(';')[0];
     const url = new URL((await start.json()).url);
     assert.equal(url.origin, 'https://freebeat.ai');
-    assert.equal(url.searchParams.get('scope'), 'freebeat:read');
+    assert.equal(url.searchParams.get('scope'), 'freebeat:read freebeat:generate');
     assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
     const state = url.searchParams.get('state');
     const mismatch = await call(`/api/freebeat/callback?code=valid-code&state=wrong`, { cookie: pendingCookie });
@@ -84,12 +84,20 @@ test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: encoded.encode('session') }, aes, ciphertext);
     const stored = JSON.parse(new TextDecoder().decode(plaintext));
     assert.deepEqual(Object.keys(stored).sort(), ['accessToken', 'clientId', 'expiresAt', 'imageAccess', 'uid']);
-    assert.equal(stored.imageAccess, false);
+    assert.equal(stored.imageAccess, true);
     assert.equal(JSON.stringify(stored).includes('NEVER-STORE-REFRESH'), false);
     assert.equal((await (await call('/api/freebeat/status', { token: 'other-admin', cookie: session })).json()).connected, false);
     assert.equal((await call('/api/freebeat/balance', { token: 'other-admin', cookie: session, method: 'POST' })).status, 401);
     assert.equal((await call('/api/freebeat/balance', { token: 'user-token', cookie: session, method: 'POST' })).status, 403);
+    const statusBeforeReload = await (await call('/api/freebeat/status', { token: 'admin-token', cookie: session })).json();
+    assert.equal(statusBeforeReload.connected, true);
+    // A new page load reuses the same HttpOnly cookie until the upstream expiry.
     assert.equal((await (await call('/api/freebeat/status', { token: 'admin-token', cookie: session })).json()).connected, true);
+    const realNow = Date.now;
+    try {
+      Date.now = () => statusBeforeReload.expiresAt + 1;
+      assert.equal((await (await call('/api/freebeat/status', { token: 'admin-token', cookie: session })).json()).connected, false);
+    } finally { Date.now = realNow; }
     const balance = await call('/api/freebeat/balance', { token: 'admin-token', cookie: session, method: 'POST' });
     assert.deepEqual((await balance.json()).balance, { credits: 500 });
     assert.deepEqual(calls.map((item) => item.method), ['initialize', 'notifications/initialized', 'tools/call']);
@@ -420,7 +428,7 @@ test('image discovery fails safely for invalid model shapes and repeating pagina
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
 
-test('image scope is optional, consented through a separate OAuth flow and tracked without saving refresh tokens', async () => {
+test('unified OAuth tracks granted generation scope without saving refresh tokens', async () => {
   const originalFetch = globalThis.fetch;
   let returnedScope;
   let registrations = 0;
@@ -451,7 +459,7 @@ test('image scope is optional, consented through a separate OAuth flow and track
       ['freebeat:generate', 'failed', false],
     ]) {
       returnedScope = scope;
-      const start = await call('/api/freebeat/start-image', { token: 'admin-token', method: 'POST' });
+      const start = await call('/api/freebeat/start', { token: 'admin-token', method: 'POST' });
       assert.equal(start.status, 200);
       const auth = new URL((await start.json()).url);
       assert.equal(auth.searchParams.get('scope'), 'freebeat:read freebeat:generate');

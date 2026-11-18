@@ -71,7 +71,7 @@ export function FreebeatPage() {
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      if (action === 'start' || action === 'start-image') {
+      if (action === 'start') {
         const result = await request(action, 'POST');
         const url = new URL(result.url);
         if (url.origin !== 'https://freebeat.ai' || url.pathname !== '/oauth/authorize') throw new Error('Alamat otorisasi Freebeat tidak valid.');
@@ -163,9 +163,9 @@ export function FreebeatPage() {
   return <DropXLayout title="Freebeat MCP" description="Uji koneksi Freebeat khusus admin.">
     <div className="freebeat-page">
       <section className="freebeat-card">
-        <span className="freebeat-kicker">MCP · OAUTH · READ ONLY</span><h2>Hubungkan Freebeat</h2>
-        <p>Uji koneksi resmi MCP dan baca saldo akun Freebeat Anda. Pemeriksaan saldo tidak memakai kredit; uji gambar terpisah di bawah hanya dikirim setelah persetujuan eksplisit.</p>
-        <p>Koneksi uji tersimpan terenkripsi dalam cookie HttpOnly pada browser admin ini, bukan dibagikan ke pengguna lain. Koneksi bersifat sementara dan perlu dihubungkan ulang setelah kedaluwarsa.</p>
+        <span className="freebeat-kicker">MCP · OAUTH · KHUSUS ADMIN</span><h2>Hubungkan Freebeat</h2>
+        <p>Tombol ini meminta izin membaca dan generasi Freebeat. Setujui izin tersebut di Freebeat. Pemeriksaan saldo tidak memakai kredit; setiap uji generasi tetap memerlukan persetujuan eksplisit.</p>
+        <p>Koneksi uji tersimpan terenkripsi dalam cookie HttpOnly pada browser dan domain ini, bukan dibagikan ke pengguna lain. Reload tidak seharusnya memutus koneksi sebelum masa berakhir, selama cookie dan login admin masih ada. Input form tidak disimpan. Token tidak diperpanjang otomatis; hubungkan ulang setelah kedaluwarsa.</p>
         <p>Menurut ketentuan Freebeat, kredit gratis hanya untuk penggunaan nonkomersial. Pastikan penggunaan Anda sesuai ketentuan penyedia.</p>
         {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
         {notice && <div className="freebeat-alert" role="status">{notice}</div>}
@@ -181,10 +181,9 @@ export function FreebeatPage() {
         <span className="freebeat-kicker">GAMBAR · KHUSUS ADMIN · BACA SAJA</span>
         <h2>Persiapan uji gambar</h2>
         <p>Periksa daftar model, struktur tool MCP dan respons quote tanpa membuat gambar atau memakai kredit. Pembelian BLEA belum diaktifkan; uji generasi admin memerlukan persetujuan terpisah di bawah.</p>
-        <p>Untuk memeriksa izin gambar, tombol berikut meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code> melalui Freebeat. Izin ini lebih luas dari baca saldo; Anda harus menyetujuinya di Freebeat.</p>
-        <div className="freebeat-status">Izin gambar: {imageAccess ? 'diminta dan terindikasi diberikan; penggunaan belum diuji' : 'belum diberikan atau belum terverifikasi'}</div>
+        <p>Koneksi di atas meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code>. Jika izin generasi tidak diberikan, hubungkan ulang dan setujui di Freebeat.</p>
+        <div className="freebeat-status">Izin gambar: {imageAccess ? 'diminta dan terindikasi diberikan' : 'belum diberikan atau belum terverifikasi'}</div>
         <div className="freebeat-actions">
-          <button type="button" disabled={loading || busy || imageBusy} onClick={() => run('start-image')}>Hubungkan izin gambar</button>
           <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-models')}>Lihat model gambar</button>
           <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-schemas')}>Periksa skema tool gambar</button>
         </div>
