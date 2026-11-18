@@ -389,3 +389,79 @@ test('initial response diagnostics are optional and do not bypass separate spend
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('Freebeat image upload is optional, requires separate check and upload consent, and is cleared on URL change', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => { calls.push(args); return args[0] === 'video-upload-check' ? { eligible: true } : { eligible: true, outcome: 'uploaded' }; };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const checkbox = (label) => [...document.querySelectorAll('label')].find((item) => item.textContent.includes(label)).querySelector('input');
+  async function change(value) { const input = document.querySelector('input[type=url]'); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); }
+  const render = (connected = true) => React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected, imageAccess: true, loading: false, request, videoModels: catalog })));
+  try {
+    await render(); await change('https://images.example/cat.jpg');
+    assert.equal(calls.length, 0);
+    assert.equal(button('Periksa biaya dan batas upload Freebeat').disabled, true);
+    await React.act(async () => checkbox('Saya mengizinkan pengiriman URL').click());
+    await React.act(async () => button('Periksa biaya dan batas upload Freebeat').click());
+    assert.deepEqual(calls, [['video-upload-check', 'POST', { image_url: 'https://images.example/cat.jpg', acknowledge: true }]]);
+    assert.equal(button('Uji upload gambar ke Freebeat').disabled, true);
+    await change('https://images.example/another.jpg');
+    assert.equal(button('Uji upload gambar ke Freebeat'), undefined);
+    assert.equal(checkbox('Saya mengizinkan pengiriman URL').checked, false);
+    await React.act(async () => checkbox('Saya mengizinkan pengiriman URL').click());
+    await React.act(async () => button('Periksa biaya dan batas upload Freebeat').click());
+    await React.act(async () => checkbox('Saya menyetujui satu upload gambar').click());
+    await React.act(async () => button('Uji upload gambar ke Freebeat').click());
+    assert.deepEqual(calls.at(-1), ['video-upload-image', 'POST', { image_url: 'https://images.example/another.jpg', acknowledge: true }]);
+    assert.match(document.body.textContent, /Freebeat melaporkan upload berhasil/);
+    assert.equal(calls.filter(([action]) => action === 'video-upload-image').length, 1);
+    assert.equal(calls.some(([action]) => action === 'video-submit'), false);
+    await render(false);
+    assert.doesNotMatch(document.body.textContent, /Freebeat melaporkan upload berhasil/);
+    assert.equal(checkbox('Saya mengizinkan pengiriman URL').checked, false);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('upload preflight blocks missing cost cap; network loss after submission is uncertain', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react'); const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  let allowed = false; const calls = [];
+  const request = async (action) => { calls.push(action); if (action === 'video-upload-check') return allowed ? { eligible: true } : { eligible: false, reason: 'cap_unavailable' }; throw new Error('network'); };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const checkbox = (label) => [...document.querySelectorAll('label')].find((item) => item.textContent.includes(label)).querySelector('input');
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog })));
+    const input = document.querySelector('input[type=url]');
+    await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, 'https://images.example/cat.jpg'); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    await React.act(async () => checkbox('Saya mengizinkan pengiriman URL').click());
+    await React.act(async () => button('Periksa biaya dan batas upload Freebeat').click());
+    assert.match(document.body.textContent, /Upload diblokir/);
+    assert.equal(button('Uji upload gambar ke Freebeat'), undefined);
+    allowed = true;
+    await React.act(async () => button('Periksa biaya dan batas upload Freebeat').click());
+    await React.act(async () => checkbox('Saya menyetujui satu upload gambar').click());
+    await React.act(async () => button('Uji upload gambar ke Freebeat').click());
+    assert.match(document.body.textContent, /Hasil upload tidak pasti/);
+    assert.equal(calls.filter((action) => action === 'video-upload-image').length, 1);
+    assert.equal(button('Uji upload gambar ke Freebeat'), undefined);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});

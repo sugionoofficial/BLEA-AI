@@ -23,6 +23,16 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [privacyConsent, setPrivacyConsent] = useState({});
   const visibilityVersion = useRef(0);
   const catalogVersion = useRef(0);
+  const uploadCheckVersion = useRef(0);
+  const [uploadCheckConsent, setUploadCheckConsent] = useState(false);
+  const [freebeatUploadConsent, setFreebeatUploadConsent] = useState(false);
+  const [freebeatUploadCheck, setFreebeatUploadCheck] = useState(null);
+  const [freebeatUploadResult, setFreebeatUploadResult] = useState(null);
+  useEffect(() => {
+    uploadCheckVersion.current += 1;
+    setUploadCheckConsent(false); setFreebeatUploadConsent(false); setFreebeatUploadCheck(null); setFreebeatUploadResult(null);
+    return () => { uploadCheckVersion.current += 1; };
+  }, [connected, imageUrl]);
   useEffect(() => {
     if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setModel(''); setApproval(null); setConfirmed(false); setInitialConsent(false); setInitialDiagnostics(null); }
     return () => { visibilityVersion.current += 1; };
@@ -63,6 +73,24 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     } catch (err) { setUploadError(err.message || 'Penghapusan gagal; periksa Supabase Storage.'); }
     finally { setUploadBusy(false); }
   }
+  async function inspectFreebeatUpload(submit) {
+    if (loading || !connected || !imageAccess || busy || uploadBusy || !imageUrl.trim() || (submit ? (!freebeatUploadCheck?.eligible || !freebeatUploadConsent) : !uploadCheckConsent)) return;
+    const version = uploadCheckVersion.current;
+    setBusy(true); setError(''); setFreebeatUploadResult(null); setFreebeatUploadConsent(false);
+    try {
+      const result = await request(submit ? 'video-upload-image' : 'video-upload-check', 'POST', { image_url: imageUrl.trim(), acknowledge: true });
+      if (version !== uploadCheckVersion.current) return;
+      setFreebeatUploadCheck({ eligible: result.eligible === true, reason: result.reason });
+      if (submit && result.eligible === true) { setFreebeatUploadResult(result.outcome || 'unknown'); setUploadCheckConsent(false); setFreebeatUploadCheck(null); }
+    } catch (err) {
+      if (version === uploadCheckVersion.current) {
+        setFreebeatUploadCheck(null); setUploadCheckConsent(false);
+        if (submit) setFreebeatUploadResult('unknown');
+        else setError(err.message || 'Pemeriksaan upload belum tersedia.');
+      }
+    } finally { setBusy(false); }
+  }
+
   async function copyUrl() {
     try { await navigator.clipboard.writeText(imageUrl); setUploadNotice('URL disalin.'); }
     catch { setUploadNotice('Tidak dapat menyalin otomatis. Pilih dan salin URL secara manual.'); }
@@ -275,5 +303,18 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
         </div>}
       </div>)}</div>}
     </div>
+    <details className="freebeat-upload"><summary>Periksa pengambilan gambar oleh Freebeat</summary>
+      <p>Pemeriksaan mengirim URL gambar di atas ke Freebeat untuk memeriksa skema dan quote, tanpa upload atau generasi. Gunakan hanya gambar yang boleh dibagikan; jangan gunakan URL bertanda tangan atau rahasia.</p>
+      <p>Upload berikutnya hanya tersedia jika Freebeat mengembalikan quote tepat 0 dan skema menyediakan batas kredit; server memeriksa ulang sebelum mengirim batas 0. Quote dan batas bukan jaminan biaya aktual. Jika biaya atau batas tidak tersedia, upload diblokir.</p>
+      <label className="freebeat-confirm"><input type="checkbox" checked={uploadCheckConsent} disabled={busy || uploadBusy || !connected} onChange={(event) => setUploadCheckConsent(event.target.checked)} /> Saya mengizinkan pengiriman URL ini ke Freebeat untuk pemeriksaan skema dan quote.</label>
+      <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || busy || uploadBusy || !imageUrl.trim() || !uploadCheckConsent} onClick={() => inspectFreebeatUpload(false)}>Periksa biaya dan batas upload Freebeat</button></div>
+      {freebeatUploadCheck && (freebeatUploadCheck.eligible ? <>
+        <p>Freebeat mengutip 0 kredit dan menyediakan parameter batas. Upload akan meminta batas 0; biaya aktual tidak dijamin. Gambar dapat disalin dan disimpan di Freebeat, dengan retensi dan akses yang diatur Freebeat. Ini tidak membuat video.</p>
+        <label className="freebeat-confirm"><input type="checkbox" checked={freebeatUploadConsent} disabled={busy || !connected} onChange={(event) => setFreebeatUploadConsent(event.target.checked)} /> Saya menyetujui satu upload gambar ini ke Freebeat dengan batas 0 kredit.</label>
+        <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy || uploadBusy || !connected || !freebeatUploadConsent} onClick={() => inspectFreebeatUpload(true)}>Uji upload gambar ke Freebeat</button></div>
+      </> : <p role="status">{freebeatUploadCheck.reason === 'cap_unavailable' ? 'Skema Freebeat tidak menyediakan batas kredit yang dapat digunakan. Upload diblokir.' : 'Quote nol tidak tersedia. Upload diblokir.'}</p>)}
+      {freebeatUploadResult === 'uploaded' && <p role="status">Freebeat melaporkan upload berhasil dan mengembalikan URL gambar. Ini bukan jaminan generasi video akan berhasil; URL tidak disimpan atau dipakai otomatis.</p>}
+      {freebeatUploadResult === 'unknown' && <p role="alert">Hasil upload tidak pasti; Freebeat mungkin sudah menyimpan salinan. Jangan ulangi sebelum memeriksa akun Freebeat.</p>}
+    </details>
   </div>;
 }

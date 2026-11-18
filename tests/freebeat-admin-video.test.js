@@ -21,7 +21,7 @@ async function connect(token = 'admin') {
 }
 function fixture() {
   const rows = new Map(), calls = [];
-  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null, createResult = null;
+  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null, createResult = null, uploadConfig = null;
   return {
     rows, calls,
     setScope(value) { scope = value; },
@@ -32,6 +32,7 @@ function fixture() {
     setDbMode(value) { dbMode = value; },
     setTaskResult(value) { taskResult = value; },
     setCreateResult(value) { createResult = value; },
+    setUploadConfig(value) { uploadConfig = value; },
     async fetch(input, init = {}) {
       const url = new URL(String(input));
       if (url.href === 'https://supabase.example/auth/v1/user') {
@@ -64,8 +65,20 @@ function fixture() {
       const body = JSON.parse(init.body); calls.push(body);
       if (body.method === 'initialize') return Response.json({ id: body.id, result: { protocolVersion: '2025-03-26' } });
       if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      if (body.method === 'tools/list') {
+        assert.ok(uploadConfig);
+        const properties = { urls: { type: 'array', items: { type: 'string' } }, ...(uploadConfig.cap ? { max_credits: { type: 'number' } } : {}) };
+        return Response.json({ id: body.id, result: { tools: [{ name: 'upload_image', inputSchema: { type: 'object', properties, required: ['urls'] } }] } });
+      }
       let data;
-      if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: '186', name: 'Model 186' }] }; }
+      if (body.params.name === 'quote_generation' && body.params.arguments.tool === 'upload_image') {
+        assert.deepEqual(body.params.arguments, { tool: 'upload_image', parameters: { urls: ['https://images.example/input.png'] } });
+        data = uploadConfig.quote;
+      } else if (body.params.name === 'upload_image') {
+        assert.deepEqual(body.params.arguments, { urls: ['https://images.example/input.png'], max_credits: 0 });
+        if (uploadConfig.lost) throw new Error('PRIVATE-NETWORK-ERROR');
+        data = uploadConfig.result || { success: true, image_urls: ['https://cdn.example/private?token=SECRET'], message: 'PRIVATE MESSAGE' };
+      } else if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: '186', name: 'Model 186' }] }; }
       else if (body.params.name === 'get_model_help') { assert.deepEqual(body.params.arguments, { type: 'video', model_id: expectedModel }); data = { model_id: expectedModel }; }
       else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
       else if (body.params.name === 'generate_video') {
@@ -330,5 +343,60 @@ test('unrecognized, RPC error, and lost initial responses remain uncertain and k
       assert.equal((await submit(cookie, next.approval)).status, 409);
       assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
     }
+  } finally { globalThis.fetch = original; console.warn = warn; }
+});
+
+test('Freebeat image upload diagnostic fails closed without consent, zero quote and a supported zero cap', async () => {
+  const original = globalThis.fetch, f = fixture(); globalThis.fetch = f.fetch;
+  const call = (cookie, action, data = { image_url: 'https://images.example/input.png', acknowledge: true }, extra = {}) => api(action, { cookie, method: 'POST', data, ...extra });
+  try {
+    const cookie = await connect();
+    f.setScope('freebeat:read'); const readOnly = await connect();
+    f.setUploadConfig({ cap: false, quote: { status: 'quoted', credits: 0 } });
+    assert.equal((await call(cookie, 'video-upload-image', { image_url: 'https://images.example/input.png' })).status, 400);
+    assert.equal((await call(cookie, 'video-upload-image', undefined, { token: 'user' })).status, 403);
+    assert.equal((await call(cookie, 'video-upload-image', undefined, { origin: 'https://evil.example' })).status, 403);
+    assert.equal((await call(readOnly, 'video-upload-image')).status, 403);
+    assert.equal((await call(cookie, 'video-upload-image', { image_url: 'http://images.example/input.png', acknowledge: true })).status, 400);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'upload_image').length, 0);
+    let response = await call(cookie, 'video-upload-check');
+    assert.deepEqual(await response.json(), { ok: true, eligible: false, reason: 'cap_unavailable' });
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    f.setUploadConfig({ cap: true, quote: { status: 'unavailable' } });
+    assert.deepEqual(await (await call(cookie, 'video-upload-image')).json(), { ok: true, eligible: false, reason: 'zero_quote_unavailable' });
+    f.setUploadConfig({ cap: true, quote: { status: 'quoted', credits: 5 } });
+    assert.deepEqual(await (await call(cookie, 'video-upload-image')).json(), { ok: true, eligible: false, reason: 'zero_quote_unavailable' });
+    assert.equal(f.calls.filter((c) => c.params?.name === 'upload_image').length, 0);
+    f.setUploadConfig({ cap: true, quote: { status: 'quoted', credits: 0 } });
+    assert.deepEqual(await (await call(cookie, 'video-upload-check')).json(), { ok: true, eligible: true });
+    assert.equal(f.calls.filter((c) => c.params?.name === 'upload_image').length, 0);
+    f.setUploadConfig({ cap: true, quote: { status: 'quoted', credits: 1 } });
+    assert.deepEqual(await (await call(cookie, 'video-upload-image')).json(), { ok: true, eligible: false, reason: 'zero_quote_unavailable' });
+    assert.equal(f.calls.filter((c) => c.params?.name === 'upload_image').length, 0);
+    f.setUploadConfig({ cap: true, quote: { status: 'quoted', credits: 0 } });
+    response = await call(cookie, 'video-upload-image');
+    const text = await response.text();
+    assert.deepEqual(JSON.parse(text), { ok: true, eligible: true, outcome: 'uploaded' });
+    assert.doesNotMatch(text, /SECRET|PRIVATE|cdn\.example|images\.example/);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'upload_image').length, 1);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+    assert.equal(f.rows.size, 0);
+  } finally { globalThis.fetch = original; }
+});
+
+test('unconfirmed upload and unsafe response never reveal provider details and are not retried', async () => {
+  const original = globalThis.fetch, warn = console.warn, f = fixture(); globalThis.fetch = f.fetch; console.warn = () => {};
+  try {
+    const cookie = await connect();
+    for (const config of [{ lost: true }, { result: { success: true, image_urls: ['https://u:p@cdn.example/img'] } }]) {
+      f.setUploadConfig({ cap: true, quote: { status: 'quoted', credits: 0 }, ...config });
+      const response = await api('video-upload-image', { cookie, method: 'POST', data: { image_url: 'https://images.example/input.png', acknowledge: true } });
+      const text = await response.text();
+      assert.deepEqual(JSON.parse(text), { ok: true, eligible: true, outcome: 'unknown' });
+      assert.doesNotMatch(text, /PRIVATE|cdn\.example|images\.example/);
+    }
+    assert.equal(f.calls.filter((c) => c.params?.name === 'upload_image').length, 2);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
   } finally { globalThis.fetch = original; console.warn = warn; }
 });
