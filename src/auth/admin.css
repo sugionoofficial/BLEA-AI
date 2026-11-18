@@ -887,6 +887,45 @@
   color: var(--muted-foreground);
 }
 
+.admin-secret-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.admin-secret-wrap input {
+  width: 100%;
+  padding-right: 34px;
+}
+
+.admin-secret-input {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
+.admin-secret-toggle {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.admin-secret-toggle:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
 .admin-api-actions {
   display: flex;
   flex-wrap: wrap;

@@ -6,6 +6,8 @@ import {
   ChevronDown,
   Clapperboard,
   Clock3,
+  Eye,
+  EyeOff,
   Globe,
   KeyRound,
   LayoutDashboard,
@@ -24,7 +26,7 @@ import {
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { PROVIDER_PRESETS } from '../lib/videoCatalog';
+import { PROVIDER_PRESETS, validateProviderBaseUrl } from '../lib/videoCatalog';
 import {
   fetchAdminModels,
   fetchCatalog,
@@ -159,6 +161,7 @@ export function AdminPage() {
   const [providerKeys, setProviderKeys] = useState([]);
   const [keyDrafts, setKeyDrafts] = useState({});
   const [baseUrlDrafts, setBaseUrlDrafts] = useState({});
+  const [revealedKeys, setRevealedKeys] = useState({});
   const [keyNotices, setKeyNotices] = useState({});
   const [keyBusy, setKeyBusy] = useState('');
   const [newProvider, setNewProvider] = useState({ provider: '', label: '', base_url: '' });
@@ -378,8 +381,14 @@ export function AdminPage() {
   async function saveProviderKey(providerRow) {
     const provider = providerRow.provider;
     const rawDraft = String(keyDrafts[provider] || '').trim();
-    const apiKey = rawDraft || (provider === 'cloudflare' && !providerRow.api_key ? 'binding:AI' : '');
-    const baseUrl = String(baseUrlDrafts[provider] ?? providerRow.base_url ?? '').trim() || null;
+    const rawBaseUrl = String(baseUrlDrafts[provider] ?? providerRow.base_url ?? '').trim();
+    const urlCheck = validateProviderBaseUrl(rawBaseUrl, provider);
+    if (!urlCheck.ok) {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: urlCheck.error } }));
+      return;
+    }
+    const baseUrl = urlCheck.value;
+    const apiKey = rawDraft || (provider === 'cloudflare' && (!providerRow.api_key || !baseUrl) ? 'binding:AI' : '');
 
     if (!apiKey && !providerRow.api_key) {
       setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Masukkan API key terlebih dahulu.' } }));
@@ -418,14 +427,42 @@ export function AdminPage() {
     setKeyBusy('');
   }
 
+  async function resetCloudflareBinding() {
+    setKeyBusy('save-cloudflare');
+    const { error } = await supabase
+      .from('provider_api_keys')
+      .upsert({
+        provider: 'cloudflare',
+        label: PROVIDER_PRESETS.cloudflare.label,
+        api_key: 'binding:AI',
+        base_url: null,
+        updated_at: new Date().toISOString(),
+      });
+    if (error) {
+      setKeyNotices((current) => ({ ...current, cloudflare: { type: 'error', text: 'Gagal mereset Cloudflare ke Binding env.AI.' } }));
+    } else {
+      setKeyDrafts((current) => ({ ...current, cloudflare: '' }));
+      setBaseUrlDrafts((current) => ({ ...current, cloudflare: '' }));
+      setKeyNotices((current) => ({ ...current, cloudflare: { type: 'success', text: 'Cloudflare Workers AI dikembalikan ke mode Binding native (env.AI).' } }));
+      await loadData();
+    }
+    setKeyBusy('');
+  }
+
   async function verifyProviderKey(providerRow) {
     const provider = providerRow.provider;
+    const rawBaseUrl = String(baseUrlDrafts[provider] ?? providerRow.base_url ?? '').trim();
+    const urlCheck = validateProviderBaseUrl(rawBaseUrl, provider);
+    if (!urlCheck.ok) {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: urlCheck.error } }));
+      return;
+    }
+    const baseUrl = urlCheck.value || '';
     const apiKey = String(
       keyDrafts[provider]
       || providerRow.api_key
       || (provider === 'cloudflare' ? 'binding:AI' : ''),
     ).trim();
-    const baseUrl = String(baseUrlDrafts[provider] ?? providerRow.base_url ?? '').trim();
     if (!apiKey) {
       setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Masukkan API key terlebih dahulu.' } }));
       return;
@@ -507,8 +544,14 @@ export function AdminPage() {
     const src = presetOverride || newProvider;
     const provider = String(src.id || src.provider || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
     const label = String(src.label || '').trim();
-    const base_url = String(src.baseUrl || src.base_url || '').trim() || null;
+    const rawBaseUrl = String(src.baseUrl || src.base_url || '').trim();
     if (!provider || !label) return;
+    const urlCheck = validateProviderBaseUrl(rawBaseUrl, provider);
+    if (!urlCheck.ok) {
+      setKeyNotices((current) => ({ ...current, [`add:${newProvider.provider}`]: { type: 'error', text: urlCheck.error } }));
+      return;
+    }
+    const base_url = urlCheck.value;
     setKeyBusy('add');
     const { error } = await supabase
       .from('provider_api_keys')
@@ -832,7 +875,17 @@ export function AdminPage() {
                         <div className="admin-api-input-row">
                           <Globe size={14} />
                           <input
-                            type="url"
+                            type="text"
+                            inputMode="url"
+                            name={`cfg-endpoint-${provider.provider}`}
+                            autoComplete="off"
+                            spellCheck={false}
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-bwignore="true"
+                            data-form-type="other"
                             value={baseUrlDrafts[provider.provider] ?? provider.base_url ?? ''}
                             onChange={(event) => setBaseUrlDrafts((cur) => ({ ...cur, [provider.provider]: event.target.value }))}
                             placeholder={
@@ -846,19 +899,39 @@ export function AdminPage() {
 
                         <div className="admin-api-input-row">
                           <LockKeyhole size={14} />
-                          <input
-                            type="password"
-                            value={keyDrafts[provider.provider] || ''}
-                            onChange={(current) => setKeyDrafts((prev) => ({ ...prev, [provider.provider]: current.target.value }))}
-                            placeholder={
-                              provider.provider === 'cloudflare'
-                                ? (provider.api_key === 'binding:AI'
-                                  ? 'Aktif via Binding env.AI (atau tempel API Token Cloudflare untuk REST)...'
-                                  : 'Kosongkan untuk Binding env.AI, atau masukkan Cloudflare API Token...')
-                                : (provider.api_key ? 'Ganti API key...' : 'Masukkan API key...')
-                            }
-                            aria-label={`API key ${provider.provider}`}
-                          />
+                          <div className="admin-secret-wrap">
+                            <input
+                              type="text"
+                              name={`cfg-secret-${provider.provider}`}
+                              className={revealedKeys[provider.provider] ? '' : 'admin-secret-input'}
+                              autoComplete="off"
+                              spellCheck={false}
+                              autoCapitalize="off"
+                              autoCorrect="off"
+                              data-lpignore="true"
+                              data-1p-ignore="true"
+                              data-bwignore="true"
+                              data-form-type="other"
+                              value={keyDrafts[provider.provider] || ''}
+                              onChange={(current) => setKeyDrafts((prev) => ({ ...prev, [provider.provider]: current.target.value }))}
+                              placeholder={
+                                provider.provider === 'cloudflare'
+                                  ? (provider.api_key === 'binding:AI'
+                                    ? 'Aktif via Binding env.AI (kosongkan, atau tempel API Token Cloudflare)...'
+                                    : 'Kosongkan untuk Binding env.AI, atau masukkan Cloudflare API Token...')
+                                  : (provider.api_key ? 'Ganti API key...' : 'Masukkan API key...')
+                              }
+                              aria-label={`API key ${provider.provider}`}
+                            />
+                            <button
+                              type="button"
+                              className="admin-secret-toggle"
+                              onClick={() => setRevealedKeys((cur) => ({ ...cur, [provider.provider]: !cur[provider.provider] }))}
+                              aria-label={revealedKeys[provider.provider] ? 'Sembunyikan API key' : 'Tampilkan API key'}
+                            >
+                              {revealedKeys[provider.provider] ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
+                          </div>
                           <div className="admin-api-actions">
                             <button
                               type="button"
@@ -876,6 +949,16 @@ export function AdminPage() {
                             >
                               Simpan
                             </button>
+                            {provider.provider === 'cloudflare' && (provider.api_key !== 'binding:AI' || provider.base_url) && (
+                              <button
+                                type="button"
+                                className="admin-api-verify"
+                                onClick={resetCloudflareBinding}
+                                disabled={keyBusy === 'save-cloudflare'}
+                              >
+                                Pakai Binding env.AI
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="admin-api-remove"

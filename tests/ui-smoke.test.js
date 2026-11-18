@@ -125,6 +125,8 @@ test('Admin CSS keeps readable contrast and avoids white-on-white legacy readabi
   assert.equal(/\bth\s*\{|\btd\s*\{/.test(readabilityCss), false, 'readability.css must not override table th/td to white');
   assert.ok(adminCss.includes('.admin-workspace'), 'admin.css should define nested .admin-workspace grid');
   assert.ok(adminCss.includes('.admin-subnav-children'), 'admin.css should style nested sub-navigation');
+  assert.ok(adminCss.includes('.admin-secret-input'), 'admin.css should mask API keys visually without type="password"');
+  assert.equal(adminSource.includes('type="password"'), false, 'AdminPage must not use type="password" so browsers never autofill login email/password into provider fields');
   assert.equal(adminSource.includes("provider: 'unorouter', label: 'UnoRouter'"), false, 'AdminPage must not hardcode a fallback UnoRouter row');
 });
 

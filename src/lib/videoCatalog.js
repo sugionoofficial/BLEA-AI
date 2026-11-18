@@ -564,11 +564,53 @@ export const CLOUDFLARE_FREE_LLM_MODELS = [
   },
 ];
 
+export function isValidHttpBaseUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function validateProviderBaseUrl(value, provider = 'custom') {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return { ok: true, value: null };
+  if (trimmed.includes('@') && !/^https?:\/\//i.test(trimmed)) {
+    return {
+      ok: false,
+      error: 'Base URL terlihat seperti alamat email (terisi otomatis oleh browser). Kosongkan atau isi URL valid yang dimulai dengan https://.',
+    };
+  }
+  if (!isValidHttpBaseUrl(trimmed)) {
+    return {
+      ok: false,
+      error: 'Base URL tidak valid. Gunakan URL lengkap yang dimulai dengan https:// (misal https://api.provider.com/v1).',
+    };
+  }
+  if (provider === 'cloudflare') {
+    const parsed = new URL(trimmed);
+    if (/[<{]account[_-]?id[>}]/i.test(trimmed) || !/\/accounts\/[^/]+\/ai/i.test(parsed.pathname)) {
+      return {
+        ok: false,
+        error: 'Base URL REST Cloudflare harus berbentuk https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1 — atau kosongkan untuk memakai Binding env.AI.',
+      };
+    }
+  }
+  return { ok: true, value: trimmed };
+}
+
 export function resolveProviderApiBase(provider, baseUrl) {
   const preset = PROVIDER_PRESETS[provider] || PROVIDER_PRESETS.custom;
-  const rawBase = String(baseUrl || preset.defaultBaseUrl || '').trim().replace(/\/+$/, '');
+  const candidate = String(baseUrl || '').trim().replace(/\/+$/, '');
+  const validCandidate = candidate && isValidHttpBaseUrl(candidate) ? candidate : '';
+  const presetBase = String(preset.defaultBaseUrl || '').trim().replace(/\/+$/, '');
+  const rawBase = validCandidate || presetBase;
   if (provider === 'cloudflare' && !rawBase) return '';
-  let base = rawBase || 'https://api.unorouter.com';
+  let base = rawBase || (provider === 'custom' && candidate ? '' : 'https://api.unorouter.com');
+  if (!base) return '';
   // Strip known endpoint suffixes if an admin pasted a full endpoint URL
   base = base
     .replace(/\/chat\/completions$/i, '')
