@@ -221,7 +221,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
             <FreebeatCopyResult title="Status video dan rincian kegagalan yang disaring" value={{ status: taskResults[test.id].status, billing: taskResults[test.id].billing, failure: taskResults[test.id].failure, item_failures: taskResults[test.id].item_failures }} />
             {test.canPoll && connected && <div className="freebeat-result">
               <h3>Pesan kegagalan pribadi</h3>
-              <p>Pesan dari Freebeat mungkin berisi prompt, data pribadi atau kredensial. Beberapa pola sensitif disamarkan, tetapi penyaringan tidak dijamin lengkap. Jangan salin atau bagikan pesan mentah; jika perlu bantuan, jelaskan penyebabnya dengan kata-kata sendiri tanpa URL, token atau data pribadi.</p>
+              <p>Pesan status dan kesalahan batch/item dari Freebeat mungkin berisi prompt, data pribadi atau kredensial. Beberapa pola sensitif disamarkan, tetapi penyaringan tidak dijamin lengkap. Jangan salin atau bagikan pesan mentah; jika perlu bantuan, jelaskan penyebabnya dengan kata-kata sendiri tanpa URL, token atau data pribadi.</p>
               {!Object.hasOwn(privateFailure, test.id) && <>
                 <label className="freebeat-confirm"><input type="checkbox" checked={Boolean(privacyConsent[test.id])} disabled={busy} onChange={(event) => setPrivacyConsent((old) => ({ ...old, [test.id]: event.target.checked }))} /> Saya memahami pesan mungkin mengandung informasi sensitif dan hanya akan melihatnya secara pribadi.</label>
                 <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy || !privacyConsent[test.id]} onClick={() => viewPrivateFailure(test.id)}>Tampilkan pesan kegagalan pribadi</button></div>

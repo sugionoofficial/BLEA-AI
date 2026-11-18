@@ -674,7 +674,12 @@ async function privateVideoFailure(env, user, session, request) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
   const content = await videoTaskContent(env, user, session, { id: input.id });
   if (!['failed', 'partial_failed', 'action_required'].includes(content.status)) throw fail('Pesan kegagalan tidak tersedia untuk status ini.', 409);
-  const reasons = [content.failure?.reason, ...(Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => item?.failure?.reason) : [])].map(privateFailureReason).filter(Boolean);
+  // Status responses can carry useful details in failure.reason, error_message
+  // or message at batch/item level. The original create response is not stored,
+  // so this can only reveal fields that get_task_status still returns.
+  const fields = (value) => [value?.failure?.reason, value?.error_code, value?.error_message, value?.message];
+  const candidates = [...fields(content), ...(Array.isArray(content.items) ? content.items.slice(0, 10).flatMap(fields) : [])];
+  const reasons = [...new Set(candidates.map(privateFailureReason).filter(Boolean))];
   return { reasons };
 }
 
