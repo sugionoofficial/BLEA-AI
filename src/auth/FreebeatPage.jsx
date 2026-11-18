@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
+import { FreebeatImageForm } from './FreebeatImageForm';
 import { supabase } from '../lib/supabase';
 import './freebeat.css';
 
@@ -49,6 +50,7 @@ export function FreebeatPage() {
   const [quoteModel, setQuoteModel] = useState('');
   const [quotePrompt, setQuotePrompt] = useState('');
   const [imageQuote, setImageQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState('');
   const [approval, setApproval] = useState(null);
   const [spendConfirmed, setSpendConfirmed] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
@@ -107,11 +109,11 @@ export function FreebeatPage() {
   async function inspectQuote(event) {
     event.preventDefault();
     if (imageBusy) return;
-    setImageBusy(true); setImageError(''); setImageQuote(null);
+    setImageBusy(true); setQuoteError(''); setImageQuote(null);
     try {
       const result = await request('image-quote', 'POST', { model_id: Number(quoteModel), prompt: quotePrompt });
       setImageQuote(result.quote);
-    } catch (err) { setImageError(err.message || 'Pemeriksaan quote gagal.'); }
+    } catch (err) { setQuoteError(err.message || 'Pemeriksaan quote gagal.'); }
     finally { setImageBusy(false); }
   }
   async function refreshTests() {
@@ -196,25 +198,20 @@ export function FreebeatPage() {
         </div>
         {imageModels && <div className="freebeat-result"><h3>Model gambar dari Freebeat</h3><pre>{JSON.stringify(imageModels.models, null, 2)}</pre>{imageModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
         {imageSchemas && <div className="freebeat-result"><h3>Struktur tool gambar</h3><p>Hanya nama parameter dan tipe dasar; deskripsi dan data sesi tidak ditampilkan. Bagikan hasil ini untuk memeriksa format biaya.</p><pre>{JSON.stringify(imageSchemas.tools, null, 2)}</pre>{imageSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
-        <form onSubmit={inspectQuote}>
-          <label className="freebeat-field">ID model gambar (angka dari daftar model)
-            <input type="number" min="0" step="1" required value={quoteModel} onChange={(event) => { setQuoteModel(event.target.value); setImageQuote(null); setApproval(null); setSpendConfirmed(false); }} />
-          </label>
-          <label className="freebeat-field">Prompt percobaan (dikirim ke Freebeat untuk quote)
-            <input type="text" maxLength={2000} required value={quotePrompt} onChange={(event) => { setQuotePrompt(event.target.value); setImageQuote(null); setApproval(null); setSpendConfirmed(false); }} />
-          </label>
-          <div className="freebeat-actions"><button type="submit" className="is-secondary" disabled={loading || !connected || imageBusy}>Periksa respons quote</button></div>
-        </form>
         {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
-        {imageQuote !== null && <div className="freebeat-result"><h3>Respons quote yang disaring</h3><p>Hanya status dalam daftar aman yang ditampilkan; status lain tetap disembunyikan. Nilai ini belum diverifikasi sebagai biaya final atau izin generasi. Tidak ada kredit yang dipakai.</p><pre>{JSON.stringify(imageQuote, null, 2)}</pre></div>}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">UJI GAMBAR · KHUSUS ADMIN · KREDIT FREEBEAT</span>
         <h2>Uji generasi gambar admin</h2>
-        <p>Hanya akun Freebeat di browser admin ini yang digunakan. Ini bukan pembelian atau pemakaian kredit BLEA. Isi ID model dan prompt di atas, lalu siapkan quote baru. Pastikan penggunaan sesuai ketentuan dan plan Freebeat; manfaat plan yang hanya untuk aplikasi web tidak otomatis berlaku untuk MCP.</p>
+        <p>Hanya akun Freebeat di browser admin ini yang digunakan. Ini bukan pembelian atau pemakaian kredit BLEA. Isi ID model dan prompt di bawah, lalu siapkan quote baru. Pastikan penggunaan sesuai ketentuan dan plan Freebeat; manfaat plan yang hanya untuk aplikasi web tidak otomatis berlaku untuk MCP.</p>
         <p>Freebeat melaporkan quote, bukan biaya akhir; saldo dapat terpakai meskipun tugas gagal, dan refund tidak dijamin. Jika hasil pengiriman tidak pasti, jangan mengulang sebelum memeriksa Freebeat. Uji dengan hasil tidak pasti akan mengunci pengiriman berikutnya hingga ditinjau operator.</p>
-        <div className="freebeat-actions"><button type="button" disabled={loading || !connected || !imageAccess || testBusy || imageBusy || !quoteModel || !quotePrompt.trim()} onClick={prepareTest}>Siapkan quote untuk persetujuan</button>
-          <button type="button" className="is-secondary" disabled={loading || !connected || testBusy} onClick={inspectTests}>Periksa catatan uji</button></div>
+        <FreebeatImageForm loading={loading} connected={connected} imageAccess={imageAccess} busy={busy} imageBusy={imageBusy} testBusy={testBusy} model={quoteModel} prompt={quotePrompt}
+          onModelChange={(value) => { setQuoteModel(value); setImageQuote(null); setQuoteError(''); setApproval(null); setSpendConfirmed(false); }}
+          onPromptChange={(value) => { setQuotePrompt(value); setImageQuote(null); setQuoteError(''); setApproval(null); setSpendConfirmed(false); }}
+          onInspect={inspectQuote} onPrepare={prepareTest} />
+        {quoteError && <div className="freebeat-alert is-error" role="alert">{quoteError}</div>}
+        {imageQuote !== null && <div className="freebeat-result"><h3>Respons quote yang disaring</h3><p>Hanya status dalam daftar aman yang ditampilkan; status lain tetap disembunyikan. Nilai ini belum diverifikasi sebagai biaya final atau izin generasi. Tidak ada kredit yang dipakai.</p><pre>{JSON.stringify(imageQuote, null, 2)}</pre></div>}
+        <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={loading || !connected || testBusy} onClick={inspectTests}>Periksa catatan uji</button></div>
         {approval && <div className="freebeat-result">
           <h3>Periksa dan setujui satu kali</h3>
           <p>Model: <strong>{approval.model_id}</strong> · Quote Freebeat: <strong>{approval.credits} kredit</strong> · Batas maksimum yang dikirim: <strong>{approval.credits} kredit</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}. Jika quote berubah, pengiriman ditolak.</p>

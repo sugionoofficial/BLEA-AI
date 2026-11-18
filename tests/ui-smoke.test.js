@@ -254,3 +254,34 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('type="password"'));
   assert.ok(html.includes('Ini bukan koneksi MCP') === false, 'site result is hidden before a successful test');
 });
+
+test('Freebeat image preparation explains every blocking condition and enables only with valid inputs and permission', async () => {
+  const { FreebeatImageForm, prepareBlockers } = await vite.ssrLoadModule('/src/auth/FreebeatImageForm.jsx');
+  const ready = { loading: false, connected: true, imageAccess: true, busy: false, imageBusy: false, testBusy: false, model: '80', prompt: 'seekor kucing' };
+  assert.deepEqual(prepareBlockers(ready), []);
+  for (const [changes, expected] of [
+    [{ loading: true }, /Menunggu pemeriksaan koneksi/],
+    [{ connected: false }, /belum terhubung atau sudah berakhir/],
+    [{ imageAccess: false }, /Izin gambar belum tersedia/],
+    [{ busy: true }, /sedang berjalan/],
+    [{ imageBusy: true }, /sedang berjalan/],
+    [{ testBusy: true }, /sedang berjalan/],
+    [{ model: '' }, /Isi ID model/],
+    [{ model: '-1' }, /bilangan bulat nonnegatif/],
+    [{ model: '1.5' }, /bilangan bulat nonnegatif/],
+    [{ model: '9007199254740992' }, /bilangan bulat nonnegatif/],
+    [{ prompt: '   ' }, /Isi prompt/],
+    [{ prompt: 'x'.repeat(2001) }, /maksimal 2000/],
+  ]) {
+    const props = { ...ready, ...changes };
+    assert.match(prepareBlockers(props).join(' '), expected);
+    const markup = renderToStaticMarkup(React.createElement(FreebeatImageForm, { ...props, onModelChange() {}, onPromptChange() {}, onInspect() {}, onPrepare() {} }));
+    assert.match(markup, /<button type="button" disabled="" aria-describedby="freebeat-prepare-help">Siapkan quote/);
+    assert.match(markup, expected);
+  }
+  const html = renderToStaticMarkup(React.createElement(FreebeatImageForm, { ...ready, onModelChange() {}, onPromptChange() {}, onInspect() {}, onPrepare() {} }));
+  assert.match(html, /<button type="button" aria-describedby="freebeat-prepare-help">Siapkan quote/);
+  assert.match(html, /Langkah ini tidak membuat gambar atau memakai kredit/);
+  assert.ok(html.indexOf('ID model gambar') < html.indexOf('Siapkan quote untuk persetujuan'));
+  assert.ok(html.indexOf('Prompt percobaan') < html.indexOf('Siapkan quote untuk persetujuan'));
+});
