@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, MessageSquarePlus, Network, Paperclip, Plus, RefreshCw, Send, Slack, Sparkles, Square, Trash2, WandSparkles, X } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatCompletionStream, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus, webSearch } from '../api/unorouter';
+import { chatCompletionStream, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus } from '../api/unorouter';
 import { splitThinkingContent, thinkingStageLabel } from '../lib/chatStream';
 import { useAuth } from './AuthProvider';
 
@@ -651,6 +651,7 @@ export function AIStudio() {
       github: !!githubConnected?.connected && !!selectedRepo,
       repository: selectedRepo,
       autoFallback: true,
+      research: webSearchEnabled,
       signal: controller.signal,
       onMeta: (meta) => {
         if (meta?.fallbackFrom && meta?.model && meta.model !== targetModel) {
@@ -703,7 +704,7 @@ export function AIStudio() {
     setRetryState({ conversationId, history, failedModel: targetModel });
     setRetryCountdown(waitSec);
     setError(formatChatErrorMessage(chatData, chatStatus));
-  }, [selectedModel, resolveProviderForModel, githubConnected?.connected, selectedRepo]);
+  }, [selectedModel, resolveProviderForModel, githubConnected?.connected, selectedRepo, webSearchEnabled]);
 
   async function retryLastCompletion(overrideModel) {
     if (!retryState || sending) return;
@@ -823,21 +824,7 @@ export function AIStudio() {
 
       setLiveReply((cur) => (cur ? { ...cur, conversationId: conversation.id } : cur));
 
-      // Mode agen: akses internet — cari web sebelum menghubungi model.
-      let webResults = [];
-      if (webSearchEnabled && providerStatus?.configured) {
-        try {
-          webResults = (await webSearch(content)).slice(0, 5);
-        } catch { /* pencarian web opsional — lanjut tanpa hasil jika gagal */ }
-      }
-
-      if (controller.signal.aborted) return;
-
       const history = [
-        ...(webResults.length ? [{
-          role: 'user',
-          content: `Berikut hasil pencarian web terkini untuk: "${content}"\n\n${webResults.map((result, index) => `${index + 1}. ${result.title}\n   ${result.url}\n   ${result.snippet}`).join('\n')}\n\nGunakan informasi ini bila relevan. Sebutkan sumber bila mengutip.`,
-        }] : []),
         ...priorMessages,
         { role: 'user', content: buildMessageContent(content, attachedFiles) },
       ]

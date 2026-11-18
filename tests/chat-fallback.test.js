@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
-import { resolveProviderApiBase, validateProviderBaseUrl } from '../src/lib/videoCatalog.js';
-import { parseUpstreamSsePayload, splitThinkingContent, thinkingStageLabel } from '../src/lib/chatStream.js';
+import { CLOUDFLARE_FREE_LLM_MODELS, resolveProviderApiBase, validateProviderBaseUrl } from '../src/lib/videoCatalog.js';
+import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, splitThinkingContent, thinkingStageLabel } from '../src/lib/chatStream.js';
 
 function createEnv() {
   return {
@@ -475,6 +475,8 @@ test('Cloudflare Workers AI native env.AI binding supports /api/status, /api/ver
     const lastCall = aiCalls.at(-1);
     assert.equal(typeof lastCall.input.messages[1].content, 'string');
     assert.ok(lastCall.input.messages[1].content.includes('Jelaskan file ini'));
+    assert.equal(lastCall.input.max_tokens, 4096);
+    assert.equal(lastCall.input.temperature, 0.35);
 
     const chatRes2 = await worker.fetch(apiRequest('/api/chat', {
       body: {
@@ -494,6 +496,7 @@ test('Cloudflare Workers AI native env.AI binding supports /api/status, /api/ver
 test('Cloudflare Workers AI supports REST Account ID endpoint and cross-provider 429 fallback onto env.AI', async () => {
   const realFetch = globalThis.fetch;
   let capturedCfAuth = '';
+  let capturedCfPayload = null;
   const envWithAi = {
     ...createEnv(),
     AI: {
@@ -522,6 +525,7 @@ test('Cloudflare Workers AI supports REST Account ID endpoint and cross-provider
     }
     if (url === 'https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1/chat/completions') {
       capturedCfAuth = init.headers.authorization;
+      capturedCfPayload = JSON.parse(init.body);
       return Response.json({ choices: [{ message: { content: 'Balasan via REST Cloudflare!' } }] });
     }
     if (url === 'https://api.unorouter.com/v1/chat/completions') {
@@ -546,6 +550,8 @@ test('Cloudflare Workers AI supports REST Account ID endpoint and cross-provider
     const restData = await restRes.json();
     assert.equal(restData.reply, 'Balasan via REST Cloudflare!');
     assert.equal(capturedCfAuth, 'Bearer cf-rest-token');
+    assert.equal(capturedCfPayload.max_tokens, 4096);
+    assert.equal(capturedCfPayload.temperature, 0.35);
 
     // 2. Fallback from 429 UnoRouter onto Cloudflare Workers AI binding (when CF uses binding:AI)
     globalThis.fetch = async (input) => {
@@ -665,6 +671,13 @@ test('/api/chat stream:true emits normalized SSE events, supports 429 fallback b
   );
   assert.match(thinkingStageLabel(0.5), /Sedang berpikir/);
   assert.match(thinkingStageLabel(7), /Masih memproses/);
+  assert.deepEqual(parseSearchRequests('Butuh cek ini. ```search\n{"query":"Cloudflare Workers AI max tokens"}\n```'), ['Cloudflare Workers AI max tokens']);
+  assert.deepEqual(parseSearchRequests('```search\nquery: cuaca Jakarta hari ini\n```'), ['cuaca Jakarta hari ini']);
+  assert.equal(isUncertainReply('Maaf, saya tidak dapat memastikan informasi terkini.'), true);
+  assert.equal(isUncertainReply('Berikut langkah-langkah yang bisa dicoba.'), false);
+  for (const id of ['@cf/openai/gpt-oss-120b', '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', '@cf/meta/llama-4-scout-17b-16e-instruct', '@cf/qwen/qwen2.5-coder-32b-instruct']) {
+    assert.equal(CLOUDFLARE_FREE_LLM_MODELS.find((model) => model.id === id)?.starter, true);
+  }
 
   const encoder = new TextEncoder();
   const realFetch = globalThis.fetch;
@@ -748,3 +761,104 @@ test('/api/chat stream:true emits normalized SSE events, supports 429 fallback b
   }
 });
 
+
+test('/api/chat autonomously searches diverse sources on an explicit search request then retries with source context', async () => {
+  const realFetch = globalThis.fetch;
+  const modelBodies = [];
+  const searchHosts = new Set();
+  let modelCalls = 0;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'research-user' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([{ provider: 'unorouter', api_key: 'uno-key', base_url: null }]);
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'research-message' }]);
+    if (url.startsWith('https://api.unorouter.com/v1/chat/completions')) {
+      modelCalls += 1;
+      const payload = JSON.parse(init.body);
+      modelBodies.push(payload);
+      return Response.json({ choices: [{ message: { content: modelCalls === 1
+        ? '```search\n{"query":"Cloudflare Workers AI token limit"}\n```Saya akan memeriksa sumber.'
+        : 'Workers AI membatasi token keluaran; atur max_tokens secara eksplisit. [Dokumentasi](https://developers.cloudflare.com/workers-ai/)' } }] });
+    }
+    const parsedUrl = new URL(url);
+    searchHosts.add(parsedUrl.hostname);
+    if (parsedUrl.hostname === 'html.duckduckgo.com') return new Response('<html></html>', { headers: { 'content-type': 'text/html' } });
+    if (parsedUrl.hostname === 'en.wikipedia.org') return Response.json({ query: { search: [{ title: 'Cloudflare Workers AI', snippet: 'An AI platform.' }] } });
+    if (parsedUrl.hostname === 'id.wikipedia.org') return Response.json({ query: { search: [] } });
+    if (parsedUrl.hostname === 'api.stackexchange.com') return Response.json({ items: [{ title: 'How to set max_tokens?', link: 'https://stackoverflow.com/questions/1', answer_count: 2, score: 5, is_answered: true }] });
+    if (parsedUrl.hostname === 'api.github.com') return Response.json({ items: [{ full_name: 'cloudflare/workers-sdk', html_url: 'https://github.com/cloudflare/workers-sdk', description: 'Cloudflare Workers tools', stargazers_count: 100 }] });
+    if (parsedUrl.hostname === 'api.duckduckgo.com' || parsedUrl.hostname === 'hn.algolia.com') return Response.json({});
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const response = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'research-conv', provider: 'unorouter', model: 'gpt-oss-120b:free',
+        messages: [{ role: 'user', content: 'Bagaimana mengatasi batas token Cloudflare?' }],
+      },
+    }), createEnv());
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.match(data.reply, /atur max_tokens/);
+    assert.equal(modelCalls, 2);
+    assert.match(modelBodies[1].messages.at(-1).content, /Stack Overflow/);
+    assert.match(modelBodies[1].messages.at(-1).content, /Wikipedia/);
+    assert.ok(searchHosts.has('api.stackexchange.com'));
+    assert.ok(searchHosts.has('api.github.com'));
+    assert.ok(searchHosts.has('hn.algolia.com'));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('/api/chat stream mode buffers a search request, researches, then streams the final answer without leaking its control block', async () => {
+  const realFetch = globalThis.fetch;
+  const inputs = [];
+  const envWithAi = {
+    ...createEnv(),
+    AI: {
+      run: async (_model, input) => {
+        inputs.push(input);
+        if (input.stream) {
+          const encoder = new TextEncoder();
+          return new ReadableStream({ start(controller) {
+            const responseText = '```search\n{"query":"Workers AI output tokens"}\n```Saya akan mengecek.';
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ response: responseText })}\n\n`));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          } });
+        }
+        return { response: 'Atur max_tokens secara eksplisit. https://developers.cloudflare.com/workers-ai/' };
+      },
+    },
+  };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'stream-research-user' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([{ provider: 'cloudflare', api_key: 'binding:AI', base_url: null }]);
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'stream-research-message' }]);
+    const host = new URL(url).hostname;
+    if (host === 'html.duckduckgo.com') return new Response('<html></html>');
+    if (host === 'en.wikipedia.org') return Response.json({ query: { search: [{ title: 'Workers AI', snippet: 'Workers AI models accept max_tokens.' }] } });
+    if (host === 'id.wikipedia.org') return Response.json({ query: { search: [] } });
+    return Response.json({});
+  };
+  try {
+    const response = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'stream-research-conv', provider: 'cloudflare', model: '@cf/openai/gpt-oss-120b',
+        stream: true, messages: [{ role: 'user', content: 'Apa batas output token?' }],
+      },
+    }), envWithAi);
+    assert.equal(response.status, 200);
+    const lines = (await response.text()).split(/\r?\n/).filter((line) => line.startsWith('data:'));
+    const events = lines.map((line) => JSON.parse(line.slice(5).trim()));
+    const done = events.find((event) => event.type === 'done');
+    assert.match(done.reply, /Atur max_tokens/);
+    assert.equal(done.reply.includes('```search'), false);
+    assert.equal(inputs.length, 2);
+    assert.match(inputs[1].messages.at(-1).content, /Wikipedia/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

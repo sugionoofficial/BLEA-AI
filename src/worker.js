@@ -33,7 +33,7 @@ import {
   normalizeVideoStatus,
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
-import { parseUpstreamSsePayload } from './lib/chatStream.js';
+import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 
 const SUPABASE_URL_ENV = (env) => (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
 
@@ -83,13 +83,12 @@ async function servicePostgrest(env, path, options = {}) {
 // BLEA AI — system prompt untuk mode agen (mandiri, cerdas, tanggap, akses
 // internet, koneksi ke berbagai app). Disuntikkan ke /api/chat.
 const AGENT_SYSTEM_PROMPT = [
-  'Kamu adalah BLEA AI, agen mandiri di dalam BLEA AI Studio. Prinsip kerja:',
-  '- Mandiri: bekerja sendiri, mengambil keputusan dan langkah yang diperlukan tanpa diminta langkah demi langkah.',
-  '- Cerdas: analitis dan logis; jawaban akurat, terstruktur, dengan prioritas informasi yang penting.',
-  '- Tanggap: pahami konteks percakapan; ikuti bahasa pengguna (Bahasa Indonesia bila pengguna berbicara Bahasa Indonesia); langsung pada inti.',
-  '- Akses internet: kamu memiliki akses ke hasil pencarian web terkini (disertakan dalam pesan pengguna). Gunakan hasil tersebut untuk pertanyaan tentang berita, harga, peristiwa terbaru, atau informasi yang membutuhkan data terkini. Sebutkan sumber bila mengutip.',
-  '- Koneksi ke berbagai app: kamu dapat terhubung ke aplikasi seperti Notion, Slack, dan GitHub. Bila pengguna meminta manajemen catatan, dokumen, saluran, atau repository, berikan bantuan sesuai kapabilitas aplikasi tersebut.',
-  '- Format: jawaban normal berupa teks biasa tanpa blok. Bila kamu memberikan kode, script, atau prompt, bungkus dalam blok kode (```) — pengguna menampilkannya dalam blok merah yang dapat disalin.',
+  'Kamu adalah BLEA AI, agen mandiri dan cermat di BLEA AI Studio. Pahami maksud dan konteks percakapan, jawab dalam bahasa pengguna (Bahasa Indonesia bila pengguna memakai Bahasa Indonesia), dan berikan jawaban akurat, terstruktur, serta langsung pada inti.',
+  'Berpikirlah secara analitis: pecah masalah menjadi langkah yang relevan, periksa asumsi, bedakan fakta dari perkiraan, dan jangan mengarang detail atau sumber. Berikan solusi praktis beserta alasan ringkasnya.',
+  'Jika informasi dalam konteks cukup, jawab langsung tanpa pencarian. Jika pertanyaan bergantung pada informasi terkini, sumber khusus, atau kamu tidak yakin / tidak memiliki jawaban yang memadai, minta pencarian otomatis dengan satu blok persis seperti ```search\n{"query":"kata kunci pencarian spesifik"}\n``` lalu berikan jawaban sementara yang singkat. Jangan tampilkan instruksi pencarian kepada pengguna; sistem akan mencari beberapa sumber dan memintamu menyusun jawaban final berbasis temuannya. Jika hasil riset tetap tidak cukup, nyatakan ketidakpastian dengan jujur.',
+  'Saat menerima konteks riset, bandingkan sumber dan tanggalnya, utamakan sumber primer/otoritatif, sertakan tautan sumber yang relevan, dan jangan klaim telah memverifikasi sesuatu yang tidak didukung hasil tersebut.',
+  'Koneksi aplikasi hanya tersedia sesuai kapabilitas yang benar-benar aktif. Bila pengguna meminta manajemen catatan, dokumen, saluran, atau repository, jangan mengklaim tindakan telah dilakukan tanpa tool yang tersedia.',
+  'Jawaban biasa gunakan teks yang mudah dibaca. Bila memberikan kode, script, atau prompt, bungkus dalam blok kode (```), bukan blok pencarian.',
 ].join(' ');
 
 function stripHtmlTags(html) {
@@ -101,46 +100,53 @@ function stripHtmlTags(html) {
     .trim();
 }
 
-// Web search server-side: DuckDuckGo HTML (umum) + Wikipedia (fallback).
+// Multi-source web research. Each source is isolated so one outage never blocks the others.
 async function webSearch(query) {
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-  try {
-    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-      headers: { 'user-agent': ua, accept: 'text/html' },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (res.ok) {
-      const html = await res.text();
-      const results = [];
-      const re = /<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]{0,500}?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const timeout = { signal: AbortSignal.timeout(8_000) };
+  const json = async (url, options = {}) => {
+    const response = await fetch(url, { ...timeout, ...options, headers: { accept: 'application/json', ...(options.headers || {}) } });
+    if (!response.ok) return null;
+    return response.json().catch(() => null);
+  };
+  const tasks = [
+    (async () => {
+      const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {
+        ...timeout, headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0 BLEA-AI/1.0' },
+      });
+      if (!response.ok) return [];
+      const html = await response.text();
+      const rows = [];
+      const re = /<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]{0,700}?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
       let match;
-      while ((match = re.exec(html)) && results.length < 6) {
+      while ((match = re.exec(html)) && rows.length < 5) {
         let href = match[1];
-        try {
-          const parsed = new URL(href, 'https://duckduckgo.com');
-          href = parsed.searchParams.get('uddg') || href;
-        } catch {}
+        try { const parsed = new URL(href, 'https://duckduckgo.com'); href = parsed.searchParams.get('uddg') || href; } catch {}
         const title = stripHtmlTags(match[2]);
-        const snippet = stripHtmlTags(match[3]);
-        if (title && href) results.push({ title, url: href, snippet, source: 'duckduckgo' });
+        if (title && /^https?:\/\//i.test(href)) rows.push({ title, url: href, snippet: stripHtmlTags(match[3]), source: 'Web · DuckDuckGo', sourceLabel: 'Web · DuckDuckGo' });
       }
-      if (results.length) return results;
-    }
-  } catch {}
-  try {
-    const res = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch=${encodeURIComponent(query)}`, {
-      signal: AbortSignal.timeout(15_000),
-    });
-    const data = await res.json().catch(() => ({}));
-    const rows = data?.query?.search || [];
-    return rows.map((row) => ({
-      title: row.title,
-      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(row.title.replace(/ /g, '_'))}`,
-      snippet: stripHtmlTags(row.snippet || ''),
-      source: 'wikipedia',
-    }));
-  } catch {}
-  return [];
+      return rows;
+    })().catch(() => []),
+    json(`https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`).then((data) => {
+      const rows = [];
+      if (data?.AbstractText) rows.push({ title: data.Heading || q, url: data.AbstractURL || 'https://duckduckgo.com/', snippet: data.AbstractText, source: 'Ringkasan · DuckDuckGo', sourceLabel: 'Ringkasan · DuckDuckGo' });
+      const visit = (topics) => (topics || []).forEach((item) => item.Topics ? visit(item.Topics) : item.Text && item.FirstURL && rows.push({ title: item.Text.split(' - ')[0], url: item.FirstURL, snippet: item.Text, source: 'Ringkasan · DuckDuckGo', sourceLabel: 'Ringkasan · DuckDuckGo' }));
+      visit(data?.RelatedTopics);
+      return rows.slice(0, 4);
+    }).catch(() => []),
+    ...['en', 'id'].map((lang) => json(`https://${lang}.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=3&srsearch=${encodeURIComponent(q)}`).then((data) => (data?.query?.search || []).map((row) => ({ title: row.title, url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(row.title.replace(/ /g, '_'))}`, snippet: stripHtmlTags(row.snippet || ''), source: `Wikipedia · ${lang.toUpperCase()}`, sourceLabel: `Wikipedia · ${lang.toUpperCase()}` }))).catch(() => [])),
+    json(`https://api.stackexchange.com/2.3/search/advanced?site=stackoverflow&order=desc&sort=relevance&pagesize=4&q=${encodeURIComponent(q)}`).then((data) => (data?.items || []).map((row) => ({ title: row.title, url: row.link, snippet: `${row.is_answered ? 'Answered. ' : ''}${row.answer_count || 0} answers · score ${row.score || 0}`, source: 'Stack Overflow', sourceLabel: 'Stack Overflow' }))).catch(() => []),
+    json(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=4`, { headers: { accept: 'application/vnd.github+json' } }).then((data) => (data?.items || []).map((row) => ({ title: row.full_name, url: row.html_url, snippet: row.description || `GitHub repository · ${row.stargazers_count} stars`, source: 'GitHub', sourceLabel: 'GitHub' }))).catch(() => []),
+    json(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(q)}&tags=story&hitsPerPage=4`).then((data) => (data?.hits || []).map((row) => ({ title: row.title || row.story_title, url: row.url || `https://news.ycombinator.com/item?id=${row.objectID}`, snippet: `${row.points || 0} points · ${row.num_comments || 0} comments`, source: 'Hacker News', sourceLabel: 'Hacker News' }))).catch(() => []),
+  ];
+  const groups = await Promise.all(tasks);
+  const seen = new Set();
+  return groups.flat().filter((row) => {
+    if (!row?.title || !row?.url || seen.has(row.url)) return false;
+    seen.add(row.url);
+    return true;
+  }).slice(0, 16).map((row) => ({ ...row, excerpt: row.excerpt || row.snippet || '' }));
 }
 
 // GitHub OAuth
@@ -428,8 +434,12 @@ function isChatCapableModelId(modelId) {
 
 function scoreFallbackModel(modelId) {
   const id = String(modelId || '').toLowerCase();
-  if (/^@cf\/(meta\/llama-3\.1-8b-instruct-fp8-fast|openai\/gpt-oss-20b|meta\/llama-3\.3-70b-instruct-fp8-fast|qwen\/qwen3-30b-a3b-fp8)/.test(id)) return 122;
-  if (/^@cf\/(openai\/gpt-oss-120b|google\/gemma-3-12b-it|zai-org\/glm-4\.7-flash)/.test(id)) return 118;
+  if (/^@cf\/openai\/gpt-oss-120b/.test(id)) return 150;
+  if (/^@cf\/deepseek-ai\/deepseek-r1-distill-qwen-32b/.test(id)) return 145;
+  if (/^@cf\/meta\/llama-4-scout-17b-16e-instruct/.test(id)) return 138;
+  if (/^@cf\/qwen\/qwen2\.5-coder-32b-instruct/.test(id)) return 136;
+  if (/^@cf\/(meta\/llama-3\.3-70b-instruct-fp8-fast|qwen\/qwen3-30b-a3b-fp8|openai\/gpt-oss-20b)/.test(id)) return 130;
+  if (/^@cf\/(meta\/llama-3\.1-8b-instruct-fp8-fast|google\/gemma-3-12b-it|zai-org\/glm-4\.7-flash)/.test(id)) return 118;
   if (/^@cf\//.test(id)) return 112;
   if (/gemini-2\.5-flash:free|gemini-2\.5-flash-lite:free|gpt-oss-120b:free|mistral-small:free|llama-3\.3-70b:free/.test(id)) return 120;
   if (/qwen3\.6-27b:free|glm-5\.3-flash:free|nemotron-3-super-120b|gemini-3\.1-flash-lite:free/.test(id)) return 105;
@@ -520,10 +530,19 @@ async function sendCloudflareBindingChat({ ai, model, payload, stream = false })
     const input = {
       messages,
       stream: Boolean(stream),
-      ...(Number.isFinite(payload.temperature) ? { temperature: payload.temperature } : {}),
-      ...(Number.isFinite(payload.max_tokens) ? { max_tokens: payload.max_tokens } : {}),
+      temperature: Number.isFinite(payload.temperature) ? payload.temperature : 0.35,
+      max_tokens: Number.isFinite(payload.max_tokens) ? payload.max_tokens : 4096,
     };
-    const data = await ai.run(model, input);
+    let data;
+    try {
+      data = await ai.run(model, input);
+    } catch (error) {
+      if (!Number.isFinite(payload.max_tokens) && /max.?tokens|token limit|too many tokens|invalid.*token/i.test(String(error?.message || error))) {
+        data = await ai.run(model, { ...input, max_tokens: 2048 });
+      } else {
+        throw error;
+      }
+    }
     if (stream && data && typeof data.getReader === 'function') {
       return { ok: true, status: 200, stream: data };
     }
@@ -655,7 +674,15 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
       'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev',
       'X-Title': 'BLEA AI',
     },
-    body: JSON.stringify({ ...payload, model, stream: Boolean(stream) }),
+    body: JSON.stringify({
+      ...payload,
+      ...(provider === 'cloudflare' ? {
+        temperature: Number.isFinite(payload.temperature) ? payload.temperature : 0.35,
+        max_tokens: Number.isFinite(payload.max_tokens) ? payload.max_tokens : 4096,
+      } : {}),
+      model,
+      stream: Boolean(stream),
+    }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!upstream.ok) {
@@ -785,6 +812,51 @@ async function probeChatStreamAttempt(attempt) {
     status: 502,
     errorInfo: parseChatUpstreamError('Model mengembalikan stream kosong.', 502),
   };
+}
+
+async function materializeProbedStream(probed) {
+  if (probed.mode === 'json') return probed;
+  let reply = '';
+  let reasoning = '';
+  const apply = (events) => events.forEach((event) => {
+    if (event.type === 'delta') reply += event.text;
+    if (event.type === 'thinking') reasoning += event.text;
+  });
+  apply(probed.initialEvents || []);
+  let { buffer = '', streamDone = false } = probed;
+  const { reader, decoder } = probed;
+  while (!streamDone) {
+    const { value, done } = await reader.read();
+    if (done) {
+      buffer += decoder.decode();
+      if (buffer.trim()) apply(extractSseEventsFromLines(buffer.split(/\r?\n/)).events);
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+    const parsed = extractSseEventsFromLines(lines);
+    apply(parsed.events);
+    if (parsed.done) streamDone = true;
+  }
+  return { ok: true, mode: 'json', reply: reply.trim() || reasoning.trim(), reasoning: reply ? reasoning.trim() : '' };
+}
+
+function latestUserQuery(messages) {
+  const latest = [...(messages || [])].reverse().find((message) => message?.role === 'user');
+  const content = Array.isArray(latest?.content)
+    ? latest.content.map((part) => part?.text || '').join(' ')
+    : String(latest?.content || '');
+  return content.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+function formatResearchContext(results, query) {
+  if (!results.length) return `Pencarian untuk "${query}" tidak menghasilkan sumber yang dapat digunakan. Jangan mengarang fakta atau sumber; jawab dengan batasan yang jelas.`;
+  return [
+    `Hasil riset multi-sumber untuk: "${query}". Sintesis dengan cermat, bandingkan temuan, dan kutip tautan yang benar-benar relevan.`,
+    ...results.map((result, index) => `${index + 1}. [${result.sourceLabel || result.source || 'Sumber'}] ${result.title}\nURL: ${result.url}\nRingkasan: ${result.excerpt || result.snippet || 'Tidak ada ringkasan.'}`),
+    'Tulis jawaban final yang langsung membantu. Jangan menyebut proses internal atau mengeluarkan blok ```search```.',
+  ].join('\n\n');
 }
 
 function sseEncode(obj) {
@@ -2179,7 +2251,35 @@ async function handleApi(request, url, env) {
             }
           }
 
+          if (probed.ok && body.research !== false) {
+            probed = await materializeProbedStream(probed);
+            const searchRequests = parseSearchRequests(probed.reply);
+            if (searchRequests.length || isUncertainReply(probed.reply)) {
+              const query = searchRequests[0] || latestUserQuery(incomingMessages);
+              if (query) {
+                const researchResults = await webSearch(query);
+                if (researchResults.length || searchRequests.length) {
+                  const researchMessages = [
+                    ...fetchBody.messages,
+                    { role: 'assistant', content: stripSearchBlocks(probed.reply) || 'Saya perlu memeriksa beberapa sumber sebelum menjawab.' },
+                    { role: 'user', content: formatResearchContext(researchResults, query) },
+                  ];
+                  const researched = await sendChatCompletionRequest({
+                    provider: activeProvider, model: activeModel, apiKey: activeApiKey,
+                    baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
+                    timeoutMs: 60_000, env,
+                  });
+                  if (researched.ok) {
+                    const researchedReply = extractAssistantReply(researched.data);
+                    if (researchedReply) probed = { ok: true, mode: 'json', reply: stripSearchBlocks(researchedReply), reasoning: probed.reasoning || '' };
+                  }
+                }
+              }
+            }
+          }
+
           if (probed.ok) {
+            if (probed.mode === 'json') probed.reply = stripSearchBlocks(probed.reply);
             return createChatSseResponse({
               probed,
               meta: {
@@ -2289,6 +2389,34 @@ async function handleApi(request, url, env) {
             });
           }
         }
+
+        if (attempt.ok && finalReply && body.research !== false && !githubEnabled) {
+          const searchRequests = parseSearchRequests(finalReply);
+          if (searchRequests.length || isUncertainReply(finalReply)) {
+            const query = searchRequests[0] || latestUserQuery(incomingMessages);
+            if (query) {
+              const researchResults = await webSearch(query);
+              if (researchResults.length || searchRequests.length) {
+                const researchMessages = [
+                  ...fetchBody.messages,
+                  { role: 'assistant', content: stripSearchBlocks(finalReply) || 'Saya perlu memeriksa beberapa sumber sebelum menjawab.' },
+                  { role: 'user', content: formatResearchContext(researchResults, query) },
+                ];
+                const researched = await sendChatCompletionRequest({
+                  provider: activeProvider, model: activeModel, apiKey: activeApiKey,
+                  baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
+                  timeoutMs: 60_000, env,
+                });
+                if (researched.ok) {
+                  const researchedReply = extractAssistantReply(researched.data);
+                  if (researchedReply) finalReply = stripSearchBlocks(researchedReply);
+                }
+              }
+            }
+          }
+        }
+
+        if (attempt.ok && finalReply) finalReply = stripSearchBlocks(finalReply);
 
         if (!attempt.ok || !finalReply) {
           const errInfo = attempt.errorInfo || parseChatUpstreamError('', attempt.status || 502);
