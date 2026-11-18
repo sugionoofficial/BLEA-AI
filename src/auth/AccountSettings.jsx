@@ -80,7 +80,7 @@ export function AccountSettings() {
 
   return (
     <DropXLayout
-      title="Pengaturan akun"
+      title="Setting"
       description="Kelola identitas, email, dan akses akun BLEA-mu."
     >
       <div className="app-content settings-content">

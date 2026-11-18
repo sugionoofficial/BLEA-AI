@@ -16,7 +16,6 @@ import {
 } from 'recharts';
 import {
   ArrowUpRight,
-  BookOpen,
   Briefcase,
   CreditCard,
   FileText,
@@ -62,14 +61,20 @@ const tooltipProps = {
   cursor: { fill: 'var(--muted)', fillOpacity: 0.5, stroke: 'var(--border)' },
 };
 
-const quickLinks = [
-  { title: 'AI Studio', href: '/studio', icon: WandSparkles, color: 'var(--chart-1)', description: 'Chat & ide' },
+const baseQuickLinks = [
+  { title: 'Chat AI', href: '/studio', icon: MessageSquare, color: 'var(--chart-1)', description: 'Chat & ide' },
   { title: 'Proyek', href: '/projects', icon: FolderKanban, color: 'var(--chart-3)', description: 'Karya kamu' },
-  { title: 'Pengaturan', href: '/settings', icon: Settings2, color: 'var(--chart-2)', description: 'Akun & profil' },
-  { title: 'Admin panel', href: '/admin', icon: ShieldCheck, color: 'var(--chart-5)', description: 'Keseluruhan app' },
-  { title: 'Landing', href: '/', icon: Rocket, color: 'var(--chart-4)', description: 'Website publik' },
-  { title: 'Documentation', href: '/app', icon: BookOpen, color: 'var(--chart-7)', description: 'Panduan cepat' },
+  { title: 'Setting', href: '/settings', icon: Settings2, color: 'var(--chart-2)', description: 'Akun & profil' },
+  { title: 'Beranda', href: '/', icon: Rocket, color: 'var(--chart-4)', description: 'Website publik' },
 ];
+
+const adminQuickLink = {
+  title: 'Admin Panel',
+  href: '/admin',
+  icon: ShieldCheck,
+  color: 'var(--chart-5)',
+  description: 'Kelola aplikasi',
+};
 
 function formatNumber(value) {
   return (value ?? 0).toLocaleString('id-ID');
@@ -260,6 +265,13 @@ export function DropXDashboard() {
     const fullName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Kreator';
     return fullName.trim().split(/\s+/)[0];
   }, [user]);
+  const isAdmin = user?.app_metadata?.role === 'admin';
+  const quickLinks = useMemo(
+    () => (isAdmin
+      ? [...baseQuickLinks.slice(0, 3), adminQuickLink, ...baseQuickLinks.slice(3)]
+      : baseQuickLinks),
+    [isAdmin],
+  );
 
   const totalMessages = Object.values(messageCounts).reduce((sum, count) => sum + count, 0);
   const projectProgress = useMemo(() => {
@@ -294,7 +306,7 @@ export function DropXDashboard() {
             <Sparkles size={15} /> Proyek baru
           </Link>
           <Link to="/studio" className="dropx-btn dropx-btn-outline dropx-btn-sm">
-            <WandSparkles size={15} /> AI Studio
+            <MessageSquare size={15} /> Chat AI
           </Link>
         </div>
       </div>
@@ -370,7 +382,7 @@ export function DropXDashboard() {
               Aktivitas percakapan (7 hari)
             </span>
             <Link to="/studio" className="dropx-card-link">
-              Buka AI Studio <ArrowUpRight size={13} />
+              Buka Chat AI <ArrowUpRight size={13} />
             </Link>
           </div>
           <div className="dropx-card-body">
@@ -401,7 +413,7 @@ export function DropXDashboard() {
               <Users size={16} className="icon" style={{ color: 'var(--chart-3)' }} />
               Pengguna &amp; proyek baru
             </span>
-            <Link to="/admin" className="dropx-card-link">
+            <Link to={isAdmin ? '/admin' : '/projects'} className="dropx-card-link">
               Lihat semua <ArrowUpRight size={13} />
             </Link>
           </div>

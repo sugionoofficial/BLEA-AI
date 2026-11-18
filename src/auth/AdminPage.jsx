@@ -237,7 +237,7 @@ export function AdminPage() {
   const activeRows = tab === 'users' ? filteredProfiles : tab === 'projects' ? filteredProjects : tab === 'conversations' ? filteredConversations : filteredWaitlist;
   return (
     <DropXLayout
-      title="Admin panel"
+      title="Admin Panel"
       description="Kelola pengguna, proyek, percakapan, waitlist, dan API key provider."
     >
       <main className="admin-main">
