@@ -49,6 +49,13 @@ export function FreebeatPage() {
   const [quoteModel, setQuoteModel] = useState('');
   const [quotePrompt, setQuotePrompt] = useState('');
   const [imageQuote, setImageQuote] = useState(null);
+  const [approval, setApproval] = useState(null);
+  const [spendConfirmed, setSpendConfirmed] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testError, setTestError] = useState('');
+  const [testNotice, setTestNotice] = useState('');
+  const [tests, setTests] = useState([]);
+  const [taskResults, setTaskResults] = useState({});
   const load = useCallback(async () => {
     try { const result = await request('status'); setConnected(result.connected); setImageAccess(result.imageAccess === true); setExpiresAt(result.expiresAt); }
     catch (err) { setError(err.message); }
@@ -81,7 +88,7 @@ export function FreebeatPage() {
         setNotice('Permintaan baca saldo selesai tanpa menjalankan generasi.');
       } else {
         const result = await request('disconnect', 'POST');
-        setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setImageQuote(null);
+        setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setImageQuote(null); setApproval(null); setSpendConfirmed(false); setTests([]); setTaskResults({});
         setNotice(result.revoked ? 'Koneksi lokal dihapus dan token dicabut di Freebeat.' : 'Koneksi lokal dihapus. Pencabutan token di Freebeat belum dapat dikonfirmasi; periksa pengaturan akses di akun Freebeat.');
       }
     } catch (err) { setError(err.message || 'Koneksi gagal.'); }
@@ -107,6 +114,46 @@ export function FreebeatPage() {
     } catch (err) { setImageError(err.message || 'Pemeriksaan quote gagal.'); }
     finally { setImageBusy(false); }
   }
+  async function refreshTests() {
+    const result = await request('image-tests');
+    setTests(result.tests);
+  }
+  async function prepareTest(event) {
+    event.preventDefault();
+    if (testBusy) return;
+    setTestBusy(true); setTestError(''); setTestNotice(''); setApproval(null); setSpendConfirmed(false);
+    try {
+      const result = await request('image-prepare', 'POST', { model_id: Number(quoteModel), prompt: quotePrompt });
+      setApproval(result);
+      await refreshTests();
+    } catch (err) { setApproval(null); setTestError(err.message || 'Persiapan uji gagal.'); }
+    finally { setTestBusy(false); }
+  }
+  async function submitTest() {
+    if (!approval || !spendConfirmed || testBusy) return;
+    const receipt = approval.approval;
+    setApproval(null); setSpendConfirmed(false); setTestBusy(true); setTestError(''); setTestNotice('');
+    try {
+      const result = await request('image-submit', 'POST', { approval: receipt, confirm: true });
+      if (result.status === 'submitted') setTestNotice('Permintaan diterima untuk dipantau. Ini bukan konfirmasi gambar selesai atau biaya akhir.');
+      else setTestError(`Hasil pengiriman tidak pasti dan mungkin sudah memakai kredit. Jangan ulangi; periksa Freebeat dan catatan uji.${result.recoveryTaskId ? ` ID tugas untuk pemulihan pribadi: ${result.recoveryTaskId}` : ''}`);
+    } catch (err) { setTestError(`${err.message || 'Permintaan gagal.'} Jika pengiriman sempat terjadi, hasil dan biaya mungkin tidak pasti. Jangan ulangi sebelum memeriksa catatan.`); }
+    try { await refreshTests(); } catch { /* the warning above still applies */ }
+    setTestBusy(false);
+  }
+  async function inspectTests() {
+    if (testBusy) return;
+    setTestBusy(true); setTestError('');
+    try { await refreshTests(); } catch (err) { setTestError(err.message || 'Catatan tidak tersedia.'); }
+    finally { setTestBusy(false); }
+  }
+  async function pollTest(id) {
+    if (testBusy) return;
+    setTestBusy(true); setTestError('');
+    try { const result = await request('image-task', 'POST', { id }); setTaskResults((old) => ({ ...old, [id]: result.task })); }
+    catch (err) { setTestError(err.message || 'Status belum tersedia.'); }
+    finally { setTestBusy(false); }
+  }
   async function checkSiteBalance(event) {
     event.preventDefault();
     if (siteBusy || !siteAcknowledged) return;
@@ -123,7 +170,7 @@ export function FreebeatPage() {
     <div className="freebeat-page">
       <section className="freebeat-card">
         <span className="freebeat-kicker">MCP · OAUTH · READ ONLY</span><h2>Hubungkan Freebeat</h2>
-        <p>Uji koneksi resmi MCP dan baca saldo akun Freebeat Anda. Fitur ini tidak membuat video atau gambar dan tidak menghabiskan kredit.</p>
+        <p>Uji koneksi resmi MCP dan baca saldo akun Freebeat Anda. Pemeriksaan saldo tidak memakai kredit; uji gambar terpisah di bawah hanya dikirim setelah persetujuan eksplisit.</p>
         <p>Koneksi uji tersimpan terenkripsi dalam cookie HttpOnly pada browser admin ini, bukan dibagikan ke pengguna lain. Koneksi bersifat sementara dan perlu dihubungkan ulang setelah kedaluwarsa.</p>
         <p>Menurut ketentuan Freebeat, kredit gratis hanya untuk penggunaan nonkomersial. Pastikan penggunaan Anda sesuai ketentuan penyedia.</p>
         {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
@@ -139,8 +186,8 @@ export function FreebeatPage() {
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">GAMBAR · KHUSUS ADMIN · BACA SAJA</span>
         <h2>Persiapan uji gambar</h2>
-        <p>Periksa daftar model, struktur tool MCP dan respons quote tanpa membuat gambar atau memakai kredit. Format quote masih diverifikasi; respons belum dapat dipakai sebagai persetujuan biaya. Belum ada tombol generasi atau pembelian.</p>
-        <p>Untuk memeriksa izin gambar, tombol berikut meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code> melalui Freebeat. Izin ini lebih luas dari baca saldo; Anda harus menyetujuinya di Freebeat. BLEA tetap tidak menjalankan generasi pada tahap ini.</p>
+        <p>Periksa daftar model, struktur tool MCP dan respons quote tanpa membuat gambar atau memakai kredit. Pembelian BLEA belum diaktifkan; uji generasi admin memerlukan persetujuan terpisah di bawah.</p>
+        <p>Untuk memeriksa izin gambar, tombol berikut meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code> melalui Freebeat. Izin ini lebih luas dari baca saldo; Anda harus menyetujuinya di Freebeat.</p>
         <div className="freebeat-status">Izin gambar: {imageAccess ? 'diminta dan terindikasi diberikan; penggunaan belum diuji' : 'belum diberikan atau belum terverifikasi'}</div>
         <div className="freebeat-actions">
           <button type="button" disabled={loading || busy || imageBusy} onClick={() => run('start-image')}>Hubungkan izin gambar</button>
@@ -151,15 +198,39 @@ export function FreebeatPage() {
         {imageSchemas && <div className="freebeat-result"><h3>Struktur tool gambar</h3><p>Hanya nama parameter dan tipe dasar; deskripsi dan data sesi tidak ditampilkan. Bagikan hasil ini untuk memeriksa format biaya.</p><pre>{JSON.stringify(imageSchemas.tools, null, 2)}</pre>{imageSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
         <form onSubmit={inspectQuote}>
           <label className="freebeat-field">ID model gambar (angka dari daftar model)
-            <input type="number" min="0" step="1" required value={quoteModel} onChange={(event) => { setQuoteModel(event.target.value); setImageQuote(null); }} />
+            <input type="number" min="0" step="1" required value={quoteModel} onChange={(event) => { setQuoteModel(event.target.value); setImageQuote(null); setApproval(null); setSpendConfirmed(false); }} />
           </label>
           <label className="freebeat-field">Prompt percobaan (dikirim ke Freebeat untuk quote)
-            <input type="text" maxLength={2000} required value={quotePrompt} onChange={(event) => { setQuotePrompt(event.target.value); setImageQuote(null); }} />
+            <input type="text" maxLength={2000} required value={quotePrompt} onChange={(event) => { setQuotePrompt(event.target.value); setImageQuote(null); setApproval(null); setSpendConfirmed(false); }} />
           </label>
           <div className="freebeat-actions"><button type="submit" className="is-secondary" disabled={loading || !connected || imageBusy}>Periksa respons quote</button></div>
         </form>
         {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
         {imageQuote !== null && <div className="freebeat-result"><h3>Respons quote yang disaring</h3><p>Hanya status dalam daftar aman yang ditampilkan; status lain tetap disembunyikan. Nilai ini belum diverifikasi sebagai biaya final atau izin generasi. Tidak ada kredit yang dipakai.</p><pre>{JSON.stringify(imageQuote, null, 2)}</pre></div>}
+      </section>
+      <section className="freebeat-card freebeat-site-test">
+        <span className="freebeat-kicker">UJI GAMBAR · KHUSUS ADMIN · KREDIT FREEBEAT</span>
+        <h2>Uji generasi gambar admin</h2>
+        <p>Hanya akun Freebeat di browser admin ini yang digunakan. Ini bukan pembelian atau pemakaian kredit BLEA. Isi ID model dan prompt di atas, lalu siapkan quote baru. Pastikan penggunaan sesuai ketentuan dan plan Freebeat; manfaat plan yang hanya untuk aplikasi web tidak otomatis berlaku untuk MCP.</p>
+        <p>Freebeat melaporkan quote, bukan biaya akhir; saldo dapat terpakai meskipun tugas gagal, dan refund tidak dijamin. Jika hasil pengiriman tidak pasti, jangan mengulang sebelum memeriksa Freebeat. Uji dengan hasil tidak pasti akan mengunci pengiriman berikutnya hingga ditinjau operator.</p>
+        <div className="freebeat-actions"><button type="button" disabled={loading || !connected || !imageAccess || testBusy || imageBusy || !quoteModel || !quotePrompt.trim()} onClick={prepareTest}>Siapkan quote untuk persetujuan</button>
+          <button type="button" className="is-secondary" disabled={loading || !connected || testBusy} onClick={inspectTests}>Periksa catatan uji</button></div>
+        {approval && <div className="freebeat-result">
+          <h3>Periksa dan setujui satu kali</h3>
+          <p>Model: <strong>{approval.model_id}</strong> · Quote Freebeat: <strong>{approval.credits} kredit</strong> · Batas maksimum yang dikirim: <strong>{approval.credits} kredit</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}. Jika quote berubah, pengiriman ditolak.</p>
+          <p>Prompt yang akan dikirim:</p><pre>{approval.prompt}</pre>
+          <label className="freebeat-confirm"><input type="checkbox" checked={spendConfirmed} onChange={(event) => setSpendConfirmed(event.target.checked)} /> Saya menyetujui satu kali generasi ini dengan batas maksimum {approval.credits} kredit Freebeat. Saya memahami biaya aktual dan refund belum dipastikan.</label>
+          <div className="freebeat-actions"><button type="button" disabled={!spendConfirmed || testBusy} onClick={submitTest}>Setujui dan kirim satu gambar</button></div>
+        </div>}
+        {testError && <div className="freebeat-alert is-error" role="alert">{testError}</div>}
+        {testNotice && <div className="freebeat-alert" role="status">{testNotice}</div>}
+        {tests.length > 0 && <div className="freebeat-result"><h3>Catatan uji admin</h3>{tests.map((test) => <div key={test.id} className="freebeat-test-row">
+          <p>Model {test.model_id} · Batas {test.max_credits} kredit · {new Date(test.created_at).toLocaleString('id-ID')} · {test.status}</p>
+          {(test.status === 'unknown' || test.status === 'dispatching') && <p>Hasil tidak pasti; pengiriman baru diblokir. Jangan mencoba ulang. Periksa aktivitas Freebeat dan minta operator meninjau catatan.</p>}
+          {test.status === 'submitted' && !test.canPoll && <p>Status hanya dapat diperiksa dari sesi Freebeat yang digunakan saat pengiriman.</p>}
+          {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={testBusy} onClick={() => pollTest(test.id)}>Periksa status</button></div>}
+          {taskResults[test.id] && <div><p>Status tugas: {taskResults[test.id].status}. Biaya/refund yang tidak dilaporkan adalah tidak diketahui.</p><pre>{JSON.stringify(taskResults[test.id].billing, null, 2)}</pre>{taskResults[test.id].images.map((image, index) => <p key={image}><a href={image} target="_blank" rel="noopener noreferrer">Buka hasil gambar {index + 1} di tautan Freebeat</a></p>)}{taskResults[test.id].images.length > 0 && <p>Membuka tautan menghubungkan browser Anda ke host gambar penyedia.</p>}</div>}
+        </div>)}</div>}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>

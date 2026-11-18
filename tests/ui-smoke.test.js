@@ -234,7 +234,7 @@ test('Credits page shows the pending rollout notice to signed-in users', async (
   assert.equal(html.includes('Admin · Kelola paket'), false);
 });
 
-test('Freebeat MCP page describes a temporary read-only admin connection', async () => {
+test('Freebeat MCP page describes read-only diagnostics and explicit admin image consent', async () => {
   const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
   const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
   const { FreebeatPage } = await vite.ssrLoadModule('/src/auth/FreebeatPage.jsx');
@@ -242,13 +242,15 @@ test('Freebeat MCP page describes a temporary read-only admin connection', async
   const html = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(FreebeatPage))));
   assert.ok(html.includes('Hubungkan Freebeat'));
   assert.ok(html.includes('Periksa saldo'));
-  assert.ok(html.includes('tidak menghabiskan kredit'));
+  assert.ok(html.includes('Pemeriksaan saldo tidak memakai kredit'));
   assert.ok(html.includes('Uji saldo situs dengan cookie'));
   assert.ok(html.includes('Lihat model gambar'));
   assert.ok(html.includes('Periksa skema tool gambar'));
   assert.ok(html.includes('Hubungkan izin gambar'));
   assert.ok(html.includes('Periksa respons quote'));
-  assert.ok(html.includes('Belum ada tombol generasi atau pembelian'));
+  assert.ok(html.includes('Siapkan quote untuk persetujuan'));
+  assert.ok(html.includes('Uji generasi gambar admin'));
+  assert.ok(html.includes('tidak pasti'));
   assert.ok(html.includes('type="password"'));
   assert.ok(html.includes('Ini bukan koneksi MCP') === false, 'site result is hidden before a successful test');
 });
