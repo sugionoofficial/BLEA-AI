@@ -329,3 +329,41 @@ test('PEKPIK OpenAI-compatible provider works in /api/status, /api/catalog, and 
     globalThis.fetch = realFetch;
   }
 });
+
+test('/api/save-models stays well under Cloudflare 50-subrequest limit even with 120+ stale models', async () => {
+  const realFetch = globalThis.fetch;
+  let subrequestCount = 0;
+  const staleRows = Array.from({ length: 120 }, (_, i) => ({ model: `stale-model-${i}:free` }));
+  const deactivatedBatches = [];
+  globalThis.fetch = async (input, init = {}) => {
+    subrequestCount += 1;
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    }
+    if (url === 'https://supabase.example/rest/v1/provider_models' && init.method === 'POST') {
+      return Response.json(JSON.parse(init.body));
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models?select=model') && (!init.method || init.method === 'GET')) {
+      return Response.json([...staleRows, { model: 'keep-model:free' }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models') && init.method === 'PATCH') {
+      deactivatedBatches.push(url);
+      return Response.json([]);
+    }
+    throw new Error(`Unexpected fetch: ${init.method || 'GET'} ${url}`);
+  };
+  try {
+    const res = await worker.fetch(apiRequest('/api/save-models', {
+      body: { provider: 'unorouter', models: ['keep-model:free'] },
+    }), createEnv());
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.activeCount, 1);
+    assert.ok(subrequestCount <= 12, `Expected <= 12 subrequests, got ${subrequestCount}`);
+    assert.equal(deactivatedBatches.length, 5);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

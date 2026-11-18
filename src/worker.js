@@ -1134,27 +1134,55 @@ async function handleApi(request, url, env) {
         return jsonResponse({ ok: true, saved: 1, model: modelId, provider, active });
       }
 
-      const activeIds = Array.isArray(body.models) ? body.models : [];
+      const activeIds = [...new Set((Array.isArray(body.models) ? body.models : []).map((m) => String(m || '').trim()).filter(Boolean))];
       const rows = activeIds.map((model) => ({ provider, model, active: true }));
-      if (rows.length) {
+      for (let i = 0; i < rows.length; i += 250) {
         const upRes = await servicePostgrest(env, '/provider_models', {
           method: 'POST',
           headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-          body: rows,
+          body: rows.slice(i, i + 250),
         });
         if (!upRes.ok) {
           const detail = await upRes.text().catch(() => '');
           return jsonResponse({ error: 'DB write failed', status: upRes.status, detail: detail.slice(0, 200) }, 500);
         }
       }
-      const listRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.${encodeURIComponent(provider)}`);
+      const listRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.${encodeURIComponent(provider)}&active=eq.true`);
       const existing = await listRes.json().catch(() => []);
-      const stale = (existing ?? []).map((m) => m.model).filter((m) => !activeIds.includes(m));
-      for (const model of stale) {
-        await servicePostgrest(env, `/provider_models?provider=eq.${encodeURIComponent(provider)}&model=eq.${encodeURIComponent(model)}`, {
-          method: 'PATCH',
-          body: { active: false },
-        });
+      const activeSet = new Set(activeIds);
+      const stale = (existing ?? []).map((m) => m.model).filter((m) => !activeSet.has(m));
+      if (stale.length > 0) {
+        let bulkDone = false;
+        if (stale.length <= 200) {
+          bulkDone = true;
+          for (let i = 0; i < stale.length; i += 25) {
+            const batch = stale.slice(i, i + 25);
+            const inExpr = batch.map((m) => `"${String(m).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',');
+            const patchRes = await servicePostgrest(
+              env,
+              `/provider_models?provider=eq.${encodeURIComponent(provider)}&model=in.(${encodeURIComponent(inExpr)})`,
+              { method: 'PATCH', body: { active: false } },
+            );
+            if (!patchRes.ok) {
+              bulkDone = false;
+              break;
+            }
+          }
+        }
+        if (!bulkDone) {
+          await servicePostgrest(
+            env,
+            `/provider_models?provider=eq.${encodeURIComponent(provider)}&active=eq.true`,
+            { method: 'PATCH', body: { active: false } },
+          );
+          for (let i = 0; i < rows.length; i += 250) {
+            await servicePostgrest(env, '/provider_models', {
+              method: 'POST',
+              headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+              body: rows.slice(i, i + 250),
+            });
+          }
+        }
       }
       return jsonResponse({ ok: true, saved: activeIds.length, activeCount: activeIds.length });
     }
@@ -1698,7 +1726,7 @@ async function handleApi(request, url, env) {
         if (githubEnabled) {
           let roundMessages = [...fetchBody.messages];
           for (let round = 0; round < 4; round += 1) {
-            const toolCalls = parseToolCalls(finalReply);
+            const toolCalls = parseToolCalls(finalReply).slice(0, 6);
             if (!toolCalls.length) break;
             const toolResults = [];
             for (const call of toolCalls) {
