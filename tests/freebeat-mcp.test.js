@@ -521,3 +521,39 @@ test('image quote is read-only, admin-gated, validates input and returns only fi
     assert.deepEqual(mcpCalls.map((call) => call.method), ['initialize', 'notifications/initialized', 'tools/call']);
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
+
+test('quote diagnostic reveals only fixed recognized status words and never authorizes generation', async () => {
+  const originalFetch = globalThis.fetch;
+  let status = 'quoted';
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_image', parameters: { model_id: 108, prompt: 'Sebuah kucing' } } });
+    return Response.json({ id: body.id, result: { structuredContent: { status, credits: 23, source: 'PRIVATE-SOURCE', message: 'PRIVATE-MESSAGE', nested: { status }, arbitrary: status, token: 'PRIVATE-TOKEN' } } });
+  };
+  try {
+    const cookie = await connectFixture();
+    for (const [input, expected] of [['quoted', 'quoted'], ['OK', 'ok'], ['priced', 'priced'], ['unavailable', 'unavailable'], ['PRIVATE-TOKEN', '[teks disembunyikan]'], ['priced PRIVATE-TOKEN', '[teks disembunyikan]']]) {
+      status = input;
+      const res = await quoteRequest({ cookie });
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      const { quote } = JSON.parse(text);
+      assert.equal(quote.status, expected);
+      assert.equal(quote.nested.status, expected);
+      assert.equal(quote.credits, 23);
+      assert.equal(quote.source, '[teks disembunyikan]');
+      assert.equal(quote.message, '[teks disembunyikan]');
+      assert.equal(quote.arbitrary, input === 'unavailable' ? 'unavailable' : '[teks disembunyikan]');
+      assert.doesNotMatch(text, /PRIVATE|Sebuah kucing/);
+    }
+    assert.equal(calls.filter((call) => call.method === 'tools/call').length, 6);
+    assert.ok(calls.filter((call) => call.method === 'tools/call').every((call) => call.params.name === 'quote_generation'));
+  } finally { globalThis.fetch = originalFetch; }
+});
