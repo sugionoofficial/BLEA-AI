@@ -1,5 +1,6 @@
 import {
   Clapperboard,
+  Coins,
   LayoutDashboard,
   History,
   Mail,
@@ -32,6 +33,13 @@ export const navigation = [
         icon: Clapperboard,
         description: 'Generate video AI dari teks, gambar, video & audio',
         keywords: ['generate', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
+      },
+      {
+        title: 'Kredit',
+        href: '/credits',
+        icon: Coins,
+        description: 'Saldo dan pembelian kredit',
+        keywords: ['kredit', 'saldo', 'pembelian'],
       },
       {
         title: 'History',

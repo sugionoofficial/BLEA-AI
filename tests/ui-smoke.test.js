@@ -222,3 +222,14 @@ test('History page is available to signed-in users and starts with a loading sta
   assert.ok(html.includes('History'));
   assert.ok(html.includes('Memuat riwayat'));
 });
+
+test('Credits page shows the pending rollout notice to signed-in users', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { CreditsPage } = await vite.ssrLoadModule('/src/auth/CreditsPage.jsx');
+  const session = { access_token: 'test-token', user: { id: 'u1', email: 'creator@example.com', user_metadata: {}, app_metadata: {} } };
+  const html = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: ['/credits'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(CreditsPage))));
+  assert.ok(html.includes('Pembelian belum aktif'));
+  assert.ok(html.includes('integrasi Freebeat dan pemotongan kredit belum tersedia'));
+  assert.equal(html.includes('Admin · Kelola paket'), false);
+});
