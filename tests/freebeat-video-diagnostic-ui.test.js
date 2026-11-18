@@ -179,7 +179,8 @@ test('Gemini help and quote are read-only and use the current image and prompt',
   const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
   const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
   const calls = [];
-  const request = async (...args) => { calls.push(args); return args[0] === 'video-gemini-help' ? { help: { available: true } } : { quote: { status: 'quoted', credits: 25 } }; };
+  let quoteError = false;
+  const request = async (...args) => { calls.push(args); if (quoteError) throw new Error('Freebeat tidak dapat dihubungi.'); return args[0] === 'video-gemini-help' ? { help: { available: true } } : { quote: { status: 'quoted', credits: 25 } }; };
   const root = createRoot(document.getElementById('root'));
   const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
   const change = async (selector, value) => { const input = document.querySelector(selector); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); };
@@ -187,11 +188,23 @@ test('Gemini help and quote are read-only and use the current image and prompt',
     await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request })));
     assert.match(document.body.textContent, /tombol persetujuan di bawah tetap hanya untuk Wan 3.0/);
     assert.equal(button('Periksa quote Gemini Omni Flash V1.1').disabled, true);
+    assert.match(document.querySelector('#gemini-quote-help').textContent, /Isi prompt video/);
+    assert.match(document.querySelector('#gemini-quote-help').textContent, /Isi URL gambar HTTPS/);
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: false, imageAccess: false, loading: false, request })));
+    assert.match(document.querySelector('#gemini-quote-help').textContent, /belum terhubung/);
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request })));
     await React.act(async () => button('Periksa informasi Gemini Omni Flash V1.1').click());
     assert.deepEqual(calls[0], ['video-gemini-help', 'POST', {}]);
     const help = JSON.parse(document.querySelector('[aria-label="Informasi Gemini Omni Flash V1.1 yang disaring"]').value);
     assert.equal(help.model_id, 192);
-    await change('input[type=text]', 'Kucing bergerak'); await change('input[type=url]', 'https://images.example/cat.png');
+    await change('#gemini-prompt', 'Kucing bergerak');
+    assert.match(document.querySelector('#gemini-quote-help').textContent, /Isi URL gambar HTTPS/);
+    assert.equal(button('Periksa quote Gemini Omni Flash V1.1').disabled, true);
+    await change('#gemini-image-url', 'https://images.example/cat.png');
+    assert.equal(document.querySelector('input[type=text]').value, 'Kucing bergerak');
+    assert.equal(document.querySelector('input[type=url]').value, 'https://images.example/cat.png');
+    assert.equal(button('Periksa quote Gemini Omni Flash V1.1').disabled, false);
+    assert.match(document.querySelector('#gemini-quote-help').textContent, /Siap memeriksa quote/);
     await React.act(async () => button('Periksa quote Gemini Omni Flash V1.1').click());
     assert.deepEqual(calls[1], ['video-gemini-quote', 'POST', { prompt: 'Kucing bergerak', image_url: 'https://images.example/cat.png' }]);
     const quoteText = document.querySelector('[aria-label="Quote Gemini Omni Flash V1.1 yang disaring"]').value;
@@ -200,6 +213,11 @@ test('Gemini help and quote are read-only and use the current image and prompt',
     await change('input[type=text]', 'Kucing tidur');
     assert.equal(document.querySelector('[aria-label="Quote Gemini Omni Flash V1.1 yang disaring"]'), null);
     assert.deepEqual(calls.map((c) => c[0]), ['video-gemini-help', 'video-gemini-quote']);
+    quoteError = true;
+    await React.act(async () => button('Periksa quote Gemini Omni Flash V1.1').click());
+    assert.equal(button('Periksa quote Gemini Omni Flash V1.1').disabled, false);
+    assert.match(document.querySelector('[role=alert]').textContent, /Freebeat tidak dapat dihubungi/);
+    assert.equal(calls.filter((c) => c[0] === 'video-submit').length, 0);
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
