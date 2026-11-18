@@ -159,7 +159,7 @@ export function FreebeatPage() {
           <div className="freebeat-actions"><button type="submit" className="is-secondary" disabled={loading || !connected || imageBusy}>Periksa respons quote</button></div>
         </form>
         {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
-        {imageQuote !== null && <div className="freebeat-result"><h3>Respons quote yang disaring</h3><p>Format belum diverifikasi sebagai biaya final; tidak ada kredit yang dipakai.</p><pre>{JSON.stringify(imageQuote, null, 2)}</pre></div>}
+        {imageQuote !== null && <div className="freebeat-result"><h3>Respons quote yang disaring</h3><p>Hanya status dalam daftar aman yang ditampilkan; status lain tetap disembunyikan. Nilai ini belum diverifikasi sebagai biaya final atau izin generasi. Tidak ada kredit yang dipakai.</p><pre>{JSON.stringify(imageQuote, null, 2)}</pre></div>}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>

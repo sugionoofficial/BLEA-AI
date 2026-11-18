@@ -1,4 +1,4 @@
-// Admin-only Freebeat MCP diagnostics. Only balance and image catalog discovery are exposed.
+// Admin-only Freebeat MCP diagnostics. No generation or credit spending is exposed.
 import { boundedJson, siteBalance } from './freebeatSiteBalance.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
@@ -346,18 +346,22 @@ async function getImageModels(accessToken) {
 }
 
 const QUOTE_SAFE_TEXT = new Set(['generate_image', 'image', 'available', 'unavailable', 'unknown', 'known', 'exact', 'estimated', 'credits', 'credit', 'success', 'error']);
+// Fixed vocabulary only, and only in a status field. These are diagnostic
+// values, not a provider contract or a classification that authorizes spending.
+const QUOTE_SAFE_STATUS = new Set(['ok', 'ready', 'quoted', 'priced', 'price_available', 'quote_available', 'success', 'successful', 'succeeded', 'available', 'unavailable', 'unknown', 'error', 'failed', 'failure', 'pending', 'estimated', 'exact', 'not_available', 'not_supported', 'unsupported', 'not_found', 'no_quote', 'unquotable', 'insufficient_credits']);
 const QUOTE_PRIVATE_KEY = /(^id$|user|account|session|secret|token|credential|authorization|cookie|prompt|client|email|url|uri|task|batch)/i;
-function safeQuote(value, depth = 0) {
+function safeQuote(value, depth = 0, field = '') {
   if (depth > 5) return null;
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'string') {
+    if (field === 'status' && QUOTE_SAFE_STATUS.has(value.toLowerCase())) return value.toLowerCase();
     if (QUOTE_SAFE_TEXT.has(value) || (/^-?\d{1,12}(\.\d{1,6})?$/.test(value))) return value;
     return '[teks disembunyikan]';
   }
   if (Array.isArray(value)) return value.slice(0, 30).map((item) => safeQuote(item, depth + 1));
   if (typeof value !== 'object') return null;
-  return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeQuote(child, depth + 1)]));
+  return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeQuote(child, depth + 1, name)]));
 }
 async function quoteImage(accessToken, input) {
   const headers = await openMcp(accessToken);
