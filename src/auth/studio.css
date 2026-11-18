@@ -77,6 +77,160 @@
 .studio-message-text + .studio-message-text { margin-top: 9px; }
 .studio-message.from-user .studio-message-text { color: var(--primary-foreground); }
 .studio-message-loading { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
+.studio-message-avatar.is-thinking {
+  color: var(--primary);
+  border-color: rgb(99 102 241 / 0.45);
+  background: rgb(99 102 241 / 0.12);
+  animation: studio-avatar-pulse 1.5s ease-in-out infinite;
+}
+@keyframes studio-avatar-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(99 102 241 / 0.35); }
+  50% { box-shadow: 0 0 0 6px rgb(99 102 241 / 0); }
+}
+
+.studio-thinking-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgb(99 102 241 / 0.22);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgb(99 102 241 / 0.06), rgb(139 92 246 / 0.05));
+}
+.studio-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.studio-thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.studio-thinking-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--primary);
+  display: block;
+  animation: studio-dot-bounce 1.2s ease-in-out infinite;
+}
+.studio-thinking-dots i:nth-child(2) { animation-delay: 0.16s; }
+.studio-thinking-dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes studio-dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+.studio-thinking-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--foreground);
+}
+.studio-thinking-timer {
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgb(99 102 241 / 0.1);
+}
+.studio-thinking-shimmer {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+}
+.studio-thinking-shimmer span {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(99 102 241 / 0.09) 0%, rgb(99 102 241 / 0.24) 50%, rgb(99 102 241 / 0.09) 100%);
+  background-size: 220% 100%;
+  animation: studio-shimmer 1.4s ease-in-out infinite;
+}
+.studio-thinking-shimmer span:nth-child(1) { width: 92%; }
+.studio-thinking-shimmer span:nth-child(2) { width: 76%; animation-delay: 0.15s; }
+.studio-thinking-shimmer span:nth-child(3) { width: 54%; animation-delay: 0.3s; }
+@keyframes studio-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -120% 0; }
+}
+
+.studio-thought-box {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.studio-thought-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.studio-thought-toggle:hover { color: var(--foreground); background: rgb(99 102 241 / 0.05); }
+.studio-thought-toggle > svg:last-child { margin-left: auto; transition: transform 0.15s ease; }
+.studio-thought-toggle.is-open > svg:last-child { transform: rotate(180deg); }
+.studio-thought-body {
+  padding: 0 10px 9px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-top: 1px dashed var(--border);
+  padding-top: 7px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.studio-typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.16em;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: studio-cursor-blink 0.8s steps(2, start) infinite;
+}
+@keyframes studio-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.studio-stop-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgb(239 68 68 / 0.4);
+  border-radius: var(--radius-lg);
+  background: rgb(239 68 68 / 0.09);
+  color: var(--destructive);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+}
+.studio-stop-button:hover { background: rgb(239 68 68 / 0.16); }
+
 .studio-copy-button { border: 0; background: none; color: var(--muted-foreground); font-size: 11px; cursor: pointer; padding: 2px 4px; border-radius: var(--radius-sm); margin-left: auto; }
 .studio-message.from-user .studio-copy-button { color: var(--primary-foreground); opacity: .75; }
 .studio-copy-button:hover { color: var(--primary); background: rgb(99 102 241 / 0.1); }

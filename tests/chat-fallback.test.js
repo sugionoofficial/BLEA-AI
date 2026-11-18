@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import { resolveProviderApiBase, validateProviderBaseUrl } from '../src/lib/videoCatalog.js';
+import { parseUpstreamSsePayload, splitThinkingContent, thinkingStageLabel } from '../src/lib/chatStream.js';
 
 function createEnv() {
   return {
@@ -641,6 +642,107 @@ test('Malformed or autofilled email base_url never throws TypeError: Invalid URL
     const badData = await badRes.json();
     assert.equal(badData.ok, false);
     assert.match(badData.error, /Base URL.*tidak valid/i);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('/api/chat stream:true emits normalized SSE events, supports 429 fallback before opening stream, and chatStream helpers parse <think> cleanly', async () => {
+  const closedThink = splitThinkingContent('<think>analisis langkah 1\nlangkah 2</think>\n\nHalo dunia!');
+  assert.equal(closedThink.thinking, 'analisis langkah 1\nlangkah 2');
+  assert.equal(closedThink.answer, 'Halo dunia!');
+  assert.equal(closedThink.isThinkingOpen, false);
+
+  const openThink = splitThinkingContent('<think>sedang merangkai ide...');
+  assert.equal(openThink.thinking, 'sedang merangkai ide...');
+  assert.equal(openThink.answer, '');
+  assert.equal(openThink.isThinkingOpen, true);
+
+  assert.deepEqual(parseUpstreamSsePayload({ response: 'Kata ' }), { contentDelta: 'Kata ', reasoningDelta: '' });
+  assert.deepEqual(
+    parseUpstreamSsePayload({ choices: [{ delta: { reasoning_content: 'pikir', content: 'jawab' } }] }),
+    { contentDelta: 'jawab', reasoningDelta: 'pikir' },
+  );
+  assert.match(thinkingStageLabel(0.5), /Sedang berpikir/);
+  assert.match(thinkingStageLabel(7), /Masih memproses/);
+
+  const encoder = new TextEncoder();
+  const realFetch = globalThis.fetch;
+  const savedMessages = [];
+  const envWithStreamAi = {
+    ...createEnv(),
+    AI: {
+      run: async (_model, input) => {
+        assert.equal(input.stream, true);
+        return new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"response":"Halo "}\n\n'));
+            controller.enqueue(encoder.encode('data: {"response":"stream!"}\n\n'));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+      },
+    },
+  };
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'unorouter', api_key: 'uno-key', base_url: null },
+        { provider: 'cloudflare', api_key: 'binding:AI', base_url: null },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([
+        { provider: 'unorouter', model: 'gpt-oss-120b:free' },
+        { provider: 'cloudflare', model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast' },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      const payload = JSON.parse(init.body);
+      savedMessages.push(payload);
+      return Response.json([{ id: 'msg-stream-1', ...payload }]);
+    }
+    if (url === 'https://api.unorouter.com/v1/chat/completions') {
+      return new Response(JSON.stringify({ error: { message: 'Rate limited', code: 'rate_limit_exceeded' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-stream-1',
+        provider: 'unorouter',
+        model: 'gpt-oss-120b:free',
+        stream: true,
+        messages: [{ role: 'user', content: 'Tes stream fallback' }],
+      },
+    }), envWithStreamAi);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+    const rawSse = await res.text();
+    const events = rawSse
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => JSON.parse(l.slice(5).trim()));
+
+    assert.equal(events[0].type, 'meta');
+    assert.equal(events[0].provider, 'cloudflare');
+    assert.equal(events[0].fallbackFrom, 'gpt-oss-120b:free');
+    const deltas = events.filter((e) => e.type === 'delta').map((e) => e.text).join('');
+    assert.equal(deltas, 'Halo stream!');
+    const doneEv = events.find((e) => e.type === 'done');
+    assert.equal(doneEv.ok, true);
+    assert.equal(doneEv.messageId, 'msg-stream-1');
+    assert.equal(doneEv.reply, 'Halo stream!');
+    assert.equal(savedMessages.length, 1);
+    assert.equal(savedMessages[0].content, 'Halo stream!');
   } finally {
     globalThis.fetch = realFetch;
   }

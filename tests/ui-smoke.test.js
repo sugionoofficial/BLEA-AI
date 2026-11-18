@@ -150,4 +150,12 @@ test('AIStudio renders composer, chat history shell, and model status cleanly', 
   assert.ok(studioHtml.includes('BLEA AI STUDIO'));
   assert.ok(studioHtml.includes('Percakapan baru'));
   assert.ok(studioHtml.includes('Tulis pesan'));
+
+  const fs = await import('node:fs');
+  const studioCss = fs.readFileSync(new URL('../src/auth/studio.css', import.meta.url), 'utf8');
+  const studioSource = fs.readFileSync(new URL('../src/auth/AIStudio.jsx', import.meta.url), 'utf8');
+  assert.ok(studioCss.includes('.studio-thinking-panel'));
+  assert.ok(studioCss.includes('.studio-typing-cursor'));
+  assert.ok(studioSource.includes('chatCompletionStream'));
+  assert.ok(studioSource.includes('studio-thinking-panel'));
 });

@@ -120,6 +120,143 @@ export async function chatCompletion({ conversationId, model, provider, messages
   return edgeRequest('/chat', { conversationId, model, provider, messages, github, repository, autoFallback });
 }
 
+export async function chatCompletionStream({
+  conversationId,
+  model,
+  provider,
+  messages,
+  github,
+  repository,
+  autoFallback = true,
+  signal,
+  onMeta,
+  onThinking,
+  onDelta,
+}) {
+  const token = await getAccessToken();
+  if (!token) {
+    return { ok: false, status: 401, data: { error: 'authentication required' } };
+  }
+  try {
+    const res = await fetch(`${EDGE_BASE}/chat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        apikey: PUBLISHABLE_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        conversationId,
+        model,
+        provider,
+        messages,
+        github,
+        repository,
+        autoFallback,
+        stream: true,
+      }),
+      signal,
+    });
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (!res.ok || !contentType.includes('text/event-stream') || !res.body) {
+      if (!contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
+        return {
+          ok: false,
+          status: res.status,
+          workerUnavailable: true,
+          data: { error: 'API worker belum aktif pada pratinjau lokal ini.' },
+        };
+      }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.reply) {
+        onMeta?.({ model: data.model || model, provider: data.provider || provider, fallbackFrom: data.fallbackFrom, fallbackReason: data.fallbackReason });
+        onDelta?.(data.reply);
+      }
+      return { ok: res.ok, status: res.status, data };
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalDone = null;
+    let assembledReply = '';
+    let assembledReasoning = '';
+    let meta = { model, provider };
+    let streamError = '';
+
+    const handleLines = (lines) => {
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line.startsWith('data:')) continue;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') continue;
+        let ev = null;
+        try { ev = JSON.parse(jsonStr); } catch {}
+        if (!ev) continue;
+        if (ev.type === 'meta') {
+          meta = { ...meta, ...ev };
+          onMeta?.(ev);
+        } else if (ev.type === 'thinking' && ev.text) {
+          assembledReasoning += ev.text;
+          onThinking?.(ev.text);
+        } else if (ev.type === 'delta' && ev.text) {
+          assembledReply += ev.text;
+          onDelta?.(ev.text);
+        } else if (ev.type === 'done') {
+          finalDone = ev;
+        } else if (ev.type === 'error') {
+          streamError = ev.error || 'Streaming gagal.';
+        }
+      }
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) handleLines(buffer.split(/\r?\n/));
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split(/\r?\n/);
+        buffer = parts.pop() || '';
+        handleLines(parts);
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+
+    if (streamError && !assembledReply && !finalDone?.reply) {
+      return { ok: false, status: 502, data: { error: streamError } };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      data: finalDone || {
+        ok: true,
+        reply: assembledReply || assembledReasoning,
+        reasoning: assembledReasoning,
+        model: meta.model,
+        provider: meta.provider,
+        fallbackFrom: meta.fallbackFrom,
+        fallbackReason: meta.fallbackReason,
+      },
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      return { ok: false, status: 0, aborted: true, data: { error: 'Dihentikan oleh pengguna.' } };
+    }
+    return {
+      ok: false,
+      status: 0,
+      workerUnavailable: true,
+      data: { error: String(error?.message || error) },
+    };
+  }
+}
+
 // AI Studio — repo terhubung (GitHub) untuk panel koneksi di bawah input.
 export async function fetchConnectedRepos() {
   const { data } = await edgeRequest('/repos', {});
