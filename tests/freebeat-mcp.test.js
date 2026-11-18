@@ -222,3 +222,116 @@ test('registration surfaces only safe allowlisted OAuth errors, never provider d
     assert.doesNotMatch(logs.join(' '), /evil-secret-value|secret-token-do-not-share/);
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
+
+// Simulate the complete OAuth handshake so tests exercise the same admin endpoint as the UI.
+async function connectFixture() {
+  const start = await call('/api/freebeat/start', { token: 'admin-token', method: 'POST' });
+  assert.equal(start.status, 200);
+  const pending = start.headers.get('set-cookie').split(';')[0];
+  const state = new URL((await start.json()).url).searchParams.get('state');
+  const callback = await call(`/api/freebeat/callback?code=test-code&state=${state}`, { cookie: pending });
+  const sessionHeader = callback.headers.getSetCookie().find((h) => h.startsWith('__Host-blea_freebeat_session='));
+  assert.ok(sessionHeader);
+  return sessionHeader.split(';')[0];
+}
+
+function oauthFixture(url) {
+  if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'admin', app_metadata: { role: 'admin' } });
+  if (url === 'https://freebeat.ai/oauth/register') return Response.json({ client_id: 'client' });
+  if (url === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: 'SECRET-ACCESS-TOKEN', expires_in: 600 });
+  return null;
+}
+
+function stageFor(body) {
+  return body.method === 'initialize' ? 'init' : body.method === 'notifications/initialized' ? 'notify' : 'balance';
+}
+function successFor(body) {
+  if (body.method === 'initialize') return Response.json({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26', capabilities: {} } });
+  if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+  return Response.json({ jsonrpc: '2.0', id: 2, result: { structuredContent: { credits: 500 } } });
+}
+
+test('MCP diagnostic codes identify request stage, timeout, network, HTTP and redirect without exposing secrets', async () => {
+  const originalFetch = globalThis.fetch, originalWarn = console.warn;
+  const warnings = [];
+  const urls = [];
+  console.warn = (...args) => warnings.push(JSON.stringify(args));
+  let failedStage = '', failure;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input); urls.push(url);
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    assert.equal(init.redirect, 'manual');
+    assert.equal(init.headers.authorization, 'Bearer SECRET-ACCESS-TOKEN');
+    const body = JSON.parse(init.body);
+    if (stageFor(body) === failedStage) return failure();
+    return successFor(body);
+  };
+  try {
+    const cookie = await connectFixture();
+    for (const stage of ['init', 'notify', 'balance']) {
+      failedStage = stage;
+      for (const [kind, simulate] of [
+        ['network', () => { throw new Error('SECRET-network-error'); }],
+        ['timeout', () => { throw Object.assign(new Error('SECRET-timeout'), { name: 'TimeoutError' }); }],
+        ['redirect', () => new Response('SECRET-redirect', { status: 307, headers: { location: 'https://evil.example/SECRET' } })],
+        ['http', () => new Response('SECRET-response', { status: 403 })],
+      ]) {
+        failure = simulate;
+        const res = await call('/api/freebeat/balance', { token: 'admin-token', cookie, method: 'POST' });
+        const text = await res.text();
+        assert.equal(res.status, 502);
+        assert.ok(text.includes(`FB-MCP-${stage.toUpperCase()}-${kind.toUpperCase()}`), text);
+        assert.doesNotMatch(text, /SECRET|evil\.example|ACCESS-TOKEN/);
+      }
+    }
+    assert.equal(urls.includes('https://evil.example/SECRET'), false);
+    assert.doesNotMatch(warnings.join(' '), /SECRET|evil\.example|ACCESS-TOKEN/);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
+test('MCP accepts matching SSE event without waiting for stream closure and rejects malformed or oversized responses', async () => {
+  const originalFetch = globalThis.fetch, originalWarn = console.warn;
+  console.warn = () => {};
+  let mode = 'open-stream';
+  let cancelled = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    if (body.method !== 'initialize') return successFor(body);
+    if (mode === 'open-stream') {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"id":999,"result":{}}\r\n\r\ndata: {"jsonrpc":"2.0","id":1,'));
+          controller.enqueue(new TextEncoder().encode('"result":{"protocolVersion":"2025-03-26"}}\r\n\r\n'));
+          // Deliberately leave the stream open.
+        },
+        cancel() { cancelled = true; },
+      });
+      return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (mode === 'oversize') return new Response('x'.repeat(65537), { headers: { 'content-type': 'application/json' } });
+    if (mode === 'rpc') return Response.json({ id: 1, error: { message: 'PRIVATE-PROVIDER-ERROR' } });
+    if (mode === 'stream-error') return new Response(new ReadableStream({ start(controller) { controller.error(new Error('PRIVATE-STREAM-ERROR')); } }), { headers: { 'content-type': 'application/json' } });
+    if (mode === 'stream-timeout') return new Response(new ReadableStream({ start(controller) { controller.error(Object.assign(new Error('PRIVATE-TIMEOUT'), { name: 'TimeoutError' })); } }), { headers: { 'content-type': 'application/json' } });
+    return Response.json({ jsonrpc: '2.0', id: 999, result: { private: 'PRIVATE-RESPONSE' } });
+  };
+  try {
+    const cookie = await connectFixture();
+    const success = await call('/api/freebeat/balance', { token: 'admin-token', cookie, method: 'POST' });
+    assert.deepEqual((await success.json()).balance, { credits: 500 });
+    assert.equal(cancelled, true);
+    for (const [testMode, expected] of [['oversize', 'SIZE'], ['rpc', 'RPC'], ['stream-error', 'NETWORK'], ['stream-timeout', 'TIMEOUT'], ['mismatch', 'RESPONSE']]) {
+      mode = testMode;
+      const res = await call('/api/freebeat/balance', { token: 'admin-token', cookie, method: 'POST' });
+      const text = await res.text();
+      assert.equal(res.status, 502);
+      assert.match(text, new RegExp(`FB-MCP-INIT-${expected}`));
+      assert.doesNotMatch(text, /PRIVATE|SECRET/);
+    }
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});

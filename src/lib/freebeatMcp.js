@@ -163,40 +163,103 @@ async function readSession(request, env, userId) {
   return session && session.uid === userId && Number.isFinite(session.expiresAt) && session.expiresAt > Date.now() && typeof session.accessToken === 'string' ? session : null;
 }
 
-// MCP may return JSON or a finite Server-Sent Events response. Only the expected request ID is accepted.
-function parseRpc(text, type, expectedId) {
-  let objects = [];
-  if (type.includes('application/json')) { try { objects = [JSON.parse(text)]; } catch { /* invalid response */ } }
-  else if (type.includes('text/event-stream')) {
-    objects = text.split(/\r?\n\r?\n/).flatMap((event) => {
-      const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
-      try { return data ? [JSON.parse(data)] : []; } catch { return []; }
-    });
-  }
-  const object = objects.find((entry) => entry?.id === expectedId);
-  if (!object || object.error || !object.result || object.result.isError) throw fail('Freebeat menolak atau tidak mendukung permintaan baca saldo.');
+// Codes and log fields are fixed; never expose errors, response bodies, headers, URLs or tokens from Freebeat.
+function mcpFailure(stage, kind, status) {
+  const tag = `[FB-MCP-${stage.toUpperCase()}-${kind.toUpperCase()}]`;
+  const message = kind === 'timeout' ? 'MCP Freebeat tidak merespons dalam 15 detik.'
+    : kind === 'network' ? 'Worker tidak dapat terhubung ke MCP Freebeat.'
+      : kind === 'redirect' ? 'MCP Freebeat mengirim pengalihan yang ditolak demi keamanan.'
+        : kind === 'http' && (status === 401 || status === 403) ? 'Freebeat menolak akses. Hubungkan ulang atau periksa akses akun/plan.'
+          : kind === 'http' ? `MCP Freebeat menolak permintaan (HTTP ${status}).`
+            : kind === 'size' ? 'Respons MCP Freebeat terlalu besar.'
+              : kind === 'rpc' ? 'Freebeat menolak atau tidak mendukung permintaan MCP.'
+                : 'Respons MCP Freebeat tidak valid atau tidak didukung.';
+  console.warn('Freebeat MCP request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}) });
+  return Object.assign(fail(`${message} ${tag}`, kind === 'http' && status === 401 ? 401 : 502), { isMcpFailure: true });
+}
+
+function rpcObject(text, expectedId, stage) {
+  let object;
+  try { object = JSON.parse(text); } catch { return null; }
+  if (!object || typeof object !== 'object' || Array.isArray(object) || object.id !== expectedId) return null;
+  if (object.error || !object.result || typeof object.result !== 'object' || object.result.isError) throw mcpFailure(stage, 'rpc');
   return object.result;
 }
-async function rpc(accessToken, body, extraHeaders = {}) {
+
+// Bound memory while reading, and stop at the expected SSE response even if the stream stays open.
+async function readRpc(res, expectedId, stage, signal) {
+  const type = (res.headers.get('content-type') || '').toLowerCase();
+  const isSse = type.includes('text/event-stream');
+  if (!isSse && !type.includes('application/json')) throw mcpFailure(stage, 'response');
+  const length = res.headers.get('content-length');
+  if (length && /^\d+$/.test(length) && Number(length) > 65536) throw mcpFailure(stage, 'size');
+  if (!res.body) throw mcpFailure(stage, 'response');
+  let reader;
+  try { reader = res.body.getReader(); } catch { throw mcpFailure(stage, 'response'); }
+  const decoder = new TextDecoder();
+  let text = '', bytes = 0;
+  function parseEvent(event) {
+    const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).replace(/^ /, '')).join('\n');
+    return data ? rpcObject(data, expectedId, stage) : null;
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        text += decoder.decode();
+        const result = isSse ? parseEvent(text) : rpcObject(text, expectedId, stage);
+        if (result) return result;
+        throw mcpFailure(stage, 'response');
+      }
+      bytes += value.byteLength;
+      if (bytes > 65536) throw mcpFailure(stage, 'size');
+      text += decoder.decode(value, { stream: true });
+      if (isSse) {
+        let boundary;
+        while ((boundary = /\r?\n\r?\n/.exec(text))) {
+          const event = text.slice(0, boundary.index);
+          text = text.slice(boundary.index + boundary[0].length);
+          const result = parseEvent(event);
+          if (result) return result;
+        }
+      }
+    }
+  } catch (error) {
+    if (error?.isMcpFailure) throw error;
+    throw mcpFailure(stage, signal.aborted || ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'network');
+  } finally {
+    try { reader.cancel().catch(() => {}); } catch { /* ignore cancellation errors */ }
+    reader.releaseLock();
+  }
+}
+
+async function rpc(accessToken, body, stage, extraHeaders = {}) {
+  const signal = AbortSignal.timeout(15000);
   let res;
   try {
-    res = await fetch(ENDPOINT, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000), headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...extraHeaders }, body: JSON.stringify(body) });
-  } catch { throw fail('MCP Freebeat tidak dapat dihubungi.'); }
-  if (!res.ok) throw fail(res.status === 401 || res.status === 403 ? 'Freebeat menolak akses. Hubungkan ulang atau periksa akses akun/plan.' : `MCP Freebeat menolak permintaan (HTTP ${res.status}).`, res.status === 401 ? 401 : 502);
-  if (body.id === undefined) { await res.body?.cancel(); return {}; }
-  const text = await res.text();
-  if (text.length > 65536) throw fail('Respons MCP Freebeat terlalu besar.');
-  return { result: parseRpc(text, res.headers.get('content-type') || '', body.id), sessionId: res.headers.get('mcp-session-id') };
+    // Manual mode permits diagnosing redirects without forwarding credentials to their destination.
+    res = await fetch(ENDPOINT, { method: 'POST', redirect: 'manual', signal, headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...extraHeaders }, body: JSON.stringify(body) });
+  } catch (error) { throw mcpFailure(stage, signal.aborted || ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'network'); }
+  if (res.status >= 300 && res.status < 400) {
+    try { await res.body?.cancel(); } catch { /* no provider data is exposed */ }
+    throw mcpFailure(stage, 'redirect', res.status);
+  }
+  if (!res.ok) {
+    try { await res.body?.cancel(); } catch { /* no provider data is exposed */ }
+    throw mcpFailure(stage, 'http', res.status);
+  }
+  if (body.id === undefined) { try { await res.body?.cancel(); } catch { /* notification response ignored */ } return {}; }
+  return { result: await readRpc(res, body.id, stage, signal), sessionId: res.headers.get('mcp-session-id') };
 }
 async function getBalance(accessToken) {
-  const init = await rpc(accessToken, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'blea-ai-readonly-test', version: '1.0.0' } } });
+  const init = await rpc(accessToken, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'blea-ai-readonly-test', version: '1.0.0' } } }, 'init');
   const version = init.result.protocolVersion;
-  if (!['2024-11-05', '2025-03-26', '2025-06-18'].includes(version)) throw fail('Versi protokol MCP Freebeat tidak didukung.');
+  if (!['2024-11-05', '2025-03-26', '2025-06-18'].includes(version)) throw mcpFailure('init', 'response');
   const headers = { 'MCP-Protocol-Version': version, ...(init.sessionId ? { 'Mcp-Session-Id': init.sessionId } : {}) };
-  await rpc(accessToken, { jsonrpc: '2.0', method: 'notifications/initialized' }, headers);
-  const call = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_credit_balance', arguments: {} } }, headers);
+  await rpc(accessToken, { jsonrpc: '2.0', method: 'notifications/initialized' }, 'notify', headers);
+  const call = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_credit_balance', arguments: {} } }, 'balance', headers);
   const data = call.result.structuredContent ?? call.result.content;
-  if (!data) throw fail('Freebeat tidak mengembalikan data saldo.');
+  if (!data) throw mcpFailure('balance', 'response');
   return data;
 }
 
