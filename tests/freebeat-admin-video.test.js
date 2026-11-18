@@ -144,6 +144,14 @@ test('admin video test binds explicit approval and cap to fresh quote, dispatche
     const privateText = await privateResponse.text();
     assert.doesNotMatch(privateText, /private\.example|ABC|abcdefgh|topsecret|admin@example|batch-123|PROVIDER-SECRET/);
     assert.deepEqual(JSON.parse(privateText).reasons, ['Input rejected. URL [URL disembunyikan]', 'Bearer [disembunyikan] API_KEY=[disembunyikan] contact [email disembunyikan]']);
+    // Status responses may use item error_message/error_code instead of failure.reason.
+    f.setTaskResult({ status: 'failed', message: 'Batch failed', items: [{ error_code: 'invalid_image', error_message: 'Image rejected https://private.example/file?token=secret', message: 'Bearer verysecret' }, { error_code: 'invalid_image', failure: { reason: 'invalid_image' }, error_message: 'Contact admin@example.com' }] });
+    const detailed = await privateRequest();
+    const detailedText = await detailed.text();
+    assert.doesNotMatch(detailedText, /private\.example|verysecret|admin@example|token=secret/);
+    assert.deepEqual(JSON.parse(detailedText).reasons, ['Batch failed', 'invalid_image', 'Image rejected [URL disembunyikan]', 'Bearer [disembunyikan]', 'Contact [email disembunyikan]']);
+    const filteredAgain = await api('video-task', { cookie, method: 'POST', data: { id: accepted.id } });
+    assert.doesNotMatch(await filteredAgain.text(), /Batch failed|Image rejected|verysecret|admin@example/);
     f.setTaskResult({ status: 'completed' });
     assert.equal((await privateRequest()).status, 409);
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
