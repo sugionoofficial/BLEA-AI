@@ -29,7 +29,10 @@ test('Wan diagnostics request only help and quote and invalidate quote on edits'
     assert.equal(button('Periksa quote Wan 3.0').disabled, false);
     await React.act(async () => button('Periksa quote Wan 3.0').click());
     assert.deepEqual(calls[1], ['video-quote', 'POST', { prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png' }]);
-    assert.doesNotMatch(document.querySelector('[aria-label="Quote video yang disaring"]').value, /Kucing|images.example/);
+    const quoteText = document.querySelector('[aria-label="Quote video yang disaring"]').value;
+    assert.doesNotMatch(quoteText, /Kucing|images.example/);
+    assert.equal(JSON.parse(quoteText).duration, 5);
+    assert.equal(JSON.parse(quoteText).resolution, '480p');
     await setValue(document.querySelector('input[type=text]'), 'Kucing berlari');
     assert.equal(document.querySelector('[aria-label="Quote video yang disaring"]'), null);
     assert.equal(calls.length, 2);
