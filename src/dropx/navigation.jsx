@@ -1,6 +1,7 @@
 import {
   Clapperboard,
   LayoutDashboard,
+  History,
   Mail,
   MessageSquare,
   Settings,
@@ -31,6 +32,13 @@ export const navigation = [
         icon: Clapperboard,
         description: 'Generate video AI dari teks, gambar, video & audio',
         keywords: ['generate', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
+      },
+      {
+        title: 'History',
+        href: '/history',
+        icon: History,
+        description: 'Riwayat hasil generasi',
+        keywords: ['history', 'riwayat', 'hasil', 'video'],
       },
     ],
   },

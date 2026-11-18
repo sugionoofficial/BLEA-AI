@@ -284,3 +284,35 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     globalThis.fetch = realFetch;
   }
 });
+
+test('/api/video/history paginates only the authenticated user\'s records and validates offsets', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-123' });
+    if (url.startsWith('https://supabase.example/rest/v1/video_generations?')) {
+      requestedUrl = url;
+      return Response.json(Array.from({ length: 41 }, (_, i) => ({ id: `gen-${i}`, user_id: 'user-123', status: 'queued', prompt: 'test', metadata: {} })));
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const env = createEnv();
+    const response = await worker.fetch(apiRequest('/api/video/history', { body: { offset: 40 } }), env);
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.generations.length, 40);
+    assert.equal(data.hasMore, true);
+    assert.match(requestedUrl, /user_id=eq\.user-123/);
+    assert.match(requestedUrl, /limit=41&offset=40/);
+    for (const offset of [-1, 1.5, 100001, 'bad']) {
+      const invalid = await worker.fetch(apiRequest('/api/video/history', { body: { offset } }), env);
+      assert.equal(invalid.status, 400);
+    }
+    const unauth = await worker.fetch(apiRequest('/api/video/history', { token: '', body: {} }), env);
+    assert.equal(unauth.status, 401);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

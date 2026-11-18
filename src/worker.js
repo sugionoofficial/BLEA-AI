@@ -2019,14 +2019,19 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
 
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const requestedOffset = Number(body.offset ?? url.searchParams.get('offset') ?? 0);
+      if (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0 || requestedOffset > 100000) {
+        return jsonResponse({ error: 'Invalid history offset' }, 400);
+      }
       const res = await servicePostgrest(
         env,
-        `/video_generations?select=*&user_id=eq.${encodeURIComponent(user.id)}&order=created_at.desc&limit=40`,
+        `/video_generations?select=*&user_id=eq.${encodeURIComponent(user.id)}&order=created_at.desc,id.desc&limit=41&offset=${requestedOffset}`,
       );
       if (!res.ok) return jsonResponse({ error: 'Failed to load video history' }, 500);
       const rows = await res.json().catch(() => []);
-      const generations = await Promise.all((rows || []).map((row) => sanitizeGenerationRow(row, env)));
-      return jsonResponse({ ok: true, generations });
+      const generations = await Promise.all((rows || []).slice(0, 40).map((row) => sanitizeGenerationRow(row, env)));
+      return jsonResponse({ ok: true, generations, hasMore: rows.length > 40 });
     }
 
     // ---- /video/generate: submit async video generation job & persist in Supabase ----
