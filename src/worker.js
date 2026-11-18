@@ -34,6 +34,7 @@ import {
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
+import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
 
 const SUPABASE_URL_ENV = (env) => (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
 
@@ -50,6 +51,65 @@ async function supabaseFetch(env, path, { method = 'GET', token, body, headers =
     headers: finalHeaders,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+}
+
+async function handleTempmail(request, url, env) {
+  const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+  if (!token) return jsonResponse({ error: 'Login diperlukan untuk menggunakan TempMail.' }, 401, { 'cache-control': 'no-store' });
+  const user = await getUser(env, token);
+  if (!user) return jsonResponse({ error: 'Sesi tidak valid atau kedaluwarsa. Silakan login kembali.' }, 401, { 'cache-control': 'no-store' });
+  if (user.app_metadata?.role !== 'admin') return jsonResponse({ error: 'Fitur TempMail hanya tersedia untuk admin.' }, 403, { 'cache-control': 'no-store' });
+
+  const action = String(url.searchParams.get('action') || 'alias').toLowerCase();
+  const respond = (data, status = 200) => jsonResponse(data, status, { 'cache-control': 'no-store' });
+  const aliasPath = `/tempmail_user_aliases?select=user_id,email,token,provider,created_at&user_id=eq.${encodeURIComponent(user.id)}&limit=1`;
+  const aliasRes = await servicePostgrest(env, aliasPath);
+  if (!aliasRes.ok) return respond({ error: 'Gagal membaca alias TempMail. Pastikan tabel tempmail_user_aliases sudah dibuat.' }, 503);
+  const rows = await aliasRes.json().catch(() => []);
+  let alias = rows?.[0] || null;
+
+  try {
+    if (action === 'alias' || action === 'status') {
+      return respond({ ok: true, alias: alias ? { email: alias.email, provider: alias.provider, createdAt: alias.created_at } : null });
+    }
+    if (action === 'create' || action === 'rotate') {
+      if (alias && action === 'create') return respond({ ok: true, email: alias.email, provider: alias.provider, createdAt: alias.created_at, reused: true });
+      const created = await createMailtmAlias();
+      const row = { user_id: user.id, email: created.email, token: created.token, provider: created.provider, created_at: new Date().toISOString() };
+      const saveRes = await servicePostgrest(env, '/tempmail_user_aliases?on_conflict=user_id', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: [row],
+      });
+      if (!saveRes.ok) return respond({ error: 'Mailbox dibuat, tetapi gagal menyimpan alias. Pastikan tabel TempMail tersedia.' }, 503);
+      return respond({ ok: true, email: row.email, provider: row.provider, createdAt: row.created_at, reused: false });
+    }
+    if (action === 'messages' || action === 'message') {
+      if (!alias) return respond({ error: 'Buat alamat TempMail terlebih dahulu.' }, 404);
+      const requestedEmail = String(url.searchParams.get('email') || '');
+      if (requestedEmail && requestedEmail.toLowerCase() !== String(alias.email).toLowerCase()) return respond({ error: 'Alamat tidak ditemukan pada akun admin ini.' }, 404);
+      let credentials = parseMailtmCredentials(alias.token);
+      const fetchInbox = () => action === 'messages'
+        ? fetchMailtmMessages(credentials.token)
+        : fetchMailtmMessage(credentials.token, String(url.searchParams.get('messageId') || ''));
+      let result;
+      try {
+        result = await fetchInbox();
+      } catch (firstError) {
+        if (!credentials.password) throw firstError;
+        credentials = { ...credentials, token: await refreshMailtmToken(alias.email, credentials.password) };
+        const updateRes = await servicePostgrest(env, `/tempmail_user_aliases?user_id=eq.${encodeURIComponent(user.id)}`, {
+          method: 'PATCH', body: { token: serializeMailtmCredentials(credentials.token, credentials.password) },
+        });
+        if (!updateRes.ok) throw firstError;
+        result = await fetchInbox();
+      }
+      return respond(action === 'messages' ? { ok: true, messages: result } : { ok: true, message: result });
+    }
+    return respond({ error: 'Action TempMail tidak dikenal.' }, 400);
+  } catch (error) {
+    return respond({ error: String(error?.message || 'Layanan TempMail gagal. Coba lagi.') }, Number(error?.status) || 502);
+  }
 }
 
 async function getUser(env, token) {
@@ -1268,6 +1328,10 @@ async function handleApi(request, url, env) {
   try {
     if (method === 'OPTIONS') {
       return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (path === 'tempmail' && ['GET', 'POST'].includes(method)) {
+      return handleTempmail(request, url, env);
     }
 
     // ---- GET/HEAD /api/video/content/:id: signed or authorized video stream proxy ----

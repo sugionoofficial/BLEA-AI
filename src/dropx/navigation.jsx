@@ -1,6 +1,7 @@
 import {
   Clapperboard,
   LayoutDashboard,
+  Mail,
   MessageSquare,
   Settings,
   ShieldCheck,
@@ -44,6 +45,15 @@ export const navigation = [
         badge: 'Admin',
         description: 'Kelola pengguna, model & API key',
         keywords: ['admin', 'panel', 'pengguna', 'waitlist', 'api key', 'model'],
+      },
+      {
+        title: 'TempMail',
+        href: '/tempmail',
+        icon: Mail,
+        adminOnly: true,
+        badge: 'Admin',
+        description: 'Alamat email sementara dan inbox khusus admin',
+        keywords: ['tempmail', 'temporary email', 'email sementara', 'inbox', 'mail.tm'],
       },
     ],
   },
