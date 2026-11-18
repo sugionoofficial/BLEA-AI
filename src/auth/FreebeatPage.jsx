@@ -3,19 +3,8 @@ import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
-import { supabase } from '../lib/supabase';
+import { freebeatRequest as request } from '../api/freebeat';
 import './freebeat.css';
-
-async function request(action, method = 'GET', body) {
-  const { data } = await supabase.auth.getSession();
-  let session = data?.session;
-  if (session?.expires_at && session.expires_at * 1000 < Date.now() + 60000) session = (await supabase.auth.refreshSession()).data?.session;
-  if (!session?.access_token) throw new Error('Sesi login berakhir. Silakan login kembali.');
-  const res = await fetch(`/api/freebeat/${action}`, { method, headers: { authorization: `Bearer ${session.access_token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), credentials: 'same-origin', cache: 'no-store' });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(payload.error || 'Freebeat tidak dapat dihubungi.');
-  return payload;
-}
 
 const resultMessage = {
   connected: 'Otorisasi Freebeat berhasil. Tekan Periksa saldo untuk menguji MCP.',

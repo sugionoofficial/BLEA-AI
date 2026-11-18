@@ -54,6 +54,8 @@ test('videoCatalog helpers detect video models, resolve bases, compute sizes, an
 
   assert.equal(resolveProviderApiBase('unorouter'), 'https://api.unorouter.com/v1');
   assert.equal(resolveProviderApiBase('openrouter'), 'https://openrouter.ai/api/v1');
+  assert.equal(resolveProviderApiBase('unknown-provider'), '');
+  assert.equal(resolveProviderApiBase('custom'), '');
   assert.equal(resolveProviderApiBase('custom', 'https://my-gateway.example/api'), 'https://my-gateway.example/api/v1');
   assert.equal(resolveProviderApiBase('custom', 'https://my-gateway.example/v1/'), 'https://my-gateway.example/v1');
 
@@ -144,6 +146,12 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
       if (url.includes('provider=eq.unorouter')) {
         return Response.json([{ provider: 'unorouter', api_key: 'uno-secret-key', base_url: 'https://api.unorouter.com', label: 'UnoRouter' }]);
       }
+      if (url.includes('provider=eq.openai')) {
+        return Response.json([{ provider: 'openai', api_key: 'openai-secret-key', base_url: 'https://api.openai.com', label: 'OpenAI' }]);
+      }
+      if (url.includes('provider=eq.custom')) {
+        return Response.json([{ provider: 'custom', api_key: 'custom-secret', base_url: null }]);
+      }
       if (url.includes('provider=eq.openrouter')) {
         return Response.json([{ provider: 'openrouter', api_key: 'or-secret-key', base_url: 'https://openrouter.ai/api/v1', label: 'OpenRouter' }]);
       }
@@ -155,9 +163,9 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
         headers: { 'content-type': 'image/png' },
       });
     }
-    if (url === 'https://api.unorouter.com/v1/videos' && init.method === 'POST') {
+    if (url === 'https://api.openai.com/v1/videos' && init.method === 'POST') {
       upstreamGenerateBody = JSON.parse(init.body);
-      return Response.json({ id: 'job-uno-999', status: 'queued', progress: 10 });
+      return Response.json({ id: 'job-openai-999', status: 'queued', progress: 10 });
     }
     if (url === 'https://openrouter.ai/api/v1/videos' && init.method === 'POST') {
       upstreamGenerateBody = JSON.parse(init.body);
@@ -209,11 +217,17 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     const emptyRes = await worker.fetch(apiRequest('/api/video/generate', { body: { model: 'veo3.1', prompt: '   ' } }), env);
     assert.equal(emptyRes.status, 400);
 
-    // 3. UnoRouter Veo generation inlines HTTPS image URL to data URL
+    // 3. Unsupported or unspecified providers fail before any paid request.
+    for (const provider of [undefined, 'unorouter', 'freebeat', 'custom']) {
+      const blocked = await worker.fetch(apiRequest('/api/video/generate', { body: { provider, model: 'veo3.1', prompt: 'test' } }), env);
+      assert.equal(blocked.status, 400);
+    }
+
+    // 4. A supported provider can still submit, and Veo inlines its HTTPS image.
     const genRes = await worker.fetch(
       apiRequest('/api/video/generate', {
         body: {
-          provider: 'unorouter',
+          provider: 'openai',
           model: 'veo3.1',
           prompt: 'Sunset drone shot',
           aspect_ratio: '16:9',
@@ -233,7 +247,7 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     assert.equal(upstreamGenerateBody.size, '1280x720');
     assert.equal(upstreamGenerateBody.duration, 8);
 
-    // 4. OpenRouter job maps frame_images + input_references cleanly
+    // 5. OpenRouter job maps frame_images + input_references cleanly
     const orRes = await worker.fetch(
       apiRequest('/api/video/generate', {
         body: {
@@ -254,7 +268,7 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     assert.equal(upstreamGenerateBody.frame_images[0].image_url.url, 'https://cdn.example/frame.png');
     assert.equal(upstreamGenerateBody.input_references.length, 2);
 
-    // 5. Status polling updates row and returns signed /api/video/content/:id URL
+    // 6. Legacy UnoRouter status polling updates row and returns signed /api/video/content/:id URL
     storedRow.provider = 'unorouter';
     storedRow.external_job_id = 'job-uno-999';
     storedRow.polling_url = 'https://api.unorouter.com/v1/videos/job-uno-999';
@@ -265,7 +279,7 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     assert.equal(pollData.generation.status, 'completed');
     assert.ok(pollData.generation.result_url.startsWith('/api/video/content/gen-uuid-1?exp='));
 
-    // 6. Signed content proxy streams with Range passthrough; tampered sig is rejected
+    // 7. Signed content proxy streams with Range passthrough; tampered sig is rejected
     const contentRes = await worker.fetch(
       apiRequest(pollData.generation.result_url, { method: 'GET', token: '', headers: { range: 'bytes=0-3' } }),
       env,
@@ -315,4 +329,34 @@ test('/api/video/history paginates only the authenticated user\'s records and va
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('video catalog excludes UnoRouter, never queries it, and keeps active configured other providers', async () => {
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    calls.push(url);
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([
+      { provider: 'unorouter', api_key: 'test-key', base_url: 'https://api.unorouter.com', label: 'UnoRouter' },
+      { provider: 'custom', api_key: 'custom-key', base_url: 'https://gateway.example', label: 'Other Provider' },
+      { provider: 'freebeat', api_key: 'fake', base_url: null, label: 'Freebeat' },
+    ]);
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json([
+      { provider: 'unorouter', model: 'veo3.1', active: true },
+      { provider: 'custom', model: 'custom-video-v1', active: true },
+      { provider: 'freebeat', model: 'video-model', active: true },
+    ]);
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(apiRequest('/api/video/models', { body: {} }), createEnv());
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(payload.models.some((m) => m.provider === 'unorouter' || m.provider === 'freebeat'), false);
+    assert.equal(payload.providers.some((p) => p.id === 'unorouter' || p.id === 'freebeat'), false);
+    assert.ok(payload.models.some((m) => m.provider === 'custom' && m.id === 'custom-video-v1' && m.activeInAdmin && m.providerConfigured));
+    assert.equal(calls.some((url) => url.startsWith('https://api.unorouter.com/')), false);
+  } finally { globalThis.fetch = realFetch; }
 });

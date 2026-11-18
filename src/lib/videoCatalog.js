@@ -609,7 +609,8 @@ export function resolveProviderApiBase(provider, baseUrl) {
   const presetBase = String(preset.defaultBaseUrl || '').trim().replace(/\/+$/, '');
   const rawBase = validCandidate || presetBase;
   if (provider === 'cloudflare' && !rawBase) return '';
-  let base = rawBase || (provider === 'custom' && candidate ? '' : 'https://api.unorouter.com');
+  // Never route an unknown or unconfigured provider to another provider's API.
+  let base = rawBase;
   if (!base) return '';
   // Strip known endpoint suffixes if an admin pasted a full endpoint URL
   base = base

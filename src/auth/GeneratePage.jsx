@@ -4,18 +4,19 @@ import { useAuth } from './AuthProvider';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import {
-  BUILTIN_VIDEO_MODELS,
   DEFAULT_ASPECT_RATIOS,
   DEFAULT_DURATIONS,
   DEFAULT_RESOLUTIONS,
-  getVideoModelProfile,
 } from '../lib/videoCatalog';
 import {
   fetchVideoHistory,
   fetchVideoModels,
   fetchVideoStatus,
   generateVideo,
-} from '../api/unorouter';
+} from '../api/generation';
+import { availableVideoModels, generationModelKey } from '../lib/generationCatalog';
+import { freebeatRequest } from '../api/freebeat';
+import { GenerateImagePanel } from './GenerateImagePanel';
 import './generate.css';
 
 const PROMPT_CHIPS = [
@@ -69,17 +70,16 @@ function formatDateTime(iso) {
   });
 }
 
-function modelKey(m) {
-  return `${m.provider || 'unorouter'}::${m.id}`;
-}
+const modelKey = generationModelKey;
 
 export function GeneratePage() {
   const { user } = useAuth();
   const isAdmin = user?.app_metadata?.role === 'admin';
   const [searchParams] = useSearchParams();
 
-  const [models, setModels] = useState(BUILTIN_VIDEO_MODELS);
-  const [selectedModelKey, setSelectedModelKey] = useState(modelKey(BUILTIN_VIDEO_MODELS[0]));
+  const [mode, setMode] = useState(() => searchParams.get('mode') === 'image' ? 'image' : 'video');
+  const [models, setModels] = useState([]);
+  const [selectedModelKey, setSelectedModelKey] = useState('');
   const [workerMode, setWorkerMode] = useState('checking'); // 'ready' | 'unavailable' | 'checking'
 
   const [prompt, setPrompt] = useState(() => searchParams.get('prompt') || '');
@@ -106,7 +106,7 @@ export function GeneratePage() {
   const audioInputRef = useRef(null);
 
   const selectedModel = useMemo(() => {
-    return models.find((m) => modelKey(m) === selectedModelKey) || models[0] || BUILTIN_VIDEO_MODELS[0];
+    return models.find((m) => modelKey(m) === selectedModelKey) || models[0] || null;
   }, [models, selectedModelKey]);
 
   const ratioOptions = useMemo(
@@ -140,34 +140,15 @@ export function GeneratePage() {
         fetchVideoHistory(),
       ]);
 
-      if (modelsRes.ok && Array.isArray(modelsRes.data?.models) && modelsRes.data.models.length) {
+      if (modelsRes.ok && Array.isArray(modelsRes.data?.models)) {
+        const available = availableVideoModels(modelsRes.data.models);
         setWorkerMode('ready');
-        setModels(modelsRes.data.models);
-        setSelectedModelKey((prev) => {
-          const exists = modelsRes.data.models.some((m) => modelKey(m) === prev);
-          return exists ? prev : modelKey(modelsRes.data.models[0]);
-        });
-      } else if (modelsRes.workerUnavailable) {
+        setModels(available);
+        setSelectedModelKey((prev) => available.some((m) => modelKey(m) === prev) ? prev : (available[0] ? modelKey(available[0]) : ''));
+      } else {
         setWorkerMode('unavailable');
-        // Enrich fallback models from Supabase provider_models if accessible
-        const { data: dbModels } = await supabase
-          .from('provider_models')
-          .select('provider, model, active')
-          .eq('active', true)
-          .limit(200);
-        if (Array.isArray(dbModels) && dbModels.length) {
-          const map = new Map();
-          for (const item of BUILTIN_VIDEO_MODELS) {
-            map.set(modelKey(item), item);
-          }
-          for (const row of dbModels) {
-            const prof = getVideoModelProfile(row.model, row.provider);
-            if (/veo|sora|kling|hailuo|vidu|wan|seedance|grok.*video|gemini-omni|luma|runway|pika|minimax|video/i.test(row.model)) {
-              map.set(modelKey(prof), { ...prof, activeInAdmin: true, providerConfigured: true });
-            }
-          }
-          setModels(Array.from(map.values()));
-        }
+        setModels([]);
+        setSelectedModelKey('');
       }
 
       if (historyRes.ok && Array.isArray(historyRes.data?.generations)) {
@@ -279,6 +260,10 @@ export function GeneratePage() {
   const handleGenerate = async (e) => {
     e.preventDefault();
     if (submitting || uploadingSlot) return;
+    if (!selectedModel || !availableVideoModels([selectedModel]).length) {
+      setBanner({ type: 'error', text: 'Belum ada model video aktif dari provider yang dikonfigurasi.' });
+      return;
+    }
 
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt && !imageMedia?.url && !videoMedia?.url && !audioMedia?.url) {
@@ -301,7 +286,7 @@ export function GeneratePage() {
     setSubmitting(true);
     try {
       const res = await generateVideo({
-        provider: selectedModel.provider || 'unorouter',
+        provider: selectedModel.provider,
         model: selectedModel.id,
         prompt: cleanPrompt,
         aspect_ratio: aspectRatio,
@@ -383,29 +368,30 @@ export function GeneratePage() {
   return (
     <DropXLayout
       title="Generate"
-      description="Studio generasi video AI multi-provider dengan input teks, gambar, video, dan audio."
+      description="Studio gambar dan video AI dengan provider yang dapat dikonfigurasi."
     >
       <div className="generate-page">
+        <div className="generate-mode-tabs" role="tablist" aria-label="Jenis generasi">
+          <button type="button" role="tab" aria-selected={mode === 'image'} onClick={() => setMode('image')}>Generate gambar</button>
+          <button type="button" role="tab" aria-selected={mode === 'video'} onClick={() => setMode('video')}>Generate video</button>
+        </div>
+        {mode === 'image' ? <GenerateImagePanel isAdmin={isAdmin} initialPrompt={searchParams.get('prompt') || ''} request={freebeatRequest} /> : <>
         {workerMode === 'unavailable' && (
           <div className="generate-banner" role="status">
             <span>
-              Mode pratinjau lokal aktif: daftar model bawaan &amp; riwayat Supabase tetap tersedia, sedangkan pemanggilan endpoint <code>/api/video/*</code> berjalan penuh di Cloudflare Worker produksi.
+              Katalog provider video belum dapat dimuat. Coba lagi saat API tersedia; riwayat yang sudah ada tetap dapat dilihat.
             </span>
           </div>
         )}
 
-        {selectedModel && !selectedModel.providerConfigured && workerMode === 'ready' && (
-          <div className="generate-banner" role="alert">
-            <span>
-              API Key untuk provider <strong>{selectedModel.providerLabel || selectedModel.provider}</strong> belum dikonfigurasi.
-            </span>
-            {isAdmin && (
-              <Link className="generate-banner-link" to="/admin">
-                Atur API Key di Admin
-              </Link>
-            )}
+        {workerMode === 'ready' && models.length === 0 && (
+          <div className="generate-banner" role="status">
+            <span>Belum ada model video aktif dari provider yang dikonfigurasi. Freebeat video masih dalam tahap uji dan belum tersedia di sini.</span>
+            {isAdmin && <Link className="generate-banner-link" to="/admin">Atur provider &amp; model</Link>}
           </div>
         )}
+
+        {selectedModel && <div className="generate-banner" role="status"><span>Generasi video melalui provider yang dikonfigurasi dapat memakai saldo provider. Alur video lama belum memotong kredit BLEA atau memverifikasi biaya aktual.</span></div>}
 
         {banner && (
           <div
@@ -429,9 +415,7 @@ export function GeneratePage() {
                   Pilih model, unggah referensi media opsional, atur rasio, resolusi, dan durasi.
                 </p>
               </div>
-              <span className={`generate-pill ${selectedModel?.isFree ? 'is-free' : 'is-paid'}`}>
-                {selectedModel?.priceLabel || (selectedModel?.isFree ? 'Gratis' : 'Berbayar')}
-              </span>
+              {selectedModel && <span className="generate-pill">Biaya sesuai provider</span>}
             </div>
 
             {/* 1. Pilih Model */}
@@ -445,11 +429,13 @@ export function GeneratePage() {
                 aria-label="Pilih Model"
                 className="generate-select"
                 value={selectedModelKey}
+                disabled={!models.length}
                 onChange={(e) => setSelectedModelKey(e.target.value)}
               >
+                {!models.length && <option value="">Tidak ada model video aktif</option>}
                 {models.map((m) => (
                   <option key={modelKey(m)} value={modelKey(m)}>
-                    {`[${m.providerLabel || m.provider}] ${m.name} (${m.priceLabel || (m.isFree ? 'Gratis' : 'Berbayar')})${m.online === false ? ' • Sibuk' : ''}`}
+                    {`[${m.providerLabel || m.provider}] ${m.name}${m.online === false ? ' • Sibuk' : ''}`}
                   </option>
                 ))}
               </select>
@@ -472,6 +458,7 @@ export function GeneratePage() {
                 <span className="generate-label">Media Referensi (Opsional)</span>
                 <span className="generate-hint">Gambar ≤15MB · Video ≤50MB · Audio ≤20MB</span>
               </div>
+              <p className="generate-hint">File referensi diunggah ke penyimpanan publik dan dapat diakses melalui tautan; unggah hanya materi yang boleh dibagikan dengan provider.</p>
               <div className="generate-media-grid">
                 {/* Upload Image */}
                 <div className={`generate-upload-box ${imageMedia ? 'has-file' : ''}`}>
@@ -501,7 +488,7 @@ export function GeneratePage() {
                     <button
                       type="button"
                       className="generate-upload-trigger"
-                      disabled={uploadingSlot === 'image'}
+                      disabled={!selectedModel || Boolean(uploadingSlot)}
                       onClick={() => imageInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'image' ? 'Mengunggah...' : '+ Pilih Gambar'}</strong>
@@ -546,7 +533,7 @@ export function GeneratePage() {
                     <button
                       type="button"
                       className="generate-upload-trigger"
-                      disabled={uploadingSlot === 'video'}
+                      disabled={!selectedModel || Boolean(uploadingSlot)}
                       onClick={() => videoInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'video' ? 'Mengunggah...' : '+ Pilih Video'}</strong>
@@ -589,7 +576,7 @@ export function GeneratePage() {
                     <button
                       type="button"
                       className="generate-upload-trigger"
-                      disabled={uploadingSlot === 'audio'}
+                      disabled={!selectedModel || Boolean(uploadingSlot)}
                       onClick={() => audioInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'audio' ? 'Mengunggah...' : '+ Pilih Audio'}</strong>
@@ -701,7 +688,7 @@ export function GeneratePage() {
               <button
                 type="submit"
                 className="generate-submit-btn"
-                disabled={submitting || Boolean(uploadingSlot)}
+                disabled={!selectedModel || workerMode !== 'ready' || submitting || Boolean(uploadingSlot)}
               >
                 {submitting ? 'Memproses Generate...' : uploadingSlot ? 'Mengunggah Media...' : 'Generate'}
               </button>
@@ -738,10 +725,8 @@ export function GeneratePage() {
               <div className="generate-player-frame">
                 {!activeGeneration && (
                   <div className="generate-empty-stage">
-                    <strong>Siap Membuat Video</strong>
-                    <span>
-                      Pilih model, atur parameter, lalu klik <strong>Generate</strong> untuk merender video AI Anda.
-                    </span>
+                    <strong>{selectedModel ? 'Siap Membuat Video' : 'Belum ada model video aktif'}</strong>
+                    <span>{selectedModel ? 'Pilih model, atur parameter, lalu mulai generasi.' : 'Video yang sudah dibuat tetap tersedia di History.'}</span>
                   </div>
                 )}
 
@@ -906,6 +891,7 @@ export function GeneratePage() {
             </div>
           </div>
         </div>
+        </>}
       </div>
     </DropXLayout>
   );

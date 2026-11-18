@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { History, RefreshCw } from 'lucide-react';
-import { fetchVideoHistory, fetchVideoStatus } from '../api/unorouter';
+import { fetchVideoHistory, fetchVideoStatus } from '../api/generation';
 import { DropXLayout } from '../dropx/DropXLayout';
 import './history.css';
 
