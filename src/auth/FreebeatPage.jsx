@@ -17,6 +17,7 @@ async function request(action, method = 'GET', body) {
 
 const resultMessage = {
   connected: 'Otorisasi Freebeat berhasil. Tekan Periksa saldo untuk menguji MCP.',
+  'connected-limited': 'Freebeat hanya memberikan izin baca. Izin generasi belum diberikan; saldo dan pemeriksaan model tetap dapat dicoba.',
   denied: 'Otorisasi dibatalkan atau ditolak oleh Freebeat.',
   invalid: 'Sesi otorisasi tidak cocok atau kedaluwarsa. Coba hubungkan kembali.',
   failed: 'Otorisasi Freebeat tidak berhasil. Coba lagi atau periksa akses akun Anda.',
@@ -29,6 +30,7 @@ const resultMessage = {
 
 export function FreebeatPage() {
   const [connected, setConnected] = useState(false);
+  const [imageAccess, setImageAccess] = useState(false);
   const [expiresAt, setExpiresAt] = useState(null);
   const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -44,8 +46,11 @@ export function FreebeatPage() {
   const [imageError, setImageError] = useState('');
   const [imageModels, setImageModels] = useState(null);
   const [imageSchemas, setImageSchemas] = useState(null);
+  const [quoteModel, setQuoteModel] = useState('');
+  const [quotePrompt, setQuotePrompt] = useState('');
+  const [imageQuote, setImageQuote] = useState(null);
   const load = useCallback(async () => {
-    try { const result = await request('status'); setConnected(result.connected); setExpiresAt(result.expiresAt); }
+    try { const result = await request('status'); setConnected(result.connected); setImageAccess(result.imageAccess === true); setExpiresAt(result.expiresAt); }
     catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }, []);
@@ -63,8 +68,8 @@ export function FreebeatPage() {
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      if (action === 'start') {
-        const result = await request('start', 'POST');
+      if (action === 'start' || action === 'start-image') {
+        const result = await request(action, 'POST');
         const url = new URL(result.url);
         if (url.origin !== 'https://freebeat.ai' || url.pathname !== '/oauth/authorize') throw new Error('Alamat otorisasi Freebeat tidak valid.');
         window.location.assign(url.toString());
@@ -76,7 +81,7 @@ export function FreebeatPage() {
         setNotice('Permintaan baca saldo selesai tanpa menjalankan generasi.');
       } else {
         const result = await request('disconnect', 'POST');
-        setConnected(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null);
+        setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setImageQuote(null);
         setNotice(result.revoked ? 'Koneksi lokal dihapus dan token dicabut di Freebeat.' : 'Koneksi lokal dihapus. Pencabutan token di Freebeat belum dapat dikonfirmasi; periksa pengaturan akses di akun Freebeat.');
       }
     } catch (err) { setError(err.message || 'Koneksi gagal.'); }
@@ -90,6 +95,16 @@ export function FreebeatPage() {
       const result = await request(action, 'POST');
       if (action === 'image-models') setImageModels(result); else setImageSchemas(result);
     } catch (err) { setImageError(err.message || 'Pemeriksaan gambar gagal.'); }
+    finally { setImageBusy(false); }
+  }
+  async function inspectQuote(event) {
+    event.preventDefault();
+    if (imageBusy) return;
+    setImageBusy(true); setImageError(''); setImageQuote(null);
+    try {
+      const result = await request('image-quote', 'POST', { model_id: Number(quoteModel), prompt: quotePrompt });
+      setImageQuote(result.quote);
+    } catch (err) { setImageError(err.message || 'Pemeriksaan quote gagal.'); }
     finally { setImageBusy(false); }
   }
   async function checkSiteBalance(event) {
@@ -124,14 +139,27 @@ export function FreebeatPage() {
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">GAMBAR · KHUSUS ADMIN · BACA SAJA</span>
         <h2>Persiapan uji gambar</h2>
-        <p>Periksa daftar model gambar dan struktur tool MCP tanpa membuat gambar atau memakai kredit. Format perkiraan biaya perlu diverifikasi sebelum generasi dapat diaktifkan. Belum ada tombol generasi atau pembelian.</p>
+        <p>Periksa daftar model, struktur tool MCP dan respons quote tanpa membuat gambar atau memakai kredit. Format quote masih diverifikasi; respons belum dapat dipakai sebagai persetujuan biaya. Belum ada tombol generasi atau pembelian.</p>
+        <p>Untuk memeriksa izin gambar, tombol berikut meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code> melalui Freebeat. Izin ini lebih luas dari baca saldo; Anda harus menyetujuinya di Freebeat. BLEA tetap tidak menjalankan generasi pada tahap ini.</p>
+        <div className="freebeat-status">Izin gambar: {imageAccess ? 'diminta dan terindikasi diberikan; penggunaan belum diuji' : 'belum diberikan atau belum terverifikasi'}</div>
         <div className="freebeat-actions">
-          <button type="button" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-models')}>Lihat model gambar</button>
+          <button type="button" disabled={loading || busy || imageBusy} onClick={() => run('start-image')}>Hubungkan izin gambar</button>
+          <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-models')}>Lihat model gambar</button>
           <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-schemas')}>Periksa skema tool gambar</button>
         </div>
-        {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
         {imageModels && <div className="freebeat-result"><h3>Model gambar dari Freebeat</h3><pre>{JSON.stringify(imageModels.models, null, 2)}</pre>{imageModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
         {imageSchemas && <div className="freebeat-result"><h3>Struktur tool gambar</h3><p>Hanya nama parameter dan tipe dasar; deskripsi dan data sesi tidak ditampilkan. Bagikan hasil ini untuk memeriksa format biaya.</p><pre>{JSON.stringify(imageSchemas.tools, null, 2)}</pre>{imageSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
+        <form onSubmit={inspectQuote}>
+          <label className="freebeat-field">ID model gambar (angka dari daftar model)
+            <input type="number" min="0" step="1" required value={quoteModel} onChange={(event) => { setQuoteModel(event.target.value); setImageQuote(null); }} />
+          </label>
+          <label className="freebeat-field">Prompt percobaan (dikirim ke Freebeat untuk quote)
+            <input type="text" maxLength={2000} required value={quotePrompt} onChange={(event) => { setQuotePrompt(event.target.value); setImageQuote(null); }} />
+          </label>
+          <div className="freebeat-actions"><button type="submit" className="is-secondary" disabled={loading || !connected || imageBusy}>Periksa respons quote</button></div>
+        </form>
+        {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
+        {imageQuote !== null && <div className="freebeat-result"><h3>Respons quote yang disaring</h3><p>Format belum diverifikasi sebagai biaya final; tidak ada kredit yang dipakai.</p><pre>{JSON.stringify(imageQuote, null, 2)}</pre></div>}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>

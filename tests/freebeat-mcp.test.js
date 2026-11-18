@@ -83,7 +83,8 @@ test('read-only Freebeat OAuth enforces admin, PKCE and browser state; MCP calls
     const aes = await crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['decrypt']);
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: encoded.encode('session') }, aes, ciphertext);
     const stored = JSON.parse(new TextDecoder().decode(plaintext));
-    assert.deepEqual(Object.keys(stored).sort(), ['accessToken', 'clientId', 'expiresAt', 'uid']);
+    assert.deepEqual(Object.keys(stored).sort(), ['accessToken', 'clientId', 'expiresAt', 'imageAccess', 'uid']);
+    assert.equal(stored.imageAccess, false);
     assert.equal(JSON.stringify(stored).includes('NEVER-STORE-REFRESH'), false);
     assert.equal((await (await call('/api/freebeat/status', { token: 'other-admin', cookie: session })).json()).connected, false);
     assert.equal((await call('/api/freebeat/balance', { token: 'other-admin', cookie: session, method: 'POST' })).status, 401);
@@ -416,5 +417,107 @@ test('image discovery fails safely for invalid model shapes and repeating pagina
     assert.match(text, /FB-MCP-INSPECT-RESPONSE/);
     assert.doesNotMatch(text, /repeated|SECRET/);
     assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
+test('image scope is optional, consented through a separate OAuth flow and tracked without saving refresh tokens', async () => {
+  const originalFetch = globalThis.fetch;
+  let returnedScope;
+  let registrations = 0;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    if (url === 'https://freebeat.ai/oauth/register') {
+      registrations++;
+      const body = JSON.parse(init.body);
+      assert.equal(body.scope, 'freebeat:read freebeat:generate');
+      assert.deepEqual(body.grant_types, ['authorization_code', 'refresh_token']);
+      return Response.json({ client_id: 'client' });
+    }
+    if (url === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: 'SECRET-TOKEN', refresh_token: 'SECRET-REFRESH', expires_in: 600, ...(returnedScope === undefined ? {} : { scope: returnedScope }) });
+    throw new Error('unexpected request');
+  };
+  try {
+    assert.equal((await call('/api/freebeat/start-image', { method: 'POST' })).status, 401);
+    assert.equal((await call('/api/freebeat/start-image', { token: 'user', method: 'POST' })).status, 403);
+    assert.equal(registrations, 0);
+    for (const [scope, expected, hasAccess] of [
+      [undefined, 'connected', true],
+      ['freebeat:read freebeat:generate', 'connected', true],
+      ['freebeat:read', 'connected-limited', false],
+      ['freebeat:generate', 'failed', false],
+    ]) {
+      returnedScope = scope;
+      const start = await call('/api/freebeat/start-image', { token: 'admin-token', method: 'POST' });
+      assert.equal(start.status, 200);
+      const auth = new URL((await start.json()).url);
+      assert.equal(auth.searchParams.get('scope'), 'freebeat:read freebeat:generate');
+      const pending = start.headers.get('set-cookie').split(';')[0];
+      const callback = await call(`/api/freebeat/callback?code=test&state=${auth.searchParams.get('state')}`, { cookie: pending });
+      assert.ok(callback.headers.get('location').endsWith(`freebeat=${expected}`));
+      assert.doesNotMatch(callback.headers.getSetCookie().join(';'), /SECRET-TOKEN|SECRET-REFRESH/);
+      if (expected === 'failed') {
+        assert.equal(callback.headers.getSetCookie().some((h) => h.startsWith('__Host-blea_freebeat_session=')), false);
+        continue;
+      }
+      const session = callback.headers.getSetCookie().find((h) => h.startsWith('__Host-blea_freebeat_session=')).split(';')[0];
+      const status = await (await call('/api/freebeat/status', { token: 'admin-token', cookie: session })).json();
+      assert.equal(status.imageAccess, hasAccess);
+      assert.equal((await (await call('/api/freebeat/status', { token: 'different-admin', cookie: session })).json()).imageAccess, false);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+function quoteRequest({ token = 'admin-token', cookie, origin = 'https://blea-ai.blea-ai.workers.dev', contentType = 'application/json', body = JSON.stringify({ model_id: 108, prompt: '  Sebuah kucing  ' }) } = {}) {
+  return worker.fetch(new Request('https://blea-ai.blea-ai.workers.dev/api/freebeat/image-quote', {
+    method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}), 'content-type': contentType }, body,
+  }), env);
+}
+
+test('image quote is read-only, admin-gated, validates input and returns only filtered diagnostic data', async () => {
+  const originalFetch = globalThis.fetch, originalWarn = console.warn;
+  const logs = [];
+  console.warn = (...args) => logs.push(JSON.stringify(args));
+  const mcpCalls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') {
+      const token = init.headers.authorization.replace('Bearer ', '');
+      return Response.json({ id: token, app_metadata: { role: token === 'user' ? 'user' : 'admin' } });
+    }
+    const oauth = oauthFixture(url);
+    if (oauth) return oauth;
+    assert.equal(url, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body); mcpCalls.push(body);
+    if (body.method === 'initialize' || body.method === 'notifications/initialized') return successFor(body);
+    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_image', parameters: { model_id: 108, prompt: 'Sebuah kucing' } } });
+    return Response.json({ id: body.id, result: { structuredContent: { tool: 'generate_image', credits: 12, actual_price: '12.5', available: true, token: 'SECRET-TOKEN', prompt: 'SECRET-PROMPT', message: 'SECRET-MESSAGE', billing: { estimated: 12 }, notes: ['SECRET-NOTE'] } } });
+  };
+  try {
+    const cookie = await connectFixture();
+    assert.equal((await quoteRequest({ token: null, cookie })).status, 401);
+    assert.equal((await quoteRequest({ token: 'user', cookie })).status, 403);
+    assert.equal((await quoteRequest({ token: 'another-admin', cookie })).status, 401);
+    assert.equal((await quoteRequest({ cookie, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await quoteRequest({ cookie, origin: null })).status, 403);
+    assert.equal((await quoteRequest({ cookie, contentType: 'text/plain' })).status, 400);
+    assert.equal((await quoteRequest({ cookie, body: JSON.stringify({ model_id: 108, prompt: 'x', max_credits: 100 }) })).status, 400);
+    assert.equal((await quoteRequest({ cookie, body: JSON.stringify({ model_id: '108', prompt: 'x' }) })).status, 400);
+    assert.equal((await quoteRequest({ cookie, body: JSON.stringify({ model_id: 108, prompt: ' '.repeat(3) }) })).status, 400);
+    assert.equal((await quoteRequest({ cookie, body: JSON.stringify({ model_id: 108, prompt: 'x'.repeat(2001) }) })).status, 400);
+    assert.equal((await quoteRequest({ cookie, body: 'x'.repeat(16385) })).status, 400);
+    assert.equal((await call('/api/freebeat/image-generate', { token: 'admin-token', cookie, method: 'POST' })).status, 404);
+    assert.equal(mcpCalls.length, 0);
+    const result = await quoteRequest({ cookie });
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get('cache-control'), 'no-store');
+    const text = await result.text();
+    assert.deepEqual(JSON.parse(text).quote, { tool: 'generate_image', credits: 12, actual_price: '12.5', available: true, message: '[teks disembunyikan]', billing: { estimated: 12 }, notes: ['[teks disembunyikan]'] });
+    assert.doesNotMatch(text, /SECRET|Sebuah kucing/);
+    assert.doesNotMatch(logs.join(' '), /SECRET|Sebuah kucing/);
+    assert.deepEqual(mcpCalls.map((call) => call.method), ['initialize', 'notifications/initialized', 'tools/call']);
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
