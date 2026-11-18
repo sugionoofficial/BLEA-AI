@@ -367,3 +367,226 @@ test('/api/save-models stays well under Cloudflare 50-subrequest limit even with
     globalThis.fetch = realFetch;
   }
 });
+
+test('Cloudflare Workers AI native env.AI binding supports /api/status, /api/verify, /api/catalog, /api/enabled-models, /api/video/models isolation, and /api/chat', async () => {
+  assert.equal(resolveProviderApiBase('cloudflare', ''), '');
+  assert.equal(
+    resolveProviderApiBase('cloudflare', 'https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1/'),
+    'https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1',
+  );
+
+  const aiCalls = [];
+  const envWithAi = {
+    ...createEnv(),
+    AI: {
+      run: async (model, input) => {
+        aiCalls.push({ model, input });
+        if (model === '@cf/google/gemma-3-12b-it') {
+          return { choices: [{ message: { content: 'Halo dari Gemma 3 via Workers AI!' } }] };
+        }
+        return { response: 'Halo dari Llama Workers AI!' };
+      },
+    },
+  };
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'cloudflare', api_key: 'binding:AI', base_url: null, label: 'Cloudflare Workers AI' }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([
+        { provider: 'cloudflare', model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast', active: true },
+        { provider: 'cloudflare', model: '@cf/google/gemma-3-12b-it', active: true },
+        { provider: 'cloudflare', model: '@cf/zai-org/glm-4.7-flash', active: true },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-cf-1' }]);
+    }
+    if (url === 'https://api.unorouter.com/api/pricing') {
+      return Response.json({ data: [] });
+    }
+    if (url === 'https://api.unorouter.com/v1/chat/completions') {
+      throw new Error('Should not hit UnoRouter for cloudflare binding');
+    }
+    throw new Error(`Unexpected fetch: ${init.method || 'GET'} ${url}`);
+  };
+  try {
+    // 1. /api/status detects Workers AI binding cleanly and hides unconfigured binding:AI when AI is absent
+    const statusBoundRes = await worker.fetch(apiRequest('/api/status', { body: {} }), envWithAi);
+    const statusBound = await statusBoundRes.json();
+    assert.equal(statusBound.configured, true);
+    assert.equal(statusBound.workersAiBound, true);
+    assert.ok(statusBound.providers.includes('cloudflare'));
+
+    const statusUnboundRes = await worker.fetch(apiRequest('/api/status', { body: {} }), createEnv());
+    const statusUnbound = await statusUnboundRes.json();
+    assert.equal(statusUnbound.configured, false);
+    assert.deepEqual(statusUnbound.providers, []);
+
+    // 2. /api/verify verifies native env.AI binding
+    const verifyRes = await worker.fetch(
+      apiRequest('/api/verify', { body: { provider: 'cloudflare', apiKey: 'binding:AI' } }),
+      envWithAi,
+    );
+    const verifyData = await verifyRes.json();
+    assert.equal(verifyData.ok, true);
+    assert.equal(verifyData.verifiedVia, 'binding');
+    assert.ok(verifyData.modelsCount >= 10);
+
+    // 3. /api/catalog returns curated free Cloudflare LLMs
+    const catRes = await worker.fetch(apiRequest('/api/catalog', { body: { provider: 'cloudflare' } }), envWithAi);
+    const catData = await catRes.json();
+    assert.ok(catData.models.some((m) => m.id === '@cf/meta/llama-3.1-8b-instruct-fp8-fast' && m.isFree));
+    assert.ok(catData.models.every((m) => m.category === 'Text'));
+
+    // 4. /api/enabled-models lists Cloudflare models, while /api/video/models excludes @cf chat models
+    const enabledRes = await worker.fetch(apiRequest('/api/enabled-models', { body: {} }), envWithAi);
+    const enabledData = await enabledRes.json();
+    assert.ok(enabledData.modelItems.some((m) => m.id === '@cf/meta/llama-3.1-8b-instruct-fp8-fast' && m.provider === 'cloudflare'));
+
+    const videoRes = await worker.fetch(apiRequest('/api/video/models', { method: 'GET' }), envWithAi);
+    const videoData = await videoRes.json();
+    assert.equal(videoData.models.some((m) => String(m.id).startsWith('@cf/')), false);
+    assert.equal(videoData.providers.some((p) => p.id === 'cloudflare'), false);
+
+    // 5. /api/chat invokes env.AI.run, flattens multimodal arrays for text-only models, and extracts { response } & { choices }
+    const chatRes1 = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-cf-1',
+        provider: 'cloudflare',
+        model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast',
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'Jelaskan file ini' }, { type: 'image_url', image_url: { url: 'https://img.example/a.png' } }] },
+        ],
+      },
+    }), envWithAi);
+    assert.equal(chatRes1.status, 200);
+    const chatData1 = await chatRes1.json();
+    assert.equal(chatData1.ok, true);
+    assert.equal(chatData1.provider, 'cloudflare');
+    assert.equal(chatData1.reply, 'Halo dari Llama Workers AI!');
+    const lastCall = aiCalls.at(-1);
+    assert.equal(typeof lastCall.input.messages[1].content, 'string');
+    assert.ok(lastCall.input.messages[1].content.includes('Jelaskan file ini'));
+
+    const chatRes2 = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-cf-2',
+        provider: 'cloudflare',
+        model: '@cf/google/gemma-3-12b-it',
+        messages: [{ role: 'user', content: 'Halo Gemma' }],
+      },
+    }), envWithAi);
+    const chatData2 = await chatRes2.json();
+    assert.equal(chatData2.reply, 'Halo dari Gemma 3 via Workers AI!');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('Cloudflare Workers AI supports REST Account ID endpoint and cross-provider 429 fallback onto env.AI', async () => {
+  const realFetch = globalThis.fetch;
+  let capturedCfAuth = '';
+  const envWithAi = {
+    ...createEnv(),
+    AI: {
+      run: async () => ({ response: 'Cadangan gratis dari Cloudflare Workers AI!' }),
+    },
+  };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'unorouter', api_key: 'uno-key', base_url: null },
+        { provider: 'cloudflare', api_key: 'cf-rest-token', base_url: 'https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1' },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([
+        { provider: 'unorouter', model: 'gpt-oss-120b:free' },
+        { provider: 'cloudflare', model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast' },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-cf-rest' }]);
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1/chat/completions') {
+      capturedCfAuth = init.headers.authorization;
+      return Response.json({ choices: [{ message: { content: 'Balasan via REST Cloudflare!' } }] });
+    }
+    if (url === 'https://api.unorouter.com/v1/chat/completions') {
+      return new Response(JSON.stringify({ error: { message: 'Rate limited', code: 'rate_limit_exceeded' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    // 1. Direct REST route when Account ID Base URL + token configured
+    const restRes = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-cf-rest',
+        provider: 'cloudflare',
+        model: '@cf/openai/gpt-oss-20b',
+        messages: [{ role: 'user', content: 'Tes REST CF' }],
+      },
+    }), createEnv());
+    assert.equal(restRes.status, 200);
+    const restData = await restRes.json();
+    assert.equal(restData.reply, 'Balasan via REST Cloudflare!');
+    assert.equal(capturedCfAuth, 'Bearer cf-rest-token');
+
+    // 2. Fallback from 429 UnoRouter onto Cloudflare Workers AI binding (when CF uses binding:AI)
+    globalThis.fetch = async (input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+      if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+        return Response.json([
+          { provider: 'unorouter', api_key: 'uno-key', base_url: null },
+          { provider: 'cloudflare', api_key: 'binding:AI', base_url: null },
+        ]);
+      }
+      if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+        return Response.json([
+          { provider: 'unorouter', model: 'gpt-oss-120b:free' },
+          { provider: 'cloudflare', model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast' },
+        ]);
+      }
+      if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'msg-fb' }]);
+      if (url === 'https://api.unorouter.com/v1/chat/completions') {
+        return new Response(JSON.stringify({ error: { message: 'Rate limited', code: 'rate_limit_exceeded' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+    const fbRes = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-fb-cf',
+        provider: 'unorouter',
+        model: 'gpt-oss-120b:free',
+        messages: [{ role: 'user', content: 'Tes fallback' }],
+      },
+    }), envWithAi);
+    assert.equal(fbRes.status, 200);
+    const fbData = await fbRes.json();
+    assert.equal(fbData.provider, 'cloudflare');
+    assert.equal(fbData.model, '@cf/meta/llama-3.1-8b-instruct-fp8-fast');
+    assert.equal(fbData.fallbackFrom, 'gpt-oss-120b:free');
+    assert.equal(fbData.reply, 'Cadangan gratis dari Cloudflare Workers AI!');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
