@@ -190,3 +190,20 @@ test('OAuth token exchange never forwards code or verifier across origins', asyn
     assert.equal(seen.includes('https://evil.example/oauth/token'), false);
   } finally { globalThis.fetch = realFetch; console.warn = realWarn; }
 });
+
+test('registration surfaces only safe allowlisted OAuth errors, never provider descriptions or secrets', async () => {
+  const { startFreebeat } = await import('../src/lib/freebeatMcp.js');
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const logs = [];
+  console.warn = (...args) => logs.push(JSON.stringify(args));
+  try {
+    globalThis.fetch = async () => Response.json({ error: 'invalid_redirect_uri', error_description: 'Only localhost accepted. secret-token-do-not-share' }, { status: 400 });
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => /invalid_redirect_uri/.test(err.message) && /localhost\/loopback/.test(err.message) && !err.message.includes('secret-token-do-not-share'));
+    globalThis.fetch = async () => Response.json({ error: 'evil-secret-value', error_description: 'secret-token-do-not-share' }, { status: 400 });
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => /FB-REGISTER-HTTP/.test(err.message) && !/evil-secret-value|secret-token-do-not-share/.test(err.message));
+    globalThis.fetch = async () => Response.json({ error: 'invalid_client_metadata', error_description: 'x'.repeat(18000) }, { status: 400 });
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => /FB-REGISTER-HTTP/.test(err.message) && !/invalid_client_metadata/.test(err.message));
+    assert.doesNotMatch(logs.join(' '), /evil-secret-value|secret-token-do-not-share/);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
