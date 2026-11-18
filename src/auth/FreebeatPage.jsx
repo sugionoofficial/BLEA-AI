@@ -3,6 +3,7 @@ import { Link2, RefreshCw, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
+import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { freebeatRequest as request } from '../api/freebeat';
 import './freebeat.css';
 
@@ -242,8 +243,8 @@ export function FreebeatPage() {
           <button type="button" className="is-secondary" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-schemas')}>Periksa skema tool video</button>
         </div>
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
-        {videoModels && <div className="freebeat-result"><h3>Model video dari Freebeat</h3><pre>{JSON.stringify(videoModels.models, null, 2)}</pre>{videoModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
-        {videoSchemas && <div className="freebeat-result"><h3>Struktur tool video</h3><p>Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.</p><pre>{JSON.stringify(videoSchemas.tools, null, 2)}</pre>{videoSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
+        {videoModels && <FreebeatCopyResult title="Model video dari Freebeat" value={{ models: videoModels.models, truncated: videoModels.truncated === true }} description={videoModels.truncated ? 'Daftar dibatasi hingga 100 model.' : 'Salin daftar model dan status kelengkapannya.'} />}
+        {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>
