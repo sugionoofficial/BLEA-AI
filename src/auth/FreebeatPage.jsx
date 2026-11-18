@@ -4,6 +4,7 @@ import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
+import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
 import { freebeatRequest as request } from '../api/freebeat';
 import './freebeat.css';
 
@@ -245,6 +246,7 @@ export function FreebeatPage() {
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
         {videoModels && <FreebeatCopyResult title="Model video dari Freebeat" value={{ models: videoModels.models, truncated: videoModels.truncated === true }} description={videoModels.truncated ? 'Daftar dibatasi hingga 100 model.' : 'Salin daftar model dan status kelengkapannya.'} />}
         {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
+        <FreebeatVideoDiagnostic key={connected ? 'connected' : 'disconnected'} connected={connected} loading={loading} request={request} />
       </section>
       <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">EKSPERIMEN SITUS · KHUSUS ADMIN · BACA SALDO</span>
