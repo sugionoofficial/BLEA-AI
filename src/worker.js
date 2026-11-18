@@ -35,6 +35,7 @@ import {
 } from './lib/videoCatalog.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
+import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
 
 const SUPABASE_URL_ENV = (env) => (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
 
@@ -61,57 +62,126 @@ async function handleTempmail(request, url, env) {
   if (user.app_metadata?.role !== 'admin') return jsonResponse({ error: 'Fitur TempMail hanya tersedia untuk admin.' }, 403, { 'cache-control': 'no-store' });
 
   const action = String(url.searchParams.get('action') || 'alias').toLowerCase();
-  const respond = (data, status = 200) => jsonResponse(data, status, { 'cache-control': 'no-store' });
+  const respond = (data, status = 200, headers = {}) => jsonResponse(data, status, { 'cache-control': 'no-store', ...headers });
   const aliasPath = `/tempmail_user_aliases?select=user_id,email,token,provider,created_at&user_id=eq.${encodeURIComponent(user.id)}&limit=1`;
-  const aliasRes = await servicePostgrest(env, aliasPath);
-  if (!aliasRes.ok) return respond({ error: 'Gagal membaca alias TempMail. Pastikan tabel tempmail_user_aliases sudah dibuat.' }, 503);
-  const rows = await aliasRes.json().catch(() => []);
-  let alias = rows?.[0] || null;
+  const readAlias = async () => {
+    const response = await servicePostgrest(env, aliasPath);
+    if (!response.ok) throw Object.assign(new Error('Gagal membaca alias TempMail. Pastikan tabel tempmail_user_aliases sudah dibuat.'), { status: 503 });
+    const rows = await response.json().catch(() => []);
+    return rows?.[0] || null;
+  };
+  const replaceAlias = async (nextAlias) => {
+    const response = await servicePostgrest(env, '/tempmail_user_aliases?on_conflict=user_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: [{ user_id: user.id, email: nextAlias.email, token: nextAlias.token || '', provider: nextAlias.provider || 'gmailapi', created_at: new Date().toISOString() }],
+    });
+    if (response.status === 409) return null;
+    if (!response.ok) throw Object.assign(new Error('Gagal menyimpan alias TempMail.'), { status: 503 });
+    const rows = await response.json().catch(() => []);
+    return rows?.[0] || nextAlias;
+  };
+  const deleteAlias = async () => {
+    const response = await servicePostgrest(env, `/tempmail_user_aliases?user_id=eq.${encodeURIComponent(user.id)}`, { method: 'DELETE' });
+    if (!response.ok) throw Object.assign(new Error('Gagal menghapus alias TempMail.'), { status: 503 });
+  };
+  const aliasBelongsToConnection = (alias, connection) => {
+    const address = String(alias?.email || '').toLowerCase();
+    const account = String(connection?.email || '').toLowerCase();
+    const plus = address.indexOf('+');
+    const at = address.lastIndexOf('@');
+    const accountAt = account.lastIndexOf('@');
+    return plus > 0 && at > plus && accountAt > 0
+      && address.slice(0, plus) === account.slice(0, accountAt)
+      && address.slice(at + 1) === account.slice(accountAt + 1);
+  };
+  const createGmailAliasForUser = async (connection, requestedTag = '') => {
+    const custom = Boolean(String(requestedTag || '').trim());
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const created = createGmailApiAlias(connection.email, requestedTag);
+      const saved = await replaceAlias(created);
+      if (saved) return saved;
+      if (custom) break;
+    }
+    throw Object.assign(new Error('Akhiran Gmail ini sudah dipakai. Coba akhiran lain atau kosongkan kolom untuk angka acak.'), { status: 409 });
+  };
 
   try {
+    if (action === 'gmail-status') {
+      if (!isGmailApiConfigured(env)) return respond({ configured: false, connected: false, email: null });
+      const connection = await getGmailConnection(env, user.id);
+      return respond({ configured: true, connected: Boolean(connection?.email), email: connection?.email || null });
+    }
+    if (action === 'gmail-connect') {
+      if (request.method !== 'GET') return respond({ error: 'Method tidak diizinkan.' }, 405);
+      if (!isGmailApiConfigured(env)) return respond({ error: 'Mode Hubungkan Gmail belum dikonfigurasi. Siapkan Google OAuth dan secret Gmail pada Cloudflare Worker.' }, 503);
+      const { authUrl, cookie } = await buildGmailAuthUrl(env, user.id, url.toString());
+      return respond({ authUrl }, 200, { 'set-cookie': cookie });
+    }
+    if (action === 'gmail-disconnect') {
+      if (request.method !== 'POST') return respond({ error: 'Method tidak diizinkan.' }, 405);
+      await deleteGmailConnection(env, user.id);
+      await deleteAlias();
+      return respond({ disconnected: true });
+    }
     if (action === 'alias' || action === 'status') {
+      const alias = await readAlias();
       return respond({ ok: true, alias: alias ? { email: alias.email, provider: alias.provider, createdAt: alias.created_at } : null });
     }
     if (action === 'create' || action === 'rotate') {
-      if (alias && action === 'create') return respond({ ok: true, email: alias.email, provider: alias.provider, createdAt: alias.created_at, reused: true });
+      if (request.method !== 'POST') return respond({ error: 'Method tidak diizinkan.' }, 405);
+      if (isGmailApiConfigured(env)) {
+        const connection = await getGmailConnection(env, user.id);
+        if (!connection) return respond({ error: 'Hubungkan akun Gmail terlebih dahulu.' }, 400);
+        const existing = await readAlias();
+        if (action === 'create' && existing?.provider === 'gmailapi' && aliasBelongsToConnection(existing, connection)) {
+          return respond({ ok: true, email: existing.email, provider: existing.provider, createdAt: existing.created_at, reused: true });
+        }
+        const saved = await createGmailAliasForUser(connection, action === 'rotate' ? url.searchParams.get('tag') || '' : '');
+        return respond({ ok: true, email: saved.email, provider: saved.provider || 'gmailapi', createdAt: saved.created_at || new Date().toISOString(), reused: false });
+      }
+      const alias = await readAlias();
+      if (action === 'create' && alias) return respond({ ok: true, email: alias.email, provider: alias.provider, createdAt: alias.created_at, reused: true });
       const created = await createMailtmAlias();
       const row = { user_id: user.id, email: created.email, token: created.token, provider: created.provider, created_at: new Date().toISOString() };
       const saveRes = await servicePostgrest(env, '/tempmail_user_aliases?on_conflict=user_id', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-        body: [row],
+        method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' }, body: [row],
       });
-      if (!saveRes.ok) return respond({ error: 'Mailbox dibuat, tetapi gagal menyimpan alias. Pastikan tabel TempMail tersedia.' }, 503);
-      return respond({ ok: true, email: row.email, provider: row.provider, createdAt: row.created_at, reused: false });
+      if (!saveRes.ok) return respond({ error: 'Mailbox dibuat, tetapi gagal menyimpan alias.' }, 503);
+      const saved = (await saveRes.json().catch(() => []))?.[0] || row;
+      return respond({ ok: true, email: saved.email, provider: saved.provider, createdAt: saved.created_at, reused: false });
     }
     if (action === 'messages' || action === 'message') {
+      const alias = await readAlias();
       if (!alias) return respond({ error: 'Buat alamat TempMail terlebih dahulu.' }, 404);
       const requestedEmail = String(url.searchParams.get('email') || '');
-      if (requestedEmail && requestedEmail.toLowerCase() !== String(alias.email).toLowerCase()) return respond({ error: 'Alamat tidak ditemukan pada akun admin ini.' }, 404);
-      let credentials = parseMailtmCredentials(alias.token);
-      const fetchInbox = () => action === 'messages'
-        ? fetchMailtmMessages(credentials.token)
-        : fetchMailtmMessage(credentials.token, String(url.searchParams.get('messageId') || ''));
+      if (!requestedEmail || requestedEmail.toLowerCase() !== String(alias.email).toLowerCase()) return respond({ error: 'Alamat tidak ditemukan pada akun admin ini.' }, 404);
       let result;
-      try {
-        result = await fetchInbox();
-      } catch (firstError) {
-        if (!credentials.password) throw firstError;
-        credentials = { ...credentials, token: await refreshMailtmToken(alias.email, credentials.password) };
-        const updateRes = await servicePostgrest(env, `/tempmail_user_aliases?user_id=eq.${encodeURIComponent(user.id)}`, {
-          method: 'PATCH', body: { token: serializeMailtmCredentials(credentials.token, credentials.password) },
-        });
-        if (!updateRes.ok) throw firstError;
-        result = await fetchInbox();
+      if (alias.provider === 'gmailapi') {
+        const connection = await getGmailConnection(env, user.id);
+        if (!connection || !aliasBelongsToConnection(alias, connection)) return respond({ error: 'Koneksi Gmail tidak cocok dengan akhiran yang aktif. Hubungkan ulang Gmail atau buat akhiran baru.' }, 409);
+        if (action === 'messages') result = await listGmailMessages(env, connection, alias.email);
+        else {
+          const messageId = String(url.searchParams.get('messageId') || '');
+          if (!messageId) return respond({ error: 'Parameter messageId wajib diisi.' }, 400);
+          result = await getGmailMessage(env, connection, alias.email, messageId);
+        }
+      } else {
+        const credentials = parseMailtmCredentials(alias.token);
+        if (action === 'messages') result = await fetchMailtmMessages(credentials.token);
+        else {
+          const messageId = String(url.searchParams.get('messageId') || '');
+          if (!messageId) return respond({ error: 'Parameter messageId wajib diisi.' }, 400);
+          result = await fetchMailtmMessage(credentials.token, messageId);
+        }
       }
       return respond(action === 'messages' ? { ok: true, messages: result } : { ok: true, message: result });
     }
     return respond({ error: 'Action TempMail tidak dikenal.' }, 400);
   } catch (error) {
-    return respond({ error: String(error?.message || 'Layanan TempMail gagal. Coba lagi.') }, Number(error?.status) || 502);
+    return respond({ error: String(error?.message || 'Layanan TempMail gagal. Coba lagi.'), ...(error?.hint ? { hint: error.hint } : {}) }, Number(error?.status) || 502);
   }
 }
-
 async function getUser(env, token) {
   const res = await supabaseFetch(env, '/auth/v1/user', { token });
   if (!res.ok) return null;
@@ -1328,6 +1398,10 @@ async function handleApi(request, url, env) {
   try {
     if (method === 'OPTIONS') {
       return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (path === 'tempmail-gmail-callback' && method === 'GET') {
+      return handleGmailOAuthCallback(request, env);
     }
 
     if (path === 'tempmail' && ['GET', 'POST'].includes(method)) {

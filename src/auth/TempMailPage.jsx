@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Copy, Inbox, Mail, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react';
+import { Copy, Inbox, Mail, RefreshCw, RotateCcw, ShieldCheck, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import './tempmail.css';
@@ -21,7 +21,8 @@ async function tempmailRequest(action, { method = 'GET', params = {} } = {}) {
     headers: { Authorization: `Bearer ${token}`, ...(method === 'POST' ? { 'content-type': 'application/json' } : {}) },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || `Permintaan TempMail gagal (HTTP ${response.status}).`);
+  if (!response.ok) throw new Error([data?.error, data?.hint].filter(Boolean).join(' ')
+    || `Permintaan TempMail gagal (HTTP ${response.status}).`);
   return data;
 }
 
@@ -43,9 +44,13 @@ export function TempMailPage() {
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState('Memuat alamat TempMail...');
+  const [status, setStatus] = useState('Memeriksa koneksi dan alamat TempMail...');
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [gmailConfigured, setGmailConfigured] = useState(false);
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [gmailAccountEmail, setGmailAccountEmail] = useState('');
+  const [gmailTag, setGmailTag] = useState('');
 
   const loadMessages = useCallback(async (targetEmail, quiet = false) => {
     if (!targetEmail) return;
@@ -68,12 +73,21 @@ export function TempMailPage() {
     setLoading(true);
     setError('');
     try {
+      const gmail = await tempmailRequest('gmail-status');
+      setGmailConfigured(Boolean(gmail.configured));
+      setGmailConnected(Boolean(gmail.connected));
+      setGmailAccountEmail(gmail.connected ? String(gmail.email || '') : '');
       const data = await tempmailRequest('alias');
-      const savedEmail = data?.alias?.email || '';
+      const aliasProvider = String(data?.alias?.provider || '');
+      const isGmailAlias = aliasProvider === 'gmailapi';
+      const aliasMatchesMode = gmail.configured ? Boolean(gmail.connected && isGmailAlias) : !isGmailAlias;
+      const savedEmail = data?.alias?.email && aliasMatchesMode ? data.alias.email : '';
       setEmail(savedEmail);
       if (savedEmail) {
         setStatus('Alamat TempMail siap.');
         await loadMessages(savedEmail, true);
+      } else if (gmail.configured && !gmail.connected) {
+        setStatus('Hubungkan akun Gmail untuk mulai membuat alamat +tag.');
       } else {
         setStatus('Belum ada alamat. Buat alamat untuk mulai menerima email.');
       }
@@ -85,7 +99,21 @@ export function TempMailPage() {
     }
   }, [loadMessages]);
 
-  useEffect(() => { loadAlias(); }, [loadAlias]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gmailResult = params.get('gmail');
+    const gmailReason = params.get('reason') || 'OAuth dibatalkan atau gagal.';
+    if (gmailResult) {
+      params.delete('gmail');
+      params.delete('reason');
+      const query = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    }
+    loadAlias().then(() => {
+      if (gmailResult === 'connected') setStatus('Gmail berhasil dihubungkan. Sekarang isi akhiran lalu tekan Generate ujung.');
+      if (gmailResult === 'error') setError(`Gagal menghubungkan Gmail: ${gmailReason}`);
+    });
+  }, [loadAlias]);
 
   useEffect(() => {
     if (!email) return undefined;
@@ -115,6 +143,58 @@ export function TempMailPage() {
     }
   };
 
+  const connectGmail = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await tempmailRequest('gmail-connect');
+      const authUrl = new URL(String(data.authUrl || ''));
+      if (authUrl.protocol !== 'https:' || authUrl.hostname !== 'accounts.google.com') throw new Error('URL OAuth Google tidak valid.');
+      window.location.assign(authUrl.toString());
+    } catch (requestError) {
+      setError(requestError.message || 'Gagal membuka Google OAuth.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnectGmail = async () => {
+    if (!window.confirm('Putuskan akun Gmail dan hapus alias TempMail aktif?')) return;
+    setBusy(true);
+    setError('');
+    try {
+      await tempmailRequest('gmail-disconnect', { method: 'POST' });
+      setGmailConnected(false);
+      setGmailAccountEmail('');
+      setEmail('');
+      setMessages([]);
+      setSelectedMessage(null);
+      setStatus('Koneksi Gmail diputus.');
+    } catch (requestError) {
+      setError(requestError.message || 'Gagal memutuskan Gmail.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const generateGmailAlias = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const tag = gmailTag.trim();
+      const data = await tempmailRequest('rotate', { method: 'POST', params: tag ? { tag } : {} });
+      setEmail(data.email);
+      setMessages([]);
+      setSelectedMessage(null);
+      setStatus(`Akhiran baru dibuat: ${data.email}`);
+      await loadMessages(data.email, true);
+    } catch (requestError) {
+      setError(requestError.message || 'Gagal membuat akhiran Gmail.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openMessage = async (message) => {
     setBusy(true);
     setError('');
@@ -137,7 +217,12 @@ export function TempMailPage() {
     }
   };
 
+  const gmailPreview = useMemo(() => {
+    const [local = '', domain = 'gmail.com'] = gmailAccountEmail.split('@');
+    return `${local}+${gmailTag.trim() || 'angka'}@${domain}`;
+  }, [gmailAccountEmail, gmailTag]);
   const htmlDocument = useMemo(() => emailFrameDocument(selectedMessage?.bodyHtml), [selectedMessage?.bodyHtml]);
+  const gmailActive = gmailConfigured && gmailConnected;
 
   return (
     <DropXLayout title="TempMail" description="Kotak masuk email sementara khusus admin." footer={false}>
@@ -147,52 +232,62 @@ export function TempMailPage() {
           <div>
             <span className="tempmail-eyebrow"><ShieldCheck size={13} /> ADMIN ONLY</span>
             <h1>TempMail</h1>
-            <p>Buat alamat email sementara dan pantau inbox dari satu tempat.</p>
+            <p>Hubungkan Gmail, buat alamat +tag, dan pantau inbox dari satu tempat.</p>
           </div>
         </header>
 
-        <section className="tempmail-card tempmail-address-card" aria-label="Alamat email sementara">
-          <div className="tempmail-card-title"><div><span className="tempmail-kicker">ALAMAT AKTIF</span><h2>Email sementara</h2></div><span className="tempmail-provider-pill">mail.tm</span></div>
-          {email ? (
-            <div className="tempmail-address-row">
-              <code>{email}</code>
-              <button type="button" className="tempmail-button tempmail-button-secondary" onClick={copyEmail} aria-label="Salin alamat email"><Copy size={15} /> Salin</button>
+        <section className="tempmail-card tempmail-gmail-card" aria-label="Hubungkan akun Gmail">
+          <div className="tempmail-card-title"><div><span className="tempmail-kicker">GOOGLE OAUTH · GMAIL READ ONLY</span><h2>Hubungkan Gmail Anda</h2></div><span className={`tempmail-provider-pill ${gmailActive ? 'is-connected' : ''}`}>{gmailActive ? 'Terhubung' : gmailConfigured ? 'Belum terhubung' : 'Perlu konfigurasi'}</span></div>
+          {!gmailConfigured ? <>
+            <p className="tempmail-gmail-copy">Hubungkan Gmail Anda menggunakan Google OAuth untuk membuat alamat seperti <code>nama+tag@gmail.com</code> dan membaca email yang dikirim ke alias tersebut.</p>
+            <div className="tempmail-gmail-setup" role="note"><b>OAuth Gmail belum diaktifkan.</b> Admin perlu menyiapkan Gmail API, OAuth Web Client, callback <code>/api/tempmail-gmail-callback</code>, dan secret Worker: <code>GMAIL_CLIENT_ID</code>, <code>GMAIL_CLIENT_SECRET</code>, serta <code>PROVIDER_CREDENTIAL_ENCRYPTION_KEY</code>.</div>
+            <p className="tempmail-security-note">Kredensial OAuth disimpan terenkripsi di server. Aplikasi hanya meminta izin baca email; tidak dapat mengirim atau menghapus email.</p>
+          </> : <>
+            <p className="tempmail-gmail-copy">{gmailActive ? <>Akun terhubung: <b>{gmailAccountEmail}</b>. Generate akhiran untuk menerima email di inbox Gmail ini.</> : 'Google OAuth siap. Hubungkan akun Gmail yang ingin Anda gunakan.'}</p>
+            <div className="tempmail-actions">
+              <button type="button" className="tempmail-button" disabled={busy} onClick={connectGmail}><ShieldCheck size={15} /> {gmailActive ? 'Hubungkan ulang Gmail' : 'Hubungkan Gmail'}</button>
+              {gmailActive && <button type="button" className="tempmail-button tempmail-button-secondary" disabled={busy} onClick={disconnectGmail}><Unplug size={15} /> Putuskan</button>}
             </div>
-          ) : <p className="tempmail-empty-address">{loading ? 'Memeriksa alamat tersimpan…' : 'Belum ada alamat TempMail.'}</p>}
+            {gmailActive && <div className="tempmail-gmail-generator">
+              <label htmlFor="tempmail-gmail-tag">Akhiran setelah tanda + <small>(misalnya 1, toko-2026; maksimal 32 karakter)</small></label>
+              <div className="tempmail-gmail-tag-row">
+                <input id="tempmail-gmail-tag" value={gmailTag} maxLength={32} autoComplete="off" spellCheck="false" placeholder="1 (kosongkan untuk angka acak)" onChange={(event) => setGmailTag(event.target.value)} />
+                <button type="button" className="tempmail-button" disabled={busy} onClick={generateGmailAlias}><Mail size={15} /> Generate ujung</button>
+              </div>
+              <div className="tempmail-gmail-preview">Contoh alamat: <code>{gmailPreview}</code></div>
+            </div>}
+          </>}
+        </section>
+
+        {!gmailActive && <section className="tempmail-card tempmail-address-card" aria-label="Alamat email sementara">
+          <div className="tempmail-card-title"><div><span className="tempmail-kicker">MODE TEMPMAIL SEMENTARA</span><h2>Alamat email sementara</h2></div><span className="tempmail-provider-pill">mail.tm</span></div>
+          {email ? <div className="tempmail-address-row"><code>{email}</code><button type="button" className="tempmail-button tempmail-button-secondary" onClick={copyEmail} aria-label="Salin alamat email"><Copy size={15} /> Salin</button></div> : <p className="tempmail-empty-address">{loading ? 'Memeriksa alamat tersimpan…' : gmailConfigured ? 'Hubungkan Gmail di atas untuk membuat alamat Gmail +tag.' : 'Belum ada alamat TempMail.'}</p>}
           <div className="tempmail-actions">
-            {!email && <button type="button" className="tempmail-button" disabled={busy || loading} onClick={() => createAddress(false)}><Mail size={15} /> Buat alamat email</button>}
-            {email && <>
-              <button type="button" className="tempmail-button" disabled={busy} onClick={() => loadMessages(email)}><RefreshCw size={15} className={busy ? 'tempmail-spin' : ''} /> Refresh inbox</button>
-              <button type="button" className="tempmail-button tempmail-button-secondary" disabled={busy} onClick={() => createAddress(true)}><RotateCcw size={15} /> Alamat baru</button>
-            </>}
+            {!gmailConfigured && !email && <button type="button" className="tempmail-button" disabled={busy || loading} onClick={() => createAddress(false)}><Mail size={15} /> Buat alamat email</button>}
+            {email && <><button type="button" className="tempmail-button" disabled={busy} onClick={() => loadMessages(email)}><RefreshCw size={15} className={busy ? 'tempmail-spin' : ''} /> Refresh inbox</button>{!gmailConfigured && <button type="button" className="tempmail-button tempmail-button-secondary" disabled={busy} onClick={() => createAddress(true)}><RotateCcw size={15} /> Alamat baru</button>}</>}
             <span className="tempmail-poll-hint">Pembaruan otomatis tiap 15 detik</span>
           </div>
           <div className={`tempmail-status ${error ? 'is-error' : ''}`} role={error ? 'alert' : 'status'}>{error || status}{lastUpdated && !error ? ` · ${lastUpdated.toLocaleTimeString('id-ID')}` : ''}</div>
-          <p className="tempmail-security-note">Alamat ini dikelola oleh layanan mail.tm dan mungkin bersifat sementara. Jangan gunakan untuk menerima informasi sensitif atau pemulihan akun penting.</p>
-        </section>
+          <p className="tempmail-security-note">Alamat mail.tm bersifat sementara. Gunakan mode ini hanya jika Gmail OAuth belum dikonfigurasi; jangan gunakan untuk menerima informasi sensitif atau pemulihan akun penting.</p>
+        </section>}
+
+        {gmailActive && <section className="tempmail-card tempmail-address-card" aria-label="Alamat Gmail sementara">
+          <div className="tempmail-card-title"><div><span className="tempmail-kicker">ALAMAT GMAIL AKTIF</span><h2>Alias Gmail</h2></div><span className="tempmail-provider-pill is-connected">gmail.com</span></div>
+          {email ? <div className="tempmail-address-row"><code>{email}</code><button type="button" className="tempmail-button tempmail-button-secondary" onClick={copyEmail} aria-label="Salin alamat email"><Copy size={15} /> Salin</button></div> : <p className="tempmail-empty-address">Belum ada akhiran Gmail. Isi akhiran di atas dan pilih Generate ujung.</p>}
+          <div className="tempmail-actions">{email && <button type="button" className="tempmail-button" disabled={busy} onClick={() => loadMessages(email)}><RefreshCw size={15} className={busy ? 'tempmail-spin' : ''} /> Refresh inbox</button>}<span className="tempmail-poll-hint">Inbox diperbarui otomatis tiap 15 detik</span></div>
+          <div className={`tempmail-status ${error ? 'is-error' : ''}`} role={error ? 'alert' : 'status'}>{error || status}{lastUpdated && !error ? ` · ${lastUpdated.toLocaleTimeString('id-ID')}` : ''}</div>
+          <p className="tempmail-security-note">Alias +tag dikirim ke Gmail Anda. Email yang ditujukan ke alamat dasar tanpa akhiran tidak ditampilkan sebagai pesan alias.</p>
+        </section>}
 
         <div className="tempmail-content-grid">
           <section className="tempmail-card tempmail-inbox-card">
             <div className="tempmail-card-title"><div><span className="tempmail-kicker">INBOX</span><h2>Pesan masuk</h2></div><span className="tempmail-count">{messages.length}</span></div>
-            {!email ? <div className="tempmail-list-empty"><Inbox size={24} /><span>Buat alamat email untuk melihat inbox.</span></div> : messages.length === 0 ? <div className="tempmail-list-empty"><Inbox size={24} /><span>{busy ? 'Memeriksa pesan…' : 'Belum ada pesan masuk.'}</span></div> : (
-              <div className="tempmail-message-list">
-                {messages.map((message) => (
-                  <button type="button" key={message.id} className={`tempmail-message-item ${selectedMessage?.id === message.id ? 'is-selected' : ''}`} onClick={() => openMessage(message)}>
-                    <span className="tempmail-message-top"><b>{message.subject || '(Tanpa subjek)'}</b><time>{displayDate(message.createdAt)}</time></span>
-                    <span className="tempmail-message-from">{message.from || 'Pengirim tidak diketahui'}</span>
-                    {message.preview && <span className="tempmail-message-preview">{message.preview}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
+            {!email ? <div className="tempmail-list-empty"><Inbox size={24} /><span>Buat alias email untuk melihat inbox.</span></div> : messages.length === 0 ? <div className="tempmail-list-empty"><Inbox size={24} /><span>{busy ? 'Memeriksa pesan…' : 'Belum ada pesan masuk.'}</span></div> : <div className="tempmail-message-list">{messages.map((message) => <button type="button" key={message.id} className={`tempmail-message-item ${selectedMessage?.id === message.id ? 'is-selected' : ''}`} onClick={() => openMessage(message)}><span className="tempmail-message-top"><b>{message.subject || '(Tanpa subjek)'}</b><time>{displayDate(message.createdAt)}</time></span><span className="tempmail-message-from">{message.from || 'Pengirim tidak diketahui'}</span>{message.preview && <span className="tempmail-message-preview">{message.preview}</span>}</button>)}</div>}
           </section>
 
           <section className="tempmail-card tempmail-detail-card" aria-label="Isi email">
             <div className="tempmail-card-title"><div><span className="tempmail-kicker">PESAN</span><h2>{selectedMessage?.subject || 'Isi email'}</h2></div></div>
-            {!selectedMessage ? <div className="tempmail-list-empty"><Mail size={24} /><span>Pilih pesan di inbox untuk membaca isinya.</span></div> : <>
-              <div className="tempmail-detail-meta"><b>Dari</b><span>{selectedMessage.from || '—'}</span><b>Kepada</b><span>{selectedMessage.to || email}</span><b>Tanggal</b><span>{displayDate(selectedMessage.createdAt) || '—'}</span></div>
-              {selectedMessage.bodyHtml ? <iframe className="tempmail-message-frame" title="Isi pesan email (terisolasi)" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlDocument} /> : <pre className="tempmail-message-text">{selectedMessage.bodyText || 'Email ini tidak berisi teks.'}</pre>}
-            </>}
+            {!selectedMessage ? <div className="tempmail-list-empty"><Mail size={24} /><span>Pilih pesan di inbox untuk membaca isinya.</span></div> : <><div className="tempmail-detail-meta"><b>Dari</b><span>{selectedMessage.from || '—'}</span><b>Kepada</b><span>{selectedMessage.to || email}</span><b>Tanggal</b><span>{displayDate(selectedMessage.createdAt) || '—'}</span></div>{selectedMessage.bodyHtml ? <iframe className="tempmail-message-frame" title="Isi pesan email (terisolasi)" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlDocument} /> : <pre className="tempmail-message-text">{selectedMessage.bodyText || 'Email ini tidak berisi teks.'}</pre>}</>}
           </section>
         </div>
       </main>

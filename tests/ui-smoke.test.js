@@ -204,7 +204,9 @@ test('TempMail admin page renders privately and isolates untrusted email HTML', 
   ));
   assert.ok(html.includes('TempMail'));
   assert.ok(html.includes('ADMIN ONLY'));
+  assert.ok(html.includes('Hubungkan Gmail Anda'));
   assert.ok(html.includes('Buat alamat email'));
+  assert.ok(html.includes('PROVIDER_CREDENTIAL_ENCRYPTION_KEY'));
   const source = (await import('node:fs')).readFileSync(new URL('../src/auth/TempMailPage.jsx', import.meta.url), 'utf8');
   assert.ok(source.includes('sandbox=""'), 'Email HTML must be rendered in a sandboxed iframe without scripts or same-origin access');
   assert.ok(source.includes("default-src 'none'"), 'Email HTML iframe must apply a restrictive CSP');

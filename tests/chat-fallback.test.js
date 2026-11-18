@@ -922,3 +922,102 @@ test('/api/tempmail is server-gated to admins, keeps mailbox credentials private
     globalThis.fetch = realFetch;
   }
 });
+
+test('/api/tempmail supports the GEN-Z.AI Gmail OAuth connect, plus-tag alias, filtered inbox, and disconnect flow', async () => {
+  const realFetch = globalThis.fetch;
+  const gmailRefreshSecret = 'a'.repeat(64);
+  let savedConnection;
+  let savedAlias;
+  const workerFetches = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : input.url);
+    const parsed = new URL(url);
+    workerFetches.push({ url: parsed.toString(), method: init.method || 'GET' });
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'gmail-admin', app_metadata: { role: 'admin' } });
+    if (parsed.hostname === 'supabase.example' && parsed.pathname === '/rest/v1/tempmail_gmail_connections') {
+      if (init.method === 'POST') {
+        savedConnection = JSON.parse(init.body);
+        return new Response(null, { status: 201 });
+      }
+      if (init.method === 'DELETE') { savedConnection = null; return new Response(null, { status: 204 }); }
+      return Response.json(savedConnection ? [{ email: savedConnection.email, refresh_token_ciphertext: savedConnection.refresh_token_ciphertext, refresh_token_iv: savedConnection.refresh_token_iv }] : []);
+    }
+    if (parsed.hostname === 'supabase.example' && parsed.pathname === '/rest/v1/tempmail_user_aliases') {
+      if (init.method === 'POST') {
+        const body = JSON.parse(init.body);
+        savedAlias = Array.isArray(body) ? body[0] : body;
+        return Response.json([savedAlias], { status: 201 });
+      }
+      if (init.method === 'DELETE') { savedAlias = null; return new Response(null, { status: 204 }); }
+      return Response.json(savedAlias ? [savedAlias] : []);
+    }
+    if (parsed.hostname === 'oauth2.googleapis.com' && parsed.pathname === '/token') {
+      const form = new URLSearchParams(init.body);
+      if (form.get('grant_type') === 'authorization_code') return Response.json({ access_token: 'gmail-access', refresh_token: 'do-not-return-this-refresh-token' });
+      return Response.json({ access_token: 'gmail-access' });
+    }
+    if (parsed.hostname === 'gmail.googleapis.com' && parsed.pathname === '/gmail/v1/users/me/profile') return Response.json({ emailAddress: 'owner@gmail.com' });
+    if (parsed.hostname === 'gmail.googleapis.com' && parsed.pathname === '/gmail/v1/users/me/messages') return Response.json({ messages: [{ id: 'alias-message' }, { id: 'other-message' }] });
+    if (parsed.hostname === 'gmail.googleapis.com' && parsed.pathname.endsWith('/messages/alias-message')) {
+      if (parsed.searchParams.get('format') === 'metadata') return Response.json({ id: 'alias-message', snippet: 'Your code is 8321', payload: { headers: [{ name: 'To', value: 'owner+signup-2026@gmail.com' }, { name: 'Subject', value: 'Verify your account' }, { name: 'From', value: 'Service <no-reply@example.com>' }] } });
+      return Response.json({ id: 'alias-message', payload: { headers: [{ name: 'To', value: 'owner+signup-2026@gmail.com' }, { name: 'Subject', value: 'Verify your account' }, { name: 'From', value: 'no-reply@example.com' }], mimeType: 'text/plain', body: { data: btoa('Your verification code is 8321') } } });
+    }
+    if (parsed.hostname === 'gmail.googleapis.com' && parsed.pathname.endsWith('/messages/other-message')) return Response.json({ id: 'other-message', payload: { headers: [{ name: 'To', value: 'owner@gmail.com' }, { name: 'Subject', value: 'Private account email' }] } });
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  const env = {
+    ...createEnv(),
+    GMAIL_CLIENT_ID: 'test-client-id.apps.googleusercontent.com',
+    GMAIL_CLIENT_SECRET: 'test-client-secret',
+    PROVIDER_CREDENTIAL_ENCRYPTION_KEY: gmailRefreshSecret,
+  };
+  try {
+    const connect = await worker.fetch(apiRequest('/api/tempmail?action=gmail-connect', { token: 'admin-jwt', method: 'GET' }), env);
+    assert.equal(connect.status, 200);
+    const connectData = await connect.json();
+    const authUrl = new URL(connectData.authUrl);
+    assert.equal(authUrl.hostname, 'accounts.google.com');
+    assert.equal(authUrl.searchParams.get('scope'), 'https://www.googleapis.com/auth/gmail.readonly');
+    assert.equal(authUrl.searchParams.get('redirect_uri'), 'https://app.example/api/tempmail-gmail-callback');
+    const callbackUrl = `https://app.example/api/tempmail-gmail-callback?code=oauth-code&state=${encodeURIComponent(authUrl.searchParams.get('state'))}`;
+    const missingCookieCallback = await worker.fetch(new Request(callbackUrl));
+    assert.equal(new URL(missingCookieCallback.headers.get('location')).searchParams.get('gmail'), 'error', 'OAuth callback must reject state not bound to the initiating browser');
+    const cookie = connect.headers.get('set-cookie').split(';')[0];
+    const callback = await worker.fetch(new Request(callbackUrl, { headers: { cookie } }), env);
+    assert.equal(callback.status, 302);
+    assert.equal(new URL(callback.headers.get('location')).pathname, '/tempmail');
+    assert.equal(new URL(callback.headers.get('location')).searchParams.get('gmail'), 'connected', new URL(callback.headers.get('location')).searchParams.get('reason'));
+    assert.equal(savedConnection.email, 'owner@gmail.com');
+    assert.equal(savedConnection.refresh_token_ciphertext.includes('do-not-return-this-refresh-token'), false);
+
+    const status = await worker.fetch(apiRequest('/api/tempmail?action=gmail-status', { token: 'admin-jwt', method: 'GET' }), env);
+    assert.deepEqual(await status.json(), { configured: true, connected: true, email: 'owner@gmail.com' });
+
+    const invalidTag = await worker.fetch(apiRequest('/api/tempmail?action=rotate&tag=bad%40gmail.com', { token: 'admin-jwt', body: {} }), env);
+    assert.equal(invalidTag.status, 400);
+    assert.equal(savedAlias, undefined);
+
+    const generated = await worker.fetch(apiRequest('/api/tempmail?action=rotate&tag=signup-2026', { token: 'admin-jwt', body: {} }), env);
+    assert.equal(generated.status, 200);
+    const generatedData = await generated.json();
+    assert.equal(generatedData.email, 'owner+signup-2026@gmail.com');
+    assert.equal(savedAlias.provider, 'gmailapi');
+
+    const inbox = await worker.fetch(apiRequest(`/api/tempmail?action=messages&email=${encodeURIComponent(generatedData.email)}`, { token: 'admin-jwt', method: 'GET' }), env);
+    const inboxData = await inbox.json();
+    assert.equal(inboxData.messages.length, 1, 'Only the plus alias recipient should be visible');
+    assert.equal(inboxData.messages[0].subject, 'Verify your account');
+
+    const message = await worker.fetch(apiRequest(`/api/tempmail?action=message&email=${encodeURIComponent(generatedData.email)}&messageId=alias-message`, { token: 'admin-jwt', method: 'GET' }), env);
+    assert.equal((await message.json()).message.bodyText, 'Your verification code is 8321');
+
+    const disconnected = await worker.fetch(apiRequest('/api/tempmail?action=gmail-disconnect', { token: 'admin-jwt', body: {} }), env);
+    assert.equal(disconnected.status, 200);
+    assert.equal((await disconnected.json()).disconnected, true);
+    assert.equal(savedConnection, null);
+    assert.equal(savedAlias, null);
+    assert.ok(workerFetches.some((call) => call.url.includes('/gmail/v1/users/me/messages?')));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
