@@ -14,6 +14,7 @@ const ResetPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module
 const CreditsPage = lazy(() => import('./auth/CreditsPage').then((module) => ({ default: module.CreditsPage })));
 const HistoryPage = lazy(() => import('./auth/HistoryPage').then((module) => ({ default: module.HistoryPage })));
 const GeneratePage = lazy(() => import('./auth/GeneratePage').then((module) => ({ default: module.GeneratePage })));
+const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => ({ default: module.FreebeatPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const TempMailPage = lazy(() => import('./auth/TempMailPage').then((module) => ({ default: module.TempMailPage })));
 const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
@@ -50,6 +51,7 @@ function App() {
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />
+              <Route path="/admin/freebeat" element={<FreebeatPage />} />
               <Route path="/tempmail" element={<TempMailPage />} />
             </Route>
           </Route>

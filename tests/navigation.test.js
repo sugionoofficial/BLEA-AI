@@ -45,6 +45,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'Kredit', href: '/credits' },
       { title: 'History', href: '/history' },
       { title: 'Admin Panel', href: '/admin' },
+      { title: 'Freebeat MCP', href: '/admin/freebeat' },
       { title: 'TempMail', href: '/tempmail' },
       { title: 'Setting', href: '/settings' },
     ],
@@ -86,6 +87,8 @@ test('activeNavHref highlights the exact matching route and respects admin role'
   assert.equal(nav.activeNavHref('/settings'), '/settings');
   assert.equal(nav.activeNavHref('/admin', { isAdmin: false }), null);
   assert.equal(nav.activeNavHref('/admin', { isAdmin: true }), '/admin');
+  assert.equal(nav.activeNavHref('/admin/freebeat', { isAdmin: false }), null);
+  assert.equal(nav.activeNavHref('/admin/freebeat', { isAdmin: true }), '/admin/freebeat');
   assert.equal(nav.activeNavHref('/unknown'), null);
 });
 

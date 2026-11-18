@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   History,
   Mail,
+  Plug,
   MessageSquare,
   Settings,
   ShieldCheck,
@@ -61,6 +62,15 @@ export const navigation = [
         badge: 'Admin',
         description: 'Kelola pengguna, model & API key',
         keywords: ['admin', 'panel', 'pengguna', 'waitlist', 'api key', 'model'],
+      },
+      {
+        title: 'Freebeat MCP',
+        href: '/admin/freebeat',
+        icon: Plug,
+        adminOnly: true,
+        badge: 'Admin',
+        description: 'Uji koneksi Freebeat',
+        keywords: ['freebeat', 'mcp', 'koneksi'],
       },
       {
         title: 'TempMail',

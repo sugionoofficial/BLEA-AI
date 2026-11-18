@@ -233,3 +233,14 @@ test('Credits page shows the pending rollout notice to signed-in users', async (
   assert.ok(html.includes('integrasi Freebeat dan pemotongan kredit belum tersedia'));
   assert.equal(html.includes('Admin · Kelola paket'), false);
 });
+
+test('Freebeat MCP page describes a temporary read-only admin connection', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { FreebeatPage } = await vite.ssrLoadModule('/src/auth/FreebeatPage.jsx');
+  const session = { access_token: 'admin-token', user: { id: 'admin', email: 'admin@example.com', user_metadata: {}, app_metadata: { role: 'admin' } } };
+  const html = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(FreebeatPage))));
+  assert.ok(html.includes('Hubungkan Freebeat'));
+  assert.ok(html.includes('Periksa saldo'));
+  assert.ok(html.includes('tidak menghabiskan kredit'));
+});
