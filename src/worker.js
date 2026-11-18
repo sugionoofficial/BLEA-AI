@@ -33,6 +33,7 @@ import {
   normalizeVideoStatus,
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
+import { freebeatCallback, handleFreebeat } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
@@ -1398,6 +1399,13 @@ async function handleApi(request, url, env) {
   try {
     if (method === 'OPTIONS') {
       return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (path === 'freebeat/callback' && method === 'GET') return freebeatCallback(request, env);
+    if (path.startsWith('freebeat/')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+      const user = token ? await getUser(env, token) : null;
+      return handleFreebeat(request, url, env, user);
     }
 
     if (path === 'tempmail-gmail-callback' && method === 'GET') {
