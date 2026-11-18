@@ -23,12 +23,14 @@ function apiRequest(path, { method = 'POST', body, token = 'user-jwt' } = {}) {
   });
 }
 
-test('/api/enabled-models filters out video & non-chat models and returns modelItems with providers', async () => {
+test('/api/enabled-models filters out video & non-chat models, prioritizes reliable models, and returns modelItems with providers', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = typeof input === 'string' ? input : input.url;
     if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
       return Response.json([
+        { provider: 'unorouter', model: 'qwen3.7-flash:free' },
+        { provider: 'unorouter', model: 'phonellm-mini-alpha-2:free' },
         { provider: 'unorouter', model: 'gpt-oss-120b:free' },
         { provider: 'unorouter', model: 'veo3.1' },
         { provider: 'unorouter', model: 'text-embedding-3-small' },
@@ -41,11 +43,11 @@ test('/api/enabled-models filters out video & non-chat models and returns modelI
     const res = await worker.fetch(apiRequest('/api/enabled-models', { body: {} }), createEnv());
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.deepEqual(data.models, ['gpt-oss-120b:free', 'anthropic/claude-sonnet-4']);
-    assert.deepEqual(data.modelItems, [
-      { id: 'gpt-oss-120b:free', provider: 'unorouter' },
-      { id: 'anthropic/claude-sonnet-4', provider: 'openrouter' },
-    ]);
+    assert.equal(data.models[0], 'gpt-oss-120b:free');
+    assert.ok(data.models.includes('anthropic/claude-sonnet-4'));
+    assert.equal(data.models.includes('veo3.1'), false);
+    assert.equal(data.models.includes('text-embedding-3-small'), false);
+    assert.ok(data.modelItems.some((item) => item.id === 'anthropic/claude-sonnet-4' && item.provider === 'openrouter'));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -200,6 +202,71 @@ test('/api/chat returns HTTP 429 with retryAfterSec and Indonesian message when 
     assert.equal(data.retryAfterSec, 42);
     assert.match(data.error, /42 detik/);
     assert.deepEqual(data.triedModels, ['gpt-oss-120b:free', 'mistral-small:free']);
+    assert.equal(data.triedDetails.length, 2);
+    assert.equal(data.triedDetails[1].model, 'mistral-small:free');
+    assert.equal(data.triedDetails[1].status, 429);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('/api/chat places system message first, diversifies fallback across families, and extracts reasoning/array replies', async () => {
+  const realFetch = globalThis.fetch;
+  const capturedPayloads = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'unorouter', api_key: 'uno-key', base_url: null }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([
+        { provider: 'unorouter', model: 'qwen3.7-flash:free' },
+        { provider: 'unorouter', model: 'deepseek-v4-flash-0731:free' },
+        { provider: 'unorouter', model: 'deepseek-v4.1-flash-uncensored-fp8:free' },
+        { provider: 'unorouter', model: 'gemini-2.5-flash:free' },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-div-1' }]);
+    }
+    if (url === 'https://api.unorouter.com/v1/chat/completions') {
+      const payload = JSON.parse(init.body);
+      capturedPayloads.push(payload);
+      if (payload.model === 'qwen3.7-flash:free') {
+        return new Response(JSON.stringify({
+          error: { message: 'The free tier allows 1 request(s) every 1 min per account', code: 'rate_limit_exceeded' },
+        }), { status: 429, headers: { 'content-type': 'application/json' } });
+      }
+      if (payload.model === 'gemini-2.5-flash:free') {
+        return Response.json({
+          choices: [{ message: { content: [{ type: 'text', text: 'Jawaban dari Gemini' }] } }],
+        });
+      }
+      return new Response(JSON.stringify({ error: { message: 'Model overloaded' } }), { status: 503, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-4',
+        model: 'qwen3.7-flash:free',
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.model, 'gemini-2.5-flash:free');
+    assert.equal(data.reply, 'Jawaban dari Gemini');
+    assert.equal(capturedPayloads[0].messages[0].role, 'system');
+    assert.equal(capturedPayloads[0].messages[1].role, 'user');
+    assert.deepEqual(
+      capturedPayloads.map((p) => p.model),
+      ['qwen3.7-flash:free', 'gemini-2.5-flash:free'],
+    );
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -236,17 +236,21 @@ export function AIStudio() {
         }
         setProviderStatus(status);
         if (status?.configured) {
-          const [items, freeModels] = await Promise.all([fetchEnabledModelItems(), fetchFreeModels()]);
+          const items = await fetchEnabledModelItems();
           if (cancelled) return;
           if (Array.isArray(items) && items.length) {
             const ids = items.map((m) => m.id);
             setModelItems(items);
             setEnabledModels(ids);
             setSelectedModel((current) => ids.includes(current) ? current : ids[0]);
-          } else if (Array.isArray(freeModels) && freeModels.length) {
-            setModelItems(freeModels.map((id) => ({ id, provider: 'unorouter' })));
-            setModels(freeModels);
-            setSelectedModel((current) => freeModels.includes(current) ? current : freeModels[0]);
+          } else {
+            const freeModels = await fetchFreeModels();
+            if (cancelled) return;
+            if (Array.isArray(freeModels) && freeModels.length) {
+              setModelItems(freeModels.map((id) => ({ id, provider: 'unorouter' })));
+              setModels(freeModels);
+              setSelectedModel((current) => freeModels.includes(current) ? current : freeModels[0]);
+            }
           }
         }
       } catch (statusError) {
