@@ -128,9 +128,26 @@ test('admin video test binds explicit approval and cap to fresh quote, dispatche
     assert.deepEqual(failedTask.failure, { stage: 'generation', stage_hidden: false, reason: null, reason_hidden: true, retryable: false });
     assert.deepEqual(failedTask.item_failures, [{ stage: null, stage_hidden: true, reason: 'invalid_image', reason_hidden: false, retryable: true }, { stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: null }]);
     assert.deepEqual(failedTask.billing, { charged: 0, refunded: null, net: null, refund_state: null });
+    const privateRequest = (options = {}) => api('video-private-failure', { cookie, method: 'POST', data: { id: accepted.id, acknowledge: true }, ...options });
+    assert.equal((await privateRequest({ token: 'user' })).status, 403);
+    assert.equal((await privateRequest({ token: 'other-admin' })).status, 401);
+    assert.equal((await privateRequest({ origin: 'https://evil.example' })).status, 403);
+    assert.equal((await privateRequest({ data: { id: accepted.id, acknowledge: false } })).status, 400);
+    assert.equal((await privateRequest({ data: { id: accepted.id, acknowledge: true, task_id: 'other' } })).status, 400);
+    f.setTaskResult({ status: 'failed', failure: { reason: 'Input rejected. URL https://private.example/image?token=ABC' }, items: [{ failure: { reason: 'Bearer abcdefgh API_KEY=topsecret contact admin@example.com' } }] });
+    const privateResponse = await privateRequest();
+    assert.equal(privateResponse.status, 200);
+    assert.equal(privateResponse.headers.get('cache-control'), 'no-store');
+    const privateText = await privateResponse.text();
+    assert.doesNotMatch(privateText, /private\.example|ABC|abcdefgh|topsecret|admin@example|batch-123|PROVIDER-SECRET/);
+    assert.deepEqual(JSON.parse(privateText).reasons, ['Input rejected. URL [URL disembunyikan]', 'Bearer [disembunyikan] API_KEY=[disembunyikan] contact [email disembunyikan]']);
+    f.setTaskResult({ status: 'completed' });
+    assert.equal((await privateRequest()).status, 409);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
     assert.equal((await api('video-task', { cookie, token: 'other-admin', method: 'POST', data: { id: accepted.id } })).status, 401);
     f.setToken('NEW-PROVIDER-SECRET'); const newCookie = await connect();
     assert.equal((await api('video-task', { cookie: newCookie, method: 'POST', data: { id: accepted.id } })).status, 404);
+    assert.equal((await api('video-private-failure', { cookie: newCookie, method: 'POST', data: { id: accepted.id, acknowledge: true } })).status, 404);
   } finally { globalThis.fetch = original; }
 });
 

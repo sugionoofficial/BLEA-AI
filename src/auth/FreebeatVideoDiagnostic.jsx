@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
 import { FREEBEAT_VIDEO_TEST } from '../lib/freebeatVideoTestSettings';
@@ -14,6 +14,13 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [confirmed, setConfirmed] = useState(false);
   const [tests, setTests] = useState([]);
   const [taskResults, setTaskResults] = useState({});
+  const [privateFailure, setPrivateFailure] = useState({});
+  const [privacyConsent, setPrivacyConsent] = useState({});
+  const visibilityVersion = useRef(0);
+  useEffect(() => {
+    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); }
+    return () => { visibilityVersion.current += 1; };
+  }, [connected]);
   const [testNotice, setTestNotice] = useState('');
   function clearApproval() { setApproval(null); setConfirmed(false); }
   const [file, setFile] = useState(null);
@@ -94,9 +101,25 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   async function poll(id) {
     if (busy) return;
     setBusy(true); setError('');
+    setPrivateFailure((old) => { const next = { ...old }; delete next[id]; return next; });
+    setPrivacyConsent((old) => ({ ...old, [id]: false }));
     try { const result = await request('video-task', 'POST', { id }); setTaskResults((old) => ({ ...old, [id]: result.task })); }
     catch (err) { setError(err.message || 'Status belum tersedia.'); }
     finally { setBusy(false); }
+  }
+  async function viewPrivateFailure(id) {
+    if (busy || !connected || !privacyConsent[id]) return;
+    const version = visibilityVersion.current;
+    setBusy(true); setError('');
+    try {
+      const result = await request('video-private-failure', 'POST', { id, acknowledge: true });
+      if (version === visibilityVersion.current) setPrivateFailure((old) => ({ ...old, [id]: result.reasons }));
+    } catch (err) { setError(err.message || 'Pesan kegagalan tidak tersedia.'); }
+    finally { setBusy(false); }
+  }
+  function hidePrivateFailure(id) {
+    setPrivateFailure((old) => { const next = { ...old }; delete next[id]; return next; });
+    setPrivacyConsent((old) => ({ ...old, [id]: false }));
   }
   return <div className="freebeat-result">
     <h3>Wan 3.0 · ID 182 · gambar ke video</h3>
@@ -147,6 +170,17 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
           {['failed', 'partial_failed', 'action_required'].includes(taskResults[test.id].status) && <>
             <p>Rincian kegagalan di bawah disaring; nilai kosong berarti tidak diketahui atau tidak dilaporkan. Pesan bebas disembunyikan demi privasi. Nilai retryable bukan persetujuan membuat ulang video.</p>
             <FreebeatCopyResult title="Status video dan rincian kegagalan yang disaring" value={{ status: taskResults[test.id].status, billing: taskResults[test.id].billing, failure: taskResults[test.id].failure, item_failures: taskResults[test.id].item_failures }} />
+            {test.canPoll && connected && <div className="freebeat-result">
+              <h3>Pesan kegagalan pribadi</h3>
+              <p>Pesan dari Freebeat mungkin berisi prompt, data pribadi atau kredensial. Beberapa pola sensitif disamarkan, tetapi penyaringan tidak dijamin lengkap. Jangan salin atau bagikan pesan mentah; jika perlu bantuan, jelaskan penyebabnya dengan kata-kata sendiri tanpa URL, token atau data pribadi.</p>
+              {!Object.hasOwn(privateFailure, test.id) && <>
+                <label className="freebeat-confirm"><input type="checkbox" checked={Boolean(privacyConsent[test.id])} disabled={busy} onChange={(event) => setPrivacyConsent((old) => ({ ...old, [test.id]: event.target.checked }))} /> Saya memahami pesan mungkin mengandung informasi sensitif dan hanya akan melihatnya secara pribadi.</label>
+                <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy || !privacyConsent[test.id]} onClick={() => viewPrivateFailure(test.id)}>Tampilkan pesan kegagalan pribadi</button></div>
+              </>}
+              {Object.hasOwn(privateFailure, test.id) && <><div className="freebeat-actions"><button type="button" className="is-secondary" onClick={() => hidePrivateFailure(test.id)}>Sembunyikan pesan pribadi</button></div>
+                {privateFailure[test.id].length ? privateFailure[test.id].map((reason, index) => <pre key={index}>{reason}</pre>) : <p>Freebeat tidak memberikan pesan kegagalan berbentuk teks yang dapat ditampilkan.</p>}
+              </>}
+            </div>}
           </>}
           {taskResults[test.id].videos.length > 0 && <div className="freebeat-result-links">{taskResults[test.id].videos.map((url, index) => <a className="freebeat-result-link" href={url} key={url} target="_blank" rel="noopener noreferrer">Buka hasil video {index + 1}</a>)}</div>}
           {taskResults[test.id].status === 'completed' && taskResults[test.id].videos.length === 0 && <p>Video selesai tetapi tautan belum tersedia. Periksa lagi atau lihat Freebeat; jangan ulangi generasi.</p>}

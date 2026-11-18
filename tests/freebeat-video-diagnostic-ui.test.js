@@ -141,6 +141,7 @@ test('failed video status presents shareable filtered details without retrying g
     calls.push(action);
     if (action === 'video-tests') return { tests: [{ id: 'test-id', model_id: 182, max_credits: 50, status: 'submitted', created_at: new Date().toISOString(), canPoll: true }] };
     if (action === 'video-task') return { task: { status: 'failed', billing: { charged: 0, refunded: null, net: null, refund_state: null }, videos: [], failure: { stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: false }, item_failures: [] } };
+    if (action === 'video-private-failure') { assert.deepEqual(args, ['POST', { id: 'test-id', acknowledge: true }]); return { reasons: ['Example private message'] }; }
     throw new Error('Unexpected request');
   };
   const root = createRoot(document.getElementById('root'));
@@ -154,6 +155,15 @@ test('failed video status presents shareable filtered details without retrying g
     assert.equal(JSON.parse(output.value).billing.charged, 0);
     assert.doesNotMatch(output.value, /test-id/);
     assert.deepEqual(calls, ['video-tests', 'video-task']);
+    assert.equal(button('Tampilkan pesan kegagalan pribadi').disabled, true);
+    await React.act(async () => document.querySelectorAll('input[type=checkbox]')[1].click());
+    await React.act(async () => button('Tampilkan pesan kegagalan pribadi').click());
+    assert.match(document.body.textContent, /Example private message/);
+    assert.doesNotMatch(output.value, /Example private message/);
+    assert.deepEqual(calls, ['video-tests', 'video-task', 'video-private-failure']);
+    await React.act(async () => button('Sembunyikan pesan pribadi').click());
+    assert.doesNotMatch(document.body.textContent, /Example private message/);
+    assert.equal(button('Tampilkan pesan kegagalan pribadi').disabled, true);
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
