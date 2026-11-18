@@ -3,7 +3,7 @@
 const BALANCE_URL = 'https://freebeat.ai/api/proxy/v1/user/credits/findCredits';
 const MAX_BODY = 16384;
 
-async function boundedJson(response) {
+export async function boundedJson(response) {
   const length = response.headers.get('content-length');
   if (length && (!/^\d+$/.test(length) || Number(length) > MAX_BODY)) throw new Error('too large');
   if (!response.body) throw new Error('empty');

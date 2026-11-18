@@ -1,7 +1,8 @@
 // Admin-only Freebeat MCP diagnostics. Only balance and image catalog discovery are exposed.
-import { siteBalance } from './freebeatSiteBalance.js';
+import { boundedJson, siteBalance } from './freebeatSiteBalance.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
+const IMAGE_SCOPE = 'freebeat:generate';
 const REGISTER = 'https://freebeat.ai/oauth/register';
 const AUTH = 'https://freebeat.ai/oauth/authorize';
 const TOKEN = 'https://freebeat.ai/oauth/token';
@@ -114,19 +115,20 @@ async function jsonFetch(url, options, stage) {
   return data;
 }
 
-export async function startFreebeat(env, userId) {
+export async function startFreebeat(env, userId, requestImage = false) {
   await key(env);
   const redirect = redirectUri(env);
+  const requestedScope = requestImage === true ? `${READ_SCOPE} ${IMAGE_SCOPE}` : READ_SCOPE;
   // Freebeat accepted this combination in a live registration test. Requesting
   // the refresh grant does not mean we retain or use any returned refresh token.
-  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: READ_SCOPE }) }, 'register');
+  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: requestedScope }) }, 'register');
   if (typeof registration.client_id !== 'string' || !registration.client_id || registration.client_id.length > 500) throw fail('Registrasi klien Freebeat tidak mengembalikan client ID yang valid.');
   const state = random(), verifier = random();
   const challenge = b64(await crypto.subtle.digest('SHA-256', encoder.encode(verifier)));
-  const sealed = await seal({ uid: userId, clientId: registration.client_id, state, verifier, redirect, created: Date.now() }, env, 'pending');
+  const sealed = await seal({ uid: userId, clientId: registration.client_id, state, verifier, redirect, requestedScope, created: Date.now() }, env, 'pending');
   if (sealed.length > 3800) throw fail('Data sesi Freebeat terlalu besar.', 503);
   const auth = new URL(AUTH);
-  for (const [name, value] of Object.entries({ response_type: 'code', client_id: registration.client_id, redirect_uri: redirect, state, code_challenge: challenge, code_challenge_method: 'S256', scope: READ_SCOPE, resource: ENDPOINT })) auth.searchParams.set(name, value);
+  for (const [name, value] of Object.entries({ response_type: 'code', client_id: registration.client_id, redirect_uri: redirect, state, code_challenge: challenge, code_challenge_method: 'S256', scope: requestedScope, resource: ENDPOINT })) auth.searchParams.set(name, value);
   return response({ url: auth.toString() }, 200, { 'set-cookie': cookie(PENDING, sealed, 600) });
 }
 
@@ -140,18 +142,26 @@ export async function freebeatCallback(request, env) {
   try {
     const pending = await unseal(cookieValue(request, PENDING), env, 'pending');
     if (!pending || !pending.uid || !pending.verifier || !pending.clientId || pending.redirect !== redirectUri(env) || !Number.isFinite(pending.created) || Date.now() - pending.created > 600000 || pending.created > Date.now() + 30000 || !url.searchParams.get('state') || url.searchParams.get('state') !== pending.state) return finish('invalid');
+    const requestedScope = pending.requestedScope || READ_SCOPE; // Pending sessions created before this change were read-only.
+    if (![READ_SCOPE, `${READ_SCOPE} ${IMAGE_SCOPE}`].includes(requestedScope)) return finish('invalid');
     if (url.searchParams.get('error')) return finish('denied');
     const code = url.searchParams.get('code');
     if (!code || code.length > 4000) return finish('invalid');
     const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: pending.clientId, code, redirect_uri: pending.redirect, code_verifier: pending.verifier, resource: ENDPOINT });
     const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: body.toString() }, 'token');
     if (typeof tokens.access_token !== 'string' || !tokens.access_token || tokens.access_token.length > 2000 || (tokens.token_type && tokens.token_type.toLowerCase() !== 'bearer')) return finish('failed');
+    // RFC 6749: omitted scope means the granted scope matches what was requested.
+    const grantedScope = tokens.scope === undefined ? requestedScope : tokens.scope;
+    if (typeof grantedScope !== 'string' || grantedScope.length > 1000) return finish('failed');
+    const granted = new Set(grantedScope.split(/\s+/).filter(Boolean));
+    if (!granted.has(READ_SCOPE)) return finish('failed');
+    const imageAccess = requestedScope.includes(IMAGE_SCOPE) && granted.has(IMAGE_SCOPE);
     const lifetime = Math.min(3600, Number(tokens.expires_in) || 300);
     if (lifetime < 1) return finish('failed');
-    const encrypted = await seal({ uid: pending.uid, accessToken: tokens.access_token, clientId: pending.clientId, expiresAt: Date.now() + lifetime * 1000 }, env, 'session');
+    const encrypted = await seal({ uid: pending.uid, accessToken: tokens.access_token, clientId: pending.clientId, imageAccess, expiresAt: Date.now() + lifetime * 1000 }, env, 'session');
     if (encrypted.length > 3800) return finish('failed');
     headers.append('set-cookie', cookie(SESSION, encrypted, Math.floor(lifetime)));
-    return finish('connected');
+    return finish(requestedScope.includes(IMAGE_SCOPE) && !imageAccess ? 'connected-limited' : 'connected');
   } catch (error) {
     const kind = error?.freebeatKind;
     return finish(['network', 'timeout', 'redirect', 'http', 'response'].includes(kind) ? `failed-${kind}` : 'failed');
@@ -335,26 +345,59 @@ async function getImageModels(accessToken) {
   return { models, truncated: list.length > 100 };
 }
 
+const QUOTE_SAFE_TEXT = new Set(['generate_image', 'image', 'available', 'unavailable', 'unknown', 'known', 'exact', 'estimated', 'credits', 'credit', 'success', 'error']);
+const QUOTE_PRIVATE_KEY = /(^id$|user|account|session|secret|token|credential|authorization|cookie|prompt|client|email|url|uri|task|batch)/i;
+function safeQuote(value, depth = 0) {
+  if (depth > 5) return null;
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    if (QUOTE_SAFE_TEXT.has(value) || (/^-?\d{1,12}(\.\d{1,6})?$/.test(value))) return value;
+    return '[teks disembunyikan]';
+  }
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => safeQuote(item, depth + 1));
+  if (typeof value !== 'object') return null;
+  return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeQuote(child, depth + 1)]));
+}
+async function quoteImage(accessToken, input) {
+  const headers = await openMcp(accessToken);
+  // This provider operation is read-only. Never invoke generate_image here.
+  const parameters = { model_id: input.model_id, prompt: input.prompt };
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'quote_generation', arguments: { tool: 'generate_image', parameters } } }, 'quote', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object') throw mcpFailure('quote', 'response');
+  return safeQuote(content);
+}
+async function parseImageQuote(request) {
+  if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
+  if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail('Format permintaan tidak valid.', 400);
+  let input;
+  try { input = await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'prompt'].includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0 || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan ID model angka dan prompt sepanjang 1–2000 karakter.', 400);
+  return { model_id: input.model_id, prompt: input.prompt.trim() };
+}
+
 export async function handleFreebeat(request, url, env, user) {
   try {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
     if (user.app_metadata?.role !== 'admin') return response({ error: 'Koneksi Freebeat hanya untuk admin.' }, 403);
     const action = url.pathname.split('/').pop();
     if (action === 'site-balance' && request.method === 'POST') return await siteBalance(request);
-    if (action === 'start' && request.method === 'POST') {
+    if (['start', 'start-image'].includes(action) && request.method === 'POST') {
       if (url.origin !== new URL(redirectUri(env)).origin) return response({ error: 'Buka BLEA melalui domain callback Freebeat yang dikonfigurasi sebelum menghubungkan akun.' }, 400);
-      return await startFreebeat(env, user.id);
+      return await startFreebeat(env, user.id, action === 'start-image');
     }
     if (action === 'status' && request.method === 'GET') {
       const session = await readSession(request, env, user.id);
-      return response({ connected: Boolean(session), expiresAt: session?.expiresAt || null });
+      return response({ connected: Boolean(session), imageAccess: session?.imageAccess === true, expiresAt: session?.expiresAt || null });
     }
-    if (['balance', 'image-schemas', 'image-models'].includes(action) && request.method === 'POST') {
+    if (['balance', 'image-schemas', 'image-models', 'image-quote'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       if (action === 'balance') return response({ ok: true, balance: await getBalance(session.accessToken) });
       if (action === 'image-schemas') return response({ ok: true, ...(await getImageSchemas(session.accessToken)) });
-      return response({ ok: true, ...(await getImageModels(session.accessToken)) });
+      if (action === 'image-models') return response({ ok: true, ...(await getImageModels(session.accessToken)) });
+      return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
     }
     if (action === 'disconnect' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
