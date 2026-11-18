@@ -1,4 +1,4 @@
-// Read-only Freebeat MCP connection test. No generation tools are exposed here.
+// Admin-only Freebeat MCP diagnostics. Only balance and image catalog discovery are exposed.
 import { siteBalance } from './freebeatSiteBalance.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
@@ -187,12 +187,12 @@ function rpcObject(text, expectedId, stage) {
 }
 
 // Bound memory while reading, and stop at the expected SSE response even if the stream stays open.
-async function readRpc(res, expectedId, stage, signal) {
+async function readRpc(res, expectedId, stage, signal, maxBytes = 65536) {
   const type = (res.headers.get('content-type') || '').toLowerCase();
   const isSse = type.includes('text/event-stream');
   if (!isSse && !type.includes('application/json')) throw mcpFailure(stage, 'response');
   const length = res.headers.get('content-length');
-  if (length && /^\d+$/.test(length) && Number(length) > 65536) throw mcpFailure(stage, 'size');
+  if (length && /^\d+$/.test(length) && Number(length) > maxBytes) throw mcpFailure(stage, 'size');
   if (!res.body) throw mcpFailure(stage, 'response');
   let reader;
   try { reader = res.body.getReader(); } catch { throw mcpFailure(stage, 'response'); }
@@ -212,7 +212,7 @@ async function readRpc(res, expectedId, stage, signal) {
         throw mcpFailure(stage, 'response');
       }
       bytes += value.byteLength;
-      if (bytes > 65536) throw mcpFailure(stage, 'size');
+      if (bytes > maxBytes) throw mcpFailure(stage, 'size');
       text += decoder.decode(value, { stream: true });
       if (isSse) {
         let boundary;
@@ -233,7 +233,7 @@ async function readRpc(res, expectedId, stage, signal) {
   }
 }
 
-async function rpc(accessToken, body, stage, extraHeaders = {}) {
+async function rpc(accessToken, body, stage, extraHeaders = {}, maxBytes = 65536) {
   const signal = AbortSignal.timeout(15000);
   let res;
   try {
@@ -249,18 +249,90 @@ async function rpc(accessToken, body, stage, extraHeaders = {}) {
     throw mcpFailure(stage, 'http', res.status);
   }
   if (body.id === undefined) { try { await res.body?.cancel(); } catch { /* notification response ignored */ } return {}; }
-  return { result: await readRpc(res, body.id, stage, signal), sessionId: res.headers.get('mcp-session-id') };
+  return { result: await readRpc(res, body.id, stage, signal, maxBytes), sessionId: res.headers.get('mcp-session-id') };
 }
-async function getBalance(accessToken) {
+async function openMcp(accessToken) {
   const init = await rpc(accessToken, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'blea-ai-readonly-test', version: '1.0.0' } } }, 'init');
   const version = init.result.protocolVersion;
   if (!['2024-11-05', '2025-03-26', '2025-06-18'].includes(version)) throw mcpFailure('init', 'response');
   const headers = { 'MCP-Protocol-Version': version, ...(init.sessionId ? { 'Mcp-Session-Id': init.sessionId } : {}) };
   await rpc(accessToken, { jsonrpc: '2.0', method: 'notifications/initialized' }, 'notify', headers);
+  return headers;
+}
+async function getBalance(accessToken) {
+  const headers = await openMcp(accessToken);
   const call = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_credit_balance', arguments: {} } }, 'balance', headers);
   const data = call.result.structuredContent ?? call.result.content;
   if (!data) throw mcpFailure('balance', 'response');
   return data;
+}
+
+// Only structural metadata for these image tools is returned; provider descriptions,
+// examples, URLs, default values and unrelated tools are deliberately omitted.
+const IMAGE_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_image', 'get_task_status']);
+const SAFE_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']);
+const SAFE_SCHEMA_ENUMS = new Set(['image', 'image_edit', 'generate_image', 'text', 'video']);
+function schemaName(value) { return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value); }
+function imageSchema(schema, depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 5) return {};
+  const out = {};
+  if (SAFE_SCHEMA_TYPES.has(schema.type)) out.type = schema.type;
+  if (Array.isArray(schema.required)) out.required = schema.required.filter(schemaName).slice(0, 50);
+  if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+    out.properties = Object.fromEntries(Object.entries(schema.properties).filter(([name]) => schemaName(name)).slice(0, 50).map(([name, child]) => [name, imageSchema(child, depth + 1)]));
+  }
+  if (schema.items && typeof schema.items === 'object') out.items = imageSchema(schema.items, depth + 1);
+  for (const name of ['anyOf', 'oneOf', 'allOf']) if (Array.isArray(schema[name])) out[name] = schema[name].slice(0, 8).map((child) => imageSchema(child, depth + 1));
+  if (Array.isArray(schema.enum)) {
+    out.known_enum_values = schema.enum.filter((item) => SAFE_SCHEMA_ENUMS.has(item)).slice(0, 5);
+    out.enum_incomplete = out.known_enum_values.length !== schema.enum.length;
+  }
+  return out;
+}
+
+async function getImageSchemas(accessToken) {
+  const headers = await openMcp(accessToken);
+  const tools = new Map();
+  const cursors = new Set();
+  let cursor;
+  let truncated = false;
+  for (let page = 0; page < 5; page += 1) {
+    const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: page + 2, method: 'tools/list', params: cursor ? { cursor } : {} }, 'inspect', headers, 262144);
+    if (!Array.isArray(result.tools)) throw mcpFailure('inspect', 'response');
+    for (const tool of result.tools) if (tool && IMAGE_TOOLS.has(tool.name) && !tools.has(tool.name)) tools.set(tool.name, imageSchema(tool.inputSchema));
+    if (!result.nextCursor) break;
+    if (typeof result.nextCursor !== 'string' || result.nextCursor.length > 1024 || cursors.has(result.nextCursor)) throw mcpFailure('inspect', 'response');
+    cursors.add(result.nextCursor);
+    cursor = result.nextCursor;
+    if (page === 4) truncated = true;
+  }
+  return { tools: Object.fromEntries(tools), truncated };
+}
+
+function modelContent(result) {
+  if (result.structuredContent && typeof result.structuredContent === 'object') return result.structuredContent;
+  const text = Array.isArray(result.content) ? result.content.find((item) => item?.type === 'text' && typeof item.text === 'string')?.text : null;
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return null; }
+}
+function safeModelId(id) {
+  return (Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(id));
+}
+async function getImageModels(accessToken) {
+  const headers = await openMcp(accessToken);
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_models', arguments: { type: 'image' } } }, 'models', headers, 262144);
+  const content = modelContent(result);
+  const list = Array.isArray(content) ? content : content?.models ?? content?.items ?? content?.data?.models ?? content?.data?.items ?? (Array.isArray(content?.data) ? content.data : null);
+  if (!Array.isArray(list)) throw mcpFailure('models', 'response');
+  const models = list.slice(0, 100).flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const id = item.model_id ?? item.modelId ?? item.id;
+    const name = item.display_name ?? item.displayName ?? item.name;
+    if (!safeModelId(id) || typeof name !== 'string' || !name.trim() || name.length > 200 || /[\x00-\x1f\x7f]/.test(name)) return [];
+    return [{ model_id: id, name }];
+  });
+  if (list.length && !models.length) throw mcpFailure('models', 'response');
+  return { models, truncated: list.length > 100 };
 }
 
 export async function handleFreebeat(request, url, env, user) {
@@ -277,10 +349,12 @@ export async function handleFreebeat(request, url, env, user) {
       const session = await readSession(request, env, user.id);
       return response({ connected: Boolean(session), expiresAt: session?.expiresAt || null });
     }
-    if (action === 'balance' && request.method === 'POST') {
+    if (['balance', 'image-schemas', 'image-models'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
-      return response({ ok: true, balance: await getBalance(session.accessToken) });
+      if (action === 'balance') return response({ ok: true, balance: await getBalance(session.accessToken) });
+      if (action === 'image-schemas') return response({ ok: true, ...(await getImageSchemas(session.accessToken)) });
+      return response({ ok: true, ...(await getImageModels(session.accessToken)) });
     }
     if (action === 'disconnect' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);

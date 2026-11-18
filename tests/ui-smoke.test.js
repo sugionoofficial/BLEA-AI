@@ -244,6 +244,9 @@ test('Freebeat MCP page describes a temporary read-only admin connection', async
   assert.ok(html.includes('Periksa saldo'));
   assert.ok(html.includes('tidak menghabiskan kredit'));
   assert.ok(html.includes('Uji saldo situs dengan cookie'));
+  assert.ok(html.includes('Lihat model gambar'));
+  assert.ok(html.includes('Periksa skema tool gambar'));
+  assert.ok(html.includes('Belum ada tombol generasi atau pembelian'));
   assert.ok(html.includes('type="password"'));
   assert.ok(html.includes('Ini bukan koneksi MCP') === false, 'site result is hidden before a successful test');
 });
