@@ -86,6 +86,14 @@ export const PROVIDER_PRESETS = {
     protocol: 'openai_video',
     description: 'PEKPIK API gateway (/v1/chat/completions & /v1/models)',
   },
+  cloudflare: {
+    id: 'cloudflare',
+    label: 'Cloudflare Workers AI',
+    defaultBaseUrl: '',
+    baseUrl: '',
+    protocol: 'cloudflare_ai',
+    description: 'Gratis 10.000 Neurons/hari via Workers AI Binding (env.AI) atau REST API Account ID.',
+  },
   custom: {
     id: 'custom',
     label: 'Custom Gateway',
@@ -469,10 +477,98 @@ export function computeVideoSize(aspectRatio = '16:9', resolution = '720p') {
   return SIZE_MAP[resKey]?.[ratioKey] || SIZE_MAP[resKey]?.['16:9'] || '1280x720';
 }
 
+export const CLOUDFLARE_FREE_LLM_MODELS = [
+  {
+    id: '@cf/meta/llama-3.1-8b-instruct-fp8-fast',
+    name: 'Meta Llama 3.1 8B Fast',
+    starter: true,
+    tags: ['Chat', 'Cepat', 'Hemat Neurons'],
+    description: 'Cepat & hemat (~286K output token/hari dalam kuota gratis 10K Neurons).',
+  },
+  {
+    id: '@cf/openai/gpt-oss-20b',
+    name: 'OpenAI GPT-OSS 20B',
+    starter: true,
+    tags: ['Chat', 'Open-Weight', 'Hemat Neurons'],
+    description: 'Model open-weight OpenAI 20B (~366K output token/hari gratis).',
+  },
+  {
+    id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    name: 'Meta Llama 3.3 70B Fast',
+    starter: true,
+    tags: ['Chat', '70B', 'Kualitas Tinggi'],
+    description: 'Model besar 70B berkualitas tinggi untuk analisis & penulisan kompleks.',
+  },
+  {
+    id: '@cf/qwen/qwen3-30b-a3b-fp8',
+    name: 'Qwen 3 30B A3B',
+    starter: true,
+    tags: ['Chat', 'MoE', 'Cepat'],
+    description: 'Qwen 3 30B MoE cepat, akurat, dan hemat Neurons.',
+  },
+  {
+    id: '@cf/google/gemma-3-12b-it',
+    name: 'Google Gemma 3 12B',
+    starter: true,
+    tags: ['Chat', 'Multilingual'],
+    description: 'Google Gemma 3 12B instruksional yang seimbang untuk percakapan umum.',
+  },
+  {
+    id: '@cf/openai/gpt-oss-120b',
+    name: 'OpenAI GPT-OSS 120B',
+    starter: false,
+    tags: ['Chat', '120B', 'Flagship'],
+    description: 'Model open-weight terbesar OpenAI 120B (~146K output token/hari gratis).',
+  },
+  {
+    id: '@cf/meta/llama-4-scout-17b-16e-instruct',
+    name: 'Meta Llama 4 Scout 17B',
+    starter: false,
+    tags: ['Chat', 'Vision', 'Llama 4'],
+    description: 'Llama 4 Scout multimodal dengan konteks panjang & dukungan gambar.',
+  },
+  {
+    id: '@cf/qwen/qwen2.5-coder-32b-instruct',
+    name: 'Qwen 2.5 Coder 32B',
+    starter: false,
+    tags: ['Chat', 'Coding'],
+    description: 'Model spesialis pemrograman, debugging, dan pembuatan skrip.',
+  },
+  {
+    id: '@cf/mistralai/mistral-small-3.1-24b-instruct',
+    name: 'Mistral Small 3.1 24B',
+    starter: false,
+    tags: ['Chat', '24B'],
+    description: 'Mistral Small 3.1 24B responsif untuk penalaran & ringkasan.',
+  },
+  {
+    id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b',
+    name: 'DeepSeek R1 Distill Qwen 32B',
+    starter: false,
+    tags: ['Chat', 'Reasoning'],
+    description: 'Model reasoning terdistilasi dari DeepSeek R1 berbasis Qwen 32B.',
+  },
+  {
+    id: '@cf/zai-org/glm-4.7-flash',
+    name: 'GLM 4.7 Flash',
+    starter: false,
+    tags: ['Chat', 'Flash'],
+    description: 'Model cepat & efisien untuk percakapan sehari-hari.',
+  },
+  {
+    id: '@cf/ibm-granite/granite-4.0-h-micro',
+    name: 'IBM Granite 4.0 H-Micro',
+    starter: false,
+    tags: ['Chat', 'Ultra Hemat'],
+    description: 'Sangat hemat Neurons (~980K output token/hari dalam jatah gratis).',
+  },
+];
+
 export function resolveProviderApiBase(provider, baseUrl) {
   const preset = PROVIDER_PRESETS[provider] || PROVIDER_PRESETS.custom;
-  let base = String(baseUrl || preset.defaultBaseUrl || 'https://api.unorouter.com').trim().replace(/\/+$/, '');
-  if (!base) base = 'https://api.unorouter.com';
+  const rawBase = String(baseUrl || preset.defaultBaseUrl || '').trim().replace(/\/+$/, '');
+  if (provider === 'cloudflare' && !rawBase) return '';
+  let base = rawBase || 'https://api.unorouter.com';
   // Strip known endpoint suffixes if an admin pasted a full endpoint URL
   base = base
     .replace(/\/chat\/completions$/i, '')

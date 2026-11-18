@@ -23,6 +23,7 @@
 
 import {
   BUILTIN_VIDEO_MODELS,
+  CLOUDFLARE_FREE_LLM_MODELS,
   PROVIDER_PRESETS,
   computeVideoSize,
   getVideoModelProfile,
@@ -398,10 +399,233 @@ function jsonResponse(data, status = 200, extraHeaders = {}) {
   });
 }
 
+function hasWorkersAiBinding(env) {
+  return Boolean(env?.AI && typeof env.AI.run === 'function');
+}
+
+function hasValidCloudflareRestBase(baseUrl) {
+  const base = resolveProviderApiBase('cloudflare', baseUrl);
+  return Boolean(base && !/[<{]account[_-]?id[>}]/i.test(base));
+}
+
+function hasCloudflareRestConfig(keyRow) {
+  return Boolean(keyRow?.api_key && keyRow.api_key !== 'binding:AI' && hasValidCloudflareRestBase(keyRow.base_url));
+}
+
 function isChatCapableModelId(modelId) {
   const id = String(modelId || '').trim();
   if (!id || isVideoModelId(id)) return false;
-  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation)/i.test(id);
+  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-)/i.test(id);
+}
+
+function scoreFallbackModel(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  if (/^@cf\/(meta\/llama-3\.1-8b-instruct-fp8-fast|openai\/gpt-oss-20b|meta\/llama-3\.3-70b-instruct-fp8-fast|qwen\/qwen3-30b-a3b-fp8)/.test(id)) return 122;
+  if (/^@cf\/(openai\/gpt-oss-120b|google\/gemma-3-12b-it|zai-org\/glm-4\.7-flash)/.test(id)) return 118;
+  if (/^@cf\//.test(id)) return 112;
+  if (/gemini-2\.5-flash:free|gemini-2\.5-flash-lite:free|gpt-oss-120b:free|mistral-small:free|llama-3\.3-70b:free/.test(id)) return 120;
+  if (/qwen3\.6-27b:free|glm-5\.3-flash:free|nemotron-3-super-120b|gemini-3\.1-flash-lite:free/.test(id)) return 105;
+  if (!id.endsWith(':free')) return 110;
+  if (/alpha|uncensored|-0731|meromero|darksoul|chimerax|phonellm|qwen3\.7-flash:free|villanova|apnea/.test(id)) return 15;
+  if (/coder|math|thinking|reasoning/.test(id)) return 30;
+  if (/gemini|deepseek|qwen|mistral|nemotron|gpt-5|gpt-4|llama|glm/.test(id)) return 75;
+  return 45;
+}
+
+function getModelFamily(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  if (/gemini/.test(id)) return 'gemini';
+  if (/gemma/.test(id)) return 'gemma';
+  if (/deepseek/.test(id)) return 'deepseek';
+  if (/qwen|qwq/.test(id)) return 'qwen';
+  if (/mistral|codestral/.test(id)) return 'mistral';
+  if (/llama/.test(id)) return 'llama';
+  if (/glm/.test(id)) return 'glm';
+  if (/granite/.test(id)) return 'granite';
+  if (/nemotron/.test(id)) return 'nemotron';
+  if (/gpt-/.test(id)) return 'gpt';
+  if (/claude/.test(id)) return 'claude';
+  if (/minimax/.test(id)) return 'minimax';
+  return id.split(/[:-]/)[0] || 'other';
+}
+
+function extractAssistantReply(data) {
+  const choice = data?.choices?.[0];
+  const msg = choice?.message;
+  const rawContent = msg?.content;
+  let text = '';
+  if (typeof rawContent === 'string') {
+    text = rawContent;
+  } else if (Array.isArray(rawContent)) {
+    text = rawContent
+      .map((part) => (typeof part === 'string' ? part : part?.text || ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (!text.trim() && typeof msg?.reasoning_content === 'string') {
+    text = msg.reasoning_content;
+  } else if (!text.trim() && typeof msg?.reasoning === 'string') {
+    text = msg.reasoning;
+  } else if (!text.trim() && typeof choice?.text === 'string') {
+    text = choice.text;
+  } else if (!text.trim() && typeof data?.response === 'string') {
+    text = data.response;
+  } else if (!text.trim() && typeof data?.result?.response === 'string') {
+    text = data.result.response;
+  } else if (!text.trim() && typeof data?.output_text === 'string') {
+    text = data.output_text;
+  } else if (!text.trim() && Array.isArray(data?.output)) {
+    text = data.output
+      .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+      .map((part) => part?.text || '')
+      .filter(Boolean)
+      .join('\n');
+  }
+  return text.trim();
+}
+
+function normalizeMessagesForWorkersAi(messages, modelId) {
+  const supportsVision = /llama-3\.2-11b-vision|llama-4-scout|gemma-3|gemma-4/i.test(String(modelId || ''));
+  return (Array.isArray(messages) ? messages : []).map((m) => {
+    const role = String(m?.role || 'user');
+    if (typeof m?.content === 'string') return { role, content: m.content };
+    if (Array.isArray(m?.content)) {
+      if (supportsVision) return { role, content: m.content };
+      const flattened = m.content
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part?.type === 'text' && part.text) return part.text;
+          if (part?.type === 'image_url' && part.image_url?.url) return `[Gambar: ${part.image_url.url}]`;
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+      return { role, content: flattened };
+    }
+    return { role, content: String(m?.content ?? '') };
+  });
+}
+
+async function sendCloudflareBindingChat({ ai, model, payload }) {
+  try {
+    const messages = normalizeMessagesForWorkersAi(payload.messages, model);
+    const input = {
+      messages,
+      stream: false,
+      ...(Number.isFinite(payload.temperature) ? { temperature: payload.temperature } : {}),
+      ...(Number.isFinite(payload.max_tokens) ? { max_tokens: payload.max_tokens } : {}),
+    };
+    const data = await ai.run(model, input);
+    return { ok: true, status: 200, data: data || {} };
+  } catch (e) {
+    const msg = String(e?.message || e || 'Workers AI binding request failed');
+    const status = /429|limit|quota|neuron/i.test(msg)
+      ? 429
+      : /401|403|unauthorized|forbidden/i.test(msg)
+        ? 403
+        : 502;
+    return {
+      ok: false,
+      status,
+      errorInfo: parseChatUpstreamError(msg, status),
+    };
+  }
+}
+
+function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env }) {
+  const seen = new Set([`${primaryProvider}:${primaryModel}`]);
+  const raw = [];
+  const workersAiBound = hasWorkersAiBinding(env);
+  for (const row of dbModelRows || []) {
+    const prov = String(row.provider || 'unorouter').trim().toLowerCase();
+    const model = String(row.model || '').trim();
+    if (!model || !isChatCapableModelId(model)) continue;
+    const key = `${prov}:${model}`;
+    if (seen.has(key)) continue;
+    const keyRow = keyByProvider.get(prov);
+    let apiKey = keyRow?.api_key || (prov === 'unorouter' && model.endsWith(':free') ? 'use-free' : '');
+    if (prov === 'cloudflare') {
+      if (!workersAiBound && !hasCloudflareRestConfig(keyRow)) continue;
+      if (!apiKey && workersAiBound) apiKey = 'binding:AI';
+    }
+    if (!apiKey) continue;
+    seen.add(key);
+    raw.push({
+      provider: prov,
+      model,
+      family: getModelFamily(model),
+      apiKey,
+      baseUrl: keyRow?.base_url || '',
+      score: (prov !== primaryProvider ? 30 : 0) + scoreFallbackModel(model),
+    });
+  }
+  raw.sort((a, b) => b.score - a.score);
+
+  // Round-robin by provider:family so fallback spreads across distinct model backends first
+  const primaryFamily = getModelFamily(primaryModel);
+  const byBucket = new Map();
+  for (const item of raw) {
+    const bucketKey = `${item.provider}:${item.family}`;
+    if (!byBucket.has(bucketKey)) byBucket.set(bucketKey, []);
+    byBucket.get(bucketKey).push(item);
+  }
+  const bucketEntries = [...byBucket.entries()].sort((a, b) => {
+    const aSame = a[0] === `${primaryProvider}:${primaryFamily}` ? 1 : 0;
+    const bSame = b[0] === `${primaryProvider}:${primaryFamily}` ? 1 : 0;
+    if (aSame !== bSame) return aSame - bSame;
+    return (b[1][0]?.score || 0) - (a[1][0]?.score || 0);
+  });
+
+  const diversified = [];
+  let remaining = true;
+  while (remaining) {
+    remaining = false;
+    for (const [, list] of bucketEntries) {
+      if (list.length) {
+        diversified.push(list.shift());
+        if (list.length) remaining = true;
+      }
+    }
+  }
+  return diversified;
+}
+
+async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000, env }) {
+  if (provider === 'cloudflare') {
+    const restReady = apiKey && apiKey !== 'binding:AI' && hasValidCloudflareRestBase(baseUrl);
+    if (!restReady) {
+      if (hasWorkersAiBinding(env)) {
+        return sendCloudflareBindingChat({ ai: env.AI, model, payload });
+      }
+      return {
+        ok: false,
+        status: 400,
+        errorInfo: parseChatUpstreamError(
+          'Cloudflare Workers AI belum aktif. Deploy Worker dengan binding [ai] atau isi Base URL Account ID & API Token di Admin Panel.',
+          400,
+        ),
+      };
+    }
+  }
+  const chatUrl = `${resolveProviderApiBase(provider, baseUrl)}/chat/completions`;
+  const upstream = await fetch(chatUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev',
+      'X-Title': 'BLEA AI',
+    },
+    body: JSON.stringify({ ...payload, model, stream: false }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!upstream.ok) {
+    const rawText = await upstream.text().catch(() => '');
+    const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'));
+    return { ok: false, status: upstream.status, errorInfo };
+  }
+  const data = await upstream.json().catch(() => ({}));
+  return { ok: true, status: upstream.status, data };
 }
 
 function parseChatUpstreamError(rawText, status, retryAfterHeader) {
@@ -445,130 +669,6 @@ function parseChatUpstreamError(rawText, status, retryAfterHeader) {
     friendlyMessage,
     rawDetail: message.slice(0, 500),
   };
-}
-
-function scoreFallbackModel(modelId) {
-  const id = String(modelId || '').toLowerCase();
-  if (/gemini-2\.5-flash:free|gemini-2\.5-flash-lite:free|gpt-oss-120b:free|mistral-small:free|llama-3\.3-70b:free/.test(id)) return 120;
-  if (/qwen3\.6-27b:free|glm-5\.3-flash:free|nemotron-3-super-120b|gemini-3\.1-flash-lite:free/.test(id)) return 105;
-  if (!id.endsWith(':free')) return 110;
-  if (/alpha|uncensored|-0731|meromero|darksoul|chimerax|phonellm|qwen3\.7-flash:free|villanova|apnea/.test(id)) return 15;
-  if (/coder|math|thinking|reasoning/.test(id)) return 30;
-  if (/gemini|deepseek|qwen|mistral|nemotron|gpt-5|gpt-4|llama|glm/.test(id)) return 75;
-  return 45;
-}
-
-function getModelFamily(modelId) {
-  const id = String(modelId || '').toLowerCase();
-  if (/gemini/.test(id)) return 'gemini';
-  if (/deepseek/.test(id)) return 'deepseek';
-  if (/qwen|qwq/.test(id)) return 'qwen';
-  if (/mistral|codestral/.test(id)) return 'mistral';
-  if (/llama/.test(id)) return 'llama';
-  if (/glm/.test(id)) return 'glm';
-  if (/nemotron/.test(id)) return 'nemotron';
-  if (/gpt-/.test(id)) return 'gpt';
-  if (/claude/.test(id)) return 'claude';
-  if (/minimax/.test(id)) return 'minimax';
-  return id.split(/[:-]/)[0] || 'other';
-}
-
-function extractAssistantReply(data) {
-  const choice = data?.choices?.[0];
-  const msg = choice?.message;
-  const rawContent = msg?.content;
-  let text = '';
-  if (typeof rawContent === 'string') {
-    text = rawContent;
-  } else if (Array.isArray(rawContent)) {
-    text = rawContent
-      .map((part) => (typeof part === 'string' ? part : part?.text || ''))
-      .filter(Boolean)
-      .join('\n');
-  }
-  if (!text.trim() && typeof msg?.reasoning_content === 'string') {
-    text = msg.reasoning_content;
-  } else if (!text.trim() && typeof msg?.reasoning === 'string') {
-    text = msg.reasoning;
-  } else if (!text.trim() && typeof choice?.text === 'string') {
-    text = choice.text;
-  }
-  return text.trim();
-}
-
-function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows }) {
-  const seen = new Set([`${primaryProvider}:${primaryModel}`]);
-  const raw = [];
-  for (const row of dbModelRows || []) {
-    const prov = String(row.provider || 'unorouter').trim().toLowerCase();
-    const model = String(row.model || '').trim();
-    if (!model || !isChatCapableModelId(model)) continue;
-    const key = `${prov}:${model}`;
-    if (seen.has(key)) continue;
-    const keyRow = keyByProvider.get(prov);
-    const apiKey = keyRow?.api_key || (prov === 'unorouter' && model.endsWith(':free') ? 'use-free' : '');
-    if (!apiKey) continue;
-    seen.add(key);
-    raw.push({
-      provider: prov,
-      model,
-      family: getModelFamily(model),
-      apiKey,
-      baseUrl: keyRow?.base_url || '',
-      score: (prov !== primaryProvider ? 30 : 0) + scoreFallbackModel(model),
-    });
-  }
-  raw.sort((a, b) => b.score - a.score);
-
-  // Round-robin by provider:family so fallback spreads across distinct model backends first
-  const primaryFamily = getModelFamily(primaryModel);
-  const byBucket = new Map();
-  for (const item of raw) {
-    const bucketKey = `${item.provider}:${item.family}`;
-    if (!byBucket.has(bucketKey)) byBucket.set(bucketKey, []);
-    byBucket.get(bucketKey).push(item);
-  }
-  const bucketEntries = [...byBucket.entries()].sort((a, b) => {
-    const aSame = a[0] === `${primaryProvider}:${primaryFamily}` ? 1 : 0;
-    const bSame = b[0] === `${primaryProvider}:${primaryFamily}` ? 1 : 0;
-    if (aSame !== bSame) return aSame - bSame;
-    return (b[1][0]?.score || 0) - (a[1][0]?.score || 0);
-  });
-
-  const diversified = [];
-  let remaining = true;
-  while (remaining) {
-    remaining = false;
-    for (const [, list] of bucketEntries) {
-      if (list.length) {
-        diversified.push(list.shift());
-        if (list.length) remaining = true;
-      }
-    }
-  }
-  return diversified;
-}
-
-async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000 }) {
-  const chatUrl = `${resolveProviderApiBase(provider, baseUrl)}/chat/completions`;
-  const upstream = await fetch(chatUrl, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev',
-      'X-Title': 'BLEA AI',
-    },
-    body: JSON.stringify({ ...payload, model, stream: false }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!upstream.ok) {
-    const rawText = await upstream.text().catch(() => '');
-    const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'));
-    return { ok: false, status: upstream.status, errorInfo };
-  }
-  const data = await upstream.json().catch(() => ({}));
-  return { ok: true, status: upstream.status, data };
 }
 
 // ---------- Signed short-lived video content proxy URLs ----------
@@ -913,16 +1013,78 @@ async function handleApi(request, url, env) {
     if (path === 'status' && (method === 'GET' || method === 'POST')) {
       const res = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label');
       const rows = await res.json().catch(() => []);
-      const configuredProviders = (rows || []).filter((r) => !!r.api_key).map((r) => r.provider);
+      const configuredSet = new Set();
+      for (const r of rows || []) {
+        if (!r?.api_key) continue;
+        const prov = String(r.provider || '').toLowerCase();
+        if (prov === 'cloudflare' && r.api_key === 'binding:AI' && !hasWorkersAiBinding(env) && !hasCloudflareRestConfig(r)) {
+          continue;
+        }
+        configuredSet.add(r.provider);
+      }
+      if (hasWorkersAiBinding(env)) configuredSet.add('cloudflare');
+      const configuredProviders = Array.from(configuredSet);
       const configured = configuredProviders.length > 0;
-      return jsonResponse({ ok: true, configured, providers: configuredProviders });
+      return jsonResponse({ ok: true, configured, providers: configuredProviders, workersAiBound: hasWorkersAiBinding(env) });
     }
 
-    // ---- /verify: validate API key for UnoRouter, OpenRouter, or custom provider ----
+    // ---- /verify: validate API key for UnoRouter, OpenRouter, Cloudflare Workers AI, or custom provider ----
     if (path === 'verify' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
       const provider = String(body.provider || 'unorouter').trim().toLowerCase();
       const keyRow = await fetchProviderKeyRecord(env, provider);
+
+      if (provider === 'cloudflare') {
+        const rawInputKey = String(body.apiKey ?? '').trim();
+        const restKey = rawInputKey === 'binding:AI'
+          ? ''
+          : (rawInputKey || (keyRow?.api_key && keyRow.api_key !== 'binding:AI' ? keyRow.api_key : ''));
+        const rawBase = body.baseUrl ?? keyRow?.base_url ?? '';
+        const restBase = resolveProviderApiBase('cloudflare', rawBase);
+        if (restKey) {
+          if (!restBase || !hasValidCloudflareRestBase(rawBase)) {
+            return jsonResponse({
+              ok: false,
+              valid: false,
+              status: 400,
+              error: 'Isi Base URL REST Cloudflare dengan Account ID Anda, misalnya https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1 (atau kosongkan API Key untuk memakai Workers AI Binding native env.AI).',
+            });
+          }
+          try {
+            const pingRes = await fetch(`${restBase}/chat/completions`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${restKey}` },
+              body: JSON.stringify({ model: '@cf/meta/llama-3.1-8b-instruct-fp8-fast', messages: [{ role: 'user', content: 'ping' }], max_tokens: 5 }),
+              signal: AbortSignal.timeout(25_000),
+            });
+            if (pingRes.ok) {
+              return jsonResponse({ ok: true, valid: true, verifiedVia: 'cloudflare_rest', modelsCount: CLOUDFLARE_FREE_LLM_MODELS.length });
+            }
+            const errText = await pingRes.text().catch(() => '');
+            return jsonResponse({ ok: false, valid: false, status: pingRes.status, error: errText.slice(0, 200) });
+          } catch (e) {
+            return jsonResponse({ ok: false, valid: false, error: String(e) });
+          }
+        }
+        if (hasWorkersAiBinding(env)) {
+          try {
+            await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8-fast', {
+              messages: [{ role: 'user', content: 'ping' }],
+              max_tokens: 5,
+            });
+            return jsonResponse({ ok: true, valid: true, verifiedVia: 'binding', modelsCount: CLOUDFLARE_FREE_LLM_MODELS.length });
+          } catch (e) {
+            return jsonResponse({ ok: false, valid: false, error: `Workers AI binding error: ${String(e)}` });
+          }
+        }
+        return jsonResponse({
+          ok: false,
+          valid: false,
+          status: 400,
+          error: 'Binding env.AI belum aktif di environment ini. Setelah deploy Worker terbaru dengan [ai] binding, tes otomatis berhasil — atau isi Base URL Account ID & Cloudflare API Token untuk jalur REST.',
+        });
+      }
+
       const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
       const apiKey = body.apiKey ?? '';
       try {
@@ -963,7 +1125,27 @@ async function handleApi(request, url, env) {
       const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
-      const chatRows = (rows ?? []).filter((m) => isChatCapableModelId(m.model));
+      let chatRows = (rows ?? []).filter((m) => isChatCapableModelId(m.model));
+      const workersAiBound = hasWorkersAiBinding(env);
+
+      if (chatRows.some((m) => String(m.provider || '').toLowerCase() === 'cloudflare') && !workersAiBound) {
+        const cfKeyRow = await fetchProviderKeyRecord(env, 'cloudflare').catch(() => null);
+        if (!hasCloudflareRestConfig(cfKeyRow)) {
+          chatRows = chatRows.filter((m) => String(m.provider || '').toLowerCase() !== 'cloudflare');
+        }
+      }
+
+      if (workersAiBound && !chatRows.some((m) => String(m.provider || '').toLowerCase() === 'cloudflare')) {
+        const anyCfRes = await servicePostgrest(env, '/provider_models?select=model&provider=eq.cloudflare&limit=1').catch(() => null);
+        const anyCfRows = anyCfRes?.ok ? await anyCfRes.json().catch(() => []) : [];
+        if (!anyCfRows?.length) {
+          chatRows = [
+            ...chatRows,
+            ...CLOUDFLARE_FREE_LLM_MODELS.filter((m) => m.starter).map((m) => ({ provider: 'cloudflare', model: m.id })),
+          ];
+        }
+      }
+
       const seen = new Set();
       const deduped = [];
       for (const m of chatRows) {
@@ -983,10 +1165,25 @@ async function handleApi(request, url, env) {
       return jsonResponse({ models, modelItems });
     }
 
-    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid) or OpenRouter ----
+    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid), OpenRouter, or Cloudflare Workers AI ----
     if (path === 'catalog' && (method === 'GET' || method === 'POST')) {
       const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
       const provider = String(body.provider || url.searchParams.get('provider') || 'unorouter').toLowerCase();
+
+      if (provider === 'cloudflare') {
+        return jsonResponse({
+          models: CLOUDFLARE_FREE_LLM_MODELS.map((m) => ({
+            id: m.id,
+            provider: 'cloudflare',
+            category: 'Text',
+            tags: m.tags,
+            description: m.description,
+            isFree: true,
+            online: true,
+            priceLabel: 'Gratis 10K Neurons/hr',
+          })),
+        });
+      }
 
       if (provider === 'openrouter') {
         try {
@@ -1236,10 +1433,11 @@ async function handleApi(request, url, env) {
       for (const row of dbModelRows || []) {
         const provider = row.provider || 'unorouter';
         const key = `${provider}:${row.model}`;
-        const isVideo = isVideoModelId(row.model) || liveCatalogMap.has(key) || provider !== 'unorouter';
+        if (provider === 'cloudflare' && !isVideoModelId(row.model)) continue;
+        const isVideo = isVideoModelId(row.model) || liveCatalogMap.has(key) || (provider !== 'unorouter' && provider !== 'cloudflare');
         if (!isVideo) continue;
         // Skip clearly non-video chat/embedding models on other providers if obvious
-        if (provider !== 'unorouter' && /(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama)/i.test(row.model)) continue;
+        if (provider !== 'unorouter' && /(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama|gemma|qwen|glm|mistral|granite)/i.test(row.model)) continue;
         const profile = getVideoModelProfile(row.model, provider);
         const live = liveCatalogMap.get(key);
         merged.set(key, {
@@ -1315,9 +1513,9 @@ async function handleApi(request, url, env) {
         return a.name.localeCompare(b.name);
       });
 
-      const providers = Array.from(configuredByProvider.values());
+      const providers = Array.from(configuredByProvider.values()).filter((p) => p.id !== 'cloudflare');
       for (const preset of Object.values(PROVIDER_PRESETS)) {
-        if (preset.id === 'custom') continue;
+        if (preset.id === 'custom' || preset.id === 'cloudflare') continue;
         if (!configuredByProvider.has(preset.id)) {
           providers.push({ id: preset.id, label: preset.label, configured: false, hasBaseUrl: false });
         }
@@ -1598,7 +1796,10 @@ async function handleApi(request, url, env) {
       const primaryProvider = String(body.provider || 'unorouter').trim().toLowerCase();
       const requestedModel = String(body.model || 'gpt-oss-120b:free').trim();
       const primaryKeyRow = keyByProvider.get(primaryProvider);
-      const primaryApiKey = primaryKeyRow?.api_key || (primaryProvider === 'unorouter' ? 'use-free' : '');
+      let primaryApiKey = primaryKeyRow?.api_key || (primaryProvider === 'unorouter' ? 'use-free' : '');
+      if (primaryProvider === 'cloudflare' && !primaryApiKey && hasWorkersAiBinding(env)) {
+        primaryApiKey = 'binding:AI';
+      }
       if (!primaryApiKey) {
         return jsonResponse({ error: `API key untuk provider "${primaryProvider}" belum dikonfigurasi.` }, 400);
       }
@@ -1635,6 +1836,7 @@ async function handleApi(request, url, env) {
           baseUrl: activeBaseUrl,
           payload: fetchBody,
           timeoutMs: 120_000,
+          env,
         });
         let finalReply = attempt.ok ? extractAssistantReply(attempt.data) : '';
         if (!attempt.ok || !finalReply) {
@@ -1659,6 +1861,7 @@ async function handleApi(request, url, env) {
             primaryModel: requestedModel,
             keyByProvider,
             dbModelRows: cachedDbModels,
+            env,
           }).slice(0, 6);
 
           const primaryReason = attempt.ok ? 'empty_reply' : (attempt.errorInfo?.code || `http_${attempt.status}`);
@@ -1671,6 +1874,7 @@ async function handleApi(request, url, env) {
               baseUrl: cand.baseUrl,
               payload: fetchBody,
               timeoutMs: 18_000,
+              env,
             });
             const altReply = altRes.ok ? extractAssistantReply(altRes.data) : '';
             if (altRes.ok && altReply) {
@@ -1747,6 +1951,7 @@ async function handleApi(request, url, env) {
               baseUrl: activeBaseUrl,
               payload: { ...fetchBody, messages: roundMessages },
               timeoutMs: 60_000,
+              env,
             });
             if (!roundRes.ok && [429, 503, 502].includes(roundRes.status) && body.autoFallback !== false) {
               if (!cachedDbModels) {
@@ -1758,6 +1963,7 @@ async function handleApi(request, url, env) {
                 primaryModel: activeModel,
                 keyByProvider,
                 dbModelRows: cachedDbModels,
+                env,
               })[0];
               if (alt) {
                 const altRoundRes = await sendChatCompletionRequest({
@@ -1767,6 +1973,7 @@ async function handleApi(request, url, env) {
                   baseUrl: alt.baseUrl,
                   payload: { ...fetchBody, messages: roundMessages },
                   timeoutMs: 40_000,
+                  env,
                 });
                 if (altRoundRes.ok) {
                   roundRes = altRoundRes;

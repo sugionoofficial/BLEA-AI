@@ -107,6 +107,7 @@ const NAV_GROUPS = [
 ];
 
 const QUICK_PROVIDER_PRESETS = [
+  PROVIDER_PRESETS.cloudflare,
   PROVIDER_PRESETS.pekpik,
   PROVIDER_PRESETS.unorouter,
   PROVIDER_PRESETS.openrouter,
@@ -376,7 +377,8 @@ export function AdminPage() {
 
   async function saveProviderKey(providerRow) {
     const provider = providerRow.provider;
-    const apiKey = String(keyDrafts[provider] || '').trim();
+    const rawDraft = String(keyDrafts[provider] || '').trim();
+    const apiKey = rawDraft || (provider === 'cloudflare' && !providerRow.api_key ? 'binding:AI' : '');
     const baseUrl = String(baseUrlDrafts[provider] ?? providerRow.base_url ?? '').trim() || null;
 
     if (!apiKey && !providerRow.api_key) {
@@ -403,7 +405,12 @@ export function AdminPage() {
     } else {
       setKeyNotices((current) => ({
         ...current,
-        [provider]: { type: 'success', text: apiKey ? 'API key & Base URL disimpan di Supabase.' : 'Base URL diperbarui.' },
+        [provider]: {
+          type: 'success',
+          text: apiKey === 'binding:AI'
+            ? 'Cloudflare Workers AI disimpan dalam mode Binding native (env.AI).'
+            : (apiKey ? 'API key & Base URL disimpan di Supabase.' : 'Base URL diperbarui.'),
+        },
       }));
       setKeyDrafts((current) => ({ ...current, [provider]: '' }));
       await loadData();
@@ -413,7 +420,11 @@ export function AdminPage() {
 
   async function verifyProviderKey(providerRow) {
     const provider = providerRow.provider;
-    const apiKey = String(keyDrafts[provider] || providerRow.api_key || '').trim();
+    const apiKey = String(
+      keyDrafts[provider]
+      || providerRow.api_key
+      || (provider === 'cloudflare' ? 'binding:AI' : ''),
+    ).trim();
     const baseUrl = String(baseUrlDrafts[provider] ?? providerRow.base_url ?? '').trim();
     if (!apiKey) {
       setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Masukkan API key terlebih dahulu.' } }));
@@ -423,9 +434,13 @@ export function AdminPage() {
     setKeyNotices((current) => ({ ...current, [provider]: { type: 'info', text: `Memverifikasi ke ${providerRow.label || provider}...` } }));
     const { data, status } = await verifyKey({ provider, apiKey, baseUrl });
     if (data?.ok) {
-      const msg = data.verifiedVia === 'chat'
-        ? 'Valid — key dapat digunakan (verifikasi via endpoint chat). Simpan untuk mengaktifkan.'
-        : `Valid — ${data.modelsCount ?? 0} model terdeteksi. Simpan untuk mengaktifkan.`;
+      const msg = data.verifiedVia === 'binding'
+        ? `Valid — Workers AI Binding (env.AI) aktif (${data.modelsCount ?? 0} model gratis siap dipakai).`
+        : data.verifiedVia === 'cloudflare_rest'
+          ? `Valid — Cloudflare Workers AI REST API terhubung (${data.modelsCount ?? 0} model gratis). Simpan untuk mengaktifkan.`
+          : data.verifiedVia === 'chat'
+            ? 'Valid — key dapat digunakan (verifikasi via endpoint chat). Simpan untuk mengaktifkan.'
+            : `Valid — ${data.modelsCount ?? 0} model terdeteksi. Simpan untuk mengaktifkan.`;
       setKeyNotices((current) => ({ ...current, [provider]: { type: 'success', text: msg } }));
     } else {
       setKeyNotices((current) => ({
@@ -497,7 +512,7 @@ export function AdminPage() {
     setKeyBusy('add');
     const { error } = await supabase
       .from('provider_api_keys')
-      .insert({ provider, label, api_key: '', base_url });
+      .insert({ provider, label, api_key: provider === 'cloudflare' ? 'binding:AI' : '', base_url });
     if (error) {
       console.error('Add provider failed:', error);
       setKeyNotices((current) => ({ ...current, [`add:${provider}`]: { type: 'error', text: 'Provider mungkin sudah ada atau tidak valid.' } }));
@@ -808,7 +823,9 @@ export function AdminPage() {
                             <small>{provider.provider}</small>
                           </div>
                           <span className={`admin-api-state ${provider.api_key ? '' : 'is-empty'}`}>
-                            {provider.api_key ? 'Terhubung' : 'Belum terhubung'}
+                            {provider.provider === 'cloudflare' && provider.api_key === 'binding:AI'
+                              ? 'Workers AI Binding (env.AI)'
+                              : (provider.api_key ? 'Terhubung' : 'Belum terhubung')}
                           </span>
                         </div>
 
@@ -818,7 +835,11 @@ export function AdminPage() {
                             type="url"
                             value={baseUrlDrafts[provider.provider] ?? provider.base_url ?? ''}
                             onChange={(event) => setBaseUrlDrafts((cur) => ({ ...cur, [provider.provider]: event.target.value }))}
-                            placeholder={PROVIDER_PRESETS[provider.provider]?.baseUrl || 'https://api.provider.com/v1'}
+                            placeholder={
+                              provider.provider === 'cloudflare'
+                                ? 'Opsional untuk REST API: https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1'
+                                : (PROVIDER_PRESETS[provider.provider]?.baseUrl || 'https://api.provider.com/v1')
+                            }
                             aria-label={`Base URL ${provider.provider}`}
                           />
                         </div>
@@ -829,7 +850,13 @@ export function AdminPage() {
                             type="password"
                             value={keyDrafts[provider.provider] || ''}
                             onChange={(current) => setKeyDrafts((prev) => ({ ...prev, [provider.provider]: current.target.value }))}
-                            placeholder={provider.api_key ? 'Ganti API key...' : 'Masukkan API key...'}
+                            placeholder={
+                              provider.provider === 'cloudflare'
+                                ? (provider.api_key === 'binding:AI'
+                                  ? 'Aktif via Binding env.AI (atau tempel API Token Cloudflare untuk REST)...'
+                                  : 'Kosongkan untuk Binding env.AI, atau masukkan Cloudflare API Token...')
+                                : (provider.api_key ? 'Ganti API key...' : 'Masukkan API key...')
+                            }
                             aria-label={`API key ${provider.provider}`}
                           />
                           <div className="admin-api-actions">
