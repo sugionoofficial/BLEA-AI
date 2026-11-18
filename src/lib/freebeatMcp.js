@@ -669,6 +669,38 @@ function privateFailureReason(value) {
     .replace(/\b(?:fbk_|sk_|sb_secret_)[A-Za-z0-9_-]+\b/gi, '[kunci disembunyikan]')
     .replace(/\b(token|api[_-]?key|authorization|cookie|secret|password)(["'\s]*[:=]["'\s]*)[^\s,;"']+/gi, '$1$2[disembunyikan]');
 }
+// More complete model help for an explicitly consenting admin. This is not a
+// guarantee of redaction: provider prose may contain unrecognized secrets.
+function privateModelHelp(value) {
+  let remaining = 3000;
+  let truncated = false;
+  function visit(item, depth) {
+    if (remaining-- <= 0 || depth > 9) { truncated = true; return '[terpotong]'; }
+    if (item === null || typeof item === 'boolean') return item;
+    if (typeof item === 'number') return Number.isFinite(item) ? item : null;
+    if (typeof item === 'string') {
+      if (item.length > 2000) truncated = true;
+      return privateFailureReason(item) ?? '';
+    }
+    if (Array.isArray(item)) {
+      if (item.length > 100) truncated = true;
+      return item.slice(0, 100).map((child) => visit(child, depth + 1));
+    }
+    if (typeof item !== 'object') return null;
+    const entries = Object.entries(item);
+    if (entries.length > 100) truncated = true;
+    const result = [];
+    for (const [name, child] of entries.slice(0, 100)) {
+      // Preserve common price-map combination keys such as 480p|5, but never
+      // reflect arbitrary URL-like or credential-bearing property names.
+      if (!/^[A-Za-z0-9_.,:|/ +\-]{1,100}$/.test(name) || name.includes('://') || ['__proto__', 'constructor', 'prototype'].includes(name) || QUOTE_PRIVATE_KEY.test(name) || /password|passwd|api[_-]?key|private[_-]?key|access[_-]?key/i.test(name) || privateFailureReason(name) !== name) { truncated = true; continue; }
+      result.push([name, visit(child, depth + 1)]);
+    }
+    return Object.fromEntries(result);
+  }
+  return { help: visit(value, 0), truncated };
+}
+
 async function privateVideoFailure(env, user, session, request) {
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
@@ -705,6 +737,14 @@ export async function handleFreebeat(request, url, env, user) {
       if (action === 'image-models') return response({ ok: true, ...(await getModels(session.accessToken, 'image')) });
       if (action === 'video-models') return response({ ok: true, ...(await getModels(session.accessToken, 'video')) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
+    }
+    if (action === 'video-model-private-help' && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      const input = await imageJson(request);
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'acknowledge'].includes(key)) || input.acknowledge !== true || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Pilih model dan konfirmasi privasi terlebih dahulu.', 400);
+      const content = await videoDiagnostic(session.accessToken, 'video-help', null, true, videoSettings(input.model_id));
+      return response({ ok: true, model_id: input.model_id, ...privateModelHelp(content) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-model-help', 'video-model-quote'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
