@@ -155,7 +155,36 @@ test('AIStudio renders composer, chat history shell, and model status cleanly', 
   const studioCss = fs.readFileSync(new URL('../src/auth/studio.css', import.meta.url), 'utf8');
   const studioSource = fs.readFileSync(new URL('../src/auth/AIStudio.jsx', import.meta.url), 'utf8');
   assert.ok(studioCss.includes('.studio-thinking-panel'));
+  assert.ok(studioCss.includes('.studio-temp-code'));
   assert.ok(studioCss.includes('.studio-typing-cursor'));
   assert.ok(studioSource.includes('chatCompletionStream'));
   assert.ok(studioSource.includes('studio-thinking-panel'));
+  assert.ok(studioSource.includes('StudioTempCodePreview'));
+
+  const composerMatch = studioSource.match(/<form className="studio-composer"[\s\S]*?<\/form>/);
+  assert.ok(composerMatch, 'studio-composer form should exist');
+  assert.equal(/Sedang berpikir|Mengetik balasan|Menghubungkan AI|Mencari di web/.test(composerMatch[0]), false, 'Thinking/typing status animations must stay inside the AI reply bubble, not inside the text input block');
+
+  const { StudioTempCodePreview, StudioMessageBody } = await vite.ssrLoadModule('/src/auth/AIStudio.jsx');
+  const earlyTemp = renderToStaticMarkup(React.createElement(StudioTempCodePreview, { charCount: 14 }));
+  assert.ok(earlyTemp.includes('studio-temp-code'));
+  assert.ok(earlyTemp.includes('studio-temp-cursor'));
+  assert.equal(earlyTemp.includes('streamTokens'), false, 'Early animation tick should only reveal the beginning lines');
+
+  const lateTemp = renderToStaticMarkup(React.createElement(StudioTempCodePreview, { charCount: 145 }));
+  assert.ok(lateTemp.includes('analyzePrompt'));
+  assert.ok(lateTemp.includes('reasonStep'));
+  assert.ok(lateTemp.includes('streamTokens'));
+
+  const streamingCode = renderToStaticMarkup(
+    React.createElement(StudioMessageBody, {
+      content: 'Berikut kode:\n\n```js\nconst x = 42;',
+      isTyping: true,
+      copiedCodeKey: '',
+      onCopyCode: () => {},
+    }),
+  );
+  assert.ok(streamingCode.includes('studio-code-block'));
+  assert.ok(streamingCode.includes('const x = 42;'));
+  assert.ok(streamingCode.includes('studio-typing-cursor'));
 });
