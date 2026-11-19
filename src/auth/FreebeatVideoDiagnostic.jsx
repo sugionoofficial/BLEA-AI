@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
-import { FREEBEAT_VIDEO_TEST } from '../lib/freebeatVideoTestSettings';
 
 export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, request, userId, storage, videoModels, videoBusy }) {
   const [busy, setBusy] = useState(false);
@@ -142,7 +141,11 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     setBusy(true); setError(''); setTestNotice(''); setInitialDiagnostics(null); clearApproval();
     try {
       const result = await request('video-prepare', 'POST', { model_id: Number(model), prompt, image_url: imageUrl });
-      if (result.settings?.model_id !== Number(model) || result.settings?.generation_type !== FREEBEAT_VIDEO_TEST.generation_type || result.settings?.duration !== FREEBEAT_VIDEO_TEST.duration || result.settings?.resolution !== FREEBEAT_VIDEO_TEST.resolution || result.prompt !== prompt.trim() || result.image_url !== imageUrl.trim() || typeof result.credits !== 'number' || !Number.isFinite(result.credits) || result.credits < 0 || typeof result.approval !== 'string') throw new Error('Persetujuan tidak cocok dengan input yang dipilih. Tidak ada video dikirim; buat quote baru.');
+      // Settings are now normalized per model by the Worker (resolution,
+      // duration, generation type follow get_model_help), so validate internal
+      // consistency and the exact input echo instead of fixed global defaults.
+      const s = result.settings;
+      if (!s || s.model_id !== Number(model) || typeof s.generation_type !== 'string' || !s.generation_type || !Number.isSafeInteger(s.duration) || s.duration <= 0 || s.duration > 600 || typeof s.resolution !== 'string' || !s.resolution || result.prompt !== prompt.trim() || result.image_url !== imageUrl.trim() || typeof result.credits !== 'number' || !Number.isFinite(result.credits) || result.credits < 0 || typeof result.approval !== 'string') throw new Error('Persetujuan tidak cocok dengan input yang dipilih. Tidak ada video dikirim; buat quote baru.');
       await refreshTests();
       if (version === catalogVersion.current && connectionVersion === visibilityVersion.current) setApproval(result);
     }
@@ -205,7 +208,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   ];
   return <div className="freebeat-result">
     <h3>Pemeriksaan video · baca saja</h3>
-    <p>Pilih model dari daftar Freebeat. Quote menggunakan gambar ke video, {FREEBEAT_VIDEO_TEST.duration} detik, {FREEBEAT_VIDEO_TEST.resolution}; dukungan dan harga belum dijamin. Pemeriksaan tidak membuat video atau memakai kredit.</p>
+    <p>Pilih model dari daftar Freebeat. Quote menggunakan gambar ke video; durasi dan resolusi dimulai dari nilai bawaan lalu disesuaikan otomatis dengan kemampuan model menurut bantuan model. Pemeriksaan tidak membuat video atau memakai kredit.</p>
     <label className="freebeat-field">Model video
       <select id="freebeat-video-model" value={selected ? model : ''} disabled={loading || !connected || videoBusy || busy || uploadBusy || !modelOptions.length} onChange={(event) => { setModel(event.target.value); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setInitialDiagnostics(null); setQuote(null); setError(''); clearApproval(); }}>
         <option value="">{videoBusy ? 'Memuat model…' : 'Pilih model video'}</option>
