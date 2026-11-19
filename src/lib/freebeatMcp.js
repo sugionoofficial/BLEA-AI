@@ -372,7 +372,7 @@ async function getModels(accessToken, type) {
     const id = item.model_id ?? item.modelId ?? item.id;
     const name = item.display_name ?? item.displayName ?? item.name;
     if (!safeModelId(id) || typeof name !== 'string' || !name.trim() || name.length > 200 || /[\x00-\x1f\x7f]/.test(name)) return [];
-    return [{ model_id: id, name }];
+    return [{ model_id: id, name, member_only: item.member_only === true, available: item.available !== false }];
   });
   if (list.length && !models.length) throw mcpFailure('models', 'response');
   return { models, truncated: list.length > 100 };
@@ -504,6 +504,16 @@ function normalizeVideoSettings(help, settings, hasImage) {
     adjusted.push('resolution');
   }
   return { settings: next, adjusted, options };
+}
+// Member-only models reject non-member accounts at dispatch time with no
+// usable reason (0 accepted credits). Fail early with an actionable message.
+// Set FREEBEAT_ALLOW_MEMBER_ONLY=1 on the Worker once the account has membership.
+function assertModelUsable(help, modelId, env) {
+  if (env && String(env.FREEBEAT_ALLOW_MEMBER_ONLY) === '1') return;
+  const model = help && typeof help === 'object' && help.model && typeof help.model === 'object' ? help.model : null;
+  if (!model) return;
+  if (model.available === false) throw fail(`Model ${modelId} sedang tidak tersedia di Freebeat. Pilih model lain.`, 409);
+  if (model.member_only === true) throw fail(`Model ${modelId} khusus member Freebeat; akun tanpa membership ditolak penyedia saat pengiriman (0 accepted credits). Pilih model non-member atau aktifkan membership, lalu set FREEBEAT_ALLOW_MEMBER_ONLY=1 bila sudah member.`, 409);
 }
 
 // Do not dispatch an upload unless the live tool exposes a zero-credit ceiling
@@ -711,6 +721,7 @@ async function prepareVideo(env, user, session, input) {
   if (!found) throw fail('Model tidak ditemukan dalam daftar video Freebeat saat ini. Muat ulang daftar model.', 400);
   const exact = { prompt: input.prompt, image_url: input.image_url };
   const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, videoSettings(input.model_id));
+  assertModelUsable(help, input.model_id, env);
   const normalized = normalizeVideoSettings(help, videoSettings(input.model_id), Boolean(exact.image_url));
   const settings = normalized.settings;
   const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, settings));
@@ -925,8 +936,9 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'video-model-help') return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
       const videoInput = validateVideoInput({ prompt: input.prompt, image_url: input.image_url });
       const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
+      assertModelUsable(help, input.model_id, env);
       const normalized = normalizeVideoSettings(help, settings, Boolean(videoInput.image_url));
-      return response({ ok: true, settings: normalized.settings, adjusted: normalized.adjusted, quote: await videoDiagnostic(session.accessToken, 'video-quote', videoInput, false, normalized.settings) });
+      return response({ ok: true, settings: normalized.settings, adjusted: normalized.adjusted, member_only: help?.model?.member_only === true, quote: await videoDiagnostic(session.accessToken, 'video-quote', videoInput, false, normalized.settings) });
     }
     if (['video-help', 'video-quote', 'video-gemini-help', 'video-gemini-quote'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);

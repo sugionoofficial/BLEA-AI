@@ -105,7 +105,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     const number = Number(id);
     if (!Number.isSafeInteger(number) || number < 0 || typeof item.name !== 'string' || seen.has(number)) continue;
     seen.add(number);
-    modelOptions.push({ id: number, name: item.name });
+    modelOptions.push({ id: number, name: item.member_only === true ? `${item.name} · khusus member` : item.name, member_only: item.member_only === true });
   }
   const selected = model !== '' && modelOptions.some((item) => String(item.id) === model);
   async function inspect(action) {
