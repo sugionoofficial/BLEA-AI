@@ -472,6 +472,9 @@ function collectHelpOptions(help) {
       for (const [name, child] of Object.entries(value).slice(0, 200)) {
         notePair(name);
         const low = name.toLowerCase();
+        // Price maps key their entries by resolution ("768p": 13) or by
+        // resolution|duration pairs ("480p|5": 27); capture both shapes.
+        if (HELP_RESOLUTION.test(low)) resolutions.add(low);
         if (/^(text|image)$/.test(low) && /generation|type|mode|input|source/i.test(key)) generations.add(low);
         walk(child, `${key}${key ? '.' : ''}${low}`, depth + 1);
       }
@@ -500,7 +503,8 @@ function normalizeVideoSettings(help, settings, hasImage) {
     adjusted.push('duration');
   }
   if (options.resolutions.length && !options.resolutions.includes(String(next.resolution).toLowerCase())) {
-    next.resolution = options.resolutions.includes('480p') ? '480p' : options.resolutions[0];
+    const preference = ['480p', '768p', '720p', '1080p', '2k', '4k'];
+    next.resolution = preference.find((item) => options.resolutions.includes(item)) ?? options.resolutions[0];
     adjusted.push('resolution');
   }
   return { settings: next, adjusted, options };
