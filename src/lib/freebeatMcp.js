@@ -8,6 +8,11 @@ const REGISTER = 'https://freebeat.ai/oauth/register';
 const AUTH = 'https://freebeat.ai/oauth/authorize';
 const TOKEN = 'https://freebeat.ai/oauth/token';
 const REVOKE = 'https://freebeat.ai/oauth/revoke';
+// Undocumented web-app gateway. Used only by the operator's explicit
+// gateway probe: a free GET first, then a paid create call that stays disabled
+// unless FREEBEAT_ALLOW_PROXY_CREATE=1 is set. The MCP path remains the only
+// sanctioned generation route.
+const PROXY_BASE = 'https://freebeat.ai/api/proxy/v1';
 const PENDING = '__Host-blea_freebeat_pending';
 const SESSION = '__Host-blea_freebeat_session';
 const encoder = new TextEncoder();
@@ -372,7 +377,9 @@ async function getModels(accessToken, type) {
     const id = item.model_id ?? item.modelId ?? item.id;
     const name = item.display_name ?? item.displayName ?? item.name;
     if (!safeModelId(id) || typeof name !== 'string' || !name.trim() || name.length > 200 || /[\x00-\x1f\x7f]/.test(name)) return [];
-    return [{ model_id: id, name, member_only: item.member_only === true, available: item.available !== false }];
+    // The web client dispatches with the model slug as well as the numeric id.
+    const slug = [item.model, item.model_slug, item.slug].find((v) => typeof v === 'string' && /^[a-z0-9._-]{1,60}$/i.test(v));
+    return [{ model_id: id, name, model_slug: slug || '', member_only: item.member_only === true, available: item.available !== false }];
   });
   if (list.length && !models.length) throw mcpFailure('models', 'response');
   return { models, truncated: list.length > 100 };
@@ -431,10 +438,20 @@ async function videoDiagnostic(accessToken, action, input, raw = false, settings
 async function parseVideoQuote(request) {
   return validateVideoInput(await imageJson(request));
 }
+function optionalDuration(value) {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 600) throw fail('Durasi harus berupa angka detik antara 1 dan 600.', 400);
+  return value;
+}
+function optionalResolution(value) {
+  if (value === undefined || value === '') return undefined;
+  if (typeof value !== 'string' || !HELP_RESOLUTION.test(value.trim())) throw fail('Resolusi tidak valid (contoh: 480p, 768p, 1080p).', 400);
+  return value.trim().toLowerCase();
+}
 async function parseVideoPrepare(request) {
   const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'prompt', 'image_url'].includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Pilih ID model video yang valid.', 400);
-  return { model_id: input.model_id, ...validateVideoInput({ prompt: input.prompt, image_url: input.image_url }) };
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'prompt', 'image_url', 'duration', 'resolution'].includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Pilih ID model video yang valid.', 400);
+  return { model_id: input.model_id, duration: optionalDuration(input.duration), resolution: optionalResolution(input.resolution), ...validateVideoInput({ prompt: input.prompt, image_url: input.image_url }) };
 }
 function videoSettings(modelId) { return { ...FREEBEAT_VIDEO_TEST, model_id: modelId }; }
 
@@ -464,18 +481,22 @@ function collectHelpOptions(help) {
       const v = value.trim().toLowerCase();
       if (HELP_RESOLUTION.test(v)) resolutions.add(v);
       notePair(v);
-      if (/^(text|image)$/.test(v) && /generation|type|mode|input|source/i.test(key)) generations.add(v);
       return;
     }
     if (Array.isArray(value)) { value.slice(0, 200).forEach((item) => walk(item, key, depth + 1)); return; }
     if (typeof value === 'object') {
+      // Help entries name their modes like "image-to-video"; map them to the
+      // generate_video generation_type enum (text|image|transition|reference).
+      if (typeof value.generation_type === 'number' && typeof value.generation_name === 'string') {
+        const mapped = { 'image-to-video': 'image', 'text-to-video': 'text', 'first/last-frame transition': 'transition', 'reference-to-video': 'reference' }[value.generation_name.toLowerCase()];
+        if (mapped) generations.add(mapped);
+      }
       for (const [name, child] of Object.entries(value).slice(0, 200)) {
         notePair(name);
         const low = name.toLowerCase();
         // Price maps key their entries by resolution ("768p": 13) or by
         // resolution|duration pairs ("480p|5": 27); capture both shapes.
         if (HELP_RESOLUTION.test(low)) resolutions.add(low);
-        if (/^(text|image)$/.test(low) && /generation|type|mode|input|source/i.test(key)) generations.add(low);
         walk(child, `${key}${key ? '.' : ''}${low}`, depth + 1);
       }
     }
@@ -552,8 +573,17 @@ async function freebeatUploadDiagnostic(session, request, submit) {
   }
   return { eligible: true, outcome: 'uploaded' };
 }
+// Settings are normalized per model (resolution/duration/generation type follow
+// get_model_help), so validate the shape and ranges instead of equality with the
+// fixed defaults. The quote re-check at dispatch remains the real price guard.
 function validVideoSettings(settings) {
-  return settings && Number.isSafeInteger(settings.model_id) && settings.model_id >= 0 && JSON.stringify(settings) === JSON.stringify(videoSettings(settings.model_id));
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+  if (Object.keys(settings).sort().join(',') !== 'aspect_ratio,duration,generation_type,model_id,resolution') return false;
+  return Number.isSafeInteger(settings.model_id) && settings.model_id >= 0
+    && ['image', 'text', 'transition', 'reference'].includes(settings.generation_type)
+    && Number.isSafeInteger(settings.duration) && settings.duration > 0 && settings.duration <= 600
+    && typeof settings.resolution === 'string' && HELP_RESOLUTION.test(settings.resolution)
+    && typeof settings.aspect_ratio === 'string' && /^\d{1,2}:\d{1,2}$/.test(settings.aspect_ratio);
 }
 function validateVideoInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000 || typeof input.image_url !== 'string' || input.image_url.trim().length > 2048) throw fail('Masukkan prompt 1–2000 karakter dan satu URL gambar HTTPS.', 400);
@@ -724,9 +754,10 @@ async function prepareVideo(env, user, session, input) {
   });
   if (!found) throw fail('Model tidak ditemukan dalam daftar video Freebeat saat ini. Muat ulang daftar model.', 400);
   const exact = { prompt: input.prompt, image_url: input.image_url };
-  const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, videoSettings(input.model_id));
+  const base = { ...videoSettings(input.model_id), ...(Number.isSafeInteger(input.duration) ? { duration: input.duration } : {}), ...(input.resolution ? { resolution: input.resolution } : {}) };
+  const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, base);
   assertModelUsable(help, input.model_id, env);
-  const normalized = normalizeVideoSettings(help, videoSettings(input.model_id), Boolean(exact.image_url));
+  const normalized = normalizeVideoSettings(help, base, Boolean(exact.image_url));
   const settings = normalized.settings;
   const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, settings));
   if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
@@ -758,7 +789,10 @@ async function submitVideo(env, user, session, request) {
   let taskId;
   let initialDiagnostics = null;
   try {
-    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { ...ticket.settings, prompt: exact.prompt, images: [exact.image_url], max_credits: cap } } }, 'generate', headers, 262144, input.private_diagnostics === true);
+    // Dispatch mirrors the official generate_video schema (model_id, prompt,
+    // generation_type enum string, images, duration, resolution, aspect_ratio,
+    // max_credits) AND the proven web client shape (aspect ratio always sent).
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { model_id: ticket.settings.model_id, generation_type: ticket.settings.generation_type, prompt: exact.prompt, images: [exact.image_url], duration: ticket.settings.duration, resolution: ticket.settings.resolution, aspect_ratio: ticket.settings.aspect_ratio, max_credits: cap } } }, 'generate', headers, 262144, input.private_diagnostics === true);
     if (input.private_diagnostics === true) initialDiagnostics = { received: true, messages: initialVideoMessages(result) };
     if (result.isError) throw new Error('unrecognized');
     const content = modelContent(result);
@@ -894,6 +928,80 @@ async function privateVideoFailure(env, user, session, request) {
   return { reasons };
 }
 
+function proxyVerdict(status) {
+  if (status === 401 || status === 403) return 'token_oauth_ditolak_gerbang_web';
+  if (status === 404 || status === 405) return 'jalur_proxy_tidak_dikenal';
+  if (status === 429) return 'rate_limited';
+  if (status >= 200 && status < 300) return 'diterima_gerbang_web';
+  if (status >= 500) return 'galat_server_freebeat';
+  return 'ditolak_lainnya';
+}
+// Read-only shapes for the web gateway's video list. The plain GET returned
+// HTTP 200 with an empty body, so the real contract is probably a POST; these
+// candidates cost nothing and reveal which one the gateway answers.
+const PROXY_LIST_CANDIDATES = Object.freeze([
+  { method: 'POST', path: '/aiVideo/list', body: { page: 1, pageSize: 5 } },
+  { method: 'POST', path: '/aiVideo/list', body: { pageNum: 1, pageSize: 5 } },
+  { method: 'POST', path: '/aiVideo/list', body: {} },
+  { method: 'GET', path: '/aiVideo/list?pageNum=1&pageSize=5', body: null },
+]);
+async function proxyRequest(session, accessToken, method, url, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(url, { method, redirect: 'manual', signal: controller.signal, headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const text = await res.text().catch(() => '');
+    const masked = text.replaceAll(accessToken || '\u0000', '[token dihapus]').slice(0, 1200);
+    return { method, url, status: res.status, accepted: res.ok, verdict: proxyVerdict(res.status), length: text.length, body: masked };
+  } catch (err) {
+    return { method, url, status: 0, accepted: false, verdict: err?.name === 'AbortError' ? 'timeout' : 'jaringan_gagal', length: 0, body: '' };
+  } finally { clearTimeout(timer); }
+}
+async function proxyListSweep(session) {
+  const attempts = [];
+  for (const candidate of PROXY_LIST_CANDIDATES) {
+    attempts.push(await proxyRequest(session, session.accessToken, candidate.method, `${PROXY_BASE}${candidate.path}`, candidate.body));
+    if (attempts[attempts.length - 1].length > 2) break; // first shape that answers wins
+  }
+  // Only a 2xx with a body counts as an answer; an error body (401 device
+  // conflict, 404) is a rejection, not proof the token works on this gateway.
+  const last = attempts[attempts.length - 1];
+  const answered = attempts.find((item) => item.accepted && item.length > 2) || null;
+  return { stage: 'list', attempts, answered: Boolean(answered), status: answered?.status ?? last.status, accepted: answered?.accepted === true, verdict: answered ? answered.verdict : (last.status ? last.verdict : 'tidak_ada_bentuk_yang_menjawab'), body: answered?.body ?? last.body ?? '' };
+}
+async function proxyProbe(session, env, input) {
+  if (input.stage === 'list') return await proxyListSweep(session);
+  const create = input.stage === 'create';
+  if (create && env.FREEBEAT_ALLOW_PROXY_CREATE !== '1') throw fail('Langkah kirim video melalui gerbang web dinonaktifkan. Setel FREEBEAT_ALLOW_PROXY_CREATE=1 di Worker hanya setelah uji probe gratis diterima dan pengeluaran disetujui.', 409);
+  const exact = create ? validateVideoInput({ prompt: input.prompt, image_url: input.image_url }) : null;
+  const url = create ? `${PROXY_BASE}/aiVideo/createAiVideo` : `${PROXY_BASE}/aiVideo/list?page=1&pageSize=1`;
+  const payload = create ? {
+    generationType: input.generation_type === 'text' ? 1 : 0,
+    model: typeof input.model_slug === 'string' && input.model_slug ? input.model_slug : undefined,
+    modelId: input.model_id,
+    duration: input.duration,
+    resolution: input.resolution,
+    style: '',
+    images: [exact.image_url],
+    prompt: exact.prompt,
+    watermark: 1,
+    name: 'BLEA AI gateway probe',
+    aspectRatio: input.aspect_ratio,
+    extraParams: {},
+  } : null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  let res;
+  try {
+    res = await fetch(url, { method: create ? 'POST' : 'GET', redirect: 'manual', signal: controller.signal, headers: { authorization: `Bearer ${session.accessToken}`, 'content-type': 'application/json', accept: 'application/json' }, body: payload ? JSON.stringify(payload) : undefined });
+  } catch (err) {
+    return { stage: input.stage, url, status: 0, accepted: false, verdict: err?.name === 'AbortError' ? 'timeout' : 'jaringan_gagal', location: null, body: '' };
+  } finally { clearTimeout(timer); }
+  const text = await res.text().catch(() => '');
+  const masked = text.replaceAll(session.accessToken || '\u0000', '[token dihapus]').slice(0, 1500);
+  return { stage: input.stage, url, status: res.status, accepted: res.ok, verdict: proxyVerdict(res.status), location: res.headers.get('location'), body: masked };
+}
+
 async function dispatchFreebeat(request, url, env, user) {
   try {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
@@ -934,9 +1042,9 @@ async function dispatchFreebeat(request, url, env, user) {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       const input = await imageJson(request);
-      const allowed = action === 'video-model-help' ? ['model_id'] : ['model_id', 'prompt', 'image_url'];
+      const allowed = action === 'video-model-help' ? ['model_id'] : ['model_id', 'prompt', 'image_url', 'duration', 'resolution'];
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Masukkan ID model video yang valid.', 400);
-      const settings = { ...FREEBEAT_VIDEO_TEST, model_id: input.model_id };
+      const settings = { ...FREEBEAT_VIDEO_TEST, model_id: input.model_id, ...(input.duration !== undefined ? { duration: optionalDuration(input.duration) } : {}), ...(input.resolution !== undefined ? { resolution: optionalResolution(input.resolution) } : {}) };
       if (action === 'video-model-help') return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
       const videoInput = validateVideoInput({ prompt: input.prompt, image_url: input.image_url });
       const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
@@ -964,6 +1072,15 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'video-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVideo(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'video-task' && request.method === 'POST') return response({ ok: true, task: await pollVideo(env, user, session, request) });
       if (action === 'video-private-failure' && request.method === 'POST') return response({ ok: true, ...(await privateVideoFailure(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+    }
+    if (action === 'proxy-probe' && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      const input = await imageJson(request);
+      if (!input || typeof input !== 'object' || Array.isArray(input) || input.acknowledge !== true || !['probe', 'list', 'create'].includes(input.stage) || Object.keys(input).some((key) => !['stage', 'acknowledge', 'model_id', 'model_slug', 'prompt', 'image_url', 'duration', 'resolution', 'aspect_ratio', 'generation_type'].includes(key))) throw fail('Permintaan probe gerbang web tidak valid.', 400);
+      const settings = { ...FREEBEAT_VIDEO_TEST, ...(Number.isSafeInteger(input.model_id) && input.model_id >= 0 ? { model_id: input.model_id } : {}), ...(input.duration !== undefined ? { duration: optionalDuration(input.duration) } : {}), ...(input.resolution !== undefined ? { resolution: optionalResolution(input.resolution) } : {}), model_slug: typeof input.model_slug === 'string' && /^[a-z0-9._-]{1,60}$/i.test(input.model_slug) ? input.model_slug.toLowerCase() : '' };
+      const probe = await proxyProbe(session, env, { stage: input.stage, model_id: settings.model_id, model_slug: settings.model_slug, generation_type: settings.generation_type, duration: settings.duration, resolution: settings.resolution, aspect_ratio: settings.aspect_ratio, prompt: input.prompt, image_url: input.image_url });
+      return response({ ok: true, probe }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['image-prepare', 'image-submit', 'image-tests', 'image-task'].includes(action)) {
       const session = await readSession(request, env, user.id);

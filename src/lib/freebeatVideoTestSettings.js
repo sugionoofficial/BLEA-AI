@@ -3,9 +3,10 @@
 // Values here are only a fallback for models whose help exposes no options.
 export const FREEBEAT_VIDEO_TEST = Object.freeze({
   model_id: 182,
-  generation_type: 'image',
+  generation_type: 'image', // string sesuai skema MCP: text|image|transition|reference
   duration: 5,
   resolution: '480p',
+  aspect_ratio: '16:9', // kontrak web Freebeat selalu mengirim aspectRatio
 });
 
 // Safety margin added on top of the quoted credits when dispatching, so a
