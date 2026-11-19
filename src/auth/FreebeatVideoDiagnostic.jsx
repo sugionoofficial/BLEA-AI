@@ -172,12 +172,12 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     try { await refreshTests(); } catch (err) { setError(err.message || 'Catatan tidak tersedia.'); }
     finally { setBusy(false); }
   }
-  async function poll(id) {
+  async function poll(id, acknowledge = false) {
     if (busy) return;
     setBusy(true); setError('');
     setPrivateFailure((old) => { const next = { ...old }; delete next[id]; return next; });
     setPrivacyConsent((old) => ({ ...old, [id]: false }));
-    try { const result = await request('video-task', 'POST', { id }); setTaskResults((old) => ({ ...old, [id]: result.task })); }
+    try { const result = await request('video-task', 'POST', acknowledge ? { id, acknowledge: true } : { id }); setTaskResults((old) => ({ ...old, [id]: result.task })); }
     catch (err) { setError(err.message || 'Status belum tersedia.'); }
     finally { setBusy(false); }
   }
@@ -254,7 +254,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     <div className="freebeat-result">
       <h3>Uji generasi video khusus admin</h3>
       <p>Ini memakai kredit akun Freebeat admin, bukan kredit BLEA. Gunakan hanya sesuai ketentuan plan Freebeat. Biaya aktual dan refund tidak dijamin, termasuk jika tugas gagal. Jika hasil pengiriman tidak pasti, jangan ulangi sebelum memeriksa Freebeat dan catatan.</p>
-      <p>Menyiapkan quote tidak membuat video. Pengiriman memerlukan konfirmasi terpisah, dengan batas maksimum sama dengan quote yang baru. URL gambar dan prompt dikirim ke Freebeat; isi di URL dapat berubah setelah persetujuan.</p>
+      <p>Menyiapkan quote tidak membuat video. Pengiriman memerlukan konfirmasi terpisah, dengan batas maksimum quote ditambah margin keamanan agar pembulatan harga penyedia tidak menolak item. URL gambar dan prompt dikirim ke Freebeat; isi di URL dapat berubah setelah persetujuan.</p>
       {!imageAccess && <p>Hubungkan Freebeat dan setujui izin generasi terlebih dahulu di atas.</p>}
       {!selected && <p>Pilih model video di atas untuk menyiapkan quote persetujuan.</p>}
       <div className="freebeat-actions">
@@ -263,9 +263,10 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       </div>
       {approval && <div className="freebeat-result">
         <h3>Periksa dan setujui satu video</h3>
-        <p>Model {modelOptions.find((item) => item.id === approval.settings.model_id)?.name || 'video'} · ID {approval.settings.model_id} · gambar ke video · {approval.settings.duration} detik · {approval.settings.resolution} · quote dan batas maksimum <strong>{approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
+        <p>Model {modelOptions.find((item) => item.id === approval.settings.model_id)?.name || 'video'} · ID {approval.settings.model_id} · {approval.settings.generation_type === 'image' ? 'gambar ke video' : 'teks ke video'} · {approval.settings.duration} detik · {approval.settings.resolution} · quote <strong>{approval.credits} kredit</strong> · batas maksimum <strong>{approval.max_credits ?? approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
+        {Array.isArray(approval.adjusted) && approval.adjusted.length > 0 && <p className="freebeat-alert" role="status">Setting uji disesuaikan otomatis dengan kemampuan model menurut bantuan model: {approval.adjusted.join(', ')}.</p>}
         <p>Prompt dan URL gambar yang akan dikirim:</p><pre>{approval.prompt}</pre><pre>{approval.image_url}</pre>
-        <label className="freebeat-confirm"><input type="checkbox" checked={confirmed} disabled={busy || !connected || !imageAccess} onChange={(event) => setConfirmed(event.target.checked)} /> Saya menyetujui satu kali generasi video ini dengan batas maksimum {approval.credits} kredit Freebeat. Biaya aktual dan refund belum dipastikan.</label>
+        <label className="freebeat-confirm"><input type="checkbox" checked={confirmed} disabled={busy || !connected || !imageAccess} onChange={(event) => setConfirmed(event.target.checked)} /> Saya menyetujui satu kali generasi video ini dengan batas maksimum {approval.max_credits ?? approval.credits} kredit Freebeat. Biaya aktual dan refund belum dipastikan.</label>
         <label className="freebeat-confirm"><input type="checkbox" checked={initialConsent} disabled={busy || !connected || !imageAccess} onChange={(event) => setInitialConsent(event.target.checked)} /> Opsional: tampilkan pesan respons awal secara privat setelah pengiriman ini. Pesan mungkin mengandung data sensitif; penyamaran tidak dijamin lengkap. Jangan bagikan pesan mentah, URL atau kredensial.</label>
         <div className="freebeat-actions"><button type="button" disabled={!confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || approval.settings?.model_id !== Number(model)} onClick={submit}>Setujui dan kirim satu video</button></div>
       </div>}
@@ -279,13 +280,14 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       {tests.length > 0 && <div className="freebeat-result"><h3>Catatan uji video admin</h3>{tests.map((test) => <div key={test.id} className="freebeat-test-row">
         <p>Model {test.model_id} · Batas {test.max_credits} kredit · {new Date(test.created_at).toLocaleString('id-ID')} · {test.status}</p>
         {(test.status === 'unknown' || test.status === 'dispatching') && <p>Hasil tidak pasti; pengiriman video baru diblokir. Jangan ulangi. Periksa aktivitas Freebeat dan minta operator meninjau catatan.</p>}
-        {test.status === 'submitted' && !test.canPoll && <p>Status hanya dapat diperiksa dari sesi Freebeat yang digunakan saat pengiriman.</p>}
+        {test.status === 'submitted' && !test.canPoll && <p>Uji ini dikirim dari sesi Freebeat yang lebih lama.</p>}
+        {test.status === 'submitted' && !test.canPoll && connected && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy} onClick={() => poll(test.id, true)}>Periksa status (sesi lama)</button></div>}
         {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy} onClick={() => poll(test.id)}>Periksa status video</button></div>}
         {taskResults[test.id] && <div className="freebeat-task-result"><p>Status tugas: {taskResults[test.id].status}. Biaya/refund yang tidak dilaporkan tidak diketahui.</p><pre>{JSON.stringify(taskResults[test.id].billing, null, 2)}</pre>
           {['failed', 'partial_failed', 'action_required'].includes(taskResults[test.id].status) && <>
             <p>Rincian kegagalan di bawah disaring; nilai kosong berarti tidak diketahui atau tidak dilaporkan. Pesan bebas disembunyikan demi privasi. Nilai retryable bukan persetujuan membuat ulang video.</p>
             <FreebeatCopyResult title="Status video dan rincian kegagalan yang disaring" value={{ status: taskResults[test.id].status, billing: taskResults[test.id].billing, failure: taskResults[test.id].failure, item_failures: taskResults[test.id].item_failures }} />
-            {test.canPoll && connected && <div className="freebeat-result">
+            {(test.canPoll || Boolean(taskResults[test.id])) && connected && <div className="freebeat-result">
               <h3>Pesan kegagalan pribadi</h3>
               <p>Pesan status dan kesalahan batch/item dari Freebeat mungkin berisi prompt, data pribadi atau kredensial. Beberapa pola sensitif disamarkan, tetapi penyaringan tidak dijamin lengkap. Jangan salin atau bagikan pesan mentah; jika perlu bantuan, jelaskan penyebabnya dengan kata-kata sendiri tanpa URL, token atau data pribadi.</p>
               {!Object.hasOwn(privateFailure, test.id) && <>

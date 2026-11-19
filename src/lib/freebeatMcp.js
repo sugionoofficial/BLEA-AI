@@ -1,6 +1,6 @@
 // Admin-only Freebeat MCP diagnostics and explicitly approved generation tests.
 import { boundedJson } from './boundedJson.js';
-import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC } from './freebeatVideoTestSettings.js';
+import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC, videoHeadroom } from './freebeatVideoTestSettings.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
 const IMAGE_SCOPE = 'freebeat:generate';
@@ -159,7 +159,7 @@ export async function freebeatCallback(request, env) {
     const imageAccess = requestedScope.includes(IMAGE_SCOPE) && granted.has(IMAGE_SCOPE);
     const lifetime = Math.min(3600, Number(tokens.expires_in) || 300);
     if (lifetime < 1) return finish('failed');
-    const encrypted = await seal({ uid: pending.uid, accessToken: tokens.access_token, clientId: pending.clientId, imageAccess, expiresAt: Date.now() + lifetime * 1000 }, env, 'session');
+    const encrypted = await seal({ uid: pending.uid, sid: crypto.randomUUID(), accessToken: tokens.access_token, refreshToken: typeof tokens.refresh_token === 'string' && tokens.refresh_token ? tokens.refresh_token : null, clientId: pending.clientId, imageAccess, expiresAt: Date.now() + lifetime * 1000 }, env, 'session');
     if (encrypted.length > 3800) return finish('failed');
     headers.append('set-cookie', cookie(SESSION, encrypted, Math.floor(lifetime)));
     return finish(requestedScope.includes(IMAGE_SCOPE) && !imageAccess ? 'connected-limited' : 'connected');
@@ -169,9 +169,35 @@ export async function freebeatCallback(request, env) {
   }
 }
 
+const REFRESH_WINDOW = 10 * 60 * 1000;
+const sessionCookies = new WeakMap();
+async function renewSession(session, env) {
+  const body = new URLSearchParams({ grant_type: 'refresh_token', client_id: session.clientId, refresh_token: session.refreshToken, resource: ENDPOINT });
+  const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: body.toString() }, 'token');
+  if (typeof tokens.access_token !== 'string' || !tokens.access_token || tokens.access_token.length > 2000 || (tokens.token_type && tokens.token_type.toLowerCase() !== 'bearer')) return null;
+  const lifetime = Math.min(3600, Number(tokens.expires_in) || 300);
+  if (lifetime < 1) return null;
+  return { ...session, accessToken: tokens.access_token, refreshToken: typeof tokens.refresh_token === 'string' && tokens.refresh_token ? tokens.refresh_token : session.refreshToken, expiresAt: Date.now() + lifetime * 1000 };
+}
 async function readSession(request, env, userId) {
   const session = await unseal(cookieValue(request, SESSION), env, 'session');
-  return session && session.uid === userId && Number.isFinite(session.expiresAt) && session.expiresAt > Date.now() && typeof session.accessToken === 'string' ? session : null;
+  if (!session || session.uid !== userId || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now() || typeof session.accessToken !== 'string') return null;
+  if (session.expiresAt - Date.now() > REFRESH_WINDOW || !session.refreshToken) return session;
+  // Silent renewal keeps ONE Freebeat connection (and therefore one provider
+  // API key) alive instead of pushing admins through consent again every hour.
+  // A failed renewal must NEVER drop a still-valid session: Freebeat's token
+  // endpoint can refuse or time out while the current access token keeps
+  // working until its own expiry. Worst case we retry on the next request.
+  try {
+    const renewed = await renewSession(session, env);
+    if (!renewed) return session;
+    const encrypted = await seal({ uid: renewed.uid, sid: renewed.sid || crypto.randomUUID(), accessToken: renewed.accessToken, refreshToken: renewed.refreshToken, clientId: renewed.clientId, imageAccess: renewed.imageAccess, expiresAt: renewed.expiresAt }, env, 'session');
+    if (encrypted.length > 3800) return session;
+    sessionCookies.set(request, cookie(SESSION, encrypted, Math.max(60, Math.floor((renewed.expiresAt - Date.now()) / 1000))));
+    return renewed;
+  } catch {
+    return session;
+  }
 }
 
 // Codes and log fields are fixed; never expose errors, response bodies, headers, URLs or tokens from Freebeat.
@@ -412,6 +438,74 @@ async function parseVideoPrepare(request) {
 }
 function videoSettings(modelId) { return { ...FREEBEAT_VIDEO_TEST, model_id: modelId }; }
 
+// --- Capability normalization -------------------------------------------------
+// Freebeat rejects generate_video items whose settings the model does not
+// support, without a usable reason (0 accepted credits). get_model_help exposes
+// the supported durations/resolutions/generation types; align the fixed test
+// settings to them BEFORE quoting so the quote, the approval and the dispatch
+// all carry values the model accepts. Unknown help => keep current settings.
+const HELP_RESOLUTION = /^(360p|480p|720p|768p|1080p|2k|4k)$/i;
+const HELP_PAIR = /^(\d{3,4}p|2k|4k)\|(\d{1,3})$/i; // price-map keys like "480p|5"
+function collectHelpOptions(help) {
+  const durations = new Set();
+  const resolutions = new Set();
+  const generations = new Set();
+  function notePair(name) {
+    const pair = HELP_PAIR.exec(name);
+    if (pair) { resolutions.add(pair[1].toLowerCase()); durations.add(Number(pair[2])); }
+  }
+  function walk(value, key = '', depth = 0) {
+    if (depth > 8 || value === null || typeof value === 'boolean') return;
+    if (typeof value === 'number') {
+      if (Number.isInteger(value) && value > 0 && value <= 600 && /duration|second|secs|length/i.test(key)) durations.add(value);
+      return;
+    }
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (HELP_RESOLUTION.test(v)) resolutions.add(v);
+      notePair(v);
+      if (/^(text|image)$/.test(v) && /generation|type|mode|input|source/i.test(key)) generations.add(v);
+      return;
+    }
+    if (Array.isArray(value)) { value.slice(0, 200).forEach((item) => walk(item, key, depth + 1)); return; }
+    if (typeof value === 'object') {
+      for (const [name, child] of Object.entries(value).slice(0, 200)) {
+        notePair(name);
+        const low = name.toLowerCase();
+        if (/^(text|image)$/.test(low) && /generation|type|mode|input|source/i.test(key)) generations.add(low);
+        walk(child, `${key}${key ? '.' : ''}${low}`, depth + 1);
+      }
+    }
+  }
+  walk(help);
+  return {
+    durations: [...durations].sort((a, b) => a - b),
+    resolutions: [...resolutions],
+    generations: [...generations],
+  };
+}
+function normalizeVideoSettings(help, settings, hasImage) {
+  const options = collectHelpOptions(help);
+  const adjusted = [];
+  const next = { ...settings };
+  if (options.generations.length) {
+    const wanted = hasImage ? 'image' : 'text';
+    if (!options.generations.includes(wanted)) {
+      throw fail(`Model ${settings.model_id} tidak mendukung generasi dari ${wanted === 'image' ? 'gambar' : 'teks'} (mendukung: ${options.generations.join(', ')}). Pilih model lain.`, 409);
+    }
+    if (next.generation_type !== wanted) { next.generation_type = wanted; adjusted.push('generation_type'); }
+  }
+  if (options.durations.length && !options.durations.includes(next.duration)) {
+    next.duration = options.durations.reduce((best, d) => (Math.abs(d - settings.duration) < Math.abs(best - settings.duration) ? d : best), options.durations[0]);
+    adjusted.push('duration');
+  }
+  if (options.resolutions.length && !options.resolutions.includes(String(next.resolution).toLowerCase())) {
+    next.resolution = options.resolutions.includes('480p') ? '480p' : options.resolutions[0];
+    adjusted.push('resolution');
+  }
+  return { settings: next, adjusted, options };
+}
+
 // Do not dispatch an upload unless the live tool exposes a zero-credit ceiling
 // and Freebeat quotes the exact URL at zero. Unknown is not free.
 async function freebeatUploadPreflight(session, imageUrl) {
@@ -472,7 +566,8 @@ const APPROVAL_LIFETIME = 5 * 60 * 1000;
 const TEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TASK_ID = /^[A-Za-z0-9_.:-]{1,256}$/;
 async function sessionHash(session) {
-  return b64(await crypto.subtle.digest('SHA-256', encoder.encode(`blea-freebeat-image-session-v1:${session.accessToken}`)));
+  // Stable across silent token renewals: polling rights survive refreshes.
+  return b64(await crypto.subtle.digest('SHA-256', encoder.encode(`blea-freebeat-image-session-v1:${session.sid || session.accessToken}`)));
 }
 function quotedCredits(content) {
   return content?.status === 'quoted' && typeof content.credits === 'number' && Number.isFinite(content.credits) && content.credits >= 0 && content.credits <= 1000000 ? content.credits : null;
@@ -614,15 +709,16 @@ async function prepareVideo(env, user, session, input) {
     return (typeof id === 'number' && id === input.model_id) || (typeof id === 'string' && /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) === input.model_id);
   });
   if (!found) throw fail('Model tidak ditemukan dalam daftar video Freebeat saat ini. Muat ulang daftar model.', 400);
-  const settings = videoSettings(input.model_id);
   const exact = { prompt: input.prompt, image_url: input.image_url };
-  await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
+  const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, videoSettings(input.model_id));
+  const normalized = normalizeVideoSettings(help, videoSettings(input.model_id), Boolean(exact.image_url));
+  const settings = normalized.settings;
   const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, settings));
   if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
   const expires = Date.now() + APPROVAL_LIFETIME;
   const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, ...exact, credits, expires }, env, 'video-approval');
   if (approval.length > 12000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
-  return { approval, settings, ...exact, credits, expiresAt: expires };
+  return { approval, settings, ...exact, credits, max_credits: credits + videoHeadroom(credits), adjusted: normalized.adjusted, supported: normalized.options, expiresAt: expires };
 }
 async function submitVideo(env, user, session, request) {
   await requireImageSession(session);
@@ -637,7 +733,8 @@ async function submitVideo(env, user, session, request) {
   if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
   const headers = await openMcp(session.accessToken);
   if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
-  const rows = await videoDb(env, '', { method: 'POST', body: { id: ticket.id, admin_id: user.id, session_hash: ticket.sessionHash, model_id: ticket.settings.model_id, quote_credits: ticket.credits, max_credits: ticket.credits, status: 'dispatching' } });
+  const cap = ticket.credits + videoHeadroom(ticket.credits);
+  const rows = await videoDb(env, '', { method: 'POST', body: { id: ticket.id, admin_id: user.id, session_hash: ticket.sessionHash, model_id: ticket.settings.model_id, quote_credits: ticket.credits, max_credits: cap, status: 'dispatching' } });
   if (rows.length !== 1 || rows[0]?.id !== ticket.id) throw fail('Pencatatan belum dapat dipastikan. Jangan ulangi sebelum memeriksa catatan.', 503);
   if (ticket.expires <= Date.now()) {
     try { await videoMark(env, user.id, ticket.id, 'reviewed'); } catch { /* preserve lock */ }
@@ -646,7 +743,7 @@ async function submitVideo(env, user, session, request) {
   let taskId;
   let initialDiagnostics = null;
   try {
-    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { ...ticket.settings, prompt: exact.prompt, images: [exact.image_url], max_credits: ticket.credits } } }, 'generate', headers, 262144, input.private_diagnostics === true);
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { ...ticket.settings, prompt: exact.prompt, images: [exact.image_url], max_credits: cap } } }, 'generate', headers, 262144, input.private_diagnostics === true);
     if (input.private_diagnostics === true) initialDiagnostics = { received: true, messages: initialVideoMessages(result) };
     if (result.isError) throw new Error('unrecognized');
     const content = modelContent(result);
@@ -681,10 +778,14 @@ function safeVideoFailure(value) {
   };
 }
 async function videoTaskContent(env, user, session, input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID uji tidak valid.', 400);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID uji tidak valid.', 400);
   const rows = await videoDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash&limit=1`);
   const row = rows[0];
-  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || row.session_hash !== await sessionHash(session)) throw fail('Uji tidak tersedia pada sesi Freebeat ini.', 404);
+  const sameSession = Boolean(row) && row.session_hash === await sessionHash(session);
+  // Legacy rows (submitted from an earlier Freebeat session) stay pollable for
+  // the owning admin with explicit acknowledgement, so rejected dispatches can
+  // finally reveal their provider failure reason instead of hanging forever.
+  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || (!sameSession && input.acknowledge !== true)) throw fail('Uji tidak tersedia pada sesi Freebeat ini.', 404);
   const headers = await openMcp(session.accessToken);
   const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_task_status', arguments: { task_id: row.task_id } } }, 'task', headers, 262144);
   const content = modelContent(result);
@@ -767,7 +868,7 @@ function initialVideoMessages(result) {
 async function privateVideoFailure(env, user, session, request) {
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
-  const content = await videoTaskContent(env, user, session, { id: input.id });
+  const content = await videoTaskContent(env, user, session, { id: input.id, acknowledge: true });
   if (!['failed', 'partial_failed', 'action_required'].includes(content.status)) throw fail('Pesan kegagalan tidak tersedia untuk status ini.', 409);
   // Status responses can carry useful details in failure.reason, error_message
   // or message at batch/item level. The original create response is not stored,
@@ -778,7 +879,7 @@ async function privateVideoFailure(env, user, session, request) {
   return { reasons };
 }
 
-export async function handleFreebeat(request, url, env, user) {
+async function dispatchFreebeat(request, url, env, user) {
   try {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
     if (user.app_metadata?.role !== 'admin') return response({ error: 'Koneksi Freebeat hanya untuk admin.' }, 403);
@@ -823,7 +924,9 @@ export async function handleFreebeat(request, url, env, user) {
       const settings = { ...FREEBEAT_VIDEO_TEST, model_id: input.model_id };
       if (action === 'video-model-help') return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
       const videoInput = validateVideoInput({ prompt: input.prompt, image_url: input.image_url });
-      return response({ ok: true, settings, quote: await videoDiagnostic(session.accessToken, 'video-quote', videoInput, false, settings) });
+      const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
+      const normalized = normalizeVideoSettings(help, settings, Boolean(videoInput.image_url));
+      return response({ ok: true, settings: normalized.settings, adjusted: normalized.adjusted, quote: await videoDiagnostic(session.accessToken, 'video-quote', videoInput, false, normalized.settings) });
     }
     if (['video-help', 'video-quote', 'video-gemini-help', 'video-gemini-quote'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
@@ -864,4 +967,12 @@ export async function handleFreebeat(request, url, env, user) {
     }
     return response({ error: 'Aksi Freebeat tidak dikenal.' }, 404);
   } catch (error) { return response({ error: error?.message || 'Koneksi Freebeat gagal.' }, error?.status || 502); }
+}
+
+export async function handleFreebeat(request, url, env, user) {
+  const res = await dispatchFreebeat(request, url, env, user);
+  // Persist silently renewed sessions so one connection keeps working.
+  const setCookie = sessionCookies.get(request);
+  if (setCookie) res.headers.append('Set-Cookie', setCookie);
+  return res;
 }
