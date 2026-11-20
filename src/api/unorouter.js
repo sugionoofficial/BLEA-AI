@@ -16,7 +16,7 @@ export async function fetchAdminModels({ apiKey } = {}) {
   return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
 }
 
-// Admin panel — catalog model dari UnoRouter / OpenRouter (di-fetch server-side via worker).
+// Admin panel — catalog model per provider (di-fetch server-side via worker).
 export async function fetchCatalog({ provider = 'unorouter' } = {}) {
   const { data, status } = await edgeRequest('/catalog', { provider });
   return { models: Array.isArray(data?.models) ? data.models : null, error: data?.error || '', status };

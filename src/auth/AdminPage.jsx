@@ -127,7 +127,6 @@ const QUICK_PROVIDER_PRESETS = [
   PROVIDER_PRESETS.cloudflare,
   PROVIDER_PRESETS.pekpik,
   PROVIDER_PRESETS.unorouter,
-  PROVIDER_PRESETS.openrouter,
   PROVIDER_PRESETS.xai,
   PROVIDER_PRESETS.openai,
   PROVIDER_PRESETS.google,
@@ -480,16 +479,6 @@ export function AdminPage() {
     if (q.state === 'empty') return <span>{q.error}</span>;
     if (q.state === 'unsupported') {
       return <span>{q.message}{q.consoleUrl ? <> <a href={q.consoleUrl} target="_blank" rel="noopener noreferrer">Buka konsol</a></> : null}</span>;
-    }
-    if (providerId === 'openrouter') {
-      return (
-        <span>
-          Sisa <b>{q.limitRemaining == null ? '∞' : usd(q.limitRemaining)}</b>{q.limit != null && <> dari limit <b>{usd(q.limit)}</b></>}
-          {q.limitReset ? <> · reset <b>{q.limitReset}</b></> : null}
-          {' · '}terpakai hari ini <b>{usd(q.usageDaily)}</b> · minggu ini <b>{usd(q.usageWeekly)}</b> · bulan ini <b>{usd(q.usageMonthly)}</b>
-          {q.freeRequests && q.freeRequests.limit > 0 ? <> · free <b>{q.freeRequests.remaining}/{q.freeRequests.limit}</b> req hari ini</> : null}
-        </span>
-      );
     }
     if (providerId === 'unorouter' || providerId === 'pekpik') {
       if (q.unlimitedQuota) return <span>Kuota: <b>unlimited</b> · terpakai <b>{quotaUsd(q.used, q.quotaPerUnit)}</b> ({q.name || providerId})</span>;
@@ -978,7 +967,7 @@ export function AdminPage() {
                   ) : displayedProviderRows.length === 0 ? (
                     <div className="admin-api-empty">
                       <b>Belum ada provider terdaftar.</b>
-                      <p>Semua provider saat ini sudah kosong. Tambahkan provider baru seperti PEKPIK, OpenRouter, UnoRouter, OpenAI, atau gateway kustom.</p>
+                      <p>Semua provider saat ini sudah kosong. Tambahkan provider baru seperti PEKPIK, UnoRouter, OpenAI, atau gateway kustom.</p>
                       <button
                         type="button"
                         className="admin-api-save"
@@ -1250,7 +1239,7 @@ export function AdminPage() {
                     <div><span className="admin-eyebrow">MODEL KUSTOM · CHAT &amp; VIDEO</span><h2>Tambah model manual</h2></div>
                   </div>
                   <p className="admin-api-note">
-                    Aktifkan ID model Chat atau Video spesifik untuk provider mana pun (misal <code>gemini-2.5-flash</code> / <code>gpt-5.5</code> di PEKPIK, <code>google/veo-3.1</code> di OpenRouter, atau <code>sora-2</code> di OpenAI).
+                    Aktifkan ID model Chat atau Video spesifik untuk provider mana pun (misal <code>gemini-2.5-flash</code> / <code>gpt-5.5</code> di PEKPIK atau <code>sora-2</code> di OpenAI).
                   </p>
                   {displayedProviderRows.length === 0 ? (
                     <div className="admin-api-empty">
@@ -1279,7 +1268,7 @@ export function AdminPage() {
                         <input
                           value={newCustomModel.model}
                           onChange={(e) => setNewCustomModel((cur) => ({ ...cur, model: e.target.value }))}
-                          placeholder="ID model (misal: gemini-2.5-flash atau google/veo-3.1)"
+                          placeholder="ID model (misal: gemini-2.5-flash atau sora-2)"
                         />
                         <button type="submit" className="admin-api-save" disabled={modelBusy === 'add-custom' || !newCustomModel.model.trim()}>
                           <Plus size={14} /> Tambah model

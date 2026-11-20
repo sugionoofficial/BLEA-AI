@@ -36,7 +36,7 @@ test('/api/enabled-models filters out video & non-chat models, prioritizes relia
         { provider: 'unorouter', model: 'gpt-oss-120b:free' },
         { provider: 'unorouter', model: 'veo3.1' },
         { provider: 'unorouter', model: 'text-embedding-3-small' },
-        { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' },
+        { provider: 'pekpik', model: 'anthropic/claude-sonnet-4' },
       ]);
     }
     throw new Error(`Unexpected fetch: ${url}`);
@@ -49,7 +49,7 @@ test('/api/enabled-models filters out video & non-chat models, prioritizes relia
     assert.ok(data.models.includes('anthropic/claude-sonnet-4'));
     assert.equal(data.models.includes('veo3.1'), false);
     assert.equal(data.models.includes('text-embedding-3-small'), false);
-    assert.ok(data.modelItems.some((item) => item.id === 'anthropic/claude-sonnet-4' && item.provider === 'openrouter'));
+    assert.ok(data.modelItems.some((item) => item.id === 'anthropic/claude-sonnet-4' && item.provider === 'pekpik'));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -130,12 +130,12 @@ test('/api/chat routes non-unorouter provider requests to configured provider en
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
       return Response.json([
         { provider: 'unorouter', api_key: 'uno-key', base_url: null },
-        { provider: 'openrouter', api_key: 'or-secret-key', base_url: 'https://openrouter.ai/api/v1' },
+        { provider: 'pekpik', api_key: 'pekpik-secret-key', base_url: 'https://aiapiv2.pekpik.com' },
       ]);
     }
-    if (url === 'https://openrouter.ai/api/v1/chat/completions') {
+    if (url === 'https://aiapiv2.pekpik.com/v1/chat/completions') {
       capturedAuth = init.headers.authorization;
-      return Response.json({ choices: [{ message: { content: 'OpenRouter siap membantu.' } }] });
+      return Response.json({ choices: [{ message: { content: 'PEKPIK siap membantu.' } }] });
     }
     if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
       return Response.json([{ id: 'msg-or-1' }]);
@@ -146,17 +146,17 @@ test('/api/chat routes non-unorouter provider requests to configured provider en
     const res = await worker.fetch(apiRequest('/api/chat', {
       body: {
         conversationId: 'conv-2',
-        provider: 'openrouter',
+        provider: 'pekpik',
         model: 'anthropic/claude-sonnet-4',
-        messages: [{ role: 'user', content: 'Tes OpenRouter' }],
+        messages: [{ role: 'user', content: 'Tes PEKPIK' }],
       },
     }), createEnv());
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(data.ok, true);
-    assert.equal(data.provider, 'openrouter');
-    assert.equal(data.reply, 'OpenRouter siap membantu.');
-    assert.equal(capturedAuth, 'Bearer or-secret-key');
+    assert.equal(data.provider, 'pekpik');
+    assert.equal(data.reply, 'PEKPIK siap membantu.');
+    assert.equal(capturedAuth, 'Bearer pekpik-secret-key');
   } finally {
     globalThis.fetch = realFetch;
   }

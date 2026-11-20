@@ -27,8 +27,15 @@ export async function fetchImageConfig() {
 
 // Generate Gambar — kirim satu generasi teks-ke-gambar; kredit BLEA dipotong
 // di server.
-export async function generateImage(prompt) {
-  return edgeRequest('/image/generate', { prompt });
+export async function generateImage(prompt, options = {}) {
+  const payload = { prompt };
+  if (options && typeof options === 'object') {
+    if (options.provider) payload.provider = String(options.provider);
+    if (options.model) payload.model = String(options.model);
+    if (options.size) payload.size = String(options.size);
+    if (options.n != null) payload.n = Number(options.n);
+  }
+  return edgeRequest('/image/generate', payload);
 }
 
 // Generate Gambar — periksa status tugas & hasil.

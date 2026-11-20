@@ -1321,10 +1321,11 @@ async function loadProviderSession(env) {
     return outcome.session;
   } catch { return session.expiresAt > Date.now() ? session : null; }
 }
-function sanitizeImageRow(row) {
+export function sanitizeImageRow(row) {
   const statuses = new Set(['queued', 'processing', 'completed', 'failed', 'unknown']);
   return {
     id: row.id,
+    provider: typeof row.provider === 'string' && row.provider ? row.provider.slice(0, 40) : 'freebeat',
     model: String(row.model ?? ''),
     prompt: typeof row.prompt === 'string' ? row.prompt.slice(0, 2000) : '',
     status: statuses.has(row.status) ? row.status : 'unknown',
@@ -1360,7 +1361,11 @@ async function assertAccountActive(env, userId) {
 export async function consumerImageGenerate(env, request, user) {
   await assertAccountActive(env, user.id);
   const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'prompt') || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
+  const allowedKeys = new Set(['prompt', 'provider', 'model', 'size', 'n']);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) throw fail('Permintaan tidak valid.', 400);
+  if (input.provider !== undefined && String(input.provider) !== 'freebeat') throw fail('Provider gambar tidak dikenal.', 400);
+  if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
   const prompt = input.prompt.trim();
   const modelId = consumerImageModel(env);
   const loaded = await loadProviderSession(env);

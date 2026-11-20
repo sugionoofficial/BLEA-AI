@@ -246,7 +246,7 @@ export function AlibabaCloudPanel({ subTab = 'accounts' }) {
               <header>
                 <code className="alibaba-catalog-id">{m.id}</code>
                 <span className={`alibaba-blea-badge ${m.blea ? `is-${m.blea}` : 'is-off'}`}>
-                  {m.blea === 'video' ? 'Terhubung · Video' : m.blea === 'chat' ? 'Bisa diaktifkan · Chat' : 'Katalog saja'}
+                  {m.blea === 'video' ? 'Terhubung · Video' : m.blea === 'chat' ? 'Bisa diaktifkan · Chat' : m.blea === 'image' ? 'Bisa diaktifkan · Gambar' : 'Katalog saja'}
                 </span>
               </header>
               <b className="alibaba-catalog-name">{m.name}</b>
@@ -263,7 +263,9 @@ export function AlibabaCloudPanel({ subTab = 'accounts' }) {
         </div>
         <p className="admin-hint is-compact">
           Menampilkan {catalogFiltered.length} dari {ALIBABA_FREE_QUOTA_MODELS.length} model. Model kategori <b>Teks</b> bisa diaktifkan di
-          tab <b>Katalog Model (Provider: Alibaba)</b> agar muncul di AI Studio — model gambar/speech hanya katalog (belum ada jalur generasi di BLEA).
+          tab <b>Katalog Model (Provider: Alibaba)</b> agar muncul di AI Studio; model gambar bertanda <b>Bisa diaktifkan · Gambar</b>
+          (wan2.7-image, wan2.7-image-pro, qwen-image-3.0, qwen-image-3.0-pro) muncul di <b>Generate Image</b> setelah diaktifkan di katalog dan
+          punya harga kredit aktif di <b>Admin → Kredit</b> — speech masih katalog saja.
         </p>
       </section>
     );
@@ -280,8 +282,8 @@ export function AlibabaCloudPanel({ subTab = 'accounts' }) {
         </div>
       </div>
       <p className="admin-api-note">
-        Tambahkan banyak akun Alibaba Cloud. Saat generasi memakai provider <b>alibaba</b> — Video Wan 3.0, Chat Qwen di AI Studio —
-        dan akun pertama terkena kuota/rate limit atau keynya ditolak (HTTP 401/402/403/429), worker <b>otomatis melanjutkan ke akun berikutnya</b>
+        Tambahkan banyak akun Alibaba Cloud. Saat generasi memakai provider <b>alibaba</b> — Video Wan 3.0, Chat Qwen di AI Studio,
+        Gambar di Generate Image — dan akun pertama terkena kuota/rate limit atau keynya ditolak (HTTP 401/402/403/429), worker <b>otomatis melanjutkan ke akun berikutnya</b>
         sesuai prioritas. Akun yang gagal masuk <b>cooldown 10–60 menit</b> (berlipat), lalu bisa dipakai lagi otomatis.
         Sisa free quota tetap hanya terlihat di{' '}
         <a href={FREE_QUOTA_CONSOLE} target="_blank" rel="noopener noreferrer">konsol</a>.

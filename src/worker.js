@@ -43,6 +43,7 @@ import {
   consumerImageStatus,
   freebeatCallback,
   handleFreebeat,
+  sanitizeImageRow,
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
@@ -1382,7 +1383,7 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
   const refAudios = asUrlList(payload.reference_audios, 5);
 
   // Google Veo & Gemini Omni on UnoRouter/Google/Vertex plugins require inline data URLs
-  if (imageUrl && provider !== 'openrouter' && (provider === 'google' || lowerModel.includes('veo') || lowerModel.includes('gemini-omni'))) {
+  if (imageUrl && (provider === 'google' || lowerModel.includes('veo') || lowerModel.includes('gemini-omni'))) {
     imageUrl = await maybeInlineImage(imageUrl);
   }
 
@@ -1390,35 +1391,7 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
     'content-type': 'application/json',
     authorization: `Bearer ${apiKey}`,
     ...(provider === 'unorouter' ? { 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' } : {}),
-    ...(provider === 'openrouter' ? { 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' } : {}),
   };
-
-  if (provider === 'openrouter') {
-    const body = {
-      model,
-      prompt: prompt || 'Generate a smooth, natural video guided by the attached media references.',
-      duration,
-      resolution: resolution.toLowerCase(),
-      aspect_ratio: aspectRatio,
-      generate_audio: generateAudio,
-    };
-    if (imageUrl) {
-      body.frame_images = [
-        { type: 'image_url', image_url: { url: imageUrl }, frame_type: 'first_frame' },
-        ...(imageLastUrl ? [{ type: 'image_url', image_url: { url: imageLastUrl }, frame_type: 'last_frame' }] : []),
-      ];
-    }
-    const refs = [];
-    if (videoUrl) refs.push({ type: 'video_url', video_url: { url: videoUrl } });
-    if (audioUrl) refs.push({ type: 'audio_url', audio_url: { url: audioUrl } });
-    if (refs.length) body.input_references = refs;
-    return {
-      submitUrl: `${apiBase}/videos`,
-      headers,
-      body,
-      pollBaseUrl: `${apiBase}/videos`,
-    };
-  }
 
   if (provider === 'alibaba') {
     // Alibaba Model Studio (Wan 3.0): async task API.
@@ -1603,6 +1576,298 @@ async function fetchProviderKeyRecord(env, provider) {
   );
   const rows = await res.json().catch(() => []);
   return rows?.[0] || null;
+}
+
+// Katalog model gambar Alibaba Model Studio (ap-southeast-1) yang sudah
+// diverifikasi (async image-generation API, messages format). Lanjutkan hanya
+// model dengan parameter terdokumentasi; region lain menyerupai.
+const ALIBABA_IMAGE_MODELS = [
+  { id: 'wan2.7-image', name: 'Alibaba: Wan 2.7 Image', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false },
+  { id: 'wan2.7-image-pro', name: 'Alibaba: Wan 2.7 Image Pro', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false },
+  { id: 'qwen-image-3.0', name: 'Alibaba: Qwen-Image 3.0', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-3.0-pro', name: 'Alibaba: Qwen-Image 3.0 Pro', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true },
+];
+
+// Upstream Alibaba bisa menyelipkan URL bertanda tangan / secret di teks error.
+// Jangan pernah meneruskan mentah; buang semua URL dan potong panjangnya.
+function redactUpstreamDetail(value, max = 200) {
+  return String(value || '')
+    .replace(/https?:\/\/\S+/gi, '[tautan disembunyikan]')
+    .replace(/[A-Za-z0-9_\-]{20,}/g, (token) => (token.length >= 32 ? '[token disembunyikan]' : token))
+    .slice(0, max)
+    .trim();
+}
+
+const ALIBABA_IMAGE_ERROR = (message, status = 400) => {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+};
+
+async function creditRpc(env, fn, body) {
+  try {
+    const res = await servicePostgrest(env, `/rpc/${fn}`, { method: 'POST', body });
+    if (!res.ok) return false;
+    const parsed = await res.json().catch(() => null);
+    return parsed === true;
+  } catch {
+    return false;
+  }
+}
+
+async function refundImageCredits(env, userId, amount, rowId, description) {
+  if (!Number.isSafeInteger(amount) || amount <= 0) return false;
+  return creditRpc(env, 'refund_credits', { p_user_id: userId, p_amount: amount, p_description: description, p_generation_id: rowId });
+}
+
+// Model gambar Alibaba yang bisa dipilih pengguna: harus aktif di Katalog
+// Model (provider alibaba, active) DAN punya harga kredit BLEA (modality
+// image). Yang belum lengkap disembunyikan supaya tidak menampilkan tombol
+// yang pasti gagal.
+async function alibabaImageCatalog(env) {
+  const [modelsRes, pricesRes] = await Promise.all([
+    servicePostgrest(env, '/provider_models?select=model&provider=eq.alibaba&active=eq.true&limit=100'),
+    servicePostgrest(env, '/credit_model_prices?provider=eq.alibaba&modality=eq.image&active=eq.true&select=model,credits&limit=100'),
+  ]);
+  const activeRows = modelsRes?.ok ? await modelsRes.json().catch(() => []) : [];
+  const priceRows = pricesRes?.ok ? await pricesRes.json().catch(() => []) : [];
+  const active = new Set((activeRows || []).map((row) => String(row?.model || '')));
+  const prices = new Map((priceRows || []).map((row) => [String(row?.model || ''), Number(row?.credits)]));
+  const candidates = await alibabaKeyCandidates(env).catch(() => []);
+  const ready = candidates.length > 0;
+  return ALIBABA_IMAGE_MODELS
+    .filter((spec) => active.has(spec.id) && Number.isSafeInteger(prices.get(spec.id)) && prices.get(spec.id) > 0)
+    .map((spec) => ({
+      provider: 'alibaba',
+      model: spec.id,
+      name: spec.name,
+      credits: prices.get(spec.id),
+      ready,
+      params: { sizes: spec.sizes, defaultSize: spec.defaultSize, maxN: spec.maxN },
+    }));
+}
+
+async function alibabaImageGenerate(env, user, rawInput) {
+  const fail = ALIBABA_IMAGE_ERROR;
+  const input = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {};
+  const allowed = new Set(['prompt', 'provider', 'model', 'size', 'n']);
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) throw fail('Permintaan tidak valid.', 400);
+  }
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  if (!prompt || prompt.length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
+  const modelId = String(input.model || '').trim();
+  const spec = ALIBABA_IMAGE_MODELS.find((item) => item.id === modelId);
+  if (!spec) throw fail('Model gambar Alibaba tidak dikenal.', 400);
+
+  // Akun ditangguhkan/diblokir ditolak sebelum kredit disentuh (konsisten dgn Freebeat).
+  const profileRes = await servicePostgrest(env, `/profiles?id=eq.${encodeURIComponent(user.id)}&select=status&limit=1`).catch(() => null);
+  const profileRows = profileRes?.ok ? await profileRes.json().catch(() => []) : [];
+  const accountStatus = Array.isArray(profileRows) ? profileRows[0]?.status : null;
+  if (accountStatus === 'banned') throw fail('Akun Anda diblokir. Hubungi admin BLEA.', 403);
+  if (accountStatus === 'suspended') throw fail('Akun Anda sedang ditangguhkan sementara. Hubungi admin BLEA.', 403);
+
+  // Model harus diaktifkan admin di Katalog Model (provider alibaba, active).
+  const activeRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.alibaba&active=eq.true&model=eq.${encodeURIComponent(modelId)}&limit=1`).catch(() => null);
+  const activeRows = activeRes?.ok ? await activeRes.json().catch(() => []) : [];
+  if (!Array.isArray(activeRows) || activeRows.length === 0) {
+    throw fail('Model ini belum diaktifkan admin di Katalog Model.', 409);
+  }
+
+  // Parameter resmi: size & n per model.
+  const size = input.size == null ? spec.defaultSize : String(input.size);
+  if (!spec.sizes.includes(size)) throw fail(`Ukuran tidak valid untuk ${spec.name}. Pilih: ${spec.sizes.join(', ')}.`, 400);
+  let n = 1;
+  if (input.n != null) {
+    n = Number(input.n);
+    if (!Number.isSafeInteger(n) || n < 1 || n > spec.maxN) throw fail(`Jumlah gambar harus 1-${spec.maxN}.`, 400);
+  }
+
+  // Harga kredit BLEA wajib diatur admin (credit_model_prices, modality image).
+  const priceRes = await servicePostgrest(env, `/credit_model_prices?provider=eq.alibaba&model=eq.${encodeURIComponent(modelId)}&modality=eq.image&active=eq.true&select=credits&limit=1`).catch(() => null);
+  const priceRows = priceRes?.ok ? await priceRes.json().catch(() => []) : [];
+  const price = Number(Array.isArray(priceRows) ? priceRows[0]?.credits : null);
+  if (!Number.isSafeInteger(price) || price <= 0) throw fail('Harga kredit untuk model ini belum diatur admin; generasi tidak dikirim.', 409);
+
+  const candidates = await alibabaKeyCandidates(env);
+  if (!candidates.length) throw fail('Belum ada akun Alibaba Cloud yang dikonfigurasi admin.', 503);
+
+  const rowId = crypto.randomUUID();
+  const spent = await creditRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Alibaba model ${modelId}`, p_generation_id: rowId });
+  if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
+
+  const parameters = { size, n, watermark: false, ...(spec.promptExtend ? { prompt_extend: true } : {}) };
+  const body = {
+    model: modelId,
+    input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
+    parameters,
+  };
+  const baseMetadata = { mode: 'text', provider: 'alibaba', size, n };
+
+  const insertedRes = await servicePostgrest(env, '/image_generations', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: { id: rowId, user_id: user.id, provider: 'alibaba', model: modelId, prompt, credits_charged: price, status: 'processing', metadata: baseMetadata },
+  }).catch(() => null);
+  const inserted = insertedRes?.ok ? await insertedRes.json().catch(() => null) : null;
+  if (!Array.isArray(inserted) || inserted.length !== 1) {
+    await refundImageCredits(env, user.id, price, rowId, 'Refund: riwayat generasi gambar tidak tersimpan');
+    throw fail('Riwayat generasi tidak dapat disimpan; kredit BLEA dikembalikan. Silakan coba lagi.', 503);
+  }
+
+  let uncertain = 0;
+  let sawDefiniteFailure = false;
+  let lastError = '';
+  for (const cand of candidates) {
+    const base = resolveProviderApiBase('alibaba', cand.base_url);
+    if (!base) { sawDefiniteFailure = true; continue; }
+    let res = null;
+    try {
+      res = await fetch(`${base}/api/v1/services/aigc/image-generation/generation`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${cand.api_key}`, 'X-DashScope-Async': 'enable' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (e) {
+      uncertain += 1;
+      await markPoolKeyResult(env, cand, { success: false, error: `jaringan: ${String(e).slice(0, 200)}` });
+      continue;
+    }
+    const text = await res.text().catch(() => '');
+    if (res.ok) {
+      const data = (() => { try { return JSON.parse(text); } catch { return {}; } })();
+      const taskId = String(data?.output?.task_id || data?.task_id || '').trim();
+      if (!taskId) {
+        uncertain += 1;
+        await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, {
+          method: 'PATCH',
+          body: { status: 'unknown', error_message: 'Respons provider tidak berisi task_id; kredit mungkin terpakai. Jangan ulangi.', updated_at: new Date().toISOString() },
+        }).catch(() => {});
+        return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
+      }
+      await markPoolKeyResult(env, cand, { success: true });
+      const patch = { external_job_id: taskId, status: 'processing', provider_key_id: cand.id || null, metadata: { ...baseMetadata, base_url: base }, updated_at: new Date().toISOString() };
+      await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: patch }).catch(() => {});
+      return { status: 'submitted', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], ...patch }) };
+    }
+    if (isAlibabaQuotaError(res.status, text)) {
+      await markPoolKeyResult(env, cand, { success: false, error: text.slice(0, 280) });
+      sawDefiniteFailure = true;
+      lastError = `HTTP ${res.status}`;
+      continue;
+    }
+    // Tolakan definitif non-kuota (payload/model ditolak): mengulang ke akun lain percuma.
+    const parsed = (() => { try { return JSON.parse(text); } catch { return {}; } })();
+    lastError = redactUpstreamDetail(extractUpstreamError(parsed) || text.slice(0, 300));
+    sawDefiniteFailure = true;
+    break;
+  }
+  if (uncertain > 0) {
+    // Sebuah percobaan gagal di jaringan/timeout — tidak bisa dipastikan apakah
+    // tugas terdaftar di provider; jangan refund otomatis.
+    await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, {
+      method: 'PATCH',
+      body: { status: 'unknown', error_message: 'Hasil pengiriman tidak pasti; periksa status sebelum mengulang.', updated_at: new Date().toISOString() },
+    }).catch(() => {});
+    return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
+  }
+  // Kegagalan definitif sebelum tugas terdaftar → refund kredit.
+  const refunded = sawDefiniteFailure
+    ? await refundImageCredits(env, user.id, price, rowId, 'Refund: generasi gambar Alibaba ditolak sebelum dikirim')
+    : false;
+  const message = `${lastError ? `Provider menolak permintaan: ${redactUpstreamDetail(lastError)}.` : 'Semua akun Alibaba gagal atau terkena kuota.'}${refunded ? ' Kredit BLEA dikembalikan.' : ''}`;
+  await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, {
+    method: 'PATCH',
+    body: { status: 'failed', error_message: message.slice(0, 300), ...(refunded ? { credits_refunded: price } : {}), updated_at: new Date().toISOString() },
+  }).catch(() => {});
+  throw fail(message, 502);
+}
+
+function extractImageResultUrl(data) {
+  const output = data?.output && typeof data.output === 'object' ? data.output : data || {};
+  const first = Array.isArray(output?.results) ? output.results[0] : null;
+  const candidates = [
+    first?.url,
+    first?.image_url,
+    output?.image_url,
+    output?.url,
+    data?.data?.url,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (/^https?:\/\//i.test(value)) return value;
+  }
+  return '';
+}
+
+async function alibabaImageStatus(env, user, row) {
+  if (!['queued', 'processing'].includes(row.status) || !row.external_job_id) {
+    return { generation: sanitizeImageRow(row), task: null };
+  }
+  // Akun yang submit dulu (provider_key_id), lalu kandidat pool lain sebagai cadangan.
+  const seeded = [];
+  if (row.provider_key_id) {
+    const res = await servicePostgrest(env, `/provider_key_pool?select=id,provider,label,api_key,base_url,priority,consecutive_failures,cooldown_until&id=eq.${encodeURIComponent(row.provider_key_id)}&limit=1`).catch(() => null);
+    const rows = res?.ok ? await res.json().catch(() => []) : [];
+    if (rows?.[0]?.api_key) seeded.push(rows[0]);
+  }
+  for (const cand of await alibabaKeyCandidates(env).catch(() => [])) {
+    if (!seeded.some((seed) => seed.id === cand.id)) seeded.push(cand);
+  }
+  let pollData = null;
+  for (const cand of seeded) {
+    const base = resolveProviderApiBase('alibaba', cand.base_url);
+    if (!base) continue;
+    let res = null;
+    try {
+      res = await fetch(`${base}/api/v1/tasks/${encodeURIComponent(row.external_job_id)}`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${cand.api_key}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      await markPoolKeyResult(env, cand, { success: false, error: 'poll jaringan gagal' });
+      continue;
+    }
+    if (isAlibabaQuotaError(res.status, '')) {
+      await markPoolKeyResult(env, cand, { success: false, error: `poll HTTP ${res.status}` });
+      continue;
+    }
+    if (!res.ok) continue;
+    pollData = await res.json().catch(() => ({}));
+    await markPoolKeyResult(env, cand, { success: true });
+    break;
+  }
+  if (!pollData) {
+    return { generation: sanitizeImageRow(row), task: null, pollWarning: 'Semua akun Alibaba gagal polling.' };
+  }
+  const raw = String(pollData?.output?.task_status || pollData?.task_status || '').toUpperCase();
+  let patch = null;
+  if (raw === 'SUCCEEDED') {
+    const url = extractImageResultUrl(pollData);
+    patch = url
+      ? { status: 'completed', image_url: url, error_message: null, updated_at: new Date().toISOString() }
+      : { status: 'failed', error_message: 'Tugas selesai tetapi URL gambar tidak ditemukan di respons provider.', updated_at: new Date().toISOString() };
+  } else if (raw === 'FAILED' || raw === 'CANCELED' || raw === 'UNKNOWN') {
+    const detail = redactUpstreamDetail(extractUpstreamError(pollData));
+    patch = { status: 'failed', error_message: detail ? `Provider melaporkan generasi gagal: ${detail}` : 'Provider melaporkan generasi gagal.', updated_at: new Date().toISOString() };
+  } else {
+    patch = { status: 'processing', updated_at: new Date().toISOString() };
+  }
+  try {
+    await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch });
+  } catch { /* biarkan status lama; percobaan berikutnya memperbarui */ }
+  if (patch.status === 'failed' && Number(row.credits_charged) > 0 && Number(row.credits_refunded || 0) === 0) {
+    const refunded = await refundImageCredits(env, user.id, Number(row.credits_charged), row.id, 'Refund: generasi gambar gagal');
+    if (refunded) {
+      row.credits_refunded = Number(row.credits_charged);
+      try {
+        await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: { credits_refunded: Number(row.credits_charged), updated_at: new Date().toISOString() } });
+      } catch { /* ledger sudah benar */ }
+    }
+  }
+  return { generation: sanitizeImageRow({ ...row, ...patch }), task: { status: raw.toLowerCase() || 'processing' } };
 }
 
 // ---- provider_key_pool: multi-akun Alibaba Cloud dengan failover ----
@@ -1816,7 +2081,7 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, configured, providers: configuredProviders, workersAiBound: hasWorkersAiBinding(env) });
     }
 
-    // ---- /verify: validate API key for UnoRouter, OpenRouter, Cloudflare Workers AI, or custom provider ----
+    // ---- /verify: validate API key for UnoRouter, Cloudflare Workers AI, or custom provider ----
     if (path === 'verify' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
       const provider = String(body.provider || 'unorouter').trim().toLowerCase();
@@ -1915,7 +2180,7 @@ async function handleApi(request, url, env) {
       }
       const apiKey = body.apiKey ?? '';
       try {
-        // Prefer standard GET /models (supported by OpenRouter, OpenAI, xAI, UnoRouter)
+        // Prefer standard GET /models (supported by OpenAI, xAI, UnoRouter, PEKPIK, etc.)
         const modelsRes = await fetch(`${apiBase}/models`, {
           method: 'GET',
           headers: { authorization: 'Bearer ' + apiKey },
@@ -1935,7 +2200,7 @@ async function handleApi(request, url, env) {
         const r = await fetch(pingUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey },
-          body: JSON.stringify({ model: provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
+          body: JSON.stringify({ model: 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
           signal: AbortSignal.timeout(30_000),
         });
         if (r.ok) return jsonResponse({ ok: true, valid: true, verifiedVia: 'chat', modelsCount: 0 });
@@ -1966,7 +2231,6 @@ async function handleApi(request, url, env) {
         kling: 'https://app.klingai.com',
         hailuo: 'https://platform.minimax.io',
         cloudflare: 'https://dash.cloudflare.com',
-        openrouter: 'https://openrouter.ai/keys',
         unorouter: 'https://unorouter.com',
       };
       const keyRow = await fetchProviderKeyRecord(env, provider);
@@ -1977,31 +2241,6 @@ async function handleApi(request, url, env) {
       }
 
       const apiBase = resolveProviderApiBase(provider, keyRow?.base_url);
-
-      // OpenRouter: GET /api/v1/key memakai inference key langsung.
-      if (provider === 'openrouter') {
-        try {
-          const res = await fetch('https://openrouter.ai/api/v1/key', {
-            headers: { authorization: `Bearer ${apiKey}` },
-            signal: AbortSignal.timeout(15_000),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (res.status === 401 || res.status === 403) return jsonResponse({ ok: false, status: res.status, error: 'API key OpenRouter ditolak.' });
-          if (!res.ok) return jsonResponse({ ok: false, status: res.status, error: `Kuota OpenRouter gagal dimuat (HTTP ${res.status}).` });
-          const d = data?.data || {};
-          const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-          return jsonResponse({
-            ok: true, supported: true, provider,
-            label: d.label || 'OpenRouter key',
-            limit: num(d.limit), limitRemaining: num(d.limit_remaining), limitReset: d.limit_reset || null,
-            usage: num(d.usage) ?? 0, usageDaily: num(d.usage_daily) ?? 0, usageWeekly: num(d.usage_weekly) ?? 0, usageMonthly: num(d.usage_monthly) ?? 0,
-            isFreeTier: Boolean(d.is_free_tier),
-            freeRequests: d.free_model_daily_requests && typeof d.free_model_daily_requests === 'object'
-              ? { used: Number(d.free_model_daily_requests.used) || 0, limit: Number(d.free_model_daily_requests.limit) || 0, remaining: Number(d.free_model_daily_requests.remaining) || 0 }
-              : null,
-          });
-        } catch (e) { return jsonResponse({ ok: false, error: `OpenRouter tidak dapat dihubungi (${String(e)}).` }); }
-      }
 
       // Gateway gaya one-api/new-api (UnoRouter, PEKPIK): GET {root}/api/usage/token/
       if (provider === 'unorouter' || provider === 'pekpik') {
@@ -2077,7 +2316,7 @@ async function handleApi(request, url, env) {
       return jsonResponse({ models, modelItems });
     }
 
-    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid), OpenRouter, or Cloudflare Workers AI ----
+    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid), Cloudflare Workers AI, or generic provider /v1/models ----
     if (path === 'catalog' && (method === 'GET' || method === 'POST')) {
       const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
       const provider = String(body.provider || url.searchParams.get('provider') || 'unorouter').toLowerCase();
@@ -2093,39 +2332,6 @@ async function handleApi(request, url, env) {
             isFree: true,
             online: true,
             priceLabel: 'Gratis 10K Neurons/hr',
-          })),
-        });
-      }
-
-      if (provider === 'openrouter') {
-        try {
-          const upstream = await fetch('https://openrouter.ai/api/v1/videos/models', {
-            signal: AbortSignal.timeout(20_000),
-          });
-          const payload = upstream.ok ? await upstream.json().catch(() => ({})) : {};
-          const list = Array.isArray(payload?.data) ? payload.data : [];
-          const models = list.map((item) => ({
-            id: item.id,
-            provider: 'openrouter',
-            category: 'Video',
-            tags: ['Video', 'OpenRouter'],
-            description: item.description || item.name || '',
-            isFree: false,
-            online: true,
-            priceLabel: item.pricing_skus?.['per-video-second'] ? `$${item.pricing_skus['per-video-second']}/s` : 'Berbayar',
-          }));
-          if (models.length) return jsonResponse({ models });
-        } catch {}
-        return jsonResponse({
-          models: BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'openrouter').map((m) => ({
-            id: m.id,
-            provider: 'openrouter',
-            category: 'Video',
-            tags: ['Video', m.vendor],
-            description: m.description,
-            isFree: m.isFree,
-            online: true,
-            priceLabel: m.priceLabel,
           })),
         });
       }
@@ -2158,7 +2364,7 @@ async function handleApi(request, url, env) {
         return jsonResponse({ models: [...builtin, ...freeQuota] });
       }
 
-      if (provider !== 'unorouter' && provider !== 'openrouter') {
+      if (provider !== 'unorouter') {
         try {
           const keyRow = await fetchProviderKeyRecord(env, provider);
           const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
@@ -2375,7 +2581,19 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
       try {
-        return jsonResponse({ ok: true, ...(await consumerImageConfig(env)) });
+        const config = await consumerImageConfig(env);
+        const models = [
+          {
+            provider: 'freebeat',
+            model: String(config?.model_id ?? ''),
+            name: `Freebeat: model ${config?.model_id ?? '—'}`,
+            credits: Number.isSafeInteger(config?.credits) ? config.credits : null,
+            ready: config?.provider_ready === true && Number.isSafeInteger(config?.credits),
+            params: null,
+          },
+          ...(await alibabaImageCatalog(env).catch(() => [])),
+        ];
+        return jsonResponse({ ok: true, ...config, models });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Konfigurasi gambar tidak tersedia' }, err?.status || 500);
       }
@@ -2386,7 +2604,22 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
       try {
-        return jsonResponse({ ok: true, ...(await consumerImageGenerate(env, request, user)) });
+        // Peek body tanpa mengonsumsi request (jalur Freebeat membaca ulang body).
+        const contentType = request.headers.get('content-type') || '';
+        const origin = request.headers.get('origin');
+        if (origin !== new URL(request.url).origin) throw ALIBABA_IMAGE_ERROR('Permintaan harus berasal dari halaman BLEA ini.', 403);
+        if (!/^application\/json(?:\s*;|$)/i.test(contentType)) throw ALIBABA_IMAGE_ERROR('Format permintaan tidak valid.', 400);
+        const length = Number(request.headers.get('content-length') || 0);
+        if (length && length > 65_536) throw ALIBABA_IMAGE_ERROR('Permintaan terlalu besar.', 413);
+        const peek = await request.clone().json().catch(() => ({}));
+        const provider = String(peek?.provider || 'freebeat').trim().toLowerCase();
+        if (provider === 'alibaba' || provider === 'freebeat') {
+          if (provider === 'alibaba') {
+            return jsonResponse({ ok: true, ...(await alibabaImageGenerate(env, user, peek)) });
+          }
+          return jsonResponse({ ok: true, ...(await consumerImageGenerate(env, request, user)) });
+        }
+        throw ALIBABA_IMAGE_ERROR('Provider gambar tidak dikenal.', 400);
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Generasi gambar gagal' }, err?.status || 500);
       }
@@ -2397,6 +2630,16 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
       try {
+        const peek = await request.clone().json().catch(() => ({}));
+        const id = typeof peek?.id === 'string' ? peek.id : '';
+        if (id) {
+          const rowRes = await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(user.id)}&select=*&limit=1`).catch(() => null);
+          const rows = rowRes?.ok ? await rowRes.json().catch(() => []) : [];
+          const row = Array.isArray(rows) ? rows[0] : null;
+          if (row?.provider === 'alibaba') {
+            return jsonResponse({ ok: true, ...(await alibabaImageStatus(env, user, row)) });
+          }
+        }
         return jsonResponse({ ok: true, ...(await consumerImageStatus(env, request, user)) });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Status gambar tidak tersedia' }, err?.status || 500);
@@ -2461,42 +2704,7 @@ async function handleApi(request, url, env) {
         });
       }
 
-      // 2. Discoverable OpenRouter video models if OpenRouter is configured
-      if (configuredByProvider.get('openrouter')?.configured) {
-        try {
-          const orRes = await fetch('https://openrouter.ai/api/v1/videos/models', { signal: AbortSignal.timeout(8_000) });
-          if (orRes.ok) {
-            const orData = await orRes.json().catch(() => ({}));
-            for (const item of Array.isArray(orData?.data) ? orData.data : []) {
-              const key = `openrouter:${item.id}`;
-              const profile = getVideoModelProfile(item.id, 'openrouter');
-              const existing = merged.get(key);
-              merged.set(key, {
-                ...profile,
-                ...(existing || {}),
-                id: item.id,
-                name: item.name || profile.name,
-                provider: 'openrouter',
-                providerLabel: configuredByProvider.get('openrouter')?.label || 'OpenRouter',
-                providerConfigured: true,
-                activeInAdmin: Boolean(existing?.activeInAdmin),
-                online: true,
-                aspectRatios: Array.isArray(item.supported_aspect_ratios) && item.supported_aspect_ratios.length
-                  ? item.supported_aspect_ratios : profile.aspectRatios,
-                resolutions: Array.isArray(item.supported_resolutions) && item.supported_resolutions.length
-                  ? item.supported_resolutions : profile.resolutions,
-                durations: Array.isArray(item.supported_durations) && item.supported_durations.length
-                  ? item.supported_durations : profile.durations,
-                priceLabel: item.pricing_skus?.['per-video-second']
-                  ? `$${item.pricing_skus['per-video-second']}/s` : profile.priceLabel,
-                description: item.description || profile.description,
-              });
-            }
-          }
-        } catch {}
-      }
-
-      // 3. Built-in video catalog entries (ensures dropdown always has video options & capabilities)
+      // 2. Built-in video catalog entries (ensures dropdown always has video options & capabilities)
       for (const item of BUILTIN_VIDEO_MODELS) {
         if (item.provider === 'unorouter') continue;
         const key = `${item.provider}:${item.id}`;
