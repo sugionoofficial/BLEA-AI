@@ -178,7 +178,7 @@ export function CreditsPage() {
 
   async function reviewOrder(orderId, approve) {
     if (busy) return;
-    if (reviewPassword.length < 6) { setError('Masukkan password aksi admin (minimal 6 karakter).'); return; }
+    if (reviewPassword.length < 6) { setError('Isi dulu password aksi admin di kolom di atas (minimal 6 karakter), lalu tekan Setujui lagi.'); return; }
     const proceed = approve
       ? window.confirm('Anda sudah memastikan transfer diterima? Kredit akan ditambahkan ke akun pengguna.')
       : window.confirm('Tolak pesanan ini? Keputusan tidak bisa dikembalikan.');
@@ -278,8 +278,9 @@ export function CreditsPage() {
           <section className="credits-card"><h2>Admin · Konfirmasi transfer</h2><p>Pastikan dana benar-benar diterima dan cocok dengan pesanan sebelum menyetujui. Konfirmasi pengguna bukan bukti pembayaran. Menyetujui atau menolak WAJIB password aksi admin.</p>
             <div className="credits-form">
               <label>Password aksi admin<input type="password" autoComplete="new-password" value={reviewPassword} onChange={(event) => setReviewPassword(event.target.value)} placeholder="Password yang Anda setel di Supabase" /></label>
+              <p className="credits-hint">Kolom ini wajib diisi minimal 6 karakter sebelum Setujui/Tolak bisa diproses.</p>
             </div>
-            {!data.reviews.length ? <p>Tidak ada pesanan menunggu verifikasi.</p> : data.reviews.map((order) => <article className="credits-order" key={order.id}><strong>{nameFor(order.user_id)}</strong><p>{order.package_name} · {number(order.credits)} kredit · {rupiah(order.price_idr)}</p><p>Referensi: {order.payment_reference}</p><small>ID pesanan: {order.id} · {date(order.submitted_at)}</small><div className="credits-actions"><button disabled={busy || reviewPassword.length < 6} onClick={() => reviewOrder(order.id, true)}>Setujui</button><button className="credits-secondary" disabled={busy || reviewPassword.length < 6} onClick={() => reviewOrder(order.id, false)}>Tolak</button></div></article>)}</section>
+            {!data.reviews.length ? <p>Tidak ada pesanan menunggu verifikasi.</p> : data.reviews.map((order) => <article className="credits-order" key={order.id}><strong>{nameFor(order.user_id)}</strong><p>{order.package_name} · {number(order.credits)} kredit · {rupiah(order.price_idr)}</p><p>Referensi: {order.payment_reference}</p><small>ID pesanan: {order.id} · {date(order.submitted_at)}</small><div className="credits-actions"><button disabled={busy} onClick={() => reviewOrder(order.id, true)}>Setujui</button><button className="credits-secondary" disabled={busy} onClick={() => reviewOrder(order.id, false)}>Tolak</button></div></article>)}</section>
         </>}
       </>}
     </div>
