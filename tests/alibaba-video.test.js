@@ -94,7 +94,6 @@ test('Wan 3.0: submit memakai async task + poll SUCCEEDED memetakan ke completed
           duration: 5,
           image_url: 'https://cdn.example/frame.png',
           image_last_url: 'https://cdn.example/frame-end.png',
-          video_url: 'https://cdn.example/ref.mp4',
         },
       }),
       env,
@@ -109,7 +108,6 @@ test('Wan 3.0: submit memakai async task + poll SUCCEEDED memetakan ke completed
     assert.deepEqual(submitted.body.input.media, [
       { type: 'first_frame', url: 'https://cdn.example/frame.png' },
       { type: 'last_frame', url: 'https://cdn.example/frame-end.png' },
-      { type: 'reference_video', url: 'https://cdn.example/ref.mp4' },
     ]);
     assert.equal(submitted.body.parameters.resolution, '720P');
     assert.equal(submitted.body.parameters.ratio, '16:9');
@@ -126,6 +124,124 @@ test('Wan 3.0: submit memakai async task + poll SUCCEEDED memetakan ke completed
     assert.equal(pollData.generation.status, 'completed');
     assert.equal(pollData.generation.progress, 100);
     assert.ok(pollData.generation.result_url.startsWith('/api/video/content/gen-wan-1?exp='));
+  } finally {
+    mock.restore();
+  }
+});
+
+test('Wan 3.0: mode referensi mengirim multi reference_image/video/audio', async () => {
+  const capture = [];
+  const mock = installMock({
+    keyRow: { provider: 'alibaba', api_key: 'sk-wan-test', base_url: BASE, label: 'Wan 3.0' },
+    capture,
+  });
+  try {
+    const env = createEnv();
+    const genRes = await worker.fetch(
+      apiRequest('/api/video/generate', {
+        body: {
+          provider: 'alibaba',
+          model: 'wan3.0-video',
+          prompt: 'Peragakan gaya berpakaian dari foto referensi, transisi halus',
+          aspect_ratio: 'adaptive',
+          resolution: '1080p',
+          duration: 10,
+          reference_images: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
+          video_url: 'https://cdn.example/motion.mp4',
+          reference_videos: ['https://cdn.example/extra.mp4'],
+          reference_audios: ['https://cdn.example/music.mp3'],
+        },
+      }),
+      env,
+    );
+    assert.equal(genRes.status, 200);
+    assert.equal(capture.length, 1);
+    const submitted = capture[0];
+    assert.deepEqual(submitted.body.input.media, [
+      { type: 'reference_image', url: 'https://cdn.example/a.png' },
+      { type: 'reference_image', url: 'https://cdn.example/b.png' },
+      { type: 'reference_video', url: 'https://cdn.example/motion.mp4' },
+      { type: 'reference_video', url: 'https://cdn.example/extra.mp4' },
+      { type: 'reference_audio', url: 'https://cdn.example/music.mp3' },
+    ]);
+    assert.equal(submitted.body.parameters.ratio, 'adaptive');
+    assert.equal(submitted.body.parameters.resolution, '1080P');
+    assert.equal(submitted.body.parameters.duration, 10);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('Wan 3.0: mode frame tidak boleh digabung dengan media referensi (ditolak 400)', async () => {
+  const capture = [];
+  const mock = installMock({
+    keyRow: { provider: 'alibaba', api_key: 'sk-wan-test', base_url: BASE, label: 'Wan 3.0' },
+    capture,
+  });
+  try {
+    const res = await worker.fetch(
+      apiRequest('/api/video/generate', {
+        body: {
+          provider: 'alibaba',
+          model: 'wan3.0-video',
+          prompt: 'Campuran tidak valid',
+          image_url: 'https://cdn.example/frame.png',
+          reference_audios: ['https://cdn.example/music.mp3'],
+        },
+      }),
+      createEnv(),
+    );
+    assert.equal(res.status, 400);
+    assert.equal(capture.length, 0, 'permintaan tidak valid tidak boleh memanggil upstream');
+    const data = await res.json();
+    assert.match(data.error, /tidak bisa digabung/i);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('Wan 3.0: batas resmi — >10 foto / >5 video / >5 audio / >20 total ditolak', async () => {
+  const capture = [];
+  const mock = installMock({
+    keyRow: { provider: 'alibaba', api_key: 'sk-wan-test', base_url: BASE, label: 'Wan 3.0' },
+    capture,
+  });
+  const url = (n, ext) => Array.from({ length: n }, (_, i) => `https://cdn.example/r${i}.${ext}`);
+  const cases = [
+    { reference_images: url(11, 'png') },
+    { reference_videos: url(6, 'mp4') },
+    { reference_audios: url(6, 'mp3') },
+    { reference_images: url(10, 'png'), reference_videos: url(5, 'mp4'), reference_audios: url(6, 'mp3') },
+  ];
+  try {
+    for (const body of cases) {
+      const res = await worker.fetch(
+        apiRequest('/api/video/generate', { body: { provider: 'alibaba', model: 'wan3.0-video', prompt: 'uji batas', ...body } }),
+        createEnv(),
+      );
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    assert.equal(capture.length, 0);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('Wan 3.0: last_frame tanpa first_frame ditolak', async () => {
+  const capture = [];
+  const mock = installMock({
+    keyRow: { provider: 'alibaba', api_key: 'sk-wan-test', base_url: BASE, label: 'Wan 3.0' },
+    capture,
+  });
+  try {
+    const res = await worker.fetch(
+      apiRequest('/api/video/generate', {
+        body: { provider: 'alibaba', model: 'wan3.0-video', prompt: 'uji', image_last_url: 'https://cdn.example/end.png' },
+      }),
+      createEnv(),
+    );
+    assert.equal(res.status, 400);
+    assert.equal(capture.length, 0);
   } finally {
     mock.restore();
   }

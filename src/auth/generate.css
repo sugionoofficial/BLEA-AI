@@ -595,3 +595,57 @@
 .dropx-shell .generate-image-panel{width:100%;max-width:900px;box-sizing:border-box;margin:0;}
 .generate-source-preview{margin-top:10px}
 .generate-source-preview img{max-width:180px;max-height:180px;border-radius:10px;border:1px solid var(--border);display:block}
+
+.generate-ref-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+}
+.generate-ref-row {
+  border: 1px dashed var(--border, #2a2a2a);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.generate-ref-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.generate-ref-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.generate-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 999px;
+  font-size: 12px;
+}
+.generate-ref-chip-img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.generate-ref-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+.generate-ref-chip button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  color: inherit;
+}

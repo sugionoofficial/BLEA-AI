@@ -47,10 +47,15 @@ const STATUS_LABELS = {
 };
 
 const MAX_BYTES = {
-  image: 15 * 1024 * 1024,
-  video: 50 * 1024 * 1024,
-  audio: 20 * 1024 * 1024,
+  // Batas resmi Wan 3.0 (Alibaba Model Studio): gambar ≤20MB, video ≤100MB,
+  // audio ≤15MB. Dipakai sebagai batas atas untuk semua provider video.
+  image: 20 * 1024 * 1024,
+  video: 100 * 1024 * 1024,
+  audio: 15 * 1024 * 1024,
 };
+
+const MAX_REFERENCES = { image: 10, video: 5, audio: 5 };
+const MAX_TOTAL_REFERENCES = 20;
 
 function formatBytes(bytes) {
   if (!bytes) return '';
@@ -87,9 +92,15 @@ export function GeneratePage() {
   const [duration, setDuration] = useState(5);
   const [generateAudio, setGenerateAudio] = useState(true);
 
-  const [imageMedia, setImageMedia] = useState(null); // { url, name, size, localPreview }
+  const [imageMedia, setImageMedia] = useState(null); // { url, name, size, localPreview } — first frame
+  const [imageLastMedia, setImageLastMedia] = useState(null); // last frame (Wan 3.0)
   const [videoMedia, setVideoMedia] = useState(null);
   const [audioMedia, setAudioMedia] = useState(null);
+  // Wan 3.0 multi-referensi (mode referensi): maks 10 foto, 5 video, 5 audio.
+  const [refImages, setRefImages] = useState([]);
+  const [refVideos, setRefVideos] = useState([]);
+  const [refAudios, setRefAudios] = useState([]);
+  const [mediaMode, setMediaMode] = useState('frame'); // 'frame' | 'reference' (khusus provider alibaba)
   const [uploadingSlot, setUploadingSlot] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
@@ -101,12 +112,18 @@ export function GeneratePage() {
   const [historyFilter, setHistoryFilter] = useState('all');
 
   const imageInputRef = useRef(null);
+  const imageLastInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const audioInputRef = useRef(null);
+  const refImageInputRef = useRef(null);
+  const refVideoInputRef = useRef(null);
+  const refAudioInputRef = useRef(null);
 
   const selectedModel = useMemo(() => {
     return models.find((m) => modelKey(m) === selectedModelKey) || models[0] || null;
   }, [models, selectedModelKey]);
+  const isAlibaba = selectedModel?.provider === 'alibaba';
+  const referenceTotal = refImages.length + refVideos.length + refAudios.length;
 
   const ratioOptions = useMemo(
     () => (selectedModel?.aspectRatios?.length ? selectedModel.aspectRatios : DEFAULT_ASPECT_RATIOS),
@@ -199,10 +216,11 @@ export function GeneratePage() {
 
   const handleUploadMedia = async (slot, file) => {
     if (!file || !user?.id) return;
-    if (file.size > MAX_BYTES[slot]) {
+    const byteLimit = slot === 'image_last' ? MAX_BYTES.image : MAX_BYTES[slot];
+    if (file.size > byteLimit) {
       setBanner({
         type: 'error',
-        text: `Ukuran file ${slot} melebihi batas maksimum (${formatBytes(MAX_BYTES[slot])}).`,
+        text: `Ukuran file ${slot === 'image_last' ? 'gambar' : slot} melebihi batas maksimum (${formatBytes(byteLimit)}).`,
       });
       return;
     }
@@ -231,6 +249,7 @@ export function GeneratePage() {
         localPreview,
       };
       if (slot === 'image') setImageMedia(mediaObj);
+      if (slot === 'image_last') setImageLastMedia(mediaObj);
       if (slot === 'video') setVideoMedia(mediaObj);
       if (slot === 'audio') setAudioMedia(mediaObj);
     } finally {
@@ -238,11 +257,67 @@ export function GeneratePage() {
     }
   };
 
+  const handleUploadReference = async (kind, files) => {
+    const list = Array.from(files || []);
+    if (!list.length || !user?.id) return;
+    const max = MAX_REFERENCES[kind];
+    const current = kind === 'image' ? refImages : kind === 'video' ? refVideos : refAudios;
+    const setList = kind === 'image' ? setRefImages : kind === 'video' ? setRefVideos : setRefAudios;
+    if (current.length + list.length > max) {
+      setBanner({ type: 'error', text: `Wan 3.0: maksimal ${max} ${kind === 'image' ? 'foto' : kind === 'video' ? 'video' : 'audio'} referensi per permintaan.` });
+      return;
+    }
+    if (referenceTotal + list.length > MAX_TOTAL_REFERENCES) {
+      setBanner({ type: 'error', text: `Wan 3.0: maksimal ${MAX_TOTAL_REFERENCES} materi referensi (foto+video+audio) per permintaan.` });
+      return;
+    }
+    for (const file of list) {
+      if (file.size > MAX_BYTES[kind]) {
+        setBanner({ type: 'error', text: `Ukuran file "${file.name}" melebihi batas maksimum (${formatBytes(MAX_BYTES[kind])}).` });
+        return;
+      }
+    }
+
+    setBanner(null);
+    setUploadingSlot(`ref-${kind}`);
+    try {
+      for (const file of list) {
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${user.id}/video-refs/${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+        const { data, error } = await supabase.storage
+          .from('ai-studio-uploads')
+          .upload(path, file, { contentType: file.type || undefined, upsert: false });
+        if (error) {
+          setBanner({ type: 'error', text: `Gagal mengunggah ${kind}: ${error.message}` });
+          break;
+        }
+        const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
+        setList((prev) => [...prev, { url: pub.publicUrl, name: file.name, size: file.size, localPreview: URL.createObjectURL(file) }]);
+      }
+    } finally {
+      setUploadingSlot('');
+    }
+  };
+
+  const clearReference = (kind, index) => {
+    const setList = kind === 'image' ? setRefImages : kind === 'video' ? setRefVideos : setRefAudios;
+    setList((prev) => {
+      const target = prev[index];
+      if (target?.localPreview?.startsWith('blob:')) URL.revokeObjectURL(target.localPreview);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
   const clearMedia = (slot) => {
     if (slot === 'image') {
       if (imageMedia?.localPreview?.startsWith('blob:')) URL.revokeObjectURL(imageMedia.localPreview);
       setImageMedia(null);
       if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+    if (slot === 'image_last') {
+      if (imageLastMedia?.localPreview?.startsWith('blob:')) URL.revokeObjectURL(imageLastMedia.localPreview);
+      setImageLastMedia(null);
+      if (imageLastInputRef.current) imageLastInputRef.current.value = '';
     }
     if (slot === 'video') {
       if (videoMedia?.localPreview?.startsWith('blob:')) URL.revokeObjectURL(videoMedia.localPreview);
@@ -265,7 +340,16 @@ export function GeneratePage() {
     }
 
     const cleanPrompt = prompt.trim();
-    if (!cleanPrompt && !imageMedia?.url && !videoMedia?.url && !audioMedia?.url) {
+    const alibabaFrame = isAlibaba && mediaMode === 'frame';
+    const alibabaReference = isAlibaba && mediaMode === 'reference';
+    const frameEmpty = !imageMedia?.url && !imageLastMedia?.url;
+    const referenceEmpty = referenceTotal === 0;
+    if (isAlibaba && mediaMode === 'frame' && imageLastMedia?.url && !imageMedia?.url) {
+      setBanner({ type: 'error', text: 'Last Frame membutuhkan First Frame. Unggah gambar pertama dulu.' });
+      return;
+    }
+    const hasMedia = alibabaFrame ? !frameEmpty : alibabaReference ? !referenceEmpty : Boolean(imageMedia?.url || videoMedia?.url || audioMedia?.url);
+    if (!cleanPrompt && !hasMedia) {
       setBanner({
         type: 'error',
         text: 'Masukkan prompt atau unggah minimal satu referensi media (gambar, video, atau audio).',
@@ -284,6 +368,27 @@ export function GeneratePage() {
     setBanner(null);
     setSubmitting(true);
     try {
+      const referencePayload = alibabaReference
+        ? {
+            image_url: '',
+            video_url: '',
+            audio_url: '',
+            reference_images: refImages.map((m) => m.url),
+            reference_videos: refVideos.map((m) => m.url),
+            reference_audios: refAudios.map((m) => m.url),
+          }
+        : alibabaFrame
+          ? {
+              image_url: imageMedia?.url || '',
+              image_last_url: imageLastMedia?.url || '',
+              video_url: '',
+              audio_url: '',
+            }
+          : {
+              image_url: imageMedia?.url || '',
+              video_url: videoMedia?.url || '',
+              audio_url: audioMedia?.url || '',
+            };
       const res = await generateVideo({
         provider: selectedModel.provider,
         model: selectedModel.id,
@@ -292,9 +397,7 @@ export function GeneratePage() {
         resolution,
         duration: Number(duration),
         generate_audio: generateAudio,
-        image_url: imageMedia?.url || '',
-        video_url: videoMedia?.url || '',
-        audio_url: audioMedia?.url || '',
+        ...referencePayload,
       });
 
       if (!res.ok || !res.data?.generation) {
@@ -334,9 +437,23 @@ export function GeneratePage() {
     }
     if (item.duration) setDuration(Number(item.duration));
     setGenerateAudio(item.generate_audio !== false);
-    if (item.image_url) setImageMedia({ url: item.image_url, name: 'Referensi Gambar', size: 0, localPreview: item.image_url });
+    if (item.image_url) setImageMedia({ url: item.image_url, name: 'First Frame', size: 0, localPreview: item.image_url });
+    if (item.image_last_url || item.metadata?.image_last_url) setImageLastMedia({ url: item.image_last_url || item.metadata.image_last_url, name: 'Last Frame', size: 0, localPreview: item.image_last_url || item.metadata.image_last_url });
     if (item.video_url) setVideoMedia({ url: item.video_url, name: 'Referensi Video', size: 0, localPreview: item.video_url });
     if (item.audio_url) setAudioMedia({ url: item.audio_url, name: 'Referensi Audio', size: 0, localPreview: item.audio_url });
+    const meta = item.metadata || {};
+    if (Array.isArray(meta.reference_images) && meta.reference_images.length) {
+      setMediaMode('reference');
+      setRefImages(meta.reference_images.map((url, i) => ({ url, name: `Referensi Gambar ${i + 1}`, size: 0, localPreview: url })));
+    }
+    if (Array.isArray(meta.reference_videos) && meta.reference_videos.length) {
+      setMediaMode('reference');
+      setRefVideos((prev) => [...prev, ...meta.reference_videos.map((url, i) => ({ url, name: `Referensi Video ${i + 1}`, size: 0, localPreview: url }))]);
+    }
+    if (Array.isArray(meta.reference_audios) && meta.reference_audios.length) {
+      setMediaMode('reference');
+      setRefAudios((prev) => [...prev, ...meta.reference_audios.map((url, i) => ({ url, name: `Referensi Audio ${i + 1}`, size: 0, localPreview: url }))]);
+    }
   };
 
   const handleDeleteHistory = async (id, e) => {
@@ -451,18 +568,39 @@ export function GeneratePage() {
               )}
             </div>
 
-            {/* 2. Upload Image, Video, Audio */}
+            {/* 2. Media referensi */}
             <div className="generate-field">
               <div className="generate-label-row">
                 <span className="generate-label">Media Referensi (Opsional)</span>
-                <span className="generate-hint">Gambar ≤15MB · Video ≤50MB · Audio ≤20MB</span>
+                <span className="generate-hint">Gambar ≤20MB · Video ≤100MB · Audio ≤15MB</span>
               </div>
               <p className="generate-hint">File referensi diunggah ke penyimpanan publik dan dapat diakses melalui tautan; unggah hanya materi yang boleh dibagikan dengan provider.</p>
+
+              {isAlibaba && (
+                <div className="generate-mode-tabs" role="tablist" aria-label="Mode Wan 3.0" style={{ marginBottom: 12 }}>
+                  <button type="button" role="tab" aria-selected={mediaMode === 'frame'} onClick={() => setMediaMode('frame')}>
+                    Mode Frame (First / Last Frame)
+                  </button>
+                  <button type="button" role="tab" aria-selected={mediaMode === 'reference'} onClick={() => setMediaMode('reference')}>
+                    Mode Referensi (maks 10 foto · 5 video · 5 audio)
+                  </button>
+                </div>
+              )}
+
+              {(!isAlibaba || mediaMode === 'frame') && (
+                <p className="generate-hint" style={{ marginTop: 0 }}>
+                  {isAlibaba
+                    ? 'Wan 3.0 mode frame: 1 gambar First Frame (wajib bila diisi Last Frame) + 1 Last Frame. Mode frame tidak bisa digabung dengan foto/video/audio referensi.'
+                    : 'Unggah First Frame (dan Last Frame untuk Wan 3.0) sebagai acuan visual video.'}
+                </p>
+              )}
+
               <div className="generate-media-grid">
-                {/* Upload Image */}
+                {/* First Frame / Upload Image */}
+                {(!isAlibaba || mediaMode === 'frame') && (
                 <div className={`generate-upload-box ${imageMedia ? 'has-file' : ''}`}>
                   <div className="generate-upload-top">
-                    <span className="generate-upload-title">Upload Image</span>
+                    <span className="generate-upload-title">{isAlibaba ? 'First Frame' : 'Upload Image'}</span>
                     {imageMedia && (
                       <button type="button" className="generate-clear-btn" onClick={() => clearMedia('image')}>
                         Hapus
@@ -472,8 +610,8 @@ export function GeneratePage() {
                   <input
                     ref={imageInputRef}
                     type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    aria-label="Upload Image"
+                    accept="image/jpeg,image/png,image/webp,image/bmp"
+                    aria-label="First Frame"
                     className="generate-upload-input"
                     onChange={(e) => handleUploadMedia('image', e.target.files?.[0])}
                   />
@@ -491,7 +629,7 @@ export function GeneratePage() {
                       onClick={() => imageInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'image' ? 'Mengunggah...' : '+ Pilih Gambar'}</strong>
-                      <span>JPG, PNG, WEBP</span>
+                      <span>JPG, PNG, WEBP · maks 20MB</span>
                     </button>
                   )}
                   <div className="generate-upload-footer">
@@ -501,8 +639,55 @@ export function GeneratePage() {
                     {imageMedia?.size ? <span>{formatBytes(imageMedia.size)}</span> : null}
                   </div>
                 </div>
+                )}
 
-                {/* Upload Video */}
+                {/* Last Frame (khusus Wan 3.0 mode frame) */}
+                {isAlibaba && mediaMode === 'frame' && (
+                <div className={`generate-upload-box ${imageLastMedia ? 'has-file' : ''}`}>
+                  <div className="generate-upload-top">
+                    <span className="generate-upload-title">Last Frame (Opsional)</span>
+                    {imageLastMedia && (
+                      <button type="button" className="generate-clear-btn" onClick={() => clearMedia('image_last')}>
+                        Hapus
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    ref={imageLastInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/bmp"
+                    aria-label="Last Frame"
+                    className="generate-upload-input"
+                    onChange={(e) => handleUploadMedia('image_last', e.target.files?.[0])}
+                  />
+                  {imageLastMedia ? (
+                    <img
+                      src={imageLastMedia.localPreview || imageLastMedia.url}
+                      alt={imageLastMedia.name}
+                      className="generate-preview-thumb"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="generate-upload-trigger"
+                      disabled={!selectedModel || Boolean(uploadingSlot) || !imageMedia}
+                      onClick={() => imageLastInputRef.current?.click()}
+                    >
+                      <strong>{uploadingSlot === 'image_last' ? 'Mengunggah...' : '+ Pilih Last Frame'}</strong>
+                      <span>Butuh First Frame · maks 20MB</span>
+                    </button>
+                  )}
+                  <div className="generate-upload-footer">
+                    <span className="generate-upload-name" title={imageLastMedia?.name}>
+                      {imageLastMedia ? imageLastMedia.name : 'Frame akhir video'}
+                    </span>
+                    {imageLastMedia?.size ? <span>{formatBytes(imageLastMedia.size)}</span> : null}
+                  </div>
+                </div>
+                )}
+
+                {/* Upload Video — mode referensi alibaba / mode standar non-alibaba */}
+                {!isAlibaba && (
                 <div className={`generate-upload-box ${videoMedia ? 'has-file' : ''}`}>
                   <div className="generate-upload-top">
                     <span className="generate-upload-title">Upload Video</span>
@@ -536,7 +721,7 @@ export function GeneratePage() {
                       onClick={() => videoInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'video' ? 'Mengunggah...' : '+ Pilih Video'}</strong>
-                      <span>MP4, WEBM, MOV</span>
+                      <span>MP4, WEBM, MOV · maks 100MB</span>
                     </button>
                   )}
                   <div className="generate-upload-footer">
@@ -546,8 +731,10 @@ export function GeneratePage() {
                     {videoMedia?.size ? <span>{formatBytes(videoMedia.size)}</span> : null}
                   </div>
                 </div>
+                )}
 
-                {/* Upload Audio */}
+                {/* Upload Audio — mode standar non-alibaba */}
+                {!isAlibaba && (
                 <div className={`generate-upload-box ${audioMedia ? 'has-file' : ''}`}>
                   <div className="generate-upload-top">
                     <span className="generate-upload-title">Upload Audio</span>
@@ -579,7 +766,7 @@ export function GeneratePage() {
                       onClick={() => audioInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'audio' ? 'Mengunggah...' : '+ Pilih Audio'}</strong>
-                      <span>MP3, WAV, M4A</span>
+                      <span>MP3, WAV, M4A · maks 15MB</span>
                     </button>
                   )}
                   <div className="generate-upload-footer">
@@ -589,8 +776,80 @@ export function GeneratePage() {
                     {audioMedia?.size ? <span>{formatBytes(audioMedia.size)}</span> : null}
                   </div>
                 </div>
+                )}
               </div>
+
+              {/* Mode referensi Wan 3.0: multi-upload */}
+              {isAlibaba && mediaMode === 'reference' && (
+                <div className="generate-ref-sections">
+                  <p className="generate-hint" style={{ marginTop: 4 }}>
+                    Mode referensi: {referenceTotal}/{MAX_TOTAL_REFERENCES} materi · {refImages.length}/{MAX_REFERENCES.image} foto · {refVideos.length}/{MAX_REFERENCES.video} video · {refAudios.length}/{MAX_REFERENCES.audio} audio. Video & audio maks 15 detik total.
+                  </p>
+
+                  <div className="generate-ref-row">
+                    <div className="generate-ref-row-head">
+                      <span className="generate-upload-title">Foto Referensi ({refImages.length}/{MAX_REFERENCES.image})</span>
+                      <input ref={refImageInputRef} type="file" multiple accept="image/jpeg,image/png,image/webp,image/bmp" aria-label="Foto Referensi" className="generate-upload-input" onChange={(e) => { handleUploadReference('image', e.target.files); e.target.value = ''; }} />
+                      <button type="button" className="generate-clear-btn" disabled={!selectedModel || Boolean(uploadingSlot) || refImages.length >= MAX_REFERENCES.image} onClick={() => refImageInputRef.current?.click()}>
+                        {uploadingSlot === 'ref-image' ? 'Mengunggah...' : '+ Tambah'}
+                      </button>
+                    </div>
+                    {refImages.length > 0 && (
+                      <div className="generate-ref-chips">
+                        {refImages.map((item, index) => (
+                          <span key={index} className="generate-ref-chip" title={item.name}>
+                            <img src={item.localPreview} alt={item.name} className="generate-ref-chip-img" />
+                            <span className="generate-ref-chip-name">{item.name}</span>
+                            <button type="button" aria-label={`Hapus ${item.name}`} onClick={() => clearReference('image', index)}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="generate-ref-row">
+                    <div className="generate-ref-row-head">
+                      <span className="generate-upload-title">Video Referensi ({refVideos.length}/{MAX_REFERENCES.video})</span>
+                      <input ref={refVideoInputRef} type="file" multiple accept="video/mp4,video/quicktime,video/webm" aria-label="Video Referensi" className="generate-upload-input" onChange={(e) => { handleUploadReference('video', e.target.files); e.target.value = ''; }} />
+                      <button type="button" className="generate-clear-btn" disabled={!selectedModel || Boolean(uploadingSlot) || refVideos.length >= MAX_REFERENCES.video} onClick={() => refVideoInputRef.current?.click()}>
+                        {uploadingSlot === 'ref-video' ? 'Mengunggah...' : '+ Tambah'}
+                      </button>
+                    </div>
+                    {refVideos.length > 0 && (
+                      <div className="generate-ref-chips">
+                        {refVideos.map((item, index) => (
+                          <span key={index} className="generate-ref-chip" title={item.name}>
+                            <span className="generate-ref-chip-name">{item.name}</span>
+                            <button type="button" aria-label={`Hapus ${item.name}`} onClick={() => clearReference('video', index)}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="generate-ref-row">
+                    <div className="generate-ref-row-head">
+                      <span className="generate-upload-title">Audio Referensi ({refAudios.length}/{MAX_REFERENCES.audio})</span>
+                      <input ref={refAudioInputRef} type="file" multiple accept="audio/wav,audio/mpeg,audio/mp3" aria-label="Audio Referensi" className="generate-upload-input" onChange={(e) => { handleUploadReference('audio', e.target.files); e.target.value = ''; }} />
+                      <button type="button" className="generate-clear-btn" disabled={!selectedModel || Boolean(uploadingSlot) || refAudios.length >= MAX_REFERENCES.audio} onClick={() => refAudioInputRef.current?.click()}>
+                        {uploadingSlot === 'ref-audio' ? 'Mengunggah...' : '+ Tambah'}
+                      </button>
+                    </div>
+                    {refAudios.length > 0 && (
+                      <div className="generate-ref-chips">
+                        {refAudios.map((item, index) => (
+                          <span key={index} className="generate-ref-chip" title={item.name}>
+                            <span className="generate-ref-chip-name">{item.name}</span>
+                            <button type="button" aria-label={`Hapus ${item.name}`} onClick={() => clearReference('audio', index)}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
+
 
             {/* 3. Prompt */}
             <div className="generate-field">
