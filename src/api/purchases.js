@@ -5,3 +5,9 @@ import { edgeRequest } from './client';
 export async function setPurchasesEnabled(enabled, password) {
   return edgeRequest('/admin/purchase-toggle', { enabled, password });
 }
+
+// Setujui / Tolak pesanan kredit. Wajib password aksi admin; browser tidak
+// bisa memanggil RPC review secara langsung (grant dicabut).
+export async function reviewCreditOrder(orderId, approve, password) {
+  return edgeRequest('/admin/review-order', { order_id: orderId, approve, password });
+}
