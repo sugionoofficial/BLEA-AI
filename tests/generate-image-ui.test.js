@@ -53,9 +53,12 @@ test('panel generate gambar memotong kredit BLEA dengan model 122 (teks saja)', 
   const { calls } = handle;
   const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent.includes(label));
   try {
-    assert.match(document.body.textContent, /model 122/);
-    assert.match(document.body.textContent, /15 kredit BLEA per gambar/);
+    assert.match(document.body.textContent, /Model 122/);
+    assert.match(document.body.textContent, /15 kredit/);
+    assert.doesNotMatch(document.body.textContent, /15 kredit BLEA per gambar/);
+    assert.doesNotMatch(document.body.textContent, /Freebeat:\s*model 122/i);
     assert.equal(button('Buat gambar').disabled, true);
+    assert.equal(button('Buat gambar').textContent.trim(), 'Buat gambar');
     const prompt = document.querySelector('textarea');
     await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set.call(prompt, 'Kucing tidur'); prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
     assert.equal(button('Buat gambar').disabled, false);

@@ -48,7 +48,7 @@ export const PROVIDER_PRESETS = {
   },
   alibaba: {
     id: 'alibaba',
-    label: 'Alibaba Model Studio (Wan & HappyHorse)',
+    label: 'Alibaba',
     defaultBaseUrl: '',
     baseUrl: '',
     protocol: 'alibaba_video',
@@ -112,7 +112,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- Wan 3.0 ----
   'wan3.0-video': {
     id: 'wan3.0-video',
-    name: 'Alibaba: Wan 3.0 Video',
+    name: 'Wan 3.0 Video',
     family: 'wan3',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'wan3',
@@ -132,7 +132,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan3.0-video-prime': {
     id: 'wan3.0-video-prime',
-    name: 'Alibaba: Wan 3.0 Video Prime',
+    name: 'Wan 3.0 Video Prime',
     family: 'wan3',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'wan3',
@@ -154,7 +154,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- Wan T2V ----
   'wan2.6-t2v': {
     id: 'wan2.6-t2v',
-    name: 'Alibaba: Wan 2.6 T2V',
+    name: 'Wan 2.6 T2V',
     family: 'wan-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -175,7 +175,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.5-t2v-preview': {
     id: 'wan2.5-t2v-preview',
-    name: 'Alibaba: Wan 2.5 T2V Preview',
+    name: 'Wan 2.5 T2V Preview',
     family: 'wan-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -196,7 +196,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.2-t2v-plus': {
     id: 'wan2.2-t2v-plus',
-    name: 'Alibaba: Wan 2.2 T2V Plus',
+    name: 'Wan 2.2 T2V Plus',
     family: 'wan-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -218,7 +218,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   'wan2.1-t2v-plus': {
     id: 'wan2.1-t2v-plus',
     cnId: 'wanx2.1-t2v-plus',
-    name: 'Alibaba: Wan 2.1 T2V Plus',
+    name: 'Wan 2.1 T2V Plus',
     family: 'wan-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -240,7 +240,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   'wan2.1-t2v-turbo': {
     id: 'wan2.1-t2v-turbo',
     cnId: 'wanx2.1-t2v-turbo',
-    name: 'Alibaba: Wan 2.1 T2V Turbo',
+    name: 'Wan 2.1 T2V Turbo',
     family: 'wan-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -263,7 +263,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- Wan I2V (First Frame wajib) ----
   'wan2.6-i2v': {
     id: 'wan2.6-i2v',
-    name: 'Alibaba: Wan 2.6 I2V',
+    name: 'Wan 2.6 I2V',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -284,7 +284,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.6-i2v-flash': {
     id: 'wan2.6-i2v-flash',
-    name: 'Alibaba: Wan 2.6 I2V Flash',
+    name: 'Wan 2.6 I2V Flash',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -305,7 +305,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.5-i2v-preview': {
     id: 'wan2.5-i2v-preview',
-    name: 'Alibaba: Wan 2.5 I2V Preview',
+    name: 'Wan 2.5 I2V Preview',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -326,7 +326,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.2-i2v-flash': {
     id: 'wan2.2-i2v-flash',
-    name: 'Alibaba: Wan 2.2 I2V Flash',
+    name: 'Wan 2.2 I2V Flash',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -347,7 +347,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.2-i2v-plus': {
     id: 'wan2.2-i2v-plus',
-    name: 'Alibaba: Wan 2.2 I2V Plus',
+    name: 'Wan 2.2 I2V Plus',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -369,7 +369,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   'wan2.1-i2v-turbo': {
     id: 'wan2.1-i2v-turbo',
     cnId: 'wanx2.1-i2v-turbo',
-    name: 'Alibaba: Wan 2.1 I2V Turbo',
+    name: 'Wan 2.1 I2V Turbo',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -391,7 +391,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   'wan2.1-i2v-plus': {
     id: 'wan2.1-i2v-plus',
     cnId: 'wanx2.1-i2v-plus',
-    name: 'Alibaba: Wan 2.1 I2V Plus',
+    name: 'Wan 2.1 I2V Plus',
     family: 'wan-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -414,7 +414,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- Wan R2V ----
   'wan2.6-r2v': {
     id: 'wan2.6-r2v',
-    name: 'Alibaba: Wan 2.6 R2V',
+    name: 'Wan 2.6 R2V',
     family: 'wan-r2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'reference_urls',
@@ -440,7 +440,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.6-r2v-flash': {
     id: 'wan2.6-r2v-flash',
-    name: 'Alibaba: Wan 2.6 R2V Flash',
+    name: 'Wan 2.6 R2V Flash',
     family: 'wan-r2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'reference_urls',
@@ -468,7 +468,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- Wan KF2V (First + Last Frame wajib, endpoint image2video/video-synthesis) ----
   'wan2.2-kf2v-flash': {
     id: 'wan2.2-kf2v-flash',
-    name: 'Alibaba: Wan 2.2 KF2V Flash',
+    name: 'Wan 2.2 KF2V Flash',
     family: 'wan-kf2v',
     endpoint: ENDPOINT_IMAGE2VIDEO,
     mediaMode: 'keyframes',
@@ -491,7 +491,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   'wan2.1-kf2v-plus': {
     id: 'wan2.1-kf2v-plus',
     cnId: 'wanx2.1-kf2v-plus',
-    name: 'Alibaba: Wan 2.1 KF2V Plus',
+    name: 'Wan 2.1 KF2V Plus',
     family: 'wan-kf2v',
     endpoint: ENDPOINT_IMAGE2VIDEO,
     mediaMode: 'keyframes',
@@ -515,7 +515,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- Wan Animate (Image + Video wajib, endpoint image2video/video-synthesis) ----
   'wan2.2-animate-move': {
     id: 'wan2.2-animate-move',
-    name: 'Alibaba: Wan 2.2 Animate Move',
+    name: 'Wan 2.2 Animate Move',
     family: 'wan-animate',
     endpoint: ENDPOINT_IMAGE2VIDEO,
     mediaMode: 'animate',
@@ -537,7 +537,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'wan2.2-animate-mix': {
     id: 'wan2.2-animate-mix',
-    name: 'Alibaba: Wan 2.2 Animate Mix',
+    name: 'Wan 2.2 Animate Mix',
     family: 'wan-animate',
     endpoint: ENDPOINT_IMAGE2VIDEO,
     mediaMode: 'animate',
@@ -562,7 +562,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   'wan2.1-vace-plus': {
     id: 'wan2.1-vace-plus',
     cnId: 'wanx2.1-vace-plus',
-    name: 'Alibaba: Wan 2.1 VACE Plus',
+    name: 'Wan 2.1 VACE Plus',
     family: 'wan-vace',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'vace',
@@ -589,7 +589,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   // ---- HappyHorse 1.1 & 1.0 ----
   'happyhorse-1.1-t2v': {
     id: 'happyhorse-1.1-t2v',
-    name: 'Alibaba: HappyHorse 1.1 T2V',
+    name: 'HappyHorse 1.1 T2V',
     family: 'happyhorse-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -610,7 +610,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'happyhorse-1.0-t2v': {
     id: 'happyhorse-1.0-t2v',
-    name: 'Alibaba: HappyHorse 1.0 T2V',
+    name: 'HappyHorse 1.0 T2V',
     family: 'happyhorse-t2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'none',
@@ -631,7 +631,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'happyhorse-1.1-i2v': {
     id: 'happyhorse-1.1-i2v',
-    name: 'Alibaba: HappyHorse 1.1 I2V',
+    name: 'HappyHorse 1.1 I2V',
     family: 'happyhorse-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -652,7 +652,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'happyhorse-1.0-i2v': {
     id: 'happyhorse-1.0-i2v',
-    name: 'Alibaba: HappyHorse 1.0 I2V',
+    name: 'HappyHorse 1.0 I2V',
     family: 'happyhorse-i2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'first_frame',
@@ -673,7 +673,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'happyhorse-1.1-r2v': {
     id: 'happyhorse-1.1-r2v',
-    name: 'Alibaba: HappyHorse 1.1 R2V',
+    name: 'HappyHorse 1.1 R2V',
     family: 'happyhorse-r2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'reference_images',
@@ -699,7 +699,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'happyhorse-1.0-r2v': {
     id: 'happyhorse-1.0-r2v',
-    name: 'Alibaba: HappyHorse 1.0 R2V',
+    name: 'HappyHorse 1.0 R2V',
     family: 'happyhorse-r2v',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'reference_images',
@@ -725,7 +725,7 @@ export const ALIBABA_VIDEO_MODEL_SPECS = Object.freeze({
   },
   'happyhorse-1.0-video-edit': {
     id: 'happyhorse-1.0-video-edit',
-    name: 'Alibaba: HappyHorse 1.0 Video Edit',
+    name: 'HappyHorse 1.0 Video Edit',
     family: 'happyhorse-edit',
     endpoint: ENDPOINT_SYNTHESIS,
     mediaMode: 'video_edit',
@@ -764,7 +764,7 @@ export function isAlibabaVideoModelSupported(modelId) {
 export const BUILTIN_VIDEO_MODELS = [
   {
     id: 'gemini-omni-1.2-flash:free',
-    name: 'Google: Gemini Omni 1.2 Flash',
+    name: 'Gemini Omni 1.2 Flash',
     provider: 'unorouter',
     vendor: 'Google',
     isFree: true,
@@ -780,7 +780,7 @@ export const BUILTIN_VIDEO_MODELS = [
   },
   {
     id: 'gemini-omni-1.1-flash:free',
-    name: 'Google: Gemini Omni 1.1 Flash',
+    name: 'Gemini Omni 1.1 Flash',
     provider: 'unorouter',
     vendor: 'Google',
     isFree: true,
@@ -796,7 +796,7 @@ export const BUILTIN_VIDEO_MODELS = [
   },
   {
     id: 'veo3.1',
-    name: 'Google: Veo 3.1',
+    name: 'Veo 3.1',
     provider: 'unorouter',
     vendor: 'Google',
     isFree: false,
@@ -812,7 +812,7 @@ export const BUILTIN_VIDEO_MODELS = [
   },
   {
     id: 'veo3.1-fast',
-    name: 'Google: Veo 3.1 Fast',
+    name: 'Veo 3.1 Fast',
     provider: 'unorouter',
     vendor: 'Google',
     isFree: false,
@@ -828,7 +828,7 @@ export const BUILTIN_VIDEO_MODELS = [
   },
   {
     id: 'doubao-seedance-1-5-pro-251215',
-    name: 'ByteDance: Seedance 1.5 Pro',
+    name: 'Seedance 1.5 Pro',
     provider: 'unorouter',
     vendor: 'ByteDance',
     isFree: false,
@@ -844,7 +844,7 @@ export const BUILTIN_VIDEO_MODELS = [
   },
   {
     id: 'grok-video-3',
-    name: 'xAI: Grok Video 3',
+    name: 'Grok Video 3',
     provider: 'unorouter',
     vendor: 'xAI',
     isFree: false,

@@ -70,11 +70,15 @@ test('ModelSelect opens compact popover and GenerateImagePanel shows live animat
     await React.act(async () => trigger.click());
     const popover = document.querySelector('.generate-model-popover[role="listbox"]');
     assert.ok(popover, 'Compact model popover should open on trigger click');
-    const alibabaOption = [...popover.querySelectorAll('.generate-model-option')].find((opt) => opt.textContent.includes('Alibaba: Wan 2.7 Image'));
+    const alibabaOption = [...popover.querySelectorAll('.generate-model-option')].find(
+      (opt) => opt.textContent.includes('Wan 2.7 Image') && opt.textContent.includes('Alibaba'),
+    );
     assert.ok(alibabaOption);
+    assert.doesNotMatch(alibabaOption.textContent, /Alibaba:\s*Wan 2\.7 Image/);
     await React.act(async () => alibabaOption.click());
     assert.equal(document.querySelector('.generate-model-popover'), null, 'Popover should close after selection');
-    assert.match(document.querySelector('.generate-model-trigger').textContent, /Alibaba: Wan 2\.7 Image/);
+    assert.match(document.querySelector('.generate-model-trigger').textContent, /Alibaba.*Wan 2\.7 Image.*80 kredit/);
+    assert.doesNotMatch(document.querySelector('.generate-model-trigger').textContent, /Alibaba:\s*Wan 2\.7 Image/);
 
     const textarea = document.querySelector('textarea');
     await React.act(async () => {

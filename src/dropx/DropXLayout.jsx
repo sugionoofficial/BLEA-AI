@@ -5,6 +5,7 @@ import { activeNavHref, flattenNavigation, getNavigation, resolveRoute } from '.
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../auth/AuthProvider';
 import { useCredits } from '../lib/useCredits';
+import { formatCredits } from '../lib/formatCredits';
 
 function useTheme() {
   const [theme, setTheme] = useState(() => localStorage.getItem('dropx-theme') || 'light');
@@ -327,11 +328,11 @@ export function DropXLayout({ children, title, description, actions, footer = tr
                 className={`dropx-user dropx-credit-chip ${headerMenuOpen ? 'is-open' : ''}`}
                 onClick={() => setHeaderMenuOpen((v) => !v)}
                 aria-expanded={headerMenuOpen}
-                aria-label={`Saldo kredit ${creditBalance === null ? 'belum dimuat' : creditBalance} — menu akun`}
+                aria-label={`Saldo kredit ${creditBalance === null ? 'belum dimuat' : formatCredits(creditBalance)} — menu akun`}
                 title="Saldo kredit BLEA"
               >
                 <span className="dropx-credit-icon" aria-hidden="true"><Coins size={15} /></span>
-                <b>{creditBalance === null ? '—' : creditBalance}</b>
+                <b>{creditBalance === null ? '—' : formatCredits(creditBalance)}</b>
                 <span className="dropx-credit-label">kredit</span>
                 <ChevronDown size={13} className={`dropx-nav-chevron ${headerMenuOpen ? 'is-open' : ''}`} />
               </button>

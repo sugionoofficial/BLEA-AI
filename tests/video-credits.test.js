@@ -385,8 +385,10 @@ test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manu
     ));
     await React.act(async () => new Promise((r) => setTimeout(r, 40)));
 
-    assert.match(document.body.textContent, /120 kredit BLEA/);
-    assert.match(document.body.textContent, /Saldo: 50 kredit/);
+    assert.match(document.body.textContent, /Wan 3\.0 Video/);
+    assert.match(document.body.textContent, /120 kredit/);
+    assert.doesNotMatch(document.body.textContent, /120 kredit BLEA/);
+    assert.doesNotMatch(document.body.textContent, /Saldo: 50 kredit/);
     assert.match(document.body.textContent, /Saldo kredit Anda \(50 kredit\) tidak cukup/);
     assert.doesNotMatch(document.body.textContent, /Alur video lama belum memotong kredit BLEA/);
     assert.equal(document.querySelector('button.generate-submit-btn').disabled, true);

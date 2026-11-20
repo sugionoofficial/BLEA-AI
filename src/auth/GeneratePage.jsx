@@ -19,6 +19,7 @@ import {
 } from '../api/generation';
 import { availableVideoModels, generationModelKey } from '../lib/generationCatalog';
 import { useCredits } from '../lib/useCredits';
+import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
 import { GenerateImagePanel } from './GenerateImagePanel';
 import { ModelSelect } from './ModelSelect';
 import './generate.css';
@@ -552,11 +553,12 @@ export function GeneratePage() {
       setActiveId(created.id);
       refreshBalance();
       const chargedCredits = Number(res.data?.credits || created?.credits_charged || 0);
+      const cleanModelName = formatModelDisplayName(selectedModel.name, selectedModel.provider, selectedModel.providerLabel);
       setBanner({
         type: 'success',
         text: created.status === 'completed'
-          ? `Video berhasil dibuat dan siap diputar.${chargedCredits ? ` (${chargedCredits} kredit BLEA)` : ''}`
-          : `Generasi dimulai menggunakan ${selectedModel.name}${chargedCredits ? ` (${chargedCredits} kredit BLEA)` : ''}. Status akan diperbarui otomatis.`,
+          ? `Video berhasil dibuat dan siap diputar.${chargedCredits ? ` (${formatCredits(chargedCredits)} kredit BLEA)` : ''}`
+          : `Generasi dimulai menggunakan ${cleanModelName}${chargedCredits ? ` (${formatCredits(chargedCredits)} kredit BLEA)` : ''}. Status akan diperbarui otomatis.`,
       });
     } finally {
       setSubmitting(false);
@@ -652,7 +654,7 @@ export function GeneratePage() {
         {selectedModel && selectedModel.priced === false && (
           <div className="generate-banner is-error" role="status">
             <span>
-              Tarif kredit untuk <strong>{selectedModel.name}</strong> belum diatur admin.
+              Tarif kredit untuk <strong>{formatModelDisplayName(selectedModel.name, selectedModel.provider, selectedModel.providerLabel)}</strong> belum diatur admin.
             </span>
             {isAdmin && <Link className="generate-banner-link" to="/credits">Atur harga kredit</Link>}
           </div>
@@ -661,7 +663,7 @@ export function GeneratePage() {
         {selectedModel && Number.isSafeInteger(selectedModel.credits) && selectedModel.credits > 0 && balance !== null && balance < selectedModel.credits && (
           <div className="generate-banner is-error" role="status">
             <span>
-              Saldo kredit Anda ({balance} kredit) tidak cukup (butuh {selectedModel.credits} kredit).
+              Saldo kredit Anda ({formatCredits(balance)} kredit) tidak cukup (butuh {formatCredits(selectedModel.credits)} kredit).
             </span>
             <Link className="generate-banner-link" to="/credits">Isi kredit</Link>
           </div>
@@ -686,24 +688,13 @@ export function GeneratePage() {
               <div>
                 <h2 className="generate-card-title">Generate Video</h2>
               </div>
-              {selectedModel && (
-                <span className={`generate-pill ${selectedModel.priced === false ? 'is-warn' : 'is-accent'}`}>
-                  {Number.isSafeInteger(selectedModel.credits) && selectedModel.credits > 0
-                    ? `${selectedModel.credits} kredit BLEA`
-                    : selectedModel.priced === false
-                      ? 'Tarif belum diatur'
-                      : 'Tarif sesuai kredit BLEA'}
-                </span>
-              )}
             </div>
 
             {/* 1. Pilih Model */}
             <div className="generate-field">
               <div className="generate-label-row">
                 <label className="generate-label" htmlFor="gen-model">Pilih Model</label>
-                <span className="generate-hint">
-                  {models.length} model{balance !== null ? ` · Saldo: ${balance} kredit` : ''}
-                </span>
+                <span className="generate-hint">{models.length} model</span>
               </div>
               <ModelSelect
                 id="gen-model"
@@ -711,17 +702,22 @@ export function GeneratePage() {
                 value={selectedModelKey}
                 disabled={!models.length}
                 placeholder="Tidak ada model video aktif"
-                options={models.map((m) => ({
-                  value: modelKey(m),
-                  badge: m.providerLabel || m.provider,
-                  label: m.name,
-                  sub: m.online === false ? 'Antrean penuh' : (m.description || ''),
-                  meta: Number.isSafeInteger(m.credits) && m.credits > 0
-                    ? `${m.credits} kredit`
-                    : (m.priced === false ? 'Belum bertarif' : ''),
-                  tone: m.online === false || m.priced === false ? 'warn' : 'accent',
-                  nativeLabel: `[${m.providerLabel || m.provider}] ${m.name}${Number.isSafeInteger(m.credits) && m.credits > 0 ? ` · ${m.credits} kredit` : m.priced === false ? ' · Belum bertarif' : ''}${m.online === false ? ' • Sibuk' : ''}`,
-                }))}
+                options={models.map((m) => {
+                  const badge = formatProviderBadge(m.provider, m.providerLabel);
+                  const displayName = formatModelDisplayName(m.name, m.provider, m.providerLabel);
+                  const creditLabel = Number.isSafeInteger(m.credits) && m.credits > 0
+                    ? `${formatCredits(m.credits)} kredit`
+                    : (m.priced === false ? 'Belum bertarif' : '');
+                  return {
+                    value: modelKey(m),
+                    badge,
+                    label: displayName,
+                    sub: m.online === false ? 'Antrean penuh' : '',
+                    meta: creditLabel,
+                    tone: m.online === false || m.priced === false ? 'warn' : 'accent',
+                    nativeLabel: `[${badge}] ${displayName}${creditLabel ? ` · ${creditLabel}` : ''}${m.online === false ? ' • Sibuk' : ''}`,
+                  };
+                })}
                 onChange={(nextKey) => setSelectedModelKey(nextKey)}
               />
 

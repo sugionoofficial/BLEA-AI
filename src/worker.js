@@ -2014,41 +2014,41 @@ async function fetchProviderKeyRecord(env, provider) {
 //   'wxh'    → '<lebar>*<tinggi>' bebas 512–2048 (famili qwen-image-2.0)
 //             atau rentang `minSide`–`maxSide` (wan2.6-t2i)
 const ALIBABA_IMAGE_MODELS = [
-  { id: 'wan2.7-image', name: 'Alibaba: Wan 2.7 Image', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 4 },
-  { id: 'wan2.7-image-pro', name: 'Alibaba: Wan 2.7 Image Pro', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 4 },
-  { id: 'qwen-image-3.0', name: 'Alibaba: Qwen-Image 3.0', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-3.0-pro', name: 'Alibaba: Qwen-Image 3.0 Pro', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'wan2.7-image', name: 'Wan 2.7 Image', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 4 },
+  { id: 'wan2.7-image-pro', name: 'Wan 2.7 Image Pro', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 4 },
+  { id: 'qwen-image-3.0', name: 'Qwen-Image 3.0', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-3.0-pro', name: 'Qwen-Image 3.0 Pro', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
   // Famili Qwen-Image-2.0 / 2.1 (sinkron & async messages; n 1-6). Dated variants = snapshot model yang sama.
-  { id: 'qwen-image-2.0', name: 'Alibaba: Qwen-Image 2.0', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.0-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.0-pro', name: 'Alibaba: Qwen-Image 2.0 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.0-pro-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.0-pro-2026-04-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-04-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.0-pro-2026-06-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-06-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.1-pro', name: 'Alibaba: Qwen-Image 2.1 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
-  { id: 'qwen-image-2.1-turbo', name: 'Alibaba: Qwen-Image 2.1 Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0', name: 'Qwen-Image 2.0', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-2026-03-03', name: 'Qwen-Image 2.0 (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro', name: 'Qwen-Image 2.0 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro-2026-03-03', name: 'Qwen-Image 2.0 Pro (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro-2026-04-22', name: 'Qwen-Image 2.0 Pro (2026-04-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro-2026-06-22', name: 'Qwen-Image 2.0 Pro (2026-06-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.1-pro', name: 'Qwen-Image 2.1 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.1-turbo', name: 'Qwen-Image 2.1 Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
   // Wan2.6-T2I: messages async; n 1-4; 1280*1280 s/d 1440*1440.
-  { id: 'wan2.6-t2i', name: 'Alibaba: Wan 2.6 T2I', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 1280, maxSide: 1440, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 0 },
+  { id: 'wan2.6-t2i', name: 'Wan 2.6 T2I', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 1280, maxSide: 1440, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 0 },
   // Wan 2.5 & lebih lama (text-to-image V2): HTTP async LEGACY —
   // POST /api/v1/services/aigc/text2image/image-synthesis, input.prompt STRING,
   // hasil output.results[].url. Ukuran wan2.5: total piksel 1280^2–1440^2, rasio [1:4, 4:1].
-  { id: 'wan2.5-t2i-preview', name: 'Alibaba: Wan 2.5 T2I Preview', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 1280 * 1280, maxProduct: 1440 * 1440, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 2000, sizeHint: 'total 1280*1280–1440*1440 piksel, rasio 1:4–4:1', maxInputImages: 0 },
+  { id: 'wan2.5-t2i-preview', name: 'Wan 2.5 T2I Preview', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 1280 * 1280, maxProduct: 1440 * 1440, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 2000, sizeHint: 'total 1280*1280–1440*1440 piksel, rasio 1:4–4:1', maxInputImages: 0 },
   // Wan 2.2: total piksel maks 1440*1440, sisi 512–1440, prompt 500 karakter.
-  { id: 'wan2.2-t2i-plus', name: 'Alibaba: Wan 2.2 T2I Plus', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
-  { id: 'wan2.2-t2i-flash', name: 'Alibaba: Wan 2.2 T2I Flash', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  { id: 'wan2.2-t2i-plus', name: 'Wan 2.2 T2I Plus', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  { id: 'wan2.2-t2i-flash', name: 'Wan 2.2 T2I Flash', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
   // Wan 2.1: Singapore menggunakan wan2.1-t2i-*; Beijing menggunakan wanx2.1-t2i-*.
-  { id: 'wan2.1-t2i-plus', cnId: 'wanx2.1-t2i-plus', name: 'Alibaba: Wan 2.1 T2I Plus', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
-  { id: 'wan2.1-t2i-turbo', cnId: 'wanx2.1-t2i-turbo', name: 'Alibaba: Wan 2.1 T2I Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  { id: 'wan2.1-t2i-plus', cnId: 'wanx2.1-t2i-plus', name: 'Wan 2.1 T2I Plus', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  { id: 'wan2.1-t2i-turbo', cnId: 'wanx2.1-t2i-turbo', name: 'Wan 2.1 T2I Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
   // Wan2.6-Image: async messages (image-generation).
   // Tanpa gambar input: interleaved mode (enable_interleave=true, n=1, max_images 1-5, total 768^2–1280^2).
   // Dengan 1-4 gambar input: edit mode (enable_interleave=false, n 1-4, prompt_extend=true, size 1K/2K atau 768^2–2048^2).
-  { id: 'wan2.6-image', name: 'Alibaba: Wan 2.6 Image', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 768 * 768, maxProduct: 1280 * 1280, editMaxProduct: 2048 * 2048, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 5, promptExtend: false, payloadMode: 'interleave', maxPromptChars: 2000, maxInputImages: 4, sizeHint: 'total 768*768–1280*1280 piksel (edit s/d 2048*2048 atau 1K/2K), rasio 1:4–4:1' },
+  { id: 'wan2.6-image', name: 'Wan 2.6 Image', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 768 * 768, maxProduct: 1280 * 1280, editMaxProduct: 2048 * 2048, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 5, promptExtend: false, payloadMode: 'interleave', maxPromptChars: 2000, maxInputImages: 4, sizeHint: 'total 768*768–1280*1280 piksel (edit s/d 2048*2048 atau 1K/2K), rasio 1:4–4:1' },
   // Wan2.5-I2I-Preview: editing only (1-4 gambar sumber wajib), async image2image/image-synthesis,
   // total piksel 768^2–1280^2, rasio [1:4, 4:1], n 1-4.
-  { id: 'wan2.5-i2i-preview', name: 'Alibaba: Wan 2.5 I2I Preview (Edit Gambar)', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 768 * 768, maxProduct: 1280 * 1280, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'legacy-i2i', maxPromptChars: 2000, maxInputImages: 4, requiresImageInput: true, sizeHint: 'wajib 1–4 gambar sumber · total 768*768–1280*1280 piksel, rasio 1:4–4:1' },
+  { id: 'wan2.5-i2i-preview', name: 'Wan 2.5 I2I Preview (Edit Gambar)', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 768 * 768, maxProduct: 1280 * 1280, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'legacy-i2i', maxPromptChars: 2000, maxInputImages: 4, requiresImageInput: true, sizeHint: 'wajib 1–4 gambar sumber · total 768*768–1280*1280 piksel, rasio 1:4–4:1' },
   // Z-Image-Turbo: SYNC (multimodal-generation), messages, prompt_extend default false,
   // prompt maks 800 karakter, n tetap 1; ukuran sisi 512–2048; hasil di output.choices[0].message.content[0].image.
-  { id: 'z-image-turbo', name: 'Alibaba: Z-Image Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '1024*1024', maxN: 1, promptExtend: false, payloadMode: 'zimage', maxPromptChars: 800, sizeHint: 'sisi 512–2048 piksel', maxInputImages: 0 },
+  { id: 'z-image-turbo', name: 'Z-Image Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '1024*1024', maxN: 1, promptExtend: false, payloadMode: 'zimage', maxPromptChars: 800, sizeHint: 'sisi 512–2048 piksel', maxInputImages: 0 },
 ];
 
 function validateAlibabaWxh(size, spec, override = {}) {
@@ -3431,7 +3431,7 @@ async function handleApi(request, url, env) {
           {
             provider: 'freebeat',
             model: String(config?.model_id ?? ''),
-            name: `Freebeat: model ${config?.model_id ?? '—'}`,
+            name: `Model ${config?.model_id ?? '—'}`,
             credits: Number.isSafeInteger(config?.credits) ? config.credits : null,
             ready: config?.provider_ready === true && Number.isSafeInteger(config?.credits),
             params: null,
@@ -3543,7 +3543,7 @@ async function handleApi(request, url, env) {
       for (const row of keyRows || []) {
         configuredByProvider.set(row.provider, {
           id: row.provider,
-          label: row.label || PROVIDER_PRESETS[row.provider]?.label || row.provider,
+          label: row.provider === 'alibaba' ? 'Alibaba' : (row.label || PROVIDER_PRESETS[row.provider]?.label || row.provider),
           configured: Boolean(row.api_key) && Boolean(resolveProviderApiBase(row.provider, row.base_url)),
           hasBaseUrl: Boolean(row.base_url),
         });
@@ -3609,9 +3609,9 @@ async function handleApi(request, url, env) {
         const dancePriced = Number.isSafeInteger(danceCredits) && danceCredits > 0;
         merged.set('freebeat:generate_dance_video', {
           id: 'generate_dance_video',
-          name: 'Freebeat Music-to-Dance Video (720p)',
+          name: 'Music-to-Dance Video (720p)',
           provider: 'freebeat',
-          providerLabel: 'Freebeat Dance (Music-to-Dance)',
+          providerLabel: 'Freebeat',
           providerConfigured: danceCfg.provider_ready === true,
           activeInAdmin: dancePriced,
           online: danceCfg.provider_ready === true,
@@ -3643,7 +3643,7 @@ async function handleApi(request, url, env) {
 
       const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
       if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
-        providers.push({ id: 'freebeat', label: 'Freebeat Dance (Music-to-Dance)', configured: danceCfg.provider_ready === true, hasBaseUrl: false });
+        providers.push({ id: 'freebeat', label: 'Freebeat', configured: danceCfg.provider_ready === true, hasBaseUrl: false });
       }
       for (const preset of Object.values(PROVIDER_PRESETS)) {
         if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;

@@ -67,16 +67,17 @@ test('panel generate gambar: memilih model Alibaba mengirim provider/model/size/
     const selects = [...document.querySelectorAll('select')];
     const modelSelect = selects[0];
     assert.ok(modelSelect, 'ada selector model');
-    assert.match(modelSelect.textContent, /Alibaba: Wan 2\.7 Image/);
-    assert.match(document.body.textContent, /Freebeat: model 122/);
+    assert.match(modelSelect.textContent, /\[Alibaba\] Wan 2\.7 Image · 80 kredit/);
+    assert.doesNotMatch(modelSelect.textContent, /Alibaba:\s*Wan 2\.7 Image/);
+    assert.match(document.body.textContent, /Model 122/);
 
     // Pilih Alibaba.
     await React.act(async () => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set.call(modelSelect, 'alibaba:wan2.7-image');
       modelSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     });
-    assert.match(document.body.textContent, /Alibaba: Wan 2\.7 Image/);
-    assert.match(document.body.textContent, /80 kredit BLEA per gambar/);
+    assert.match(document.querySelector('.generate-model-trigger').textContent, /Alibaba.*Wan 2\.7 Image.*80 kredit/);
+    assert.doesNotMatch(document.body.textContent, /80 kredit BLEA per gambar/);
 
     // Parameter khusus model tampil (ukuran 1K/2K).
     const sizeSelect = [...document.querySelectorAll('select')].find((el) => [...el.options].some((o) => o.value === '1K'));
