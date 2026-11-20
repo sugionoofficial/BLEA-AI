@@ -405,27 +405,29 @@ async function getBalance(accessToken) {
 // examples, URLs, default values and unrelated tools are deliberately omitted.
 const IMAGE_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_image', 'edit_image', 'upload_image', 'get_task_status']);
 const VIDEO_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_video', 'get_task_status']);
+const DANCE_TOOLS = new Set(['upload_audio', 'upload_image', 'quote_generation', 'generate_dance_video', 'get_task_status', 'get_task_result', 'get_video_session', 'send_video_agent_message']);
 const SAFE_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']);
 const SAFE_SCHEMA_ENUMS = new Set(['image', 'image_edit', 'generate_image', 'generate_video', 'text', 'video', 'transition', 'reference']);
+const SAFE_DANCE_SCHEMA_ENUMS = new Set([...SAFE_SCHEMA_ENUMS, 'generate_dance_video', 'upload_audio', '16:9', '9:16', '1:1', '4:3', '3:4', '720p']);
 function schemaName(value) { return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value); }
-function imageSchema(schema, depth = 0) {
+function imageSchema(schema, depth = 0, allowedEnums = SAFE_SCHEMA_ENUMS) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 5) return {};
   const out = {};
   if (SAFE_SCHEMA_TYPES.has(schema.type)) out.type = schema.type;
   if (Array.isArray(schema.required)) out.required = schema.required.filter(schemaName).slice(0, 50);
   if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
-    out.properties = Object.fromEntries(Object.entries(schema.properties).filter(([name]) => schemaName(name)).slice(0, 50).map(([name, child]) => [name, imageSchema(child, depth + 1)]));
+    out.properties = Object.fromEntries(Object.entries(schema.properties).filter(([name]) => schemaName(name)).slice(0, 50).map(([name, child]) => [name, imageSchema(child, depth + 1, allowedEnums)]));
   }
-  if (schema.items && typeof schema.items === 'object') out.items = imageSchema(schema.items, depth + 1);
-  for (const name of ['anyOf', 'oneOf', 'allOf']) if (Array.isArray(schema[name])) out[name] = schema[name].slice(0, 8).map((child) => imageSchema(child, depth + 1));
+  if (schema.items && typeof schema.items === 'object') out.items = imageSchema(schema.items, depth + 1, allowedEnums);
+  for (const name of ['anyOf', 'oneOf', 'allOf']) if (Array.isArray(schema[name])) out[name] = schema[name].slice(0, 8).map((child) => imageSchema(child, depth + 1, allowedEnums));
   if (Array.isArray(schema.enum)) {
-    out.known_enum_values = schema.enum.filter((item) => SAFE_SCHEMA_ENUMS.has(item)).slice(0, 20);
+    out.known_enum_values = schema.enum.filter((item) => allowedEnums.has(item)).slice(0, 20);
     out.enum_incomplete = out.known_enum_values.length !== schema.enum.length;
   }
   return out;
 }
 
-async function getToolSchemas(accessToken, allowedTools) {
+async function getToolSchemas(accessToken, allowedTools, allowedEnums = SAFE_SCHEMA_ENUMS) {
   const headers = await openMcp(accessToken);
   const tools = new Map();
   const cursors = new Set();
@@ -434,7 +436,7 @@ async function getToolSchemas(accessToken, allowedTools) {
   for (let page = 0; page < 5; page += 1) {
     const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: page + 2, method: 'tools/list', params: cursor ? { cursor } : {} }, 'inspect', headers, 262144);
     if (!Array.isArray(result.tools)) throw mcpFailure('inspect', 'response');
-    for (const tool of result.tools) if (tool && allowedTools.has(tool.name) && !tools.has(tool.name)) tools.set(tool.name, imageSchema(tool.inputSchema));
+    for (const tool of result.tools) if (tool && allowedTools.has(tool.name) && !tools.has(tool.name)) tools.set(tool.name, imageSchema(tool.inputSchema, 0, allowedEnums));
     if (!result.nextCursor) break;
     if (typeof result.nextCursor !== 'string' || result.nextCursor.length > 1024 || cursors.has(result.nextCursor)) throw mcpFailure('inspect', 'response');
     cursors.add(result.nextCursor);
@@ -741,8 +743,8 @@ async function imageJson(request) {
   try { return await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
 }
 async function imageDb(env, path, options = {}, kind = 'image') {
-  const label = kind === 'video' ? 'video' : 'gambar';
-  const table = kind === 'video' ? 'freebeat_admin_video_tests' : 'freebeat_admin_image_tests';
+  const label = kind === 'dance' ? 'dance' : kind === 'video' ? 'video' : 'gambar';
+  const table = kind === 'dance' ? 'freebeat_admin_dance_tests' : kind === 'video' ? 'freebeat_admin_video_tests' : 'freebeat_admin_image_tests';
   if (!env.SUPABASE_SERVICE_ROLE_KEY || !env.SUPABASE_URL) throw fail(`Penyimpanan uji ${label} belum dikonfigurasi; tidak ada generasi yang dikirim.`, 503);
   const base = new URL(env.SUPABASE_URL);
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw fail(`Konfigurasi penyimpanan uji ${label} tidak valid.`, 503);
@@ -1026,6 +1028,387 @@ async function privateVideoFailure(env, user, session, request) {
   return { reasons };
 }
 
+// --- Dance Video Director (generate_dance_video) ----------------------------
+const DANCE_RATIOS = new Set(['16:9', '9:16', '1:1', '4:3', '3:4']);
+const DANCE_ALLOWED_KEYS = new Set(['music_id', 'auto_mode', 'prompt', 'aspect_ratio', 'image_urls', 'start_ms', 'end_ms', 'remove_watermark']);
+function normalizeDanceMusicId(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw fail('music_id tidak valid.', 400);
+    return value;
+  }
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (!s || s.length > 256 || !/^[A-Za-z0-9_.:-]+$/.test(s)) throw fail('Masukkan music_id yang valid (atau unggah audio terlebih dahulu).', 400);
+  return /^\d{1,15}$/.test(s) ? Number(s) : s;
+}
+function validateDanceInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !DANCE_ALLOWED_KEYS.has(k))) {
+    throw fail('Parameter dance video tidak valid.', 400);
+  }
+  const music_id = normalizeDanceMusicId(input.music_id);
+  const auto_mode = typeof input.auto_mode === 'boolean' ? input.auto_mode : true;
+  const aspect_ratio = typeof input.aspect_ratio === 'string' && DANCE_RATIOS.has(input.aspect_ratio.trim()) ? input.aspect_ratio.trim() : '9:16';
+  let prompt = '';
+  if (input.prompt !== undefined && input.prompt !== null) {
+    if (typeof input.prompt !== 'string' || input.prompt.trim().length > 2000) throw fail('Prompt arahan kreatif maksimal 2000 karakter.', 400);
+    prompt = input.prompt.trim();
+  }
+  let image_urls = [];
+  if (input.image_urls !== undefined && input.image_urls !== null) {
+    if (!Array.isArray(input.image_urls) || input.image_urls.length > 5) throw fail('Maksimal 5 foto penari.', 400);
+    image_urls = input.image_urls.map((raw) => {
+      const safe = consumerImageUrl(typeof raw === 'string' ? raw : '');
+      if (!safe) throw fail('Setiap foto penari harus berupa URL HTTPS publik yang valid.', 400);
+      return safe;
+    });
+  }
+  let start_ms;
+  let end_ms;
+  if (input.start_ms !== undefined && input.start_ms !== null && input.start_ms !== '') {
+    if (!Number.isSafeInteger(input.start_ms) || input.start_ms < 0 || input.start_ms > 600000) throw fail('start_ms harus berupa bilangan bulat milidetik >= 0.', 400);
+    start_ms = input.start_ms;
+  }
+  if (input.end_ms !== undefined && input.end_ms !== null && input.end_ms !== '') {
+    if (!Number.isSafeInteger(input.end_ms) || input.end_ms <= 0 || input.end_ms > 600000) throw fail('end_ms harus berupa bilangan bulat milidetik > 0.', 400);
+    end_ms = input.end_ms;
+  }
+  if ((start_ms !== undefined) !== (end_ms !== undefined)) throw fail('Isi start_ms dan end_ms bersama-sama, atau kosongkan keduanya.', 400);
+  if (start_ms !== undefined && end_ms <= start_ms) throw fail('end_ms harus lebih besar dari start_ms.', 400);
+  const remove_watermark = input.remove_watermark === true;
+  return {
+    music_id,
+    auto_mode,
+    aspect_ratio,
+    ...(prompt ? { prompt } : {}),
+    ...(image_urls.length ? { image_urls } : {}),
+    ...(start_ms !== undefined ? { start_ms, end_ms } : {}),
+    ...(remove_watermark ? { remove_watermark: true } : {}),
+  };
+}
+function danceQuoteParameters(params) {
+  return {
+    music_id: params.music_id,
+    auto_mode: params.auto_mode,
+    aspect_ratio: params.aspect_ratio,
+    ...(params.prompt ? { prompt: params.prompt } : {}),
+    ...(params.image_urls?.length ? { image_urls: params.image_urls } : {}),
+    ...(params.start_ms !== undefined ? { start_ms: params.start_ms, end_ms: params.end_ms } : {}),
+    ...(params.remove_watermark ? { remove_watermark: true } : {}),
+  };
+}
+async function danceUploadAudio(accessToken, input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => k !== 'audio_url')) {
+    throw fail('Permintaan upload audio tidak valid.', 400);
+  }
+  const audioUrl = consumerImageUrl(typeof input.audio_url === 'string' ? input.audio_url : '');
+  if (!audioUrl) throw fail('Masukkan URL audio HTTPS publik atau link platform musik yang valid (misal Suno, Udio, YouTube, SoundCloud, atau file MP3 publik).', 400);
+  const headers = await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'upload_audio', arguments: { url: audioUrl } },
+  }, 'upload', headers, 262144);
+  if (result.isError) throw mcpFailure('upload', 'response');
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('upload', 'response');
+  const rawId = content.music_id ?? content.musicId ?? content.id;
+  if (rawId === undefined || rawId === null || !/^[A-Za-z0-9_.:-]{1,256}$/.test(String(rawId).trim())) {
+    throw fail('Freebeat tidak mengembalikan music_id yang valid dari upload_audio.', 502);
+  }
+  return {
+    music_id: String(rawId).trim(),
+    status: content.status === 'preparing' ? 'preparing' : 'ready',
+    retry_after_seconds: Number.isFinite(content.retry_after_seconds) ? content.retry_after_seconds : null,
+  };
+}
+async function danceQuote(accessToken, params, raw = false) {
+  const headers = await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'quote_generation', arguments: { tool: 'generate_dance_video', parameters: danceQuoteParameters(params) } },
+  }, 'quote', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');
+  return raw ? content : safeQuote(content);
+}
+const danceDb = (env, path, options = {}) => imageDb(env, path, options, 'dance');
+async function danceMark(env, uid, id, status, extra = {}) {
+  const rows = await danceDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(uid)}&status=eq.dispatching`, {
+    method: 'PATCH',
+    body: { status, ...extra, updated_at: new Date().toISOString() },
+  });
+  if (rows.length !== 1) throw fail('Status penyimpanan uji dance video tidak dapat dipastikan.', 503);
+}
+async function prepareDance(env, user, session, input) {
+  await requireImageSession(session);
+  const parameters = validateDanceInput(input);
+  const rawQuote = await danceQuote(session.accessToken, parameters, true);
+  const credits = quotedCredits(rawQuote);
+  const accept_unknown_cost = credits === null;
+  const max_credits = credits !== null ? credits + videoHeadroom(credits) : null;
+  const expires = Date.now() + APPROVAL_LIFETIME;
+  const approval = await seal({
+    id: crypto.randomUUID(),
+    uid: user.id,
+    sessionHash: await sessionHash(session),
+    parameters,
+    credits,
+    max_credits,
+    accept_unknown_cost,
+    expires,
+  }, env, 'dance-approval');
+  if (approval.length > 14000) throw fail('Input terlalu besar untuk persetujuan uji dance video.', 400);
+  return {
+    approval,
+    parameters,
+    credits,
+    max_credits,
+    accept_unknown_cost,
+    cost_mode: accept_unknown_cost ? 'accept_unknown_cost' : 'max_credits',
+    quote: safeQuote(rawQuote),
+    expiresAt: expires,
+  };
+}
+async function submitDance(env, user, session, request) {
+  await requireImageSession(session);
+  const input = await imageJson(request);
+  const allowedKeys = new Set(['approval', 'confirm', 'confirm_unknown_cost']);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !allowedKeys.has(k)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 14000) {
+    throw fail('Persetujuan uji dance video tidak valid.', 400);
+  }
+  const ticket = await unseal(input.approval, env, 'dance-approval', 14000);
+  if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME) {
+    throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
+  }
+  const parameters = validateDanceInput(ticket.parameters);
+  if (ticket.accept_unknown_cost === true && input.confirm_unknown_cost !== true) {
+    throw fail('Persetujuan biaya tidak diketahui di awal diperlukan untuk mengirimkan dance video tanpa quote pasti.', 400);
+  }
+  const current = quotedCredits(await danceQuote(session.accessToken, parameters, true));
+  if (ticket.accept_unknown_cost === false) {
+    if (current === null || current !== ticket.credits) throw fail('Quote berubah atau tidak tersedia. Tidak ada dance video dikirim; buat quote baru.', 409);
+  } else if (current !== null) {
+    throw fail('Quote numerik kini tersedia. Buat persetujuan ulang agar batas maksimum kredit dikirim.', 409);
+  }
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada dance video dikirim.', 400);
+  const headers = await openMcp(session.accessToken);
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada dance video dikirim.', 400);
+  const rows = await danceDb(env, '', {
+    method: 'POST',
+    body: {
+      id: ticket.id,
+      admin_id: user.id,
+      session_hash: ticket.sessionHash,
+      music_id: String(parameters.music_id),
+      aspect_ratio: parameters.aspect_ratio,
+      auto_mode: parameters.auto_mode,
+      quote_credits: ticket.credits,
+      max_credits: ticket.accept_unknown_cost ? null : ticket.max_credits,
+      accept_unknown_cost: ticket.accept_unknown_cost,
+      status: 'dispatching',
+    },
+  });
+  if (rows.length !== 1 || rows[0]?.id !== ticket.id) {
+    throw fail('Pencatatan belum dapat dipastikan. Jangan ulangi sebelum memeriksa catatan.', 503);
+  }
+  if (ticket.expires <= Date.now()) {
+    try { await danceMark(env, user.id, ticket.id, 'reviewed', { task_id: null }); } catch { /* retain lock */ }
+    throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada dance video dikirim.', 409);
+  }
+  let content;
+  try {
+    const args = {
+      ...danceQuoteParameters(parameters),
+      ...(ticket.accept_unknown_cost ? { accept_unknown_cost: true } : { max_credits: ticket.max_credits }),
+    };
+    const { result } = await rpc(session.accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'generate_dance_video', arguments: args },
+    }, 'generate', headers, 262144);
+    if (result.isError) throw new Error('unrecognized');
+    content = modelContent(result);
+    if (!content || typeof content !== 'object') throw new Error('unrecognized');
+  } catch {
+    try { await danceMark(env, user.id, ticket.id, 'unknown', { task_id: null }); } catch { /* retain lock */ }
+    return { id: ticket.id, status: 'unknown' };
+  }
+  if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
+    try { await danceMark(env, user.id, ticket.id, 'reviewed', { task_id: null }); } catch { /* leave lock if unmarkable */ }
+    return {
+      id: ticket.id,
+      status: 'preparing',
+      music_id: String(content.music_id),
+      retry_after_seconds: Number.isFinite(content.retry_after_seconds) ? content.retry_after_seconds : 10,
+    };
+  }
+  const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
+  if (!taskId) {
+    try { await danceMark(env, user.id, ticket.id, 'unknown', { task_id: null }); } catch { /* retain lock */ }
+    return { id: ticket.id, status: 'unknown' };
+  }
+  const sessionUrl = safeImageUrl(content.session_url);
+  try {
+    await danceMark(env, user.id, ticket.id, 'submitted', { task_id: taskId, ...(sessionUrl ? { session_url: sessionUrl } : {}) });
+  } catch {
+    return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId };
+  }
+  return { id: ticket.id, status: 'submitted', ...(sessionUrl ? { session_url: sessionUrl } : {}) };
+}
+async function danceTests(env, user, session) {
+  const rows = await danceDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,music_id,aspect_ratio,auto_mode,quote_credits,max_credits,accept_unknown_cost,status,session_url,created_at,session_hash&order=created_at.desc&limit=20`);
+  const hash = await sessionHash(session);
+  return rows.map((row) => ({
+    id: row.id,
+    music_id: row.music_id,
+    aspect_ratio: row.aspect_ratio,
+    auto_mode: row.auto_mode,
+    quote_credits: row.quote_credits,
+    max_credits: row.max_credits,
+    accept_unknown_cost: row.accept_unknown_cost === true,
+    status: row.status,
+    session_url: safeImageUrl(row.session_url),
+    created_at: row.created_at,
+    canPoll: row.status === 'submitted' && row.session_hash === hash,
+  }));
+}
+async function danceRowForTask(env, user, session, input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
+    throw fail('ID uji dance video tidak valid.', 400);
+  }
+  const rows = await danceDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash,session_url&limit=1`);
+  const row = rows[0];
+  const sameSession = Boolean(row) && row.session_hash === await sessionHash(session);
+  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || (!sameSession && input.acknowledge !== true)) {
+    throw fail('Uji dance video tidak tersedia pada sesi Freebeat ini.', 404);
+  }
+  return row;
+}
+async function pollDance(env, user, session, request) {
+  const input = await imageJson(request);
+  if (Object.keys(input || {}).some((k) => !['id', 'acknowledge'].includes(k))) throw fail('Permintaan tidak valid.', 400);
+  const row = await danceRowForTask(env, user, session, input);
+  const headers = await openMcp(session.accessToken);
+  const { result: statusRes } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_task_status', arguments: { task_id: row.task_id } },
+  }, 'task', headers, 262144);
+  const statusContent = modelContent(statusRes);
+  if (!statusContent || typeof statusContent !== 'object' || Array.isArray(statusContent)) throw mcpFailure('task', 'response');
+  const summary = safeTask(statusContent);
+  let resultContent = null;
+  if (['completed', 'failed', 'action_required'].includes(summary.status)) {
+    try {
+      const { result: finalRes } = await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_task_result', arguments: { task_id: row.task_id } },
+      }, 'task', headers, 262144);
+      const parsed = modelContent(finalRes);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
+    } catch { /* fallback to statusContent only */ }
+  }
+  const source = resultContent || statusContent;
+  const billingSummary = safeTask(source).billing;
+  const videos = [];
+  const pushVideo = (rawUrl) => {
+    const safe = safeImageUrl(rawUrl);
+    if (safe && !videos.includes(safe)) videos.push(safe);
+  };
+  pushVideo(source?.result?.video_url);
+  pushVideo(source?.video_url);
+  if (Array.isArray(source?.items)) for (const item of source.items.slice(0, 10)) pushVideo(item?.video_url);
+  const cover_url = safeImageUrl(source?.result?.cover_url || source?.cover_url);
+  return {
+    status: summary.status,
+    message: privateFailureReason(statusContent.message || source?.message || ''),
+    session_url: safeImageUrl(source?.session_url || statusContent.session_url || row.session_url),
+    billing: billingSummary,
+    videos,
+    cover_url,
+    failure: safeVideoFailure(source?.failure || statusContent?.failure),
+  };
+}
+function sanitizeDanceSession(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const messages = [];
+  const rawMessages = Array.isArray(value.messages) ? value.messages.slice(-20) : Array.isArray(value.events) ? value.events.slice(-20) : [];
+  for (const entry of rawMessages) {
+    if (typeof entry === 'string') {
+      const clean = privateFailureReason(entry);
+      if (clean) messages.push({ role: 'agent', text: clean });
+    } else if (entry && typeof entry === 'object') {
+      const clean = privateFailureReason(entry.text || entry.content || entry.message || '');
+      if (clean) messages.push({ role: String(entry.role || entry.sender || 'agent').slice(0, 20), text: clean });
+    }
+  }
+  const media = [];
+  const collectMedia = (item) => {
+    const safe = safeImageUrl(typeof item === 'string' ? item : item?.url || item?.video_url || item?.image_url);
+    if (safe && !media.includes(safe)) media.push(safe);
+  };
+  if (Array.isArray(value.media_links)) value.media_links.slice(0, 10).forEach(collectMedia);
+  if (Array.isArray(value.artifacts)) value.artifacts.slice(0, 10).forEach(collectMedia);
+  return {
+    status: typeof value.status === 'string' ? value.status.slice(0, 40) : null,
+    stage: typeof value.stage === 'string' ? privateFailureReason(value.stage) : null,
+    auto_mode: typeof value.auto_mode === 'boolean' ? value.auto_mode : null,
+    latest_message: privateFailureReason(value.latest_message || value.message || ''),
+    session_url: safeImageUrl(value.session_url),
+    messages,
+    media,
+  };
+}
+async function danceSession(env, user, session, request) {
+  const input = await imageJson(request);
+  if (Object.keys(input || {}).some((k) => !['id', 'acknowledge'].includes(k))) throw fail('Permintaan tidak valid.', 400);
+  const row = await danceRowForTask(env, user, session, input);
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_video_session', arguments: { task_id: row.task_id } },
+  }, 'task', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('task', 'response');
+  return sanitizeDanceSession(content);
+}
+async function danceMessage(env, user, session, request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !['id', 'message', 'auto_mode'].includes(k))) {
+    throw fail('Permintaan pesan sesi tidak valid.', 400);
+  }
+  const msg = typeof input.message === 'string' ? input.message.trim() : '';
+  if (!msg || msg.length > 2000) throw fail('Isi pesan untuk sutradara dance (1–2000 karakter).', 400);
+  const row = await danceRowForTask(env, user, session, { id: input.id });
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: {
+      name: 'send_video_agent_message',
+      arguments: {
+        task_id: row.task_id,
+        message: msg,
+        ...(typeof input.auto_mode === 'boolean' ? { auto_mode: input.auto_mode } : {}),
+      },
+    },
+  }, 'task', headers, 262144);
+  const content = modelContent(result);
+  return {
+    reply: privateFailureReason(content?.reply || content?.message || ''),
+    session: content ? sanitizeDanceSession(content) : null,
+  };
+}
+
 async function dispatchFreebeat(request, url, env, user) {
   try {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
@@ -1132,6 +1515,30 @@ async function dispatchFreebeat(request, url, env, user) {
         return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
       }
       return response({ ok: true, quote: await videoDiagnostic(session.accessToken, 'video-quote', await parseVideoQuote(request), false, settings) });
+    }
+    if (['dance-schemas', 'dance-upload-audio', 'dance-quote', 'dance-prepare', 'dance-submit', 'dance-tests', 'dance-task', 'dance-session', 'dance-message'].includes(action)) {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      if (action === 'dance-tests' && request.method === 'GET') return response({ ok: true, tests: await danceTests(env, user, session) });
+      if (action === 'dance-schemas' && request.method === 'POST') return response({ ok: true, ...(await getToolSchemas(session.accessToken, DANCE_TOOLS, SAFE_DANCE_SCHEMA_ENUMS)) });
+      if (action === 'dance-upload-audio' && request.method === 'POST') return response({ ok: true, ...(await danceUploadAudio(session.accessToken, await imageJson(request))) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'dance-quote' && request.method === 'POST') {
+        const params = validateDanceInput(await imageJson(request));
+        const rawQuote = await danceQuote(session.accessToken, params, true);
+        const credits = quotedCredits(rawQuote);
+        return response({
+          ok: true,
+          parameters: params,
+          credits,
+          cost_mode: credits !== null ? 'max_credits' : 'accept_unknown_cost',
+          quote: safeQuote(rawQuote),
+        });
+      }
+      if (action === 'dance-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareDance(env, user, session, await imageJson(request))) });
+      if (action === 'dance-submit' && request.method === 'POST') return response({ ok: true, ...(await submitDance(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'dance-task' && request.method === 'POST') return response({ ok: true, task: await pollDance(env, user, session, request) });
+      if (action === 'dance-session' && request.method === 'POST') return response({ ok: true, session: await danceSession(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'dance-message' && request.method === 'POST') return response({ ok: true, ...(await danceMessage(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-prepare', 'video-submit', 'video-tests', 'video-task', 'video-private-failure'].includes(action)) {
       const session = await readSession(request, env, user.id);
