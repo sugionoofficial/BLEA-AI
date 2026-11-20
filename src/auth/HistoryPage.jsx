@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { History, RefreshCw } from 'lucide-react';
 import { fetchImageHistory, fetchImageStatus, fetchVideoHistory, fetchVideoStatus } from '../api/generation';
 import { DropXLayout } from '../dropx/DropXLayout';
+import { Pager, PerPageSelect, usePagedList } from '../components/Pagination';
 import './history.css';
 
 const labels = { queued: 'Dalam antrean', in_progress: 'Sedang diproses', processing: 'Sedang diproses', completed: 'Selesai', failed: 'Gagal', cancelled: 'Dibatalkan', expired: 'Kedaluwarsa', unknown: 'Hasil tidak pasti' };
@@ -16,6 +17,9 @@ export function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('all');
+  const [searchParams] = useSearchParams();
+  const highlight = searchParams.get('highlight');
+  const highlightTried = useRef(false);
 
   const load = useCallback(async (offset = 0) => {
     setLoading(true);
@@ -47,6 +51,41 @@ export function HistoryPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Datang dari tombol "Lihat hasil di History" di Riwayat Kredit: pastikan item
+  // sorotan ikut dimuat walau bukan di halaman pertama, lalu gulir ke & kedipkan.
+  useEffect(() => {
+    if (!highlight || highlightTried.current) return;
+    highlightTried.current = true;
+    setFilter('all');
+    // Sorotan selalu diangkat ke urutan teratas supaya terlihat tanpa ganti halaman.
+    setItems((previous) => {
+      const target = previous.find((item) => item.id === highlight);
+      return target ? [target, ...previous.filter((item) => item.id !== highlight)] : previous;
+    });
+    if (items.some((item) => item.id === highlight)) return undefined;
+    let active = true;
+    (async () => {
+      const video = await fetchVideoStatus(highlight);
+      if (active && video.ok && video.data?.generation) {
+        setItems((previous) => [{ ...video.data.generation, kind: 'video' }, ...previous.filter((item) => item.id !== highlight)]);
+        return;
+      }
+      const image = await fetchImageStatus(highlight);
+      if (active && image.ok && image.data?.generation) {
+        setItems((previous) => [{ ...image.data.generation, kind: 'image' }, ...previous.filter((item) => item.id !== highlight)]);
+      }
+    })();
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight]);
+
+  useEffect(() => {
+    if (!highlight) return undefined;
+    const target = document.getElementById(`history-item-${highlight}`);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return undefined;
+  }, [items, highlight]);
+
   useEffect(() => {
     const pendingVideos = items.filter((item) => item.kind === 'video' && isVideoPending(item)).slice(0, 4);
     const pendingImages = items.filter((item) => item.kind === 'image' && isImagePending(item) && item.canPoll).slice(0, 4);
@@ -67,7 +106,11 @@ export function HistoryPage() {
     return () => { active = false; clearInterval(timer); };
   }, [items]);
 
-  const visible = items.filter((item) => filter === 'all' || item.kind === filter);
+  const filtered = items.filter((item) => filter === 'all' || item.kind === filter);
+  const { perPage, setPerPage, page, setPage, pageCount, slice, total } = usePagedList(filtered);
+  const visible = slice;
+  // Tautan dari Riwayat Kredit selalu menunjukkan halaman pertama (item sorotan diangkat paling atas).
+  useEffect(() => { setPage(1); }, [highlight, setPage]);
 
   return (
     <DropXLayout title="History" description="Riwayat generasi milik Anda.">
@@ -78,6 +121,7 @@ export function HistoryPage() {
             <button type="button" className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>Semua</button>
             <button type="button" className={filter === 'video' ? 'is-active' : ''} onClick={() => setFilter('video')}>Video</button>
             <button type="button" className={filter === 'image' ? 'is-active' : ''} onClick={() => setFilter('image')}>Gambar</button>
+            <PerPageSelect id="history-per-page" value={perPage} onChange={setPerPage} />
             <button type="button" onClick={() => load()} disabled={loading}><RefreshCw size={15} /> Perbarui</button>
           </div>
         </div>
@@ -87,7 +131,7 @@ export function HistoryPage() {
         ) : (
           <div className="history-grid">
             {visible.map((item) => (
-              <article className="history-card" key={`${item.kind}-${item.id}`}>
+              <article className={`history-card${highlight === item.id ? ' is-highlighted' : ''}`} id={`history-item-${item.id}`} key={`${item.kind}-${item.id}`}>
                 {item.kind === 'image'
                   ? (item.status === 'completed' && item.image_url
                     ? <img src={item.image_url} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
@@ -108,6 +152,7 @@ export function HistoryPage() {
             ))}
           </div>
         )}
+        <Pager page={page} pageCount={pageCount} total={total} onPage={setPage} />
         {hasMore && filter !== 'image' && <button className="history-more" type="button" onClick={() => load(nextOffset)} disabled={loading}>{loading ? 'Memuat…' : 'Muat lebih banyak'}</button>}
       </div>
     </DropXLayout>

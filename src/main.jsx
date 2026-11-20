@@ -13,6 +13,7 @@ const ForgotPasswordPage = lazy(() => import('./auth/RecoveryPages').then((modul
 const ResetPasswordPage = lazy(() => import('./auth/RecoveryPages').then((module) => ({ default: module.ResetPasswordPage })));
 const CreditsPage = lazy(() => import('./auth/CreditsPage').then((module) => ({ default: module.CreditsPage })));
 const HistoryPage = lazy(() => import('./auth/HistoryPage').then((module) => ({ default: module.HistoryPage })));
+const CreditHistoryPage = lazy(() => import('./auth/CreditHistoryPage').then((module) => ({ default: module.CreditHistoryPage })));
 const GeneratePage = lazy(() => import('./auth/GeneratePage').then((module) => ({ default: module.GeneratePage })));
 const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => ({ default: module.FreebeatPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
@@ -48,6 +49,7 @@ function App() {
             <Route path="/generate" element={<GeneratePage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/credits" element={<CreditsPage />} />
+            <Route path="/credits/history" element={<CreditHistoryPage />} />
             <Route path="/projects" element={<Navigate to="/generate" replace />} />
             <Route path="/studio" element={<StudioErrorBoundary><AIStudio /></StudioErrorBoundary>} />
             <Route path="/settings" element={<AccountSettings />} />

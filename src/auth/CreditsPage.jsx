@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Coins, Pencil, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Coins, History, Pencil, Trash2 } from 'lucide-react';
 import { PaymentLogo } from './paymentLogos';
 import { reviewCreditOrder, setPurchasesEnabled } from '../api/purchases';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthProvider';
+import { Pager, PerPageSelect, usePagedList } from '../components/Pagination';
 import './credits.css';
 
 const labels = { awaiting_payment: 'Menunggu transfer', pending_review: 'Menunggu verifikasi', approved: 'Disetujui', rejected: 'Ditolak', cancelled: 'Dibatalkan' };
@@ -20,7 +22,7 @@ const PROVIDER_SUGGESTIONS = ['BCA', 'DANA', 'SeaBank', 'Gopay', 'OVO', 'ShopeeP
 export function CreditsPage() {
   const { user } = useAuth();
   const isAdmin = user?.app_metadata?.role === 'admin';
-  const [data, setData] = useState({ packages: [], prices: [], orders: [], ledger: [], reviews: [], profiles: [], wallet: null, settings: null });
+  const [data, setData] = useState({ packages: [], prices: [], orders: [], reviews: [], profiles: [], wallet: null, settings: null });
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,16 +49,15 @@ export function CreditsPage() {
         supabase.from('credit_model_prices').select('*').order('provider').order('model'),
         supabase.from('credit_payment_settings').select('*').eq('singleton', true).maybeSingle(),
         supabase.from('credit_wallets').select('balance').eq('user_id', user.id).maybeSingle(),
-        supabase.from('credit_orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(30),
-        supabase.from('credit_ledger').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50),
-        ...(isAdmin ? [supabase.from('credit_orders').select('*').eq('status', 'pending_review').order('submitted_at', { ascending: true }).limit(100), supabase.from('profiles').select('id,email').limit(1000)] : []),
+        supabase.from('credit_orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000),
+        ...(isAdmin ? [supabase.from('credit_orders').select('*').eq('status', 'pending_review').order('submitted_at', { ascending: true }).limit(1000), supabase.from('profiles').select('id,email').limit(1000)] : []),
       ]);
       const methodResult = await supabase.from('credit_payment_methods').select('*').order('sort_order', { ascending: true }).order('provider', { ascending: true });
       setMethods(methodResult.error ? [] : methodResult.data || []);
       const failed = results.find((result) => result.error);
       if (failed) throw failed.error;
-      const [packages, prices, settings, wallet, orders, ledger, reviews, profiles] = results;
-      setData({ packages: packages.data || [], prices: prices.data || [], settings: settings.data, wallet: wallet.data, orders: orders.data || [], ledger: ledger.data || [], reviews: reviews?.data || [], profiles: profiles?.data || [] });
+      const [packages, prices, settings, wallet, orders, reviews, profiles] = results;
+      setData({ packages: packages.data || [], prices: prices.data || [], settings: settings.data, wallet: wallet.data, orders: orders.data || [], reviews: reviews?.data || [], profiles: profiles?.data || [] });
       setInstructions(settings.data?.instructions || '');
       setLoaded(true);
     } catch (err) {
@@ -80,6 +81,11 @@ export function CreditsPage() {
 
   const openOrder = data.orders.find((order) => ['awaiting_payment', 'pending_review'].includes(order.status));
   const nameFor = (id) => data.profiles.find((profile) => profile.id === id)?.email || id;
+  const ordersPaged = usePagedList(data.orders);
+  const reviewsPaged = usePagedList(data.reviews);
+  const pageActions = (
+    <Link className="credits-history-btn" to="/credits/history"><History size={15} /> Riwayat kredit</Link>
+  );
 
   async function savePackage(event) {
     event.preventDefault();
@@ -194,13 +200,13 @@ export function CreditsPage() {
 
   const methodList = methods.filter((method) => method.active);
 
-  return <DropXLayout title="Kredit" description="Saldo, paket, dan riwayat pembelian kredit Anda.">
+  return <DropXLayout title="Kredit" description="Saldo, paket, dan pembelian kredit Anda." actions={pageActions}>
     <div className="credits-page">
       {!data.settings?.purchases_enabled && <div className="credits-notice"><strong>Pembelian kredit belum dibuka.</strong> Jangan melakukan transfer dulu. Kredit BLEA sudah bisa dipakai untuk generasi di halaman Generate; pembelian kredit akan diumumkan setelah diaktifkan.</div>}
       {error && <div role="alert" className="credits-error">{error}</div>}
       {notice && <div role="status" className="credits-notice">{notice}</div>}
       {loading ? <p role="status">Memuat kredit…</p> : !loaded ? <button type="button" onClick={load}>Coba lagi</button> : <>
-        <section className="credits-card credits-balance"><Coins size={24} /><div><span>Saldo kredit</span><strong>{number(data.wallet?.balance || 0)}</strong></div></section>
+        <section className="credits-card credits-balance"><Coins size={24} /><div><span>Saldo kredit</span><strong>{number(data.wallet?.balance || 0)}</strong></div><Link className="credits-history-btn credits-history-btn-inline" to="/credits/history">Riwayat kredit <ArrowRight size={14} /></Link></section>
         <section className="credits-card"><h2>Paket kredit</h2><p>Pesanan diverifikasi admin setelah transfer; kredit tidak bertambah secara otomatis.</p>
           {!data.packages.filter((item) => item.active).length ? <p>Belum ada paket tersedia.</p> : <div className="credits-grid">{data.packages.filter((item) => item.active).map((item) => <article className="credits-package" key={item.id}><h3>{item.name}</h3><strong>{number(item.credits)} kredit</strong><p>{rupiah(item.price_idr)}</p><button type="button" disabled={busy || !data.settings?.purchases_enabled || !!openOrder} onClick={() => run(() => supabase.rpc('create_credit_order', { p_package_id: item.id }), 'Pesanan dibuat. Ikuti petunjuk transfer pada pesanan Anda.')}>Pilih paket</button></article>)}</div>}
           {openOrder && <p>Anda memiliki satu pesanan aktif. Selesaikan atau batalkan pesanan tersebut sebelum membuat yang baru.</p>}
@@ -220,11 +226,11 @@ export function CreditsPage() {
               </article>
             ))}</div>}
         </section>
-        <section className="credits-card"><h2>Pesanan saya</h2>{!data.orders.length ? <p>Belum ada pesanan.</p> : data.orders.map((order) => <article className="credits-order" key={order.id}><div className="credits-row"><strong>{order.package_name} · {number(order.credits)} kredit</strong><span>{labels[order.status]}</span></div><p>{rupiah(order.price_idr)} · {date(order.created_at)}</p><small>ID pesanan: {order.id}</small>
+        <section className="credits-card"><div className="credits-card-head"><h2>Pesanan saya</h2>{data.orders.length > 0 && <PerPageSelect id="orders-per-page" value={ordersPaged.perPage} onChange={ordersPaged.setPerPage} />}</div>{!data.orders.length ? <p>Belum ada pesanan.</p> : ordersPaged.slice.map((order) => <article className="credits-order" key={order.id}><div className="credits-row"><strong>{order.package_name} · {number(order.credits)} kredit</strong><span>{labels[order.status]}</span></div><p>{rupiah(order.price_idr)} · {date(order.created_at)}</p><small>ID pesanan: {order.id}</small>
           {order.status === 'awaiting_payment' && <><p className="credits-instructions">{order.payment_instructions}</p><form className="credits-inline" onSubmit={(event) => { event.preventDefault(); run(() => supabase.rpc('submit_credit_payment', { p_order_id: order.id, p_reference: references[order.id] || '' }), 'Konfirmasi dikirim. Tunggu admin memeriksa transfer.'); }}><label>Nama pengirim / referensi transfer<input required maxLength={300} value={references[order.id] || ''} onChange={(event) => setReferences({ ...references, [order.id]: event.target.value })} /></label><button disabled={busy}>Saya sudah transfer</button><button type="button" className="credits-secondary" disabled={busy} onClick={() => run(() => supabase.rpc('cancel_credit_order', { p_order_id: order.id }), 'Pesanan dibatalkan.')}>Batalkan pesanan</button></form></>}
           {order.status === 'pending_review' && <p>Konfirmasi telah dikirim; admin perlu memeriksa transfer secara manual.</p>}
-        </article>)}</section>
-        <section className="credits-card"><h2>Riwayat kredit</h2>{!data.ledger.length ? <p>Belum ada transaksi kredit.</p> : data.ledger.map((entry) => <div className="credits-row credits-ledger" key={entry.id}><div>{entry.description}<small>{date(entry.created_at)}</small></div><strong>{entry.delta > 0 ? '+' : ''}{number(entry.delta)}</strong></div>)}</section>
+        </article>)}<Pager page={ordersPaged.page} pageCount={ordersPaged.pageCount} total={ordersPaged.total} onPage={ordersPaged.setPage} /></section>
+        <section className="credits-card credits-history-card"><div><h2>Riwayat kredit</h2><p>Total pembelian, total pemakaian, sisa saldo, dan setiap transaksi — termasuk tautan langsung ke hasil generasi di History.</p></div><Link className="credits-history-btn" to="/credits/history"><History size={15} /> Buka riwayat kredit <ArrowRight size={14} /></Link></section>
         {isAdmin && <>
           <section className="credits-card"><h2>Admin · Status pembelian</h2>
             <p>Mode pembelian saat ini: <strong className={data.settings?.purchases_enabled ? 'credits-state-on' : 'credits-state-off'}>{data.settings?.purchases_enabled ? 'AKTIF' : 'NONAKTIF'}</strong></p>
@@ -280,7 +286,8 @@ export function CreditsPage() {
               <label>Password aksi admin<input type="password" autoComplete="new-password" value={reviewPassword} onChange={(event) => setReviewPassword(event.target.value)} placeholder="Password yang Anda setel di Supabase" /></label>
               <p className="credits-hint">Kolom ini wajib diisi minimal 6 karakter sebelum Setujui/Tolak bisa diproses.</p>
             </div>
-            {!data.reviews.length ? <p>Tidak ada pesanan menunggu verifikasi.</p> : data.reviews.map((order) => <article className="credits-order" key={order.id}><strong>{nameFor(order.user_id)}</strong><p>{order.package_name} · {number(order.credits)} kredit · {rupiah(order.price_idr)}</p><p>Referensi: {order.payment_reference}</p><small>ID pesanan: {order.id} · {date(order.submitted_at)}</small><div className="credits-actions"><button disabled={busy} onClick={() => reviewOrder(order.id, true)}>Setujui</button><button className="credits-secondary" disabled={busy} onClick={() => reviewOrder(order.id, false)}>Tolak</button></div></article>)}</section>
+            {data.reviews.length > 1 && <PerPageSelect id="reviews-per-page" value={reviewsPaged.perPage} onChange={reviewsPaged.setPerPage} />}
+            {!data.reviews.length ? <p>Tidak ada pesanan menunggu verifikasi.</p> : reviewsPaged.slice.map((order) => <article className="credits-order" key={order.id}><strong>{nameFor(order.user_id)}</strong><p>{order.package_name} · {number(order.credits)} kredit · {rupiah(order.price_idr)}</p><p>Referensi: {order.payment_reference}</p><small>ID pesanan: {order.id} · {date(order.submitted_at)}</small><div className="credits-actions"><button disabled={busy} onClick={() => reviewOrder(order.id, true)}>Setujui</button><button className="credits-secondary" disabled={busy} onClick={() => reviewOrder(order.id, false)}>Tolak</button></div></article>)}<Pager page={reviewsPaged.page} pageCount={reviewsPaged.pageCount} total={reviewsPaged.total} onPage={reviewsPaged.setPage} /></section>
         </>}
       </>}
     </div>
