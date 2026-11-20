@@ -34,7 +34,7 @@ import {
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
-import { handlePurchaseToggle } from './lib/adminPurchases.js';
+import { handleOrderReview, handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
   consumerImageConfig,
   consumerImageGenerate,
@@ -2019,6 +2019,17 @@ async function handleApi(request, url, env) {
         return jsonResponse({ ok: true, ...(await handlePurchaseToggle(env, request, user)) });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Mengubah status pembelian gagal' }, err?.status || 500);
+      }
+    }
+
+    // ---- /admin/review-order: setujui/tolak pesanan kredit (wajib password) ----
+    if (path === 'admin/review-order' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      try {
+        return jsonResponse({ ok: true, ...(await handleOrderReview(env, request, user)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Verifikasi pesanan gagal' }, err?.status || 500);
       }
     }
 

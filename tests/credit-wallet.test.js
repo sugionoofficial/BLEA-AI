@@ -14,11 +14,17 @@ async function login(db, id, admin = false) {
   await db.exec('set role authenticated');
 }
 
+async function reviewPrivileged(db, adminId, orderId, approve) {
+  await db.exec('reset role');
+  const res = await db.query('select * from admin_review_credit_order($1, $2, $3)', [orderId, approve, adminId]);
+  return res.rows[0];
+}
+
 test('credit purchase permissions, snapshots and exactly-once manual approval', async () => {
   const db = new PGlite();
   try {
     await db.exec(`
-      create role anon; create role authenticated;
+      create role anon; create role authenticated; create role service_role;
       create schema auth;
       create table auth.users(id uuid primary key);
       insert into auth.users values ('${ADMIN}'), ('${USER}'), ('${OTHER}');
@@ -29,6 +35,7 @@ test('credit purchase permissions, snapshots and exactly-once manual approval', 
       create function public.is_admin() returns boolean language sql stable as $$ select coalesce((auth.jwt()->'app_metadata'->>'role') = 'admin', false) $$;
     `);
     await db.exec(await readFile(new URL('../supabase/migrations/20261118000003_create_credit_wallets.sql', import.meta.url), 'utf8'));
+    await db.exec(await readFile(new URL('../supabase/migrations/20261122000000_review_credit_order_password.sql', import.meta.url), 'utf8'));
     await login(db, ADMIN, true);
     await db.query('insert into credit_packages(id, name, credits, price_idr) values ($1, $2, $3, $4)', [PACKAGE, 'Starter', 100, 25000]);
     await db.query('insert into credit_payment_settings(instructions) values ($1)', ['Bank Contoh 123']);
@@ -39,7 +46,10 @@ test('credit purchase permissions, snapshots and exactly-once manual approval', 
     await assert.rejects(db.query("insert into credit_model_prices (provider,model,modality,credits) values ('freebeat','fake','video',1)"), /row-level security/i);
     await assert.rejects(db.query('insert into credit_wallets(user_id,balance) values ($1,999999)', [USER]), /permission denied/i);
     await assert.rejects(db.query('insert into credit_orders(user_id, package_name, credits, price_idr, payment_instructions) values ($1,$2,1,1,$3)', [USER, 'fake', 'fake']), /permission denied/i);
-    await assert.rejects(db.query('select review_credit_order($1,true)', [PACKAGE]), /Administrator only/);
+    // Jalur RPC lama ditutup: authenticated (walau admin) tidak bisa lagi memanggilnya.
+    await assert.rejects(db.query('select review_credit_order($1,true)', [PACKAGE]), /permission denied|not allowed/i);
+    // Fungsi privileged juga tidak bisa dipanggil authenticated secara langsung.
+    await assert.rejects(db.query('select admin_review_credit_order($1, true, $2)', [PACKAGE, ADMIN]), /permission denied|not allowed/i);
 
     // Simulate a future server-side release enabling sales after consumption is implemented.
     await db.exec('reset role; update credit_payment_settings set purchases_enabled=true');
@@ -53,15 +63,15 @@ test('credit purchase permissions, snapshots and exactly-once manual approval', 
     await assert.rejects(db.query('select submit_credit_payment($1,$2)', [order.id, 'stolen']), /tidak ditemukan/i);
     await login(db, ADMIN, true);
     await db.query('update credit_packages set credits=500, price_idr=1 where id=$1', [PACKAGE]);
-    await assert.rejects(db.query('select review_credit_order($1,true)', [order.id]), /tidak menunggu pemeriksaan/i);
+    await assert.rejects(reviewPrivileged(db, ADMIN, order.id, true), /tidak menunggu pemeriksaan/i);
     await login(db, USER);
     await assert.rejects(db.query('select submit_credit_payment($1,$2)', [order.id, '  ']), /Isi nama pengirim/i);
     await db.query('select submit_credit_payment($1,$2)', [order.id, 'Transfer Alice']);
     await assert.rejects(db.query('select cancel_credit_order($1)', [order.id]), /tidak dapat dibatalkan/i);
     await login(db, ADMIN, true);
-    await db.query('select review_credit_order($1,true)', [order.id]);
-    await db.query('select review_credit_order($1,true)', [order.id]);
-    await assert.rejects(db.query('select review_credit_order($1,false)', [order.id]), /tidak menunggu pemeriksaan/i);
+    await reviewPrivileged(db, ADMIN, order.id, true);
+    await reviewPrivileged(db, ADMIN, order.id, true);
+    await assert.rejects(reviewPrivileged(db, ADMIN, order.id, false), /tidak menunggu pemeriksaan/i);
     await login(db, USER);
     const wallet = (await db.query('select balance from credit_wallets')).rows[0];
     const ledger = (await db.query('select * from credit_ledger')).rows;
@@ -79,8 +89,8 @@ test('credit purchase permissions, snapshots and exactly-once manual approval', 
     const third = (await db.query('select * from create_credit_order($1)', [PACKAGE])).rows[0];
     await db.query('select submit_credit_payment($1,$2)', [third.id, 'Bob']);
     await login(db, ADMIN, true);
-    await db.query('select review_credit_order($1,false)', [third.id]);
-    await db.query('select review_credit_order($1,false)', [third.id]);
+    await reviewPrivileged(db, ADMIN, third.id, false);
+    await reviewPrivileged(db, ADMIN, third.id, false);
     await login(db, OTHER);
     assert.equal((await db.query('select * from credit_wallets')).rows.length, 0);
     assert.equal((await db.query('select * from credit_ledger')).rows.length, 0);
