@@ -56,11 +56,11 @@ export const PROVIDER_PRESETS = {
   },
   alibaba: {
     id: 'alibaba',
-    label: 'Alibaba Wan',
-    defaultBaseUrl: 'https://dashscope.aliyuncs.com',
-    baseUrl: 'https://dashscope.aliyuncs.com',
-    protocol: 'openai_video',
-    description: 'Alibaba Wan 2.6 / 2.7',
+    label: 'Alibaba Wan 3.0',
+    defaultBaseUrl: '',
+    baseUrl: '',
+    protocol: 'alibaba_video',
+    description: 'Alibaba Model Studio Wan 3.0 Video (async task API). Base URL wajib: https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com (ap-southeast-1 = Singapura)',
   },
   kling: {
     id: 'kling',
@@ -239,6 +239,22 @@ export const BUILTIN_VIDEO_MODELS = [
     description: 'Seedance 2.0 multimodal dengan dukungan gambar, referensi video & audio.',
   },
   {
+    id: 'wan3.0-video',
+    name: 'Alibaba: Wan 3.0 Video',
+    provider: 'alibaba',
+    vendor: 'Alibaba',
+    isFree: false,
+    priceLabel: 'Berbayar (per detik)',
+    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
+    resolutions: ['480p', '720p', '1080p'],
+    durations: [5, 10, 15, 20, 30],
+    supportsImage: true,
+    supportsVideo: true,
+    supportsAudioInput: true,
+    supportsAudioOutput: true,
+    description: 'Wan 3.0 Video (Model Studio ap-southeast-1): text-to-video, image-to-video (first/last frame), referensi video & audio. Base URL workspace wajib diisi di Admin Panel → API Key.',
+  },
+  {
     id: 'alibaba/wan-2.7',
     name: 'Alibaba: Wan 2.7 (OpenRouter)',
     provider: 'openrouter',
@@ -366,6 +382,25 @@ function resolveRawVideoProfile(modelId, provider = 'unorouter') {
       supportsAudioInput: isV2,
       supportsAudioOutput: true,
       description: 'ByteDance Seedance video generation.',
+    };
+  }
+  if (lower.includes('wan3')) {
+    return {
+      id,
+      name: id,
+      provider,
+      vendor: 'Alibaba',
+      isFree: false,
+      priceLabel: 'Berbayar',
+      aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
+      resolutions: ['480p', '720p', '1080p'],
+      durations: [5, 10, 15, 20, 30],
+      supportsImage: true,
+      supportsVideo: true,
+      supportsAudioInput: true,
+      supportsAudioOutput: true,
+      supportsAudio: true,
+      description: 'Alibaba Wan 3.0 video generation (Model Studio async task).',
     };
   }
   if (lower.includes('wan')) {
@@ -621,6 +656,11 @@ export function resolveProviderApiBase(provider, baseUrl) {
     if (base.endsWith('/api/v1') || base.endsWith('/v1')) return base;
     if (base.endsWith('/api')) return `${base}/v1`;
     return `${base}/api/v1`;
+  }
+  if (provider === 'alibaba') {
+    // Model Studio memakai prefix {WorkspaceId}.<region>.maas.aliyuncs.com
+    // tanpa akhiran /v1; endpoint dibangun worker dari base apa adanya.
+    return base.replace(/\/api\/v1$/i, '').replace(/\/v1$/i, '');
   }
   if (/\/v1(?:beta)?$/i.test(base)) return base;
   return `${base}/v1`;

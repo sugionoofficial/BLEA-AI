@@ -1361,6 +1361,40 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
     };
   }
 
+  if (provider === 'alibaba') {
+    // Alibaba Model Studio (Wan 3.0): async task API.
+    // Submit -> X-DashScope-Async -> output.task_id; poll GET {base}/api/v1/tasks/{task_id}.
+    const media = [];
+    if (imageUrl && imageLastUrl) {
+      media.push({ type: 'first_frame', url: imageUrl }, { type: 'last_frame', url: imageLastUrl });
+    } else if (imageUrl) {
+      media.push({ type: 'first_frame', url: imageUrl });
+    }
+    if (videoUrl) media.push({ type: 'reference_video', url: videoUrl });
+    if (audioUrl) media.push({ type: 'reference_audio', url: audioUrl });
+    const resMap = { '480p': '480P', '720p': '720P', '1080p': '1080P', '4k': '1080P', '4K': '1080P' };
+    const wanRatio = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'].includes(aspectRatio) ? aspectRatio : 'adaptive';
+    const body = {
+      model,
+      input: {
+        prompt: prompt || 'Generate a smooth, natural video.',
+        ...(media.length ? { media } : {}),
+      },
+      parameters: {
+        resolution: resMap[String(resolution).toLowerCase()] || '720P',
+        ratio: wanRatio,
+        duration: Math.max(2, Math.min(30, duration)),
+        prompt_extend: true,
+      },
+    };
+    return {
+      submitUrl: `${apiBase}/api/v1/services/aigc/video-generation/video-synthesis`,
+      headers: { ...headers, 'X-DashScope-Async': 'enable' },
+      body,
+      pollBaseUrl: `${apiBase}/api/v1/tasks`,
+    };
+  }
+
   if (provider === 'xai') {
     const isEdit = Boolean(videoUrl && !imageUrl);
     const body = {
@@ -1421,7 +1455,9 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
 
 function extractVideoJobId(data) {
   return String(
-    data?.id
+    data?.output?.task_id
+    || data?.output?.taskId
+    || data?.id
     || data?.task_id
     || data?.request_id
     || data?.data?.id
@@ -1438,6 +1474,8 @@ function extractUpstreamVideoUrl(data, apiBase, jobId) {
     || data?.url
     || data?.video_url
     || data?.output?.video_url
+    || data?.output?.video_urls?.[0]
+    || data?.output?.results?.[0]?.video_url
     || data?.data?.video_url
     || data?.data?.url
     || (Array.isArray(data?.data) && data.data[0]?.url)
@@ -1453,6 +1491,8 @@ function extractUpstreamError(data) {
   if (typeof data.error === 'string') return data.error;
   if (data.error?.message) return String(data.error.message);
   if (data.fail_reason) return String(data.fail_reason);
+  if (data.output?.message) return String(data.output.message);
+  if (data.code && data.message && !data.output?.task_status) return `${data.code}: ${data.message}`;
   if (data.message && !data.id && !data.task_id) return String(data.message);
   return '';
 }
@@ -2297,7 +2337,7 @@ async function handleApi(request, url, env) {
       }
 
       const externalJobId = extractVideoJobId(upstreamData);
-      const status = normalizeVideoStatus(upstreamData?.status || upstreamData?.data?.status || 'queued');
+      const status = normalizeVideoStatus(upstreamData?.status || upstreamData?.data?.status || upstreamData?.output?.task_status || 'queued');
       const progress = extractProgressPercent(upstreamData, status);
       const pollingUrl = String(
         upstreamData?.polling_url
@@ -2393,7 +2433,7 @@ async function handleApi(request, url, env) {
       }
 
       const pollData = await pollRes.json().catch(() => ({}));
-      const nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || row.status);
+      const nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || pollData?.output?.task_status || row.status);
       const nextProgress = extractProgressPercent(pollData, nextStatus);
       const upstreamUrl = nextStatus === 'completed'
         ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
