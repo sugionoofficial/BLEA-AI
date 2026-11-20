@@ -1,10 +1,11 @@
-// Kontrol admin atas pengguna: tambah/kurangi saldo, suspend, banned, hapus akun.
-// Setiap aksi wajib password yang hash-nya disimpan admin di Supabase
-// (admin_action_settings). Hash tidak pernah dikirim ke browser; verifikasi
-// dilakukan fungsi SECURITY DEFINER yang hanya bisa dipanggil service_role.
-// Semua percobaan — berhasil maupun gagal — dicatat di admin_user_actions.
+// Kontrol admin atas pengguna: tambah/kurangi saldo, suspend, banned, hapus
+// akun, dan ubah peran (user <-> admin). Setiap aksi wajib password yang
+// hash-nya disimpan admin di Supabase (admin_action_settings). Hash tidak
+// pernah dikirim ke browser; verifikasi dilakukan fungsi SECURITY DEFINER yang
+// hanya bisa dipanggil service_role. Semua percobaan — berhasil maupun gagal —
+// dicatat di admin_user_actions.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ACTIONS = new Set(['credits', 'status', 'delete']);
+const ACTIONS = new Set(['credits', 'status', 'delete', 'role']);
 const STATUSES = new Set(['active', 'suspended', 'banned']);
 
 function fail(message, status = 400) { return Object.assign(new Error(message), { status }); }
@@ -69,6 +70,22 @@ async function readJson(request) {
   return input;
 }
 
+// Daftar seluruh akun auth (dipakai untuk kolom PEROAN dan untuk mencegah
+// pencabutan admin terakhir). Di-cache per pemanggilan request, bukan global.
+async function listAuthUsers(env) {
+  const users = [];
+  const perPage = 200;
+  for (let page = 1; page <= 25; page += 1) {
+    const data = await sbJson(env, `/auth/v1/admin/users?page=${page}&per_page=${perPage}`);
+    const chunk = Array.isArray(data?.users) ? data.users : [];
+    users.push(...chunk);
+    const total = Number(data?.total ?? NaN);
+    if (chunk.length < perPage) break;
+    if (Number.isFinite(total) && users.length >= total) break;
+  }
+  return users;
+}
+
 async function targetProfile(env, userId) {
   const rows = await sbJson(env, `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,status&limit=1`);
   const row = Array.isArray(rows) ? rows[0] : null;
@@ -82,11 +99,15 @@ export async function handleAdminUserAction(env, request, user) {
   const input = await readJson(request);
   const action = String(input.action || '');
   if (!ACTIONS.has(action)) throw fail('Aksi tidak dikenal.', 400);
-  if (Object.keys(input).some((key) => !['action', 'user_id', 'password', 'delta', 'description', 'status', 'reason', 'confirm_email'].includes(key))) throw fail('Permintaan memuat field yang tidak diizinkan.', 400);
+  if (Object.keys(input).some((key) => !['action', 'user_id', 'password', 'delta', 'description', 'status', 'reason', 'confirm_email', 'role'].includes(key))) throw fail('Permintaan memuat field yang tidak diizinkan.', 400);
 
   const targetId = String(input.user_id || '');
   if (!UUID_RE.test(targetId)) throw fail('ID pengguna tidak valid.', 400);
-  if (targetId === user.id) throw fail('Anda tidak dapat mengubah akun Anda sendiri melalui aksi ini.', 409);
+  // Admin boleh menyesuaikan saldo akunnya SENDIRI (tetap wajib password),
+  // tetapi tidak boleh mengubah status, peran, atau menghapus akun sendiri —
+  // perubahan itu wajib dilakukan admin lain supaya tidak terjadi penguncian
+  // tidak sengaja.
+  if (targetId === user.id && action !== 'credits') throw fail('Anda tidak dapat mengubah peran/status/penghapusan akun Anda sendiri dari sini; hanya saldo kredit yang boleh Anda sesuaikan sendiri. Minta admin lain untuk perubahan lainnya.', 409);
 
   const password = typeof input.password === 'string' ? input.password : '';
   if (password.length < 6 || password.length > 200) throw fail('Masukkan password aksi admin (minimal 6 karakter).', 400);
@@ -125,6 +146,37 @@ export async function handleAdminUserAction(env, request, user) {
     return { action, user_id: targetId, status, reason };
   }
 
+  if (action === 'role') {
+    const role = String(input.role || '');
+    if (role !== 'admin' && role !== 'user') throw fail('Peran harus admin atau user.', 400);
+    const authUsers = await listAuthUsers(env);
+    const target = authUsers.find((item) => item?.id === targetId);
+    if (!target) throw fail('Akun pengguna tidak ditemukan.', 404);
+    const previousRole = target?.app_metadata?.role === 'admin' ? 'admin' : 'user';
+    if (role === 'user' && previousRole === 'admin') {
+      const adminCount = authUsers.filter((item) => item?.app_metadata?.role === 'admin').length;
+      if (adminCount <= 1) {
+        await audit(env, user.id, targetId, 'role_ditolak_admin_terakhir', false, {});
+        throw fail('Tidak dapat mencabut peran admin terakhir. Promosikan admin lain terlebih dahulu.', 409);
+      }
+    }
+    if (role === previousRole) {
+      return { action, user_id: targetId, role, previous: previousRole, unchanged: true };
+    }
+    const existingMeta = target.app_metadata && typeof target.app_metadata === 'object' ? target.app_metadata : {};
+    const res = await sbFetch(env, `/auth/v1/admin/users/${encodeURIComponent(targetId)}`, {
+      method: 'PUT',
+      body: { app_metadata: { ...existingMeta, role } },
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      await audit(env, user.id, targetId, 'role', false, { status: res.status });
+      throw fail(`Supabase menolak perubahan peran (${res.status}). ${detail.slice(0, 160)}`, 502);
+    }
+    await audit(env, user.id, targetId, 'role', true, { role, previous: previousRole });
+    return { action, user_id: targetId, role, previous: previousRole };
+  }
+
   // action === 'delete'
   const confirmEmail = String(input.confirm_email || '').trim().toLowerCase();
   if (!confirmEmail || confirmEmail !== String(profile.email || '').trim().toLowerCase()) {
@@ -139,4 +191,13 @@ export async function handleAdminUserAction(env, request, user) {
   }
   await audit(env, user.id, targetId, 'delete', res.ok, { email: profile.email || null });
   return { action, user_id: targetId, deleted: res.ok, already_absent: res.status === 404 };
+}
+
+// Daftar ID akun yang menyandang role admin (untuk kolom PEROAN di /admin).
+// Hanya baca, khusus admin; tidak membocorkan metadata lain.
+export async function handleAdminUserRoles(env, request, user) {
+  if (!user) throw fail('Login diperlukan.', 401);
+  if (user.app_metadata?.role !== 'admin') throw fail('Hanya admin yang dapat melihat peran ini.', 403);
+  const users = await listAuthUsers(env);
+  return { admin_ids: users.filter((item) => item?.app_metadata?.role === 'admin').map((item) => item.id) };
 }
