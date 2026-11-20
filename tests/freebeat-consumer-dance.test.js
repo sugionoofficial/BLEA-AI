@@ -455,9 +455,9 @@ test('GeneratePage UI: mode Freebeat Dance Video menampilkan upload audio/URL la
         ok: true,
         models: [{
           id: 'generate_dance_video',
-          name: 'Freebeat AI Dance Video (720p)',
+          name: 'Freebeat Music-to-Dance Video (720p)',
           provider: 'freebeat',
-          providerLabel: 'Freebeat AI Dance',
+          providerLabel: 'Freebeat Dance (Music-to-Dance)',
           providerConfigured: true,
           activeInAdmin: true,
           online: true,
@@ -532,7 +532,8 @@ test('GeneratePage UI: mode Freebeat Dance Video menampilkan upload audio/URL la
 
     const html = dom.window.document.body.textContent || '';
     assert.match(html, /Lagu \/ Audio \(Wajib\)/);
-    assert.match(html, /Foto Penari \(0\/5\)/);
+    assert.match(html, /Foto Karakter \/ Penari \(0\/5\)/);
+    assert.match(html, /Music-to-Dance \(bukan Motion Transfer video\)/);
     assert.doesNotMatch(html, /First Frame/);
     assert.doesNotMatch(html, /Upload Video/);
 

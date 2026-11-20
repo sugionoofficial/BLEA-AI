@@ -416,7 +416,7 @@ export function GeneratePage() {
     if (isFreebeatDance && !effectiveAudioUrl) {
       setBanner({
         type: 'error',
-        text: 'Freebeat Dance Video wajib menyertakan file audio/lagu (MP3/WAV/M4A) atau tautan musik HTTPS publik.',
+        text: 'Freebeat Music-to-Dance Video wajib menyertakan file audio/lagu (MP3/WAV/M4A) atau tautan musik HTTPS publik.',
       });
       return;
     }
@@ -755,8 +755,8 @@ export function GeneratePage() {
               return (
             <div className="generate-field">
               <div className="generate-label-row">
-                <span className="generate-label">{isFreebeatDance ? 'Lagu (Wajib) & Foto Penari (Opsional)' : isMediaRequired ? 'Media Sumber / Referensi' : 'Media Referensi (Opsional)'}</span>
-                <span className="generate-hint">Gambar ≤20MB · Video ≤100MB · Audio ≤25MB</span>
+                <span className="generate-label">{isFreebeatDance ? 'Music-to-Dance: Lagu (Wajib) & Foto Karakter (Opsional)' : isMediaRequired ? 'Media Sumber / Referensi' : 'Media Referensi (Opsional)'}</span>
+                <span className="generate-hint">{isFreebeatDance ? 'Audio ≤25MB · Foto penari JPG/PNG ≤10MB' : 'Gambar ≤20MB · Video ≤100MB · Audio ≤25MB'}</span>
               </div>
               <p className="generate-hint">File referensi diunggah ke penyimpanan publik dan dapat diakses melalui tautan; unggah hanya materi yang boleh dibagikan dengan provider.</p>
 
@@ -981,7 +981,7 @@ export function GeneratePage() {
                 <div className="generate-ref-sections">
                   <p className="generate-hint" style={{ marginTop: 4 }}>
                     {isFreebeatDance
-                      ? `Opsional 0–${maxRefImages} foto penari. Freebeat Dance Video berjalan di resolusi 720p (durasi lagu ~15 detik awal, proses sutradara AI umumnya 15–60 menit).`
+                      ? `Mode Music-to-Dance (bukan Motion Transfer video): koreografi AI otomatis dibuat dari lagu Anda + opsional 0–${maxRefImages} foto karakter/penari. Resolusi 720p (~15 detik awal, proses 15–60 menit).`
                       : aliMediaMode === 'reference_images'
                       ? `Wajib 1–${maxRefImages} foto referensi (rujuk di prompt: [Image 1], [Image 2], ...).`
                       : aliMediaMode === 'reference_urls'
@@ -996,7 +996,7 @@ export function GeneratePage() {
                   {maxRefImages > 0 && (
                   <div className="generate-ref-row">
                     <div className="generate-ref-row-head">
-                      <span className="generate-upload-title">{isFreebeatDance ? `Foto Penari (${refImages.length}/${maxRefImages})` : `Foto Referensi (${refImages.length}/${maxRefImages})`}</span>
+                      <span className="generate-upload-title">{isFreebeatDance ? `Foto Karakter / Penari (${refImages.length}/${maxRefImages})` : `Foto Referensi (${refImages.length}/${maxRefImages})`}</span>
                       <input ref={refImageInputRef} type="file" multiple accept="image/jpeg,image/png,image/webp,image/bmp" aria-label="Foto Referensi" className="generate-upload-input" onChange={(e) => { handleUploadReference('image', e.target.files); e.target.value = ''; }} />
                       <button type="button" className="generate-clear-btn" disabled={!selectedModel || Boolean(uploadingSlot) || refImages.length >= maxRefImages} onClick={() => refImageInputRef.current?.click()}>
                         {uploadingSlot === 'ref-image' ? 'Mengunggah...' : '+ Tambah'}
