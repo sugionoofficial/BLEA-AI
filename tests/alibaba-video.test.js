@@ -160,3 +160,51 @@ test('Wan 3.0: API key hilang ditolak dengan pesan yang jelas', async () => {
     mock.restore();
   }
 });
+
+test('/api/catalog provider alibaba menyajikan Wan bawaan tanpa memanggil upstream', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('upstream tidak boleh dipanggil untuk alibaba'); };
+  try {
+    const res = await worker.fetch(apiRequest('/api/catalog', { body: { provider: 'alibaba' } }), createEnv());
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const wan = (data.models || []).find((m) => m.id === 'wan3.0-video');
+    assert.ok(wan, 'wan3.0-video harus ada di katalog alibaba');
+    assert.equal(wan.category, 'Video');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('/api/verify alibaba: 401/403 = key ditolak; status lain = key diterima (body kosong)', async () => {
+  const realFetch = globalThis.fetch;
+  const mockVerify = (status) => {
+    globalThis.fetch = async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init?.method || 'GET').toUpperCase();
+      if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+        return Response.json([{ provider: 'alibaba', api_key: 'sk-wan-test', base_url: BASE, label: 'Wan' }]);
+      }
+      if (url === `${BASE}/api/v1/services/aigc/video-generation/video-synthesis` && method === 'POST') {
+        return new Response(JSON.stringify({ code: 'InvalidParameter', message: 'model is required' }), { status, headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    };
+  };
+  try {
+    mockVerify(400);
+    let res = await worker.fetch(apiRequest('/api/verify', { body: { provider: 'alibaba' } }), createEnv());
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).valid, true);
+
+    mockVerify(403);
+    res = await worker.fetch(apiRequest('/api/verify', { body: { provider: 'alibaba' } }), createEnv());
+    assert.equal((await res.json()).valid, false);
+
+    mockVerify(401);
+    res = await worker.fetch(apiRequest('/api/verify', { body: { provider: 'alibaba' } }), createEnv());
+    assert.equal((await res.json()).valid, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

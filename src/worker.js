@@ -1722,6 +1722,37 @@ async function handleApi(request, url, env) {
       }
 
       const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
+      if (provider === 'alibaba') {
+        if (!apiBase || !isValidHttpBaseUrl(apiBase)) {
+          return jsonResponse({
+            ok: false,
+            valid: false,
+            status: 400,
+            error: 'Base URL Alibaba wajib diisi: https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com',
+          });
+        }
+        const alibabaKey = String(body.apiKey ?? keyRow?.api_key ?? '').trim();
+        if (!alibabaKey) {
+          return jsonResponse({ ok: false, valid: false, status: 400, error: 'Masukkan API key Alibaba terlebih dahulu.' });
+        }
+        try {
+          // Sengaja mengirim body kosong: request akan gagal validasi SEBELUM ada
+          // tugas/biaya, tapi autentikasi key tetap dievaluasi server Alibaba.
+          const alibabaRes = await fetch(`${apiBase}/api/v1/services/aigc/video-generation/video-synthesis`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${alibabaKey}`, 'X-DashScope-Async': 'enable' },
+            body: '{}',
+            signal: AbortSignal.timeout(20_000),
+          });
+          const alibabaText = await alibabaRes.text().catch(() => '');
+          if (alibabaRes.status === 401 || alibabaRes.status === 403) {
+            return jsonResponse({ ok: false, valid: false, status: alibabaRes.status, error: alibabaText.slice(0, 200) });
+          }
+          return jsonResponse({ ok: true, valid: true, verifiedVia: 'alibaba_auth', modelsCount: 1 });
+        } catch (e) {
+          return jsonResponse({ ok: false, valid: false, error: String(e) });
+        }
+      }
       if (!apiBase || !isValidHttpBaseUrl(apiBase)) {
         return jsonResponse({
           ok: false,
@@ -1854,6 +1885,23 @@ async function handleApi(request, url, env) {
             provider: 'openrouter',
             category: 'Video',
             tags: ['Video', m.vendor],
+            description: m.description,
+            isFree: m.isFree,
+            online: true,
+            priceLabel: m.priceLabel,
+          })),
+        });
+      }
+
+      if (provider === 'alibaba') {
+        // Model Studio tidak menyediakan GET /models. Sajikan katalog bawaan
+        // Wan; admin menyalakan model yang ingin dipakai lewat panel.
+        return jsonResponse({
+          models: BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'alibaba').map((m) => ({
+            id: m.id,
+            provider: 'alibaba',
+            category: 'Video',
+            tags: ['Video', 'Alibaba'],
             description: m.description,
             isFree: m.isFree,
             online: true,
