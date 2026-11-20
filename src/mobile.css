@@ -1,0 +1,231 @@
+/* ==========================================================================
+   Mobile hardening — semua halaman (dipuat paling akhir)
+   1) Nonaktifkan zoom viewport di mobile (bersama <meta user-scalable=no>)
+   2) Cegah overflow horizontal & media keluar layar
+   3) Shell DropX rapat di layar kecil
+   4) Target sentuh nyaman & input 16px (tanpa zoom saat fokus)
+   ========================================================================== */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+[role="button"],
+[role="tab"] {
+  touch-action: manipulation;
+}
+
+img,
+video,
+canvas,
+iframe {
+  max-width: 100%;
+}
+
+/* ---------- Shell DropX (semua halaman app) ---------- */
+@media (max-width: 640px) {
+  .dropx-header {
+    height: 58px;
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .dropx-header-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .dropx-search-wrap {
+    display: none;
+  }
+
+  .dropx-header-actions {
+    gap: 6px;
+  }
+
+  .dropx-credit-chip {
+    padding: 5px 8px 5px 5px;
+    gap: 6px;
+  }
+
+  .dropx-credit-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .dropx-credit-label {
+    display: none;
+  }
+
+  .dropx-content {
+    padding: 14px 12px;
+  }
+
+  .dropx-page-title h1 {
+    font-size: 20px;
+  }
+
+  .dropx-breadcrumb {
+    font-size: 11px;
+  }
+
+  .dropx-page-actions {
+    width: 100%;
+  }
+
+  .dropx-page-actions > * {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .dropx-header-menu,
+  .dropx-profile-menu {
+    min-width: 200px;
+    max-width: calc(100vw - 20px);
+  }
+
+  .dropx-search-results {
+    position: fixed;
+    top: 64px;
+    left: 8px;
+    right: 8px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+
+  .dropx-sidebar {
+    width: min(84vw, 320px);
+  }
+
+  /* Input 16px mencegah auto-zoom saat fokus di iOS */
+  .dropx-shell input,
+  .dropx-shell select,
+  .dropx-shell textarea {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 400px) {
+  .dropx-credit-chip b {
+    font-size: 12px;
+  }
+
+  .dropx-header-actions {
+    gap: 4px;
+  }
+}
+
+/* ---------- Halaman publik (landing, login, signup) ---------- */
+@media (max-width: 640px) {
+  .header,
+  .auth-header {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .landing-page,
+  .auth-page,
+  .landing-page main {
+    overflow-x: hidden;
+  }
+}
+
+/* ---------- Dashboard contoh (pengguna) ---------- */
+@media (max-width: 640px) {
+  .showcase {
+    padding-bottom: 24px;
+    gap: 14px;
+  }
+
+  .showcase-prompt-wrap {
+    max-height: none;
+  }
+
+  .showcase-form-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .showcase-form-actions > * {
+    justify-content: center;
+  }
+}
+
+/* ---------- Generate & riwayat ---------- */
+@media (max-width: 640px) {
+  .generate-card {
+    padding: 16px !important;
+  }
+
+  .generate-card-head {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 8px !important;
+  }
+
+  .generate-submit-btn {
+    width: 100%;
+  }
+
+  .generate-textarea {
+    font-size: 16px;
+  }
+
+  .history-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ---------- Freebeat & admin ---------- */
+@media (max-width: 640px) {
+  .freebeat-actions,
+  .tempmail-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .freebeat-actions > button,
+  .tempmail-actions > button,
+  .tempmail-actions > .tempmail-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .admin-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-subnav {
+    max-height: 46vh;
+    overflow-y: auto;
+  }
+}
+
+/* ---------- Kredit & setting ---------- */
+@media (max-width: 640px) {
+  .credits-actions,
+  .credits-inline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .credits-actions > *,
+  .credits-inline > * {
+    width: 100%;
+  }
+
+  .credits-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

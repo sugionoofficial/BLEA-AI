@@ -1179,53 +1179,20 @@ export async function handleFreebeat(request, url, env, user) {
 }
 
 // ===================== Generasi gambar konsumen =====================
-// Semua user dapat membuat gambar lewat provider Freebeat; biayanya dipotong
-// dari kredit BLEA (credit_model_prices), sedangkan kredit Freebeat keluar dari
-// saldo akun admin yang menghubungkan provider. Sesi admin disimpan tersegel di
+// Semua user dapat membuat gambar lewat provider Freebeat HANYA dengan
+// text-to-image (model 122 = "Nano Banana 2 Lite", terbukti sukses via MCP).
+// Mode edit foto (model 202) DIHAPUS: selalu gagal di provider dan kredit
+// pengguna sempat terpotong sebelum di-refund. Biayanya dipotong dari kredit
+// BLEA (credit_model_prices), sedangkan kredit Freebeat keluar dari saldo akun
+// admin yang menghubungkan provider. Sesi admin disimpan tersegel di
 // freebeat_provider_sessions agar dapat dipakai request user lain.
-// 122 = "Nano Banana 2 Lite" (10 kredit Freebeat, terbukti sukses via MCP).
-// Model 202 "Nano Banana 2.1" sementara tidak dipakai: quote_generation
-// menjawab "unavailable" untuk text-to-image karena hanya punya satu
-// generation_type (6) yang tampaknya memerlukan input tambahan.
 const CONSUMER_IMAGE_MODEL_DEFAULT = 122;
-const CONSUMER_IMAGE_EDIT_MODEL_DEFAULT = 202;
-// 202 "Nano Banana 2.1" hanya punya mode edit (web mengirim generationType 8
-// dengan images wajib), jadi quote text-to-image-nya selalu "unavailable".
-function consumerImageEditModel(env) {
-  const raw = String(env?.FREEBEAT_IMAGE_EDIT_MODEL ?? CONSUMER_IMAGE_EDIT_MODEL_DEFAULT).trim();
-  return /^\d{1,6}$/.test(raw) ? Number(raw) : CONSUMER_IMAGE_EDIT_MODEL_DEFAULT;
-}
-// TERBUKTI lewat probe: quote model 202 (edit_image) hanya dapat dihitung bila
-// aspect_ratio dan resolution disertakan. Tanpa keduanya provider menjawab
-// status "unavailable"; dengan keduanya "quoted" 18 kredit (9:16, 1K).
+// Default ID model untuk probe quote admin (diagnostik edit_image di halaman
+// admin, BUKAN bagian dari generasi pengguna).
+const QUOTE_PROBE_EDIT_MODEL_DEFAULT = 202;
+// Daftar rasio yang diketahui dapat dihargai provider untuk tool edit_image;
+// dipakai probe quote admin (get_model_help), bukan oleh pengguna.
 const EDIT_ASPECT_RATIOS = ['9:16', '16:9', '1:1', '3:4', '4:3', '2:3', '3:2'];
-const EDIT_ASPECT_DEFAULT = '9:16';
-const EDIT_RESOLUTIONS = ['1K', '2K'];
-// Resolusi yang dibuka admin ke user. Biayanya berbeda (1K = 18, 2K = 27 kredit
-// Freebeat), jadi tiap resolusi punya baris harga sendiri di credit_model_prices.
-function consumerImageEditResolutions(env) {
-  const raw = String(env?.FREEBEAT_IMAGE_EDIT_RESOLUTIONS ?? '1K,2K').toUpperCase();
-  const wanted = raw.split(',').map((part) => part.trim());
-  const list = EDIT_RESOLUTIONS.filter((item) => wanted.includes(item));
-  return list.length ? list : ['1K'];
-}
-function consumerImageEditResolution(env) {
-  const list = consumerImageEditResolutions(env);
-  const raw = String(env?.FREEBEAT_IMAGE_EDIT_RESOLUTION ?? '').trim().toUpperCase();
-  return list.includes(raw) ? raw : list[0];
-}
-// Help model 202 di katalog image_edit menyatakan generation_type 8 — angka yang
-// sama dengan payload web (generationType: 8). Skema tool edit_image tidak
-// mencantumkan parameter ini, jadi pengirimannya dikendalikan env dan dapat
-// diuji lewat probe tanpa mengubah kode.
-function consumerImageEditGenerationType(env) {
-  const raw = String(env?.FREEBEAT_IMAGE_EDIT_GENERATION_TYPE ?? '').trim();
-  return /^\d{1,3}$/.test(raw) ? Number(raw) : null;
-}
-// Modality harga per resolusi: image_edit untuk 1K, image_edit_2k untuk 2K.
-function editModality(resolution) {
-  return resolution === '1K' ? 'image_edit' : `image_edit_${String(resolution).toLowerCase()}`;
-}
 function consumerImageUrl(value) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > 4096) return null;
   let url;
@@ -1250,7 +1217,7 @@ const QUOTE_PROBE_PROMPT_DEFAULT = 'Ubah latar belakang foto menjadi biru polos.
 async function imageQuoteProbe(accessToken, env, request) {
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'image_url', 'prompt'].includes(key))) throw fail('Permintaan probe tidak valid.', 400);
-  const modelId = Number.isSafeInteger(input.model_id) && input.model_id > 0 && input.model_id < 1000000 ? input.model_id : consumerImageEditModel(env);
+  const modelId = Number.isSafeInteger(input.model_id) && input.model_id > 0 && input.model_id < 1000000 ? input.model_id : QUOTE_PROBE_EDIT_MODEL_DEFAULT;
   const control = consumerImageModel(env);
   const prompt = typeof input.prompt === 'string' && input.prompt.trim() ? input.prompt.trim().slice(0, 500) : QUOTE_PROBE_PROMPT_DEFAULT;
   const imageUrl = consumerImageUrl(typeof input.image_url === 'string' ? input.image_url : '');
@@ -1291,14 +1258,6 @@ async function imageQuoteProbe(accessToken, env, request) {
 function consumerImageModel(env) {
   const raw = String(env?.FREEBEAT_IMAGE_MODEL ?? CONSUMER_IMAGE_MODEL_DEFAULT).trim();
   return /^\d{1,6}$/.test(raw) ? Number(raw) : CONSUMER_IMAGE_MODEL_DEFAULT;
-}
-// Fallback bila provider menolak memberi quote untuk edit_image: kirim dengan
-// max_credits = harga jual BLEA. Provider menegakkan plafon ini sendiri, jadi
-// biaya riil tidak pernah melebihi yang dibayar user; bila biaya sebenarnya
-// lebih tinggi, provider menolak dan kredit dikembalikan otomatis.
-function consumerEditCapped(env) {
-  const raw = String(env?.FREEBEAT_IMAGE_EDIT_CAPPED ?? '1').trim().toLowerCase();
-  return !['0', 'false', 'no', 'off'].includes(raw);
 }
 // Plafon kredit Freebeat per gambar: melindungi saldo admin dari harga tak terduga.
 function consumerProviderCeiling(env) {
@@ -1385,16 +1344,10 @@ async function consumerImagePrice(env, modelId, modality = 'image') {
 }
 export async function consumerImageConfig(env) {
   const modelId = consumerImageModel(env);
-  const editModelId = consumerImageEditModel(env);
   const credits = await consumerImagePrice(env, modelId);
-  const editResolutions = consumerImageEditResolutions(env);
-  const editDefaultResolution = consumerImageEditResolution(env);
-  const editPrices = await Promise.all(editResolutions.map((item) => consumerImagePrice(env, editModelId, editModality(item))));
-  const editPriceByResolution = Object.fromEntries(editResolutions.map((item, index) => [item, editPrices[index]]));
-  const editCredits = Number.isSafeInteger(editPriceByResolution[editDefaultResolution]) ? editPriceByResolution[editDefaultResolution] : (editPrices.find((item) => Number.isSafeInteger(item)) ?? null);
   let ready = false;
   try { const session = await loadProviderSession(env); ready = Boolean(session?.imageAccess); } catch { ready = false; }
-  return { model_id: modelId, credits, edit_model_id: editModelId, edit_credits: editCredits, edit_ready: editCredits !== null, edit_capped: consumerEditCapped(env), edit_aspect_ratios: EDIT_ASPECT_RATIOS, edit_aspect_default: EDIT_ASPECT_DEFAULT, edit_resolutions: editResolutions, edit_resolution: editDefaultResolution, edit_generation_type: consumerImageEditGenerationType(env), edit_price_by_resolution: editPriceByResolution, provider_ready: ready, ceiling: consumerProviderCeiling(env), min_margin: consumerMinMargin(env) };
+  return { model_id: modelId, credits, provider_ready: ready, ceiling: consumerProviderCeiling(env), min_margin: consumerMinMargin(env) };
 }
 // Service_role menembus RLS, jadi status akun harus diperiksa di worker:
 // policy database saja tidak cukup untuk menahan user yang di-suspend/banned.
@@ -1404,62 +1357,12 @@ async function assertAccountActive(env, userId) {
   if (status === 'banned') throw fail('Akun Anda diblokir. Hubungi admin BLEA.', 403);
   if (status === 'suspended') throw fail('Akun Anda sedang ditangguhkan sementara. Hubungi admin BLEA.', 403);
 }
-// Foto referensi diambil provider secara ASINKRON setelah job dikirim. Bila foto
-// sudah dihapus (atau tidak publik), job gagal dengan charged 0 dan kredit BLEA
-// user terpakai sampai di-refund. Pemeriksaan ini menolak lebih awal, sebelum
-// kredit dipotong. Dibatasi ketat ke host storage Supabase proyek ini supaya
-// tidak menjadi celah SSRF ke URL arbitrary.
-async function assertReferenceImageReachable(env, imageUrl) {
-  let storageHost = null;
-  try { storageHost = new URL(String(env?.SUPABASE_URL || '')).host; } catch { storageHost = null; }
-  if (!storageHost) return;
-  let target = null;
-  try { target = new URL(imageUrl); } catch { return; }
-  if (target.host !== storageHost) return;
-  let res;
-  try {
-    res = await fetch(imageUrl, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { range: 'bytes=0-2047' } });
-  } catch (error) {
-    // Penjaga ini tidak boleh menjadi penyebab kegagalan baru. Bila pemeriksaan
-    // tidak dapat dilakukan (gangguan jaringan, batas runtime, atau blokir),
-    // generasi tetap dikirim dan alasannya dicatat untuk wrangler tail.
-    console.warn('Pemeriksaan foto referensi dilewati', { alasan: error?.name || 'error', pesan: typeof error?.message === 'string' ? error.message.slice(0, 160) : '', penyebab: typeof error?.cause?.message === 'string' ? error.cause.message.slice(0, 120) : undefined });
-    return;
-  }
-  try { await res.body?.cancel(); } catch { /* tidak ada body */ }
-  if (res.status === 200 || res.status === 206) {
-    const type = String(res.headers.get('content-type') || '');
-    // Tipe kosong dibiarkan lolos: sebagian respons range tidak menyertakannya.
-    if (type && !/^image\//i.test(type)) throw fail(`Foto referensi bukan berkas gambar (tipe ${type.slice(0, 40)}). Unggah ulang fotonya.`, 409);
-    return;
-  }
-  // Hanya blokir pada penolakan yang PASTI. Status 5xx/429 bisa jadi gangguan
-  // sementara di sisi storage, jadi generasi tetap dilanjutkan.
-  if ([400, 403, 404, 410].includes(res.status)) throw fail(`Foto referensi tidak dapat diakses publik (HTTP ${res.status}). Unggah ulang fotonya, dan jangan hapus foto sebelum gambar selesai dibuat.`, 409);
-  console.warn('Pemeriksaan foto referensi tidak meyakinkan', { status: res.status });
-}
 export async function consumerImageGenerate(env, request, user) {
   await assertAccountActive(env, user.id);
   const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url', 'aspect_ratio', 'resolution'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'prompt') || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
   const prompt = input.prompt.trim();
-  // Mode edit aktif bila user melampirkan foto referensi: tool MCP-nya berbeda
-  // (edit_image, parameter wajib `image`) dan harganya dicatat terpisah.
-  const rawImageUrl = typeof input.image_url === 'string' && input.image_url.trim() ? input.image_url : null;
-  const imageUrl = rawImageUrl ? consumerImageUrl(rawImageUrl) : null;
-  if (rawImageUrl && !imageUrl) throw fail('URL foto referensi tidak valid. Gunakan URL HTTPS publik tanpa kredensial atau fragment.', 400);
-  const edit = Boolean(imageUrl);
-  // Rasio & resolusi wajib untuk mode edit: tanpanya provider menolak memberi
-  // quote. Nilai divalidasi terhadap daftar yang diketahui dapat dihargai.
-  const rawAspect = typeof input.aspect_ratio === 'string' ? input.aspect_ratio.trim() : '';
-  if (rawAspect && !EDIT_ASPECT_RATIOS.includes(rawAspect)) throw fail('Rasio aspek tidak didukung. Pilih salah satu rasio yang tersedia.', 400);
-  const aspectRatio = edit ? (rawAspect || EDIT_ASPECT_DEFAULT) : '';
-  const editGenerationType = edit ? consumerImageEditGenerationType(env) : null;
-  const allowedResolutions = consumerImageEditResolutions(env);
-  const rawResolution = typeof input.resolution === 'string' ? input.resolution.trim().toUpperCase() : '';
-  if (rawResolution && !allowedResolutions.includes(rawResolution)) throw fail('Resolusi tidak tersedia untuk model edit ini.', 400);
-  const resolution = edit ? (rawResolution || consumerImageEditResolution(env)) : '';
-  const modelId = edit ? consumerImageEditModel(env) : consumerImageModel(env);
+  const modelId = consumerImageModel(env);
   const loaded = await loadProviderSession(env);
   if (!loaded?.imageAccess) throw fail('Provider gambar belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.', 503);
   // Satu handshake MCP dipakai ulang untuk katalog, quote, dan pengiriman.
@@ -1468,37 +1371,17 @@ export async function consumerImageGenerate(env, request, user) {
   const opened = await openMcpSession(env, loaded);
   const session = opened.session;
   const headers = opened.headers;
-  // Mode edit diperiksa ke katalog image_edit lebih dulu: provider mendaftar
-  // model yang benar-benar menerima foto referensi di katalog itu, dan katalog
-  // image belum tentu berarti modelnya bisa dipakai lewat tool edit_image.
-  // Katalog tempat model ditemukan dicatat agar kegagalan dapat dilacak.
-  const primary = edit ? 'image_edit' : 'image';
-  const catalog = await getModels(session.accessToken, primary, headers);
-  let entry = catalog.models.find((item) => item.model_id === modelId);
-  let catalogUsed = entry ? primary : null;
-  if (!entry) {
-    const secondary = edit ? 'image' : 'image_edit';
-    const otherCatalog = await getModels(session.accessToken, secondary, headers);
-    entry = otherCatalog.models.find((item) => item.model_id === modelId);
-    if (entry) catalogUsed = secondary;
-  }
-  if (!entry) throw fail(`Model ${edit ? 'edit gambar' : 'gambar'} ${modelId} tidak tersedia di provider saat ini.`, 409);
+  const catalog = await getModels(session.accessToken, 'image', headers);
+  const entry = catalog.models.find((item) => item.model_id === modelId);
+  const catalogUsed = entry ? 'image' : null;
+  if (!entry) throw fail(`Model gambar ${modelId} tidak tersedia di provider saat ini.`, 409);
   if (entry.member_only === true) throw fail('Model ini khusus member di sisi provider.', 409);
   if (entry.available === false) throw fail('Model ini sedang tidak tersedia di sisi provider.', 409);
-  if (edit) await assertReferenceImageReachable(env, imageUrl);
-  const modality = edit ? editModality(resolution) : 'image';
-  const price = await consumerImagePrice(env, modelId, modality);
-  if (price === null) throw fail(`Harga kredit untuk model ${edit ? `edit gambar resolusi ${resolution}` : 'gambar'} ini belum diatur admin; generasi tidak dikirim.`, 409);
-  const quoteContent = await rawToolQuote(session.accessToken, edit ? 'edit_image' : 'generate_image', edit ? { model_id: modelId, image: imageUrl, prompt, aspect_ratio: aspectRatio, resolution, ...(editGenerationType ? { generation_type: editGenerationType } : {}) } : { model_id: modelId, prompt }, headers);
-  let quote = quotedCredits(quoteContent);
-  let capped = false;
+  const price = await consumerImagePrice(env, modelId, 'image');
+  if (price === null) throw fail(`Harga kredit untuk model gambar ini belum diatur admin; generasi tidak dikirim.`, 409);
+  const quoteContent = await rawToolQuote(session.accessToken, 'generate_image', { model_id: modelId, prompt }, headers);
+  const quote = quotedCredits(quoteContent);
   const ceiling = consumerProviderCeiling(env);
-  if (quote === null && edit && consumerEditCapped(env)) {
-    // Tanpa quote, max_credits menjadi satu-satunya jaminan biaya: dibatasi
-    // harga jual supaya provider tidak pernah menagih lebih dari yang dibayar.
-    quote = Math.min(price, ceiling);
-    capped = true;
-  }
   if (quote === null) {
     // safeQuote hanya meloloskan kosakata status yang aman, jadi alasan provider
     // dapat ditampilkan tanpa membocorkan pesan mentah, prompt, atau URL.
@@ -1508,12 +1391,11 @@ export async function consumerImageGenerate(env, request, user) {
   }
   if (quote > ceiling) throw fail(`Biaya provider ${quote} kredit Freebeat melebihi plafon ${ceiling}; generasi tidak dikirim.`, 409);
   const minMargin = consumerMinMargin(env);
-  if (!capped && price < quote * minMargin) throw fail(`Harga ${price} kredit BLEA lebih rendah dari biaya provider (${quote} kredit Freebeat x ${minMargin}). Admin perlu menaikkan harga model ini; generasi tidak dikirim dan kredit tidak dipotong.`, 409);
-  const modeLabel = edit ? 'edit gambar' : 'gambar';
-  const spent = await dbRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi ${modeLabel} Freebeat model ${modelId}` });
+  if (price < quote * minMargin) throw fail(`Harga ${price} kredit BLEA lebih rendah dari biaya provider (${quote} kredit Freebeat x ${minMargin}). Admin perlu menaikkan harga model ini; generasi tidak dikirim dan kredit tidak dipotong.`, 409);
+  const spent = await dbRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Freebeat model ${modelId}` });
   if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
   const rowId = crypto.randomUUID();
-  const metadata = { provider_quote: quote, quote_capped: capped, catalog: catalogUsed, mode: edit ? 'edit' : 'text', ...(edit ? { source_image_url: imageUrl, aspect_ratio: aspectRatio, resolution, ...(editGenerationType ? { generation_type: editGenerationType } : {}) } : {}) };
+  const metadata = { provider_quote: quote, quote_capped: false, catalog: catalogUsed, mode: 'text' };
   let inserted = null;
   try {
     inserted = await dbJson(env, '/image_generations', { method: 'POST', prefer: 'return=representation', body: { id: rowId, user_id: user.id, provider: 'freebeat', model: String(modelId), prompt, credits_charged: price, status: 'processing', metadata } });
@@ -1525,18 +1407,15 @@ export async function consumerImageGenerate(env, request, user) {
   // Handshake sudah dilakukan sebelum kredit dipotong, jadi kegagalan koneksi
   // tidak pernah meninggalkan tagihan. Setelah tool generasi terkirim, hasil
   // apa pun diperlakukan sebagai tidak pasti dan tidak di-refund otomatis.
-  const toolArguments = edit
-    ? { model_id: modelId, image: imageUrl, prompt, aspect_ratio: aspectRatio, resolution, ...(editGenerationType ? { generation_type: editGenerationType } : {}), max_credits: quote }
-    : { model_id: modelId, prompt, max_credits: quote };
   try {
-    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: edit ? 'edit_image' : 'generate_image', arguments: toolArguments } }, 'generate', headers, 262144);
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_image', arguments: { model_id: modelId, prompt, max_credits: quote } } }, 'generate', headers, 262144);
     const content = modelContent(result);
     if (!content || typeof content !== 'object' || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) throw new Error('unrecognized');
     await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: { external_job_id: content.batch_id, status: 'processing', updated_at: new Date().toISOString() } });
-    return { status: 'submitted', credits: price, mode: edit ? 'edit' : 'text', generation: sanitizeImageRow({ ...inserted[0], external_job_id: content.batch_id }) };
+    return { status: 'submitted', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], external_job_id: content.batch_id }) };
   } catch {
     try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: { status: 'unknown', error_message: 'Hasil pengiriman tidak pasti; periksa status sebelum mengulang.', updated_at: new Date().toISOString() } }); } catch { /* biarkan status processing */ }
-    return { status: 'unknown', credits: price, mode: edit ? 'edit' : 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
+    return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
   }
 }
 // Kosakata alasan kegagalan yang aman ditampilkan ke user biasa. Di luar daftar

@@ -1584,3 +1584,36 @@ a.dropx-quick-card:hover .dropx-quick-icon {
 .dropx-content::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ---------- Credit chip (pojok kanan atas) ---------- */
+.dropx-credit-chip {
+  gap: 7px;
+  padding: 6px 10px 6px 6px;
+}
+
+.dropx-credit-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background: var(--primary-100);
+  color: var(--primary-700);
+}
+
+.dark .dropx-credit-icon {
+  background: rgb(99 102 241 / 0.18);
+  color: var(--primary-200);
+}
+
+.dropx-credit-chip b {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.dropx-credit-label {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
