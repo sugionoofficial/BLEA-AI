@@ -216,6 +216,17 @@ export const BUILTIN_VIDEO_MODELS = [
   },
 ].map(withAudioFlag);
 
+// Model video Alibaba yang punya adapter + pengujian di BLEA. provider_models
+// bisa memuat ratusan model alibaba yang BUKAN video (chat/image/tts/asr) atau
+// id kampanye yang belum diverifikasi — hanya id di sini yang boleh tampil di
+// /api/video/models dan diterima /api/video/generate.
+// 2026-11-20: happyhorse-1.1-i2v/t2v aktif di admin tapi ditolak Alibaba
+// (i2v hanya menerima media type first_frame); belum ada adapter di BLEA.
+export const ALIBABA_VIDEO_SUPPORTED_MODELS = Object.freeze(['wan3.0-video']);
+export function isAlibabaVideoModelSupported(modelId) {
+  return ALIBABA_VIDEO_SUPPORTED_MODELS.includes(String(modelId || '').toLowerCase().trim());
+}
+
 export function isVideoModelId(modelId) {
   const id = String(modelId || '').toLowerCase().trim();
   if (!id) return false;
