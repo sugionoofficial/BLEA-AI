@@ -50,8 +50,8 @@ export const ALIBABA_FREE_QUOTA_MODELS = [
 
   // ---- Video ----
   { id: 'wan3.0-video', name: 'Wan 3.0 Video', category: 'Video', freeQuota: '30 detik / 90 hari (Singapore/internasional)', blea: 'video', note: 'T2V, I2V (first/last frame), referensi; hingga 30 detik. Pricing China: tidak ada free quota.', docs: 'https://help.aliyun.com/en/model-studio/wan3-video-generation-api-reference' },
-  { id: 'happyhorse-1.1-i2v', name: 'HappyHorse 1.1 (Image-to-Video)', category: 'Video', freeQuota: '10 detik / 90 hari (kampanye)', blea: null, note: 'Reference-to-video; id API perlu dikonfirmasi di docs; katalog saja.', verifiedId: false },
-  { id: 'happyhorse-1.1-t2v', name: 'HappyHorse 1.1 (Text-to-Video)', category: 'Video', freeQuota: '10 detik / 90 hari (kampanye)', blea: null, note: 'Text-to-video; id API perlu dikonfirmasi di docs; katalog saja.', verifiedId: false },
+  { id: 'happyhorse-1.1-i2v', name: 'HappyHorse 1.1 (Image-to-Video)', category: 'Video', freeQuota: '10 detik / 90 hari (kampanye)', blea: null, note: 'i2v: Alibaba menolak media reference_image — hanya media type first_frame (terverifikasi 2026-11-20). Belum ada adapter di BLEA; jangan diaktifkan untuk pengguna.', verifiedId: false },
+  { id: 'happyhorse-1.1-t2v', name: 'HappyHorse 1.1 (Text-to-Video)', category: 'Video', freeQuota: '10 detik / 90 hari (kampanye)', blea: null, note: 'Text-to-video kampanye; belum diuji adapter di BLEA; katalog saja.', verifiedId: false },
 
   // ---- Speech & ASR ----
   { id: 'qwen3-tts-flash', name: 'Qwen3-TTS-Flash', category: 'Speech', freeQuota: '10.000 karakter / 90 hari', blea: null, note: 'Text-to-speech; endpoint multimodal-generation/generation; output 24.000 Hz.' },

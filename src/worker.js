@@ -27,6 +27,7 @@ import {
   PROVIDER_PRESETS,
   computeVideoSize,
   getVideoModelProfile,
+  isAlibabaVideoModelSupported,
   isValidHttpBaseUrl,
   isVideoCatalogModel,
   isVideoModelId,
@@ -2686,6 +2687,9 @@ async function handleApi(request, url, env) {
         if (!provider || provider === 'unorouter' || provider === 'freebeat') continue;
         const key = `${provider}:${row.model}`;
         if (provider === 'cloudflare' && !isVideoModelId(row.model)) continue;
+        // Alibaba: provider_models memuat model chat/image/tts juga; hanya model
+        // dengan adapter video terverifikasi yang boleh tampil sebagai 'video'.
+        if (provider === 'alibaba' && !isAlibabaVideoModelSupported(row.model)) continue;
         const isVideo = isVideoModelId(row.model) || provider !== 'cloudflare';
         if (!isVideo) continue;
         // Skip clearly non-video chat/embedding models on other providers if obvious
@@ -2780,6 +2784,9 @@ async function handleApi(request, url, env) {
       // ketersediaan tabel profil.
       if (!provider || provider === 'unorouter' || provider === 'freebeat') return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
+      if (provider === 'alibaba' && !isAlibabaVideoModelSupported(model)) {
+        return jsonResponse({ error: 'Model video ini belum diverifikasi untuk BLEA (belum ada adapter + pengujian). Pilih Wan 3.0 Video.' }, 400);
+      }
       const hasReferencePayload = ['reference_images', 'reference_videos', 'reference_audios']
         .some((key) => Array.isArray(payload[key]) && payload[key].some((item) => String(item || '').trim()));
       if (!prompt && !imageUrl && !videoUrl && !audioUrl && !hasReferencePayload) {
