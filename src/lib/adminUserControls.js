@@ -8,7 +8,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const ACTIONS = new Set(['credits', 'status', 'delete', 'role']);
 const STATUSES = new Set(['active', 'suspended', 'banned']);
 
-function fail(message, status = 400) { return Object.assign(new Error(message), { status }); }
+export function fail(message, status = 400) { return Object.assign(new Error(message), { status }); }
 
 function supabaseBase(env) {
   if (!env?.SUPABASE_URL || !env?.SUPABASE_SERVICE_ROLE_KEY) throw fail('Penyimpanan BLEA belum dikonfigurasi; aksi admin tidak diaktifkan.', 503);
@@ -17,7 +17,7 @@ function supabaseBase(env) {
   return base.toString().replace(/\/$/, '');
 }
 
-async function sbFetch(env, path, options = {}) {
+export async function sbFetch(env, path, options = {}) {
   let res;
   try {
     res = await fetch(`${supabaseBase(env)}${path}`, {
@@ -36,7 +36,7 @@ async function sbFetch(env, path, options = {}) {
   return res;
 }
 
-async function sbJson(env, path, options = {}) {
+export async function sbJson(env, path, options = {}) {
   const res = await sbFetch(env, path, options);
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -45,13 +45,13 @@ async function sbJson(env, path, options = {}) {
   return await res.json().catch(() => null);
 }
 
-async function rpc(env, fn, body) {
+export async function rpc(env, fn, body) {
   const res = await sbFetch(env, `/rest/v1/rpc/${fn}`, { method: 'POST', body });
   if (!res.ok) throw fail(`Fungsi database ${fn} menolak permintaan (${res.status}).`, 503);
   return await res.json().catch(() => null);
 }
 
-async function audit(env, adminId, targetUserId, action, success, detail) {
+export async function audit(env, adminId, targetUserId, action, success, detail) {
   try {
     await sbFetch(env, '/rest/v1/admin_user_actions', {
       method: 'POST',
@@ -61,7 +61,7 @@ async function audit(env, adminId, targetUserId, action, success, detail) {
   } catch { /* audit tidak boleh membatalkan aksi yang sudah terjadi */ }
 }
 
-async function readJson(request) {
+export async function readJson(request) {
   if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail('Format permintaan tidak valid.', 400);
   let input;
