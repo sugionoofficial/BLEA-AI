@@ -5,16 +5,18 @@ import { PaymentLogo } from './paymentLogos';
 import { reviewCreditOrder, setPurchasesEnabled } from '../api/purchases';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
+import { ALIBABA_FREE_QUOTA_MODELS } from '../lib/alibabaFreeQuota';
 import { useAuth } from './AuthProvider';
 import { Pager, PerPageSelect, usePagedList } from '../components/Pagination';
 import './credits.css';
 
+const ALIBABA_IMAGE_SUGGESTIONS = ALIBABA_FREE_QUOTA_MODELS.filter((m) => m.blea === 'image');
 const labels = { awaiting_payment: 'Menunggu transfer', pending_review: 'Menunggu verifikasi', approved: 'Disetujui', rejected: 'Ditolak', cancelled: 'Dibatalkan' };
 const rupiah = (value) => `Rp${Number(value).toLocaleString('id-ID')}`;
 const number = (value) => Number(value).toLocaleString('id-ID');
 const date = (value) => new Date(value).toLocaleString('id-ID');
 const blankPackage = { name: '', credits: '', price_idr: '', active: true };
-const blankPrice = { provider: 'freebeat', model: '', modality: 'video', credits: '', active: true };
+const blankPrice = { provider: 'alibaba', model: '', modality: 'image', credits: '', active: true };
 const blankMethod = { kind: 'bank', provider: '', label: '', account_name: '', account_number: '', network: '', note: '', sort_order: 0, active: true };
 const kindLabel = { bank: 'Transfer bank', ewallet: 'E-wallet', crypto: 'Cripto (USD)' };
 const PROVIDER_SUGGESTIONS = ['BCA', 'DANA', 'SeaBank', 'Gopay', 'OVO', 'ShopeePay', 'LinkAja', 'USDT', 'USDC'];
@@ -34,6 +36,8 @@ export function CreditsPage() {
   const [editingId, setEditingId] = useState(null);
   const [priceForm, setPriceForm] = useState(blankPrice);
   const [editingPriceId, setEditingPriceId] = useState(null);
+  const [activeAlibabaModels, setActiveAlibabaModels] = useState([]);
+  const [bulkAlibabaCredits, setBulkAlibabaCredits] = useState('15');
   const [methods, setMethods] = useState([]);
   const [methodForm, setMethodForm] = useState(blankMethod);
   const [editingMethodId, setEditingMethodId] = useState(null);
@@ -54,6 +58,12 @@ export function CreditsPage() {
       ]);
       const methodResult = await supabase.from('credit_payment_methods').select('*').order('sort_order', { ascending: true }).order('provider', { ascending: true });
       setMethods(methodResult.error ? [] : methodResult.data || []);
+      if (isAdmin) {
+        const activeRes = await supabase.from('provider_models').select('model').eq('provider', 'alibaba').eq('active', true).limit(500);
+        setActiveAlibabaModels(!activeRes?.error && Array.isArray(activeRes?.data) ? activeRes.data.map((r) => r.model) : []);
+      } else {
+        setActiveAlibabaModels([]);
+      }
       const failed = results.find((result) => result.error);
       if (failed) throw failed.error;
       const [packages, prices, settings, wallet, orders, reviews, profiles] = results;
@@ -107,10 +117,37 @@ export function CreditsPage() {
       setError('Masukkan provider, model, dan biaya kredit yang valid.'); return;
     }
     await run(async () => {
-      const result = editingPriceId ? await supabase.from('credit_model_prices').update(values).eq('id', editingPriceId) : await supabase.from('credit_model_prices').insert(values);
+      const result = editingPriceId
+        ? await supabase.from('credit_model_prices').update(values).eq('id', editingPriceId)
+        : await supabase.from('credit_model_prices').upsert(values, { onConflict: 'provider,model,modality' });
       if (!result.error) { setPriceForm(blankPrice); setEditingPriceId(null); }
       return result;
     }, 'Harga model disimpan.');
+  }
+
+  const activeAlibabaImageIds = ALIBABA_IMAGE_SUGGESTIONS
+    .filter((m) => activeAlibabaModels.includes(m.id))
+    .map((m) => m.id);
+  const pricedActiveAlibabaIds = new Set(
+    data.prices
+      .filter((p) => p.provider === 'alibaba' && p.modality === 'image' && p.active && Number(p.credits) > 0)
+      .map((p) => p.model),
+  );
+  const missingAlibabaImageIds = activeAlibabaImageIds.filter((id) => !pricedActiveAlibabaIds.has(id));
+
+  async function applyBulkAlibabaPrices() {
+    const credits = Number(bulkAlibabaCredits);
+    if (!Number.isInteger(credits) || credits < 1 || credits > 1000000000) {
+      setError('Masukkan biaya kredit bilangan bulat minimal 1.'); return;
+    }
+    if (!missingAlibabaImageIds.length) return;
+    await run(
+      () => supabase.from('credit_model_prices').upsert(
+        missingAlibabaImageIds.map((model) => ({ provider: 'alibaba', model, modality: 'image', credits, active: true })),
+        { onConflict: 'provider,model,modality' },
+      ),
+      `Harga ${credits} kredit diterapkan untuk ${missingAlibabaImageIds.length} model gambar Alibaba aktif.`,
+    );
   }
 
   function methodValues() {
@@ -280,7 +317,15 @@ export function CreditsPage() {
 
           <section className="credits-card"><h2>Admin · Instruksi transfer</h2><p>Masukkan bank, nomor rekening, nama penerima, dan instruksi konfirmasi. Jangan masukkan data rahasia.</p><form className="credits-form" onSubmit={(event) => { event.preventDefault(); run(() => data.settings ? supabase.from('credit_payment_settings').update({ instructions: instructions.trim(), updated_at: new Date().toISOString() }).eq('singleton', true) : supabase.from('credit_payment_settings').insert({ singleton: true, instructions: instructions.trim() }), 'Instruksi transfer disimpan.'); }}><label>Instruksi pembayaran<textarea maxLength={2000} required value={instructions} onChange={(event) => setInstructions(event.target.value)} /></label><button disabled={busy}>Simpan instruksi</button></form></section>
           <section className="credits-card"><h2>Admin · Kelola paket</h2><form className="credits-form" onSubmit={savePackage}><label>Nama paket<input required maxLength={80} value={packageForm.name} onChange={(e) => setPackageForm({ ...packageForm, name: e.target.value })} /></label><label>Jumlah kredit<input required type="number" min="1" max="1000000000" step="1" value={packageForm.credits} onChange={(e) => setPackageForm({ ...packageForm, credits: e.target.value })} /></label><label>Harga (rupiah)<input required type="number" min="1" max="2000000000" step="1" value={packageForm.price_idr} onChange={(e) => setPackageForm({ ...packageForm, price_idr: e.target.value })} /></label><label className="credits-check"><input type="checkbox" checked={packageForm.active} onChange={(e) => setPackageForm({ ...packageForm, active: e.target.checked })} /> Paket aktif</label><div className="credits-actions"><button disabled={busy}>{editingId ? 'Simpan perubahan' : 'Tambah paket'}</button>{editingId && <button type="button" className="credits-secondary" onClick={() => { setEditingId(null); setPackageForm(blankPackage); }}>Batal edit</button>}</div></form><div>{data.packages.map((item) => <div className="credits-row credits-ledger" key={item.id}><span>{item.name} · {number(item.credits)} kredit · {rupiah(item.price_idr)} · {item.active ? 'Aktif' : 'Nonaktif'}</span><button className="credits-secondary" type="button" onClick={() => { setEditingId(item.id); setPackageForm({ name: item.name, credits: item.credits, price_idr: item.price_idr, active: item.active }); }}>Edit</button></div>)}</div></section>
-          <section className="credits-card"><h2>Admin · Harga generasi</h2><p>Persiapan harga tetap per model. Harga belum diterapkan ke generasi yang ada dan model ini belum tentu tersedia di Freebeat.</p><form className="credits-form" onSubmit={savePrice}><label>Provider<input required maxLength={80} value={priceForm.provider} onChange={(e) => setPriceForm({ ...priceForm, provider: e.target.value })} /></label><label>ID model<input required maxLength={160} value={priceForm.model} onChange={(e) => setPriceForm({ ...priceForm, model: e.target.value })} /></label><label>Jenis<select value={priceForm.modality} onChange={(e) => setPriceForm({ ...priceForm, modality: e.target.value })}><option value="video">Video</option><option value="image">Gambar</option></select></label><label>Biaya kredit<input required type="number" min="1" max="1000000000" step="1" value={priceForm.credits} onChange={(e) => setPriceForm({ ...priceForm, credits: e.target.value })} /></label><label className="credits-check"><input type="checkbox" checked={priceForm.active} onChange={(e) => setPriceForm({ ...priceForm, active: e.target.checked })} /> Aktif</label><div className="credits-actions"><button disabled={busy}>{editingPriceId ? 'Simpan harga' : 'Tambah harga'}</button>{editingPriceId && <button type="button" className="credits-secondary" onClick={() => { setEditingPriceId(null); setPriceForm(blankPrice); }}>Batal edit</button>}</div></form>{data.prices.map((item) => <div className="credits-row credits-ledger" key={item.id}><span>{item.provider} / {item.model} · {item.modality === 'image' ? 'Gambar' : 'Video'} · {number(item.credits)} kredit · {item.active ? 'Aktif' : 'Nonaktif'}</span><button type="button" className="credits-secondary" onClick={() => { setEditingPriceId(item.id); setPriceForm({ provider: item.provider, model: item.model, modality: item.modality, credits: item.credits, active: item.active }); }}>Edit</button></div>)}</section>
+          <section className="credits-card"><h2>Admin · Harga generasi</h2><p>Harga kredit tetap per model untuk halaman Generate Gambar (<code>freebeat</code> &amp; <code>alibaba</code>). Model gambar Alibaba tampil di Generate Gambar hanya setelah diaktifkan di Admin → Katalog Model dan memiliki harga aktif di sini.</p>
+            {missingAlibabaImageIds.length > 0 && <div className="credits-notice">
+              <p><strong>{missingAlibabaImageIds.length} model gambar Alibaba aktif belum punya harga kredit</strong> sehingga belum tampil di Generate Gambar ({missingAlibabaImageIds.slice(0, 4).join(', ')}{missingAlibabaImageIds.length > 4 ? ', …' : ''}).</p>
+              <div className="credits-inline">
+                <label>Kredit default <input type="number" min="1" max="1000000000" step="1" value={bulkAlibabaCredits} onChange={(e) => setBulkAlibabaCredits(e.target.value)} /></label>
+                <button type="button" disabled={busy} onClick={applyBulkAlibabaPrices}>Isi harga {missingAlibabaImageIds.length} model Alibaba aktif</button>
+              </div>
+            </div>}
+            <form className="credits-form" onSubmit={savePrice}><label>Provider<input list="credit-gen-providers" required maxLength={80} value={priceForm.provider} onChange={(e) => setPriceForm({ ...priceForm, provider: e.target.value })} /></label><datalist id="credit-gen-providers"><option value="alibaba" /><option value="freebeat" /></datalist><label>ID model<input list="credit-gen-models" required maxLength={160} value={priceForm.model} onChange={(e) => setPriceForm({ ...priceForm, model: e.target.value })} /></label><datalist id="credit-gen-models">{priceForm.provider.trim().toLowerCase() === 'freebeat' ? [<option key="122" value="122" />, <option key="80" value="80" />, <option key="202" value="202" />] : ALIBABA_IMAGE_SUGGESTIONS.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist><label>Jenis<select value={priceForm.modality} onChange={(e) => setPriceForm({ ...priceForm, modality: e.target.value })}><option value="image">Gambar</option><option value="video">Video</option></select></label><label>Biaya kredit<input required type="number" min="1" max="1000000000" step="1" value={priceForm.credits} onChange={(e) => setPriceForm({ ...priceForm, credits: e.target.value })} /></label><label className="credits-check"><input type="checkbox" checked={priceForm.active} onChange={(e) => setPriceForm({ ...priceForm, active: e.target.checked })} /> Aktif</label><div className="credits-actions"><button disabled={busy}>{editingPriceId ? 'Simpan harga' : 'Tambah / perbarui harga'}</button>{editingPriceId && <button type="button" className="credits-secondary" onClick={() => { setEditingPriceId(null); setPriceForm(blankPrice); }}>Batal edit</button>}</div></form>{data.prices.map((item) => <div className="credits-row credits-ledger" key={item.id}><span>{item.provider} / {item.model} · {item.modality === 'image' ? 'Gambar' : 'Video'} · {number(item.credits)} kredit · {item.active ? 'Aktif' : 'Nonaktif'}</span><button type="button" className="credits-secondary" onClick={() => { setEditingPriceId(item.id); setPriceForm({ provider: item.provider, model: item.model, modality: item.modality, credits: item.credits, active: item.active }); }}>Edit</button></div>)}</section>
           <section className="credits-card"><h2>Admin · Konfirmasi transfer</h2><p>Pastikan dana benar-benar diterima dan cocok dengan pesanan sebelum menyetujui. Konfirmasi pengguna bukan bukti pembayaran. Menyetujui atau menolak WAJIB password aksi admin.</p>
             <div className="credits-form">
               <label>Password aksi admin<input type="password" autoComplete="new-password" value={reviewPassword} onChange={(event) => setReviewPassword(event.target.value)} placeholder="Password yang Anda setel di Supabase" /></label>
