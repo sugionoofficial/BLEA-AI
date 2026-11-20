@@ -1392,16 +1392,16 @@ export async function consumerImageGenerate(env, request, user) {
   if (quote > ceiling) throw fail(`Biaya provider ${quote} kredit Freebeat melebihi plafon ${ceiling}; generasi tidak dikirim.`, 409);
   const minMargin = consumerMinMargin(env);
   if (price < quote * minMargin) throw fail(`Harga ${price} kredit BLEA lebih rendah dari biaya provider (${quote} kredit Freebeat x ${minMargin}). Admin perlu menaikkan harga model ini; generasi tidak dikirim dan kredit tidak dipotong.`, 409);
-  const spent = await dbRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Freebeat model ${modelId}` });
-  if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
   const rowId = crypto.randomUUID();
+  const spent = await dbRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Freebeat model ${modelId}`, p_generation_id: rowId });
+  if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
   const metadata = { provider_quote: quote, quote_capped: false, catalog: catalogUsed, mode: 'text' };
   let inserted = null;
   try {
     inserted = await dbJson(env, '/image_generations', { method: 'POST', prefer: 'return=representation', body: { id: rowId, user_id: user.id, provider: 'freebeat', model: String(modelId), prompt, credits_charged: price, status: 'processing', metadata } });
   } catch { inserted = null; }
   if (!Array.isArray(inserted) || inserted.length !== 1) {
-    try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat generasi gambar tidak tersimpan' }); } catch { /* refund manual oleh admin */ }
+    try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat generasi gambar tidak tersimpan', p_generation_id: rowId }); } catch { /* refund manual oleh admin */ }
     throw fail('Riwayat generasi tidak dapat disimpan; kredit BLEA dikembalikan. Silakan coba lagi.', 503);
   }
   // Handshake sudah dilakukan sebelum kredit dipotong, jadi kegagalan koneksi
@@ -1508,7 +1508,7 @@ export async function consumerImageStatus(env, request, user) {
     try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch }); } catch { /* status lama tetap ditampilkan */ }
     if (patch.status === 'failed' && Number(row.credits_charged) > 0 && Number(row.credits_refunded) === 0) {
       let refunded = false;
-      try { refunded = await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: Number(row.credits_charged), p_description: 'Refund: generasi gambar gagal' }); } catch { refunded = false; }
+      try { refunded = await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: Number(row.credits_charged), p_description: 'Refund: generasi gambar gagal', p_generation_id: row.id }); } catch { refunded = false; }
       if (refunded) {
         try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: { credits_refunded: Number(row.credits_charged), updated_at: new Date().toISOString() } }); } catch { /* ledger sudah benar */ }
         row.credits_refunded = Number(row.credits_charged);

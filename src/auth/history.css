@@ -4,3 +4,6 @@
 .history-filters button.is-active{border-color:var(--primary-600);color:var(--primary-600);font-weight:700}
 .generate-history{margin-top:22px;padding-top:16px;border-top:1px solid var(--border)}
 .generate-history .history-grid{margin-top:12px}
+
+.history-card.is-highlighted{outline:3px solid var(--primary);outline-offset:2px;animation:history-pulse 1.6s ease-in-out 2}@keyframes history-pulse{0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,.0)}50%{box-shadow:0 0 0 8px rgba(59,130,246,.18)}}
+.history-filters .page-size{margin-left:4px}
