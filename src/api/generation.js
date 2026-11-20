@@ -34,6 +34,7 @@ export async function generateImage(prompt, options = {}) {
     if (options.model) payload.model = String(options.model);
     if (options.size) payload.size = String(options.size);
     if (options.n != null) payload.n = Number(options.n);
+    if (Array.isArray(options.images) && options.images.length > 0) payload.images = options.images;
   }
   return edgeRequest('/image/generate', payload);
 }

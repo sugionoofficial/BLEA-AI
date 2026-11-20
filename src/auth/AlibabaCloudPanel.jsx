@@ -263,9 +263,8 @@ export function AlibabaCloudPanel({ subTab = 'accounts' }) {
         </div>
         <p className="admin-hint is-compact">
           Menampilkan {catalogFiltered.length} dari {ALIBABA_FREE_QUOTA_MODELS.length} model. Model kategori <b>Teks</b> bisa diaktifkan di
-          tab <b>Katalog Model (Provider: Alibaba)</b> agar muncul di AI Studio; model gambar bertanda <b>Bisa diaktifkan · Gambar</b>
-          (wan2.7-image, wan2.7-image-pro, qwen-image-3.0, qwen-image-3.0-pro) muncul di <b>Generate Image</b> setelah diaktifkan di katalog dan
-          punya harga kredit aktif di <b>Admin → Kredit</b> — speech masih katalog saja.
+          tab <b>Katalog Model (Provider: Alibaba)</b> agar muncul di AI Studio; model bertanda <b>Terhubung · Video</b> dapat diaktifkan di Katalog Model untuk <b>Generate Video</b>;
+          model gambar bertanda <b>Bisa diaktifkan · Gambar</b> muncul di <b>Generate Image</b> setelah diaktifkan di katalog dan punya harga kredit aktif di <b>Admin → Kredit</b> — speech masih katalog saja.
         </p>
       </section>
     );
