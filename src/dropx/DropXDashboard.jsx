@@ -454,28 +454,27 @@ export function DropXDashboard() {
                 <Link to="/generate" className="dropx-btn dropx-btn-primary dropx-btn-sm">Generate video</Link>
               </div>
             ) : (
-              <div className="dx-space-y-3">
+              <div className="dropx-recent-list">
                 {recent.videos.map((video) => {
                   const status = VIDEO_STATUS_BADGE[video.status] || { label: video.status, cls: '' };
                   return (
                     <Link
                       key={video.id}
                       to={`/generate?id=${encodeURIComponent(video.id)}`}
-                      className="flex items-center gap-3 py-1.5"
-                      style={{ textDecoration: 'none', color: 'inherit' }}
+                      className="dropx-recent-row"
                     >
-                      <span className="dropx-avatar" style={{ width: 32, height: 32 }}>
-                        <Video size={14} />
+                      <span className="dropx-avatar">
+                        <Video size={13} />
                       </span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div className="dropx-recent-main">
+                        <p className="dropx-recent-title">
                           {video.prompt || '(Video berbasis media)'}
                         </p>
-                        <p style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>
+                        <p className="dropx-recent-sub">
                           {video.model} · {video.aspect_ratio} · {video.resolution} · {video.duration}s
                         </p>
                       </div>
-                      <div style={{ textAlign: 'right' }}>
+                      <div className="dropx-recent-end">
                         <span className={`dropx-badge ${status.cls}`}>{status.label}</span>
                       </div>
                     </Link>
@@ -507,7 +506,7 @@ export function DropXDashboard() {
                 <Link to="/studio" className="dropx-btn dropx-btn-primary dropx-btn-sm">Coba AI Studio</Link>
               </div>
             ) : (
-              <div className="dx-space-y-3">
+              <div className="dropx-recent-list">
                 {recent.conversations.map((conversation) => {
                   const status = conversation.messageCount === 0
                     ? { label: 'Baru', cls: '' }
@@ -515,20 +514,20 @@ export function DropXDashboard() {
                       ? { label: 'Aktif', cls: 'is-info' }
                       : { label: 'Lancar', cls: 'is-success' };
                   return (
-                    <div key={conversation.id} className="flex items-center gap-3 py-1.5">
-                      <span className="dropx-avatar" style={{ width: 32, height: 32 }}>
+                    <div key={conversation.id} className="dropx-recent-row">
+                      <span className="dropx-avatar">
                         {(conversation.title || 'C').slice(0, 1).toUpperCase()}
                       </span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div className="dropx-recent-main">
+                        <p className="dropx-recent-title">
                           {conversation.title || 'Percakapan tanpa judul'}
                         </p>
-                        <p style={{ fontSize: 11, color: 'var(--muted-foreground)' }}>
+                        <p className="dropx-recent-sub">
                           {conversation.userName || conversation.user_id} · {new Date(conversation.updated_at || conversation.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
                         </p>
                       </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <p style={{ fontSize: 13, fontWeight: 600 }}>{conversation.messageCount}</p>
+                      <div className="dropx-recent-end">
+                        <span className="dropx-recent-count">{conversation.messageCount}</span>
                         <span className={`dropx-badge ${status.cls}`}>{status.label}</span>
                       </div>
                     </div>
@@ -560,9 +559,9 @@ export function DropXDashboard() {
                   return (
                     <div className="dropx-feed-item" key={`${item.time}-${i}`}>
                       <span className={`dropx-feed-dot ${item.cls}`}>
-                        <Icon size={14} className="icon" />
+                        <Icon size={13} className="icon" />
                       </span>
-                      <div>
+                      <div className="dropx-feed-body">
                         <p className="dropx-feed-text">{item.text}</p>
                         <p className="dropx-feed-time">
                           {new Date(item.time).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -576,10 +575,10 @@ export function DropXDashboard() {
           </div>
         </div>
 
-        <div className="dx-space-y-4 dx-col-span-1">
+        <div className="dropx-metrics-col dx-col-span-1">
           <div className="dropx-metric">
-            <span className="dropx-metric-icon"><GraduationCap size={20} className="icon" /></span>
-            <div>
+            <span className="dropx-metric-icon"><GraduationCap size={17} className="icon" /></span>
+            <div className="dropx-metric-copy">
               <p className="dropx-metric-label">Keterlibatan chat</p>
               <p className="dropx-metric-value">
                 {stats.conversations ? Math.round((totalMessages / stats.conversations) * 10) / 10 : 0}
@@ -587,17 +586,17 @@ export function DropXDashboard() {
             </div>
           </div>
           <div className="dropx-metric">
-            <span className="dropx-metric-icon" style={{ background: 'rgb(16 185 129 / 0.1)', color: 'var(--success)' }}><Video size={20} className="icon" /></span>
-            <div>
-              <p className="dropx-metric-label">Tingkat sukses video</p>
+            <span className="dropx-metric-icon" style={{ background: 'rgb(16 185 129 / 0.1)', color: 'var(--success)' }}><Video size={17} className="icon" /></span>
+            <div className="dropx-metric-copy">
+              <p className="dropx-metric-label">Sukses video</p>
               <p className="dropx-metric-value">
                 {stats.videos ? Math.round((stats.completedVideos / stats.videos) * 100) : 0}%
               </p>
             </div>
           </div>
           <div className="dropx-metric">
-            <span className="dropx-metric-icon" style={{ background: 'rgb(59 130 246 / 0.1)', color: 'var(--info)' }}><FileText size={20} className="icon" /></span>
-            <div>
+            <span className="dropx-metric-icon" style={{ background: 'rgb(59 130 246 / 0.1)', color: 'var(--info)' }}><FileText size={17} className="icon" /></span>
+            <div className="dropx-metric-copy">
               <p className="dropx-metric-label">Pesan total</p>
               <p className="dropx-metric-value">{formatNumber(totalMessages)}</p>
             </div>

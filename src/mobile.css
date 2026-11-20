@@ -69,6 +69,13 @@ iframe {
 
   .dropx-content {
     padding: 10px 10px 18px;
+    min-width: 0;
+    overflow-x: clip;
+  }
+
+  .dropx-main {
+    min-width: 0;
+    overflow-x: clip;
   }
 
   .dx-grid {
@@ -168,11 +175,116 @@ iframe {
   }
 
   .dropx-card-header {
-    padding: 10px 12px;
+    padding: 9px 11px;
+  }
+
+  .dropx-card-title {
+    font-size: 12.5px;
+    min-width: 0;
+  }
+
+  .dropx-card-link {
+    font-size: 11px;
+    flex-shrink: 0;
   }
 
   .dropx-card-body {
-    padding: 12px;
+    padding: 10px 11px;
+  }
+
+  .dropx-recent-list {
+    gap: 2px;
+  }
+
+  .dropx-recent-row {
+    gap: 8px;
+    padding: 4px 3px;
+  }
+
+  .dropx-recent-row .dropx-avatar {
+    width: 24px;
+    height: 24px;
+    font-size: 10px;
+  }
+
+  .dropx-recent-title {
+    font-size: 11.5px;
+  }
+
+  .dropx-recent-sub {
+    font-size: 10px;
+    margin-top: 1px;
+  }
+
+  .dropx-recent-count {
+    font-size: 11px;
+  }
+
+  .dropx-badge {
+    font-size: 9.5px;
+    padding: 1px 6px;
+  }
+
+  .dropx-feed::before {
+    left: 11px;
+  }
+
+  .dropx-feed-item {
+    gap: 8px;
+    padding: 3.5px 0;
+  }
+
+  .dropx-feed-dot {
+    width: 22px;
+    height: 22px;
+  }
+
+  .dropx-feed-dot .icon {
+    width: 11px;
+    height: 11px;
+  }
+
+  .dropx-feed-text {
+    font-size: 11px;
+    line-height: 1.32;
+  }
+
+  .dropx-feed-time {
+    font-size: 9.5px;
+    margin-top: 1px;
+  }
+
+  .dropx-metrics-col {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .dropx-metric {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 8px 9px;
+    border-radius: 10px;
+  }
+
+  .dropx-metric-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+  }
+
+  .dropx-metric-icon .icon {
+    width: 13px;
+    height: 13px;
+  }
+
+  .dropx-metric-label {
+    font-size: 9.5px;
+    line-height: 1.2;
+  }
+
+  .dropx-metric-value {
+    font-size: 14px;
   }
 
   .dropx-chart-box {
