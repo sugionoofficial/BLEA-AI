@@ -383,4 +383,30 @@ test('Mobile polish and animated loading stages are wired across Dashboard, Chat
   assert.match(userDashSrc, /MAX_VIDEO_BYTES\s*=\s*100\s*\*\s*1024\s*\*\s*1024/);
   assert.match(userDashSrc, /Unggah thumbnail/);
   assert.match(userDashSrc, /uploadTusResumable/);
+
+  const landingCss = fs.readFileSync(new URL('../src/landing.css', import.meta.url), 'utf8');
+  const stylesCss = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const authCss = fs.readFileSync(new URL('../src/auth/auth.css', import.meta.url), 'utf8');
+
+  // Pinned headers across all pages
+  assert.match(dropxCss, /\.dropx-shell\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*hidden;/s);
+  assert.match(dropxCss, /\.dropx-main\s*\{[^}]*min-height:\s*0;[^}]*height:\s*100%;[^}]*overflow:\s*hidden;/s);
+  assert.match(dropxCss, /\.dropx-header\s*\{[^}]*position:\s*sticky;\s*top:\s*0;[^}]*flex-shrink:\s*0;/s);
+  assert.match(dropxCss, /@media\s*\(max-width:\s*1023px\)\s*\{[\s\S]*?\.dropx-header\s*\{[^}]*position:\s*fixed;\s*top:\s*0;/);
+  assert.match(mobileCss, /\.dropx-main\s*\{[^}]*padding-top:\s*52px;/);
+  assert.match(landingCss, /\.briv-shell\{[^}]*overflow-x:clip/);
+  assert.match(landingCss, /\.briv-header\{[^}]*position:sticky;top:0/);
+  assert.match(stylesCss, /\.site-shell\{[^}]*overflow-x:clip/);
+  assert.match(stylesCss, /\.header\{[^}]*position:sticky;top:0/);
+  assert.match(authCss, /\.auth-page\{[^}]*overflow-x:clip/);
+  assert.match(authCss, /\.auth-header\{[^}]*position:sticky;top:0/);
+  assert.match(mobileCss, /body\s*\{\s*overflow-x:\s*clip;/);
+
+  // Zero right-edge horizontal overflow on Generate Video
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-media-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*hidden;/s);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-pill\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*text-overflow:\s*ellipsis;/s);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-model-desc\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
+  assert.match(mobileCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*overflow-x:\s*hidden;/s);
 });

@@ -12,7 +12,7 @@ html {
 }
 
 body {
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 button,
@@ -75,6 +75,7 @@ iframe {
 
   .dropx-main {
     min-width: 0;
+    padding-top: 52px;
     overflow-x: clip;
   }
 
@@ -339,7 +340,7 @@ iframe {
   .landing-page,
   .auth-page,
   .landing-page main {
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 }
 
@@ -398,21 +399,34 @@ iframe {
 @media (max-width: 640px) {
   .dropx-shell .generate-page {
     gap: 10px;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .dropx-shell .generate-grid {
     gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dropx-shell .generate-card {
     padding: 12px !important;
     gap: 12px;
     border-radius: 12px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .dropx-shell .generate-stage-col {
+    min-width: 0;
+    max-width: 100%;
   }
 
   .dropx-shell .generate-card-head {
     padding-bottom: 8px;
     gap: 6px !important;
+    flex-wrap: wrap;
   }
 
   .dropx-shell .generate-card-title {
@@ -427,10 +441,17 @@ iframe {
 
   .dropx-shell .generate-select {
     padding: 8px 10px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .dropx-shell .generate-params-grid .generate-select {
+    font-size: 14px;
+    padding: 7px 6px;
   }
 
   .dropx-shell .generate-upload-box {
-    min-height: 94px;
+    min-height: auto;
     padding: 10px;
     gap: 6px;
   }
@@ -441,7 +462,7 @@ iframe {
   }
 
   .history-grid {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: minmax(0, 1fr) !important;
   }
 }
 

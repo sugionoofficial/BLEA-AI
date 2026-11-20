@@ -1,5 +1,5 @@
 /* BLEA AI landing — structure inspired by Brivon (ThemeWagon) */
-.briv-shell{min-height:100vh;background:#05060a;color:#ffffff;position:relative;overflow-x:hidden}
+.briv-shell{min-height:100vh;background:#05060a;color:#ffffff;position:relative;overflow-x:clip}
 .briv-ambient{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(115,88,193,0.22),transparent 65%),radial-gradient(ellipse 60% 40% at 90% 100%,rgba(88,70,140,0.16),transparent 70%)}
 .briv-container{width:min(1180px,100%);margin:0 auto;padding:0 32px;position:relative}
 .briv-header{position:sticky;top:0;z-index:50;background:rgba(5,6,10,0.72);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,0.08)}
