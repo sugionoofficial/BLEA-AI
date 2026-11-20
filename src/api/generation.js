@@ -48,3 +48,30 @@ export async function fetchImageStatus(id) {
 export async function fetchImageHistory() {
   return edgeRequest('/image/history', {});
 }
+
+export function withDownloadParam(url) {
+  if (typeof url !== 'string' || !url) return '';
+  if (/^\/api\/(?:video|image)\/content\//.test(url)) {
+    return /[?&]download=1(?:&|$)/.test(url) ? url : `${url}${url.includes('?') ? '&' : '?'}download=1`;
+  }
+  return url;
+}
+
+export function inferImageExtension(url) {
+  if (typeof url !== 'string' || !url) return 'png';
+  try {
+    const pathname = new URL(url, 'https://blea.local').pathname.toLowerCase();
+    if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) return 'jpg';
+    if (pathname.endsWith('.webp')) return 'webp';
+    if (pathname.endsWith('.gif')) return 'gif';
+    if (pathname.endsWith('.png')) return 'png';
+  } catch { /* fallback to png */ }
+  return 'png';
+}
+
+export function buildDownloadFilename({ kind = 'image', id = '', index = 0, total = 1, url = '' } = {}) {
+  const shortId = String(id || 'hasil').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'hasil';
+  if (kind === 'video') return `blea-video-${shortId}.mp4`;
+  const suffix = total > 1 ? `-${index + 1}` : '';
+  return `blea-image-${shortId}${suffix}.${inferImageExtension(url)}`;
+}

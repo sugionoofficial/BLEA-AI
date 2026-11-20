@@ -576,6 +576,25 @@
   gap: 6px;
 }
 
+.dropx-shell .generate-history-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--primary-600);
+  background: var(--primary-600);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.dropx-shell .generate-history-download-btn:hover {
+  filter: brightness(1.08);
+}
+
 @media (max-width: 1024px) {
   .dropx-shell .generate-grid {
     grid-template-columns: 1fr;

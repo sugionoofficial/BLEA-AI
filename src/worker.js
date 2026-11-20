@@ -1312,6 +1312,81 @@ async function verifyVideoContentSig(id, exp, sig, env) {
   }
 }
 
+function contentAttachmentFilename(prefix, id, contentType, fallbackExt, suffix = '') {
+  const safeId = String(id || 'file').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12) || 'file';
+  const mime = String(contentType || '').split(';')[0].trim().toLowerCase();
+  let ext = fallbackExt;
+  if (mime === 'video/webm') ext = 'webm';
+  else if (mime === 'video/quicktime') ext = 'mov';
+  else if (mime === 'video/mp4') ext = 'mp4';
+  else if (mime === 'image/png') ext = 'png';
+  else if (mime === 'image/jpeg' || mime === 'image/jpg') ext = 'jpg';
+  else if (mime === 'image/webp') ext = 'webp';
+  else if (mime === 'image/gif') ext = 'gif';
+  return `${prefix}-${safeId}${suffix}.${ext}`;
+}
+
+function isSafeRemoteMediaUrl(raw) {
+  if (typeof raw !== 'string' || raw.length > 4096) return false;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false;
+    if (host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return false;
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+    if (ipv4) {
+      const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+      if (a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function signImageContentUrl(id, index, env, ttlMs = 2 * 60 * 60 * 1000) {
+  const exp = String(Date.now() + ttlMs);
+  const msg = new TextEncoder().encode(`img:${id}:${index}:${exp}`);
+  const sigBytes = new Uint8Array(await crypto.subtle.sign('HMAC', await videoMediaKey(env), msg));
+  const sig = base64url(sigBytes);
+  return `/api/image/content/${encodeURIComponent(id)}?index=${index}&exp=${encodeURIComponent(exp)}&sig=${encodeURIComponent(sig)}&download=1`;
+}
+
+async function verifyImageContentSig(id, index, exp, sig, env) {
+  try {
+    if (!id || !exp || !sig || !Number.isInteger(index) || index < 0 || index >= 20) return false;
+    const expNum = Number(exp);
+    if (!Number.isFinite(expNum) || Date.now() > expNum) return false;
+    const msg = new TextEncoder().encode(`img:${id}:${index}:${exp}`);
+    return await crypto.subtle.verify('HMAC', await videoMediaKey(env), unbase64url(sig), msg);
+  } catch {
+    return false;
+  }
+}
+
+async function attachImageDownloadUrls(generation, env) {
+  if (!generation || generation.status !== 'completed' || !generation.id) return generation;
+  const urls = Array.isArray(generation.image_urls) && generation.image_urls.length > 0
+    ? generation.image_urls
+    : (generation.image_url ? [generation.image_url] : []);
+  if (!urls.length) return generation;
+  const downloadUrls = await Promise.all(urls.map((_, idx) => signImageContentUrl(generation.id, idx, env)));
+  return {
+    ...generation,
+    download_url: downloadUrls[0],
+    ...(urls.length > 1 ? { download_urls: downloadUrls } : {}),
+  };
+}
+
+async function attachImageHistoryDownloads(result, env) {
+  if (!result || !Array.isArray(result.generations)) return result;
+  const generations = await Promise.all(result.generations.map((item) => attachImageDownloadUrls(item, env)));
+  return { ...result, generations };
+}
+
 async function sanitizeGenerationRow(row, env) {
   if (!row) return null;
   const clean = {
@@ -1332,6 +1407,8 @@ async function sanitizeGenerationRow(row, env) {
     progress: row.progress ?? 0,
     result_url: row.result_url,
     error_message: row.error_message,
+    credits_charged: Number(row.credits_charged || 0),
+    credits_refunded: Number(row.credits_refunded || 0),
     metadata: row.metadata || {},
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -2047,6 +2124,11 @@ async function refundImageCredits(env, userId, amount, rowId, description) {
   return creditRpc(env, 'refund_credits', { p_user_id: userId, p_amount: amount, p_description: description, p_generation_id: rowId });
 }
 
+async function refundVideoCredits(env, userId, amount, rowId, description) {
+  if (!Number.isSafeInteger(amount) || amount <= 0) return false;
+  return creditRpc(env, 'refund_credits', { p_user_id: userId, p_amount: amount, p_description: description, p_generation_id: rowId });
+}
+
 // Model gambar Alibaba yang bisa dipilih pengguna: harus aktif di Katalog
 // Model (provider alibaba, active) DAN punya harga kredit BLEA (modality
 // image). Yang belum lengkap disembunyikan supaya tidak menampilkan tombol
@@ -2629,24 +2711,31 @@ async function handleApi(request, url, env) {
       }
       if (!targetUrl) return jsonResponse({ error: 'Video content URL unavailable' }, 404);
 
+      const wantDownload = url.searchParams.get('download') === '1';
+
       if (targetUrl.startsWith('data:')) {
         const comma = targetUrl.indexOf(',');
         const header = targetUrl.slice(5, comma);
         const mime = header.split(';')[0] || 'video/mp4';
         const raw = Uint8Array.from(atob(targetUrl.slice(comma + 1)), (c) => c.charCodeAt(0));
+        const headers = {
+          'content-type': mime,
+          'content-length': String(raw.byteLength),
+          'cache-control': 'private, no-store',
+          'x-content-type-options': 'nosniff',
+        };
+        if (wantDownload) {
+          headers['content-disposition'] = `attachment; filename="${contentAttachmentFilename('blea-video', id, mime, 'mp4')}"`;
+        }
         return new Response(method === 'HEAD' ? null : raw, {
           status: 200,
-          headers: {
-            'content-type': mime,
-            'content-length': String(raw.byteLength),
-            'cache-control': 'private, no-store',
-          },
+          headers,
         });
       }
 
       const upstreamHeaders = {};
       const range = request.headers.get('range');
-      if (range) upstreamHeaders.range = range;
+      if (range && !wantDownload) upstreamHeaders.range = range;
       try {
         const targetHost = new URL(targetUrl).host;
         const apiHost = new URL(apiBase).host;
@@ -2671,8 +2760,143 @@ async function handleApi(request, url, env) {
       }
       if (!respHeaders.has('content-type')) respHeaders.set('content-type', 'video/mp4');
       respHeaders.set('cache-control', 'private, no-store');
+      respHeaders.set('x-content-type-options', 'nosniff');
+      if (wantDownload) {
+        respHeaders.set('content-disposition', `attachment; filename="${contentAttachmentFilename('blea-video', id, respHeaders.get('content-type'), 'mp4')}"`);
+      }
       return new Response(method === 'HEAD' ? null : upstream.body, {
         status: upstream.status,
+        headers: respHeaders,
+      });
+    }
+
+    // ---- GET/HEAD /api/image/content/:id: signed or authorized image download proxy ----
+    if (path.startsWith('image/content/') && (method === 'GET' || method === 'HEAD')) {
+      const id = decodeURIComponent(path.slice('image/content/'.length));
+      if (!id) return jsonResponse({ error: 'Missing generation id' }, 400);
+
+      const rawIndex = url.searchParams.get('index');
+      const index = rawIndex === null || rawIndex === '' ? 0 : Number(rawIndex);
+      if (!Number.isInteger(index) || index < 0 || index >= 20) {
+        return jsonResponse({ error: 'Invalid image index' }, 400);
+      }
+
+      const exp = url.searchParams.get('exp');
+      const sig = url.searchParams.get('sig');
+      const sigOk = await verifyImageContentSig(id, index, exp, sig, env);
+      let user = null;
+      if (!sigOk) {
+        const bearer = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+        user = bearer ? await getUser(env, bearer) : null;
+        if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      const rowRes = await servicePostgrest(
+        env,
+        `/image_generations?select=id,user_id,image_url,metadata,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+      );
+      const rows = await rowRes.json().catch(() => []);
+      const row = rows?.[0];
+      if (!row) return jsonResponse({ error: 'Image not found' }, 404);
+      if (!sigOk && row.user_id !== user.id && user?.app_metadata?.role !== 'admin') {
+        return jsonResponse({ error: 'Forbidden' }, 403);
+      }
+
+      const candidateUrls = [];
+      for (const candidate of [row.image_url, ...(Array.isArray(row.metadata?.image_urls) ? row.metadata.image_urls : [])]) {
+        if (typeof candidate !== 'string') continue;
+        const trimmed = candidate.trim();
+        if (trimmed && !candidateUrls.includes(trimmed)) candidateUrls.push(trimmed);
+      }
+      const targetUrl = candidateUrls[index];
+      if (!targetUrl) return jsonResponse({ error: 'Image content URL unavailable' }, 404);
+
+      const wantDownload = url.searchParams.get('download') !== '0';
+      const suffix = candidateUrls.length > 1 ? `-${index + 1}` : '';
+
+      if (targetUrl.startsWith('data:')) {
+        const comma = targetUrl.indexOf(',');
+        const header = targetUrl.slice(5, comma);
+        const mime = (header.split(';')[0] || 'image/png').trim().toLowerCase();
+        if (!mime.startsWith('image/') || mime === 'image/svg+xml') {
+          return jsonResponse({ error: 'Unsupported image content type' }, 400);
+        }
+        const raw = Uint8Array.from(atob(targetUrl.slice(comma + 1)), (c) => c.charCodeAt(0));
+        return new Response(method === 'HEAD' ? null : raw, {
+          status: 200,
+          headers: {
+            'content-type': mime,
+            'content-length': String(raw.byteLength),
+            'content-disposition': `${wantDownload ? 'attachment' : 'inline'}; filename="${contentAttachmentFilename('blea-image', id, mime, 'png', suffix)}"`,
+            'cache-control': 'private, no-store',
+            'x-content-type-options': 'nosniff',
+          },
+        });
+      }
+
+      if (!isSafeRemoteMediaUrl(targetUrl)) {
+        return jsonResponse({ error: 'Image content URL rejected' }, 400);
+      }
+
+      let currentUrl = targetUrl;
+      let upstream = null;
+      for (let hop = 0; hop <= 3; hop += 1) {
+        upstream = await fetch(currentUrl, {
+          method,
+          redirect: 'manual',
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (upstream.status >= 300 && upstream.status < 400) {
+          const location = upstream.headers.get('location');
+          if (!location || hop === 3) {
+            return jsonResponse({ error: 'Failed to stream upstream image', status: upstream.status }, 502);
+          }
+          const resolved = new URL(location, currentUrl).toString();
+          if (!isSafeRemoteMediaUrl(resolved)) {
+            return jsonResponse({ error: 'Image redirect rejected' }, 400);
+          }
+          currentUrl = resolved;
+          continue;
+        }
+        break;
+      }
+
+      if (!upstream || !upstream.ok) {
+        const text = upstream ? await upstream.text().catch(() => '') : '';
+        return jsonResponse({ error: 'Failed to stream upstream image', status: upstream?.status || 502, detail: text.slice(0, 300) }, 502);
+      }
+
+      const rawType = (upstream.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      let contentType = rawType;
+      if (rawType === 'image/svg+xml') {
+        return jsonResponse({ error: 'Unsupported image content type' }, 502);
+      }
+      if (!rawType.startsWith('image/')) {
+        if (rawType && rawType !== 'application/octet-stream') {
+          return jsonResponse({ error: 'Unexpected upstream content type' }, 502);
+        }
+        const pathLower = new URL(currentUrl).pathname.toLowerCase();
+        contentType = pathLower.endsWith('.jpg') || pathLower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : pathLower.endsWith('.webp')
+            ? 'image/webp'
+            : pathLower.endsWith('.gif')
+              ? 'image/gif'
+              : 'image/png';
+      }
+
+      const respHeaders = new Headers();
+      respHeaders.set('content-type', contentType);
+      const len = upstream.headers.get('content-length');
+      if (len) respHeaders.set('content-length', len);
+      respHeaders.set(
+        'content-disposition',
+        `${wantDownload ? 'attachment' : 'inline'}; filename="${contentAttachmentFilename('blea-image', id, contentType, 'png', suffix)}"`,
+      );
+      respHeaders.set('cache-control', 'private, no-store');
+      respHeaders.set('x-content-type-options', 'nosniff');
+      return new Response(method === 'HEAD' ? null : upstream.body, {
+        status: 200,
         headers: respHeaders,
       });
     }
@@ -3238,10 +3462,14 @@ async function handleApi(request, url, env) {
         const peek = await request.clone().json().catch(() => ({}));
         const provider = String(peek?.provider || 'freebeat').trim().toLowerCase();
         if (provider === 'alibaba' || provider === 'freebeat') {
-          if (provider === 'alibaba') {
-            return jsonResponse({ ok: true, ...(await alibabaImageGenerate(env, user, peek)) });
-          }
-          return jsonResponse({ ok: true, ...(await consumerImageGenerate(env, request, user)) });
+          const result = provider === 'alibaba'
+            ? await alibabaImageGenerate(env, user, peek)
+            : await consumerImageGenerate(env, request, user);
+          return jsonResponse({
+            ok: true,
+            ...result,
+            ...(result?.generation ? { generation: await attachImageDownloadUrls(result.generation, env) } : {}),
+          });
         }
         throw ALIBABA_IMAGE_ERROR('Provider gambar tidak dikenal.', 400);
       } catch (err) {
@@ -3256,15 +3484,21 @@ async function handleApi(request, url, env) {
       try {
         const peek = await request.clone().json().catch(() => ({}));
         const id = typeof peek?.id === 'string' ? peek.id : '';
+        let result = null;
         if (id) {
           const rowRes = await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(user.id)}&select=*&limit=1`).catch(() => null);
           const rows = rowRes?.ok ? await rowRes.json().catch(() => []) : [];
           const row = Array.isArray(rows) ? rows[0] : null;
           if (row?.provider === 'alibaba') {
-            return jsonResponse({ ok: true, ...(await alibabaImageStatus(env, user, row)) });
+            result = await alibabaImageStatus(env, user, row);
           }
         }
-        return jsonResponse({ ok: true, ...(await consumerImageStatus(env, request, user)) });
+        if (!result) result = await consumerImageStatus(env, request, user);
+        return jsonResponse({
+          ok: true,
+          ...result,
+          ...(result?.generation ? { generation: await attachImageDownloadUrls(result.generation, env) } : {}),
+        });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Status gambar tidak tersedia' }, err?.status || 500);
       }
@@ -3275,7 +3509,7 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
       try {
-        return jsonResponse({ ok: true, ...(await consumerImageHistory(env, user)) });
+        return jsonResponse({ ok: true, ...(await attachImageHistoryDownloads(await consumerImageHistory(env, user), env)) });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Riwayat gambar tidak tersedia' }, err?.status || 500);
       }
@@ -3286,12 +3520,20 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
 
-      const [keysRes, modelsRes] = await Promise.all([
+      const [keysRes, modelsRes, pricesRes] = await Promise.all([
         servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label'),
         servicePostgrest(env, '/provider_models?select=provider,model,active&active=eq.true&order=created_at.desc&limit=500'),
+        servicePostgrest(env, '/credit_model_prices?modality=eq.video&active=eq.true&select=provider,model,credits&limit=500').catch(() => null),
       ]);
       const keyRows = await keysRes.json().catch(() => []);
       const dbModelRows = await modelsRes.json().catch(() => []);
+      const videoPriceRows = pricesRes?.ok ? await pricesRes.json().catch(() => []) : [];
+      const videoPriceMap = new Map(
+        (Array.isArray(videoPriceRows) ? videoPriceRows : []).map((row) => [
+          `${String(row?.provider || '').trim().toLowerCase()}:${String(row?.model || '').trim()}`,
+          Number(row?.credits),
+        ]),
+      );
 
       const configuredByProvider = new Map();
       for (const row of keyRows || []) {
@@ -3318,6 +3560,8 @@ async function handleApi(request, url, env) {
         // Skip clearly non-video chat/embedding models on other providers if obvious
         if (/(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama|gemma|qwen|glm|mistral|granite)/i.test(row.model)) continue;
         const profile = getVideoModelProfile(row.model, provider);
+        const creditPrice = videoPriceMap.get(key);
+        const priced = Number.isSafeInteger(creditPrice) && creditPrice > 0;
         merged.set(key, {
           ...profile,
           provider,
@@ -3325,8 +3569,10 @@ async function handleApi(request, url, env) {
           providerConfigured: Boolean(configuredByProvider.get(provider)?.configured),
           activeInAdmin: true,
           online: true,
-          isFree: profile.isFree,
-          priceLabel: profile.priceLabel,
+          credits: priced ? creditPrice : null,
+          priced,
+          isFree: priced ? false : profile.isFree,
+          priceLabel: priced ? `${creditPrice} kredit` : 'Tarif belum diatur',
           description: profile.description,
         });
       }
@@ -3337,14 +3583,18 @@ async function handleApi(request, url, env) {
         const key = `${item.provider}:${item.id}`;
         if (merged.has(key)) continue;
         const provInfo = configuredByProvider.get(item.provider);
+        const creditPrice = videoPriceMap.get(key);
+        const priced = Number.isSafeInteger(creditPrice) && creditPrice > 0;
         merged.set(key, {
           ...item,
           providerLabel: provInfo?.label || PROVIDER_PRESETS[item.provider]?.label || item.provider,
           providerConfigured: Boolean(provInfo?.configured),
           activeInAdmin: false,
           online: true,
-          isFree: item.isFree,
-          priceLabel: item.priceLabel,
+          credits: priced ? creditPrice : null,
+          priced,
+          isFree: priced ? false : item.isFree,
+          priceLabel: priced ? `${creditPrice} kredit` : 'Tarif belum diatur',
           description: item.description,
         });
       }
@@ -3352,6 +3602,7 @@ async function handleApi(request, url, env) {
       const models = Array.from(merged.values()).sort((a, b) => {
         if (a.activeInAdmin !== b.activeInAdmin) return a.activeInAdmin ? -1 : 1;
         if (a.providerConfigured !== b.providerConfigured) return a.providerConfigured ? -1 : 1;
+        if (a.priced !== b.priced) return a.priced ? -1 : 1;
         if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
@@ -3435,25 +3686,60 @@ async function handleApi(request, url, env) {
         }, 400);
       }
 
-      let keyRow = null;
-      let upstreamReq = null;
-      let upstreamRes = null;
-      let rawText = '';
-      let upstreamData = {};
+      const builtRequests = [];
       const triedAccounts = [];
-      let attemptedFetches = 0;
       for (const candidate of keyCandidates) {
         if (!resolveProviderApiBase(provider, candidate.base_url)) {
           if (!isAlibabaGenerate) return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
           triedAccounts.push({ label: candidate.label || 'akun', reason: 'base_url tidak valid' });
           continue;
         }
-        attemptedFetches += 1;
         const req = await buildUpstreamVideoRequest({ provider, baseUrl: candidate.base_url, apiKey: candidate.api_key, payload });
         if (req?.error) {
-          // Input tidak valid — bukan masalah key, tidak perlu rotasi akun.
+          // Input tidak valid — bukan masalah key, tidak perlu rotasi akun atau potong kredit.
           return jsonResponse({ error: req.error }, req.status || 400);
         }
+        builtRequests.push({ candidate, req });
+      }
+      if (!builtRequests.length) {
+        return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
+      }
+
+      // Tarif kredit BLEA wajib diatur admin (credit_model_prices, modality = 'video').
+      const priceRes = await servicePostgrest(
+        env,
+        `/credit_model_prices?provider=eq.${encodeURIComponent(provider)}&model=eq.${encodeURIComponent(model)}&modality=eq.video&active=eq.true&select=credits&limit=1`,
+      ).catch(() => null);
+      const priceRows = priceRes?.ok ? await priceRes.json().catch(() => []) : [];
+      const videoCredits = Number(Array.isArray(priceRows) ? priceRows[0]?.credits : null);
+      if (!Number.isSafeInteger(videoCredits) || videoCredits <= 0) {
+        return jsonResponse({
+          error: `Harga kredit untuk model video "${model}" (${provider}) belum diatur admin. Atur dulu di Kredit → Admin · Harga generasi.`,
+          code: 'video_price_missing',
+        }, 409);
+      }
+
+      const genId = crypto.randomUUID();
+      const spent = await creditRpc(env, 'spend_credits', {
+        p_user_id: user.id,
+        p_amount: videoCredits,
+        p_description: `Generasi video ${provider} model ${model}`,
+        p_generation_id: genId,
+      });
+      if (!spent) {
+        return jsonResponse({
+          error: `Kredit BLEA tidak cukup untuk generasi ini (butuh ${videoCredits} kredit).`,
+          code: 'insufficient_credits',
+          credits_required: videoCredits,
+        }, 402);
+      }
+
+      let keyRow = null;
+      let upstreamReq = null;
+      let upstreamRes = null;
+      let rawText = '';
+      let upstreamData = {};
+      for (const { candidate, req } of builtRequests) {
         let res = null;
         try {
           res = await fetch(req.submitUrl, {
@@ -3468,7 +3754,8 @@ async function handleApi(request, url, env) {
             triedAccounts.push({ label: candidate.label || 'akun Alibaba', reason: 'jaringan gagal' });
             continue;
           }
-          return jsonResponse({ error: `Gagal menghubungi provider (${provider}): ${String(e)}` }, 502);
+          const refunded = await refundVideoCredits(env, user.id, videoCredits, genId, `Refund: generasi video ${provider} (${model}) gagal dihubungi`);
+          return jsonResponse({ error: `Gagal menghubungi provider (${provider}): ${String(e)}${refunded ? ' Kredit BLEA dikembalikan.' : ''}` }, 502);
         }
         const text = await res.text().catch(() => '');
         const data = (() => { try { return JSON.parse(text); } catch { return {}; } })();
@@ -3496,17 +3783,16 @@ async function handleApi(request, url, env) {
       }
 
       if (isAlibabaGenerate && !keyRow) {
-        if (attemptedFetches === 0) {
-          return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
-        }
+        const refunded = await refundVideoCredits(env, user.id, videoCredits, genId, `Refund: semua akun Alibaba (${model}) gagal / kuota penuh`);
         return jsonResponse({
           ok: false,
-          error: `Semua akun Alibaba (${triedAccounts.length || keyCandidates.length}) gagal atau terkena kuota/rate limit. Tambah akun lain di Admin Panel → Alibaba Cloud atau tunggu kuota reset.`,
+          error: `Semua akun Alibaba (${triedAccounts.length || keyCandidates.length}) gagal atau terkena kuota/rate limit. Tambah akun lain di Admin Panel → Alibaba Cloud atau tunggu kuota reset.${refunded ? ' Kredit BLEA dikembalikan.' : ''}`,
           detail: triedAccounts.map((t) => `${t.label}: ${t.reason}`).join('; ').slice(0, 400),
         }, 429);
       }
 
       if (!upstreamRes.ok) {
+        const refunded = await refundVideoCredits(env, user.id, videoCredits, genId, `Refund: generasi video ${provider} (${model}) ditolak (HTTP ${upstreamRes.status})`);
         const detail = redactUpstreamDetail(extractUpstreamError(upstreamData) || rawText.slice(0, 300), 300);
         const statusMsg = upstreamRes.status === 402
           ? 'Saldo / kuota provider tidak mencukupi untuk model ini.'
@@ -3517,7 +3803,7 @@ async function handleApi(request, url, env) {
               : (detail || `Permintaan generate gagal (HTTP ${upstreamRes.status}).`);
         return jsonResponse({
           ok: false,
-          error: statusMsg,
+          error: `${statusMsg}${refunded ? ' Kredit BLEA dikembalikan.' : ''}`,
           upstreamStatus: upstreamRes.status,
           detail,
         }, upstreamRes.status >= 400 && upstreamRes.status < 500 ? upstreamRes.status : 502);
@@ -3535,7 +3821,12 @@ async function handleApi(request, url, env) {
         ? extractUpstreamVideoUrl(upstreamData, apiBase, externalJobId)
         : '';
 
+      const immediateRefund = status === 'failed'
+        ? await refundVideoCredits(env, user.id, videoCredits, genId, `Refund: generasi video ${provider} (${model}) langsung gagal`)
+        : false;
+
       const insertBody = {
+        id: genId,
         user_id: user.id,
         provider,
         model,
@@ -3550,6 +3841,8 @@ async function handleApi(request, url, env) {
         external_job_id: externalJobId || null,
         polling_url: pollingUrl || null,
         provider_key_id: keyRow?.id || null,
+        credits_charged: videoCredits,
+        credits_refunded: immediateRefund ? videoCredits : 0,
         status,
         progress,
         upstream_result_url: immediateContentUrl || null,
@@ -3569,13 +3862,16 @@ async function handleApi(request, url, env) {
         body: insertBody,
       });
       if (!insertRes.ok) {
+        if (!immediateRefund) {
+          await refundVideoCredits(env, user.id, videoCredits, genId, 'Refund: riwayat generasi video tidak tersimpan');
+        }
         const detail = await insertRes.text().catch(() => '');
         return jsonResponse({ error: 'Gagal menyimpan riwayat generate', detail: detail.slice(0, 200) }, 500);
       }
       const inserted = await insertRes.json().catch(() => []);
       const row = inserted?.[0] || insertBody;
       const generation = await sanitizeGenerationRow(row, env);
-      return jsonResponse({ ok: true, generation });
+      return jsonResponse({ ok: true, credits: videoCredits, generation });
     }
 
     // ---- /video/status: poll upstream job status & update Supabase row ----
@@ -3682,9 +3978,16 @@ async function handleApi(request, url, env) {
         ? (redactUpstreamDetail(extractUpstreamError(pollData), 300) || 'Generasi video gagal di server provider.')
         : row.error_message;
 
+      const charged = Number(row.credits_charged || 0);
+      const shouldRefund = ['failed', 'cancelled', 'expired'].includes(nextStatus)
+        && charged > 0
+        && Number(row.credits_refunded || 0) === 0;
+      const patchQuery = shouldRefund
+        ? `/video_generations?id=eq.${encodeURIComponent(row.id)}&credits_refunded=eq.0`
+        : `/video_generations?id=eq.${encodeURIComponent(row.id)}`;
       const patchRes = await servicePostgrest(
         env,
-        `/video_generations?id=eq.${encodeURIComponent(row.id)}`,
+        patchQuery,
         {
           method: 'PATCH',
           headers: { Prefer: 'return=representation' },
@@ -3693,10 +3996,27 @@ async function handleApi(request, url, env) {
             progress: nextProgress,
             ...(upstreamUrl ? { upstream_result_url: upstreamUrl } : {}),
             ...(errMsg ? { error_message: errMsg } : {}),
+            ...(shouldRefund ? { credits_refunded: charged } : {}),
           },
         },
       );
       const patched = patchRes.ok ? await patchRes.json().catch(() => []) : [];
+      if (shouldRefund && Array.isArray(patched) && patched.length > 0) {
+        const refunded = await refundVideoCredits(
+          env,
+          row.user_id,
+          charged,
+          row.id,
+          `Refund: generasi video ${row.provider} (${row.model}) ${nextStatus}`,
+        );
+        if (!refunded && patched[0]) {
+          patched[0].credits_refunded = 0;
+          await servicePostgrest(env, `/video_generations?id=eq.${encodeURIComponent(row.id)}`, {
+            method: 'PATCH',
+            body: { credits_refunded: 0 },
+          }).catch(() => {});
+        }
+      }
       const updated = patched?.[0] || {
         ...row,
         status: nextStatus,

@@ -45,6 +45,15 @@ function installMock({ keyRow, capture = [] } = {}) {
     if (url.startsWith('https://supabase.example/rest/v1/profiles')) {
       return Response.json([{ id: 'user-123', status: 'active' }]);
     }
+    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) {
+      return Response.json([{ provider: 'alibaba', model: 'wan3.0-video', modality: 'video', credits: 60, active: true }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) {
+      return Response.json(true);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/refund_credits')) {
+      return Response.json(true);
+    }
     if (url === `${BASE}/api/v1/services/aigc/video-generation/video-synthesis` && method === 'POST') {
       capture.push({ url, headers: init.headers || {}, body: JSON.parse(init.body || '{}') });
       return Response.json({ request_id: 'req-1', output: { task_id: 'task-wan-1', task_status: 'PENDING' } });
@@ -54,7 +63,7 @@ function installMock({ keyRow, capture = [] } = {}) {
     }
     if (url === 'https://supabase.example/rest/v1/video_generations' && method === 'POST') {
       const payload = JSON.parse(init.body || '{}');
-      storedRow = { id: 'gen-wan-1', created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z', ...payload };
+      storedRow = { ...payload, id: 'gen-wan-1', created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z' };
       return Response.json([storedRow]);
     }
     if (url.startsWith('https://supabase.example/rest/v1/video_generations?select=')) {

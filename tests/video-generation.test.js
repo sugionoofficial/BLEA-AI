@@ -159,13 +159,22 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
         headers: { 'content-type': 'image/png' },
       });
     }
+    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) {
+      return Response.json([{ provider: 'openai', model: 'veo3.1', modality: 'video', credits: 40, active: true }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) {
+      return Response.json(true);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/refund_credits')) {
+      return Response.json(true);
+    }
     if (url === 'https://api.openai.com/v1/videos' && init.method === 'POST') {
       upstreamGenerateBody = JSON.parse(init.body);
       return Response.json({ id: 'job-openai-999', status: 'queued', progress: 10 });
     }
     if (url === 'https://supabase.example/rest/v1/video_generations' && init.method === 'POST') {
       const payload = JSON.parse(init.body);
-      storedRow = { id: 'gen-uuid-1', created_at: '2026-11-18T00:00:00Z', updated_at: '2026-11-18T00:00:00Z', ...payload };
+      storedRow = { ...payload, id: 'gen-uuid-1', created_at: '2026-11-18T00:00:00Z', updated_at: '2026-11-18T00:00:00Z' };
       return Response.json([storedRow]);
     }
     if (url.startsWith('https://supabase.example/rest/v1/video_generations?select=') && (!init?.method || init.method === 'GET')) {
