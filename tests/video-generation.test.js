@@ -53,7 +53,6 @@ test('videoCatalog helpers detect video models, resolve bases, compute sizes, an
   assert.equal(computeVideoSize('1:1', '4k'), '2160x2160');
 
   assert.equal(resolveProviderApiBase('unorouter'), 'https://api.unorouter.com/v1');
-  assert.equal(resolveProviderApiBase('openrouter'), 'https://openrouter.ai/api/v1');
   assert.equal(resolveProviderApiBase('unknown-provider'), '');
   assert.equal(resolveProviderApiBase('custom'), '');
   assert.equal(resolveProviderApiBase('custom', 'https://my-gateway.example/api'), 'https://my-gateway.example/api/v1');
@@ -108,9 +107,9 @@ test('/api/verify validates custom baseUrl provider key via GET /models', async 
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input.url;
-    if (url === 'https://openrouter.ai/api/v1/models') {
-      assert.equal(init.headers.authorization, 'Bearer sk-or-test');
-      return Response.json({ data: [{ id: 'google/veo-3.1' }, { id: 'openai/sora-2' }] });
+    if (url === 'https://aiapiv2.pekpik.com/v1/models') {
+      assert.equal(init.headers.authorization, 'Bearer sk-pek-test');
+      return Response.json({ data: [{ id: 'gpt-5.5' }, { id: 'sora-2' }] });
     }
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
       return Response.json([]);
@@ -119,7 +118,7 @@ test('/api/verify validates custom baseUrl provider key via GET /models', async 
   };
   try {
     const res = await worker.fetch(
-      apiRequest('/api/verify', { body: { provider: 'openrouter', apiKey: 'sk-or-test' } }),
+      apiRequest('/api/verify', { body: { provider: 'pekpik', apiKey: 'sk-pek-test' } }),
       createEnv(),
     );
     assert.equal(res.status, 200);
@@ -152,9 +151,6 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
       if (url.includes('provider=eq.custom')) {
         return Response.json([{ provider: 'custom', api_key: 'custom-secret', base_url: null }]);
       }
-      if (url.includes('provider=eq.openrouter')) {
-        return Response.json([{ provider: 'openrouter', api_key: 'or-secret-key', base_url: 'https://openrouter.ai/api/v1', label: 'OpenRouter' }]);
-      }
       return Response.json([]);
     }
     if (url === 'https://cdn.example/frame.png') {
@@ -166,10 +162,6 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     if (url === 'https://api.openai.com/v1/videos' && init.method === 'POST') {
       upstreamGenerateBody = JSON.parse(init.body);
       return Response.json({ id: 'job-openai-999', status: 'queued', progress: 10 });
-    }
-    if (url === 'https://openrouter.ai/api/v1/videos' && init.method === 'POST') {
-      upstreamGenerateBody = JSON.parse(init.body);
-      return Response.json({ id: 'job-or-777', status: 'in_progress', polling_url: 'https://openrouter.ai/api/v1/videos/job-or-777' });
     }
     if (url === 'https://supabase.example/rest/v1/video_generations' && init.method === 'POST') {
       const payload = JSON.parse(init.body);
@@ -246,27 +238,6 @@ test('/api/video/generate, /api/video/status, and signed /api/video/content/:id 
     assert.ok(upstreamGenerateBody.input_reference.startsWith('data:image/png;base64,'));
     assert.equal(upstreamGenerateBody.size, '1280x720');
     assert.equal(upstreamGenerateBody.duration, 8);
-
-    // 5. OpenRouter job maps frame_images + input_references cleanly
-    const orRes = await worker.fetch(
-      apiRequest('/api/video/generate', {
-        body: {
-          provider: 'openrouter',
-          model: 'google/veo-3.1',
-          prompt: 'Cyberpunk motorcycle chase',
-          aspect_ratio: '9:16',
-          resolution: '1080p',
-          duration: 5,
-          image_url: 'https://cdn.example/frame.png',
-          video_url: 'https://cdn.example/ref.mp4',
-          audio_url: 'https://cdn.example/beat.mp3',
-        },
-      }),
-      env,
-    );
-    assert.equal(orRes.status, 200);
-    assert.equal(upstreamGenerateBody.frame_images[0].image_url.url, 'https://cdn.example/frame.png');
-    assert.equal(upstreamGenerateBody.input_references.length, 2);
 
     // 6. Legacy UnoRouter status polling updates row and returns signed /api/video/content/:id URL
     storedRow.provider = 'unorouter';

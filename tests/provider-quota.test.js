@@ -47,7 +47,7 @@ function installMock({ keyRow, upstream } = {}) {
 test('non-admin ditolak 403', async () => {
   const mock = installMock({ keyRow: null });
   try {
-    const res = await worker.fetch(apiRequest({ provider: 'openrouter' }, 'user-token'), createEnv());
+    const res = await worker.fetch(apiRequest({ provider: 'unorouter' }, 'user-token'), createEnv());
     assert.equal(res.status, 403);
   } finally { mock.restore(); }
 });
@@ -55,31 +55,11 @@ test('non-admin ditolak 403', async () => {
 test('provider tanpa API key tersimpan dilaporkan apa adanya', async () => {
   const mock = installMock({ keyRow: null });
   try {
-    const res = await worker.fetch(apiRequest({ provider: 'openrouter' }), createEnv());
+    const res = await worker.fetch(apiRequest({ provider: 'unorouter' }), createEnv());
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(data.available, false);
     assert.match(data.error, /Belum ada API key/);
-  } finally { mock.restore(); }
-});
-
-test('openrouter: limit & pemakaian dipetakan dari /api/v1/key', async () => {
-  const mock = installMock({
-    keyRow: { provider: 'openrouter', api_key: 'sk-or-test', base_url: 'https://openrouter.ai/api/v1', label: 'OR' },
-    upstream: {
-      urlPrefix: 'https://openrouter.ai/api/v1/key',
-      respond: () => Response.json({ data: { label: 'sk-or-v1-abc', limit: 10, limit_remaining: 6.42, limit_reset: 'monthly', usage: 3.58, usage_daily: 0.12, usage_weekly: 0.87, usage_monthly: 3.58, is_free_tier: true, free_model_daily_requests: { used: 3, limit: 50, remaining: 47 } } }),
-    },
-  });
-  try {
-    const res = await worker.fetch(apiRequest({ provider: 'openrouter' }), createEnv());
-    const data = await res.json();
-    assert.equal(data.supported, true);
-    assert.equal(data.limit, 10);
-    assert.equal(data.limitRemaining, 6.42);
-    assert.equal(data.limitReset, 'monthly');
-    assert.equal(data.usageDaily, 0.12);
-    assert.deepEqual(data.freeRequests, { used: 3, limit: 50, remaining: 47 });
   } finally { mock.restore(); }
 });
 
@@ -114,11 +94,11 @@ test('provider tanpa endpoint kuota (alibaba) dilaporkan supported=false + tauta
 
 test('upstream 401 dilaporkan sebagai key ditolak', async () => {
   const mock = installMock({
-    keyRow: { provider: 'openrouter', api_key: 'sk-or-test', base_url: 'https://openrouter.ai/api/v1', label: 'OR' },
-    upstream: { urlPrefix: 'https://openrouter.ai/api/v1/key', respond: () => new Response('{"error":"unauthorized"}', { status: 401 }) },
+    keyRow: { provider: 'pekpik', api_key: 'sk-pek-test', base_url: 'https://aiapiv2.pekpik.com', label: 'PEKPIK' },
+    upstream: { urlPrefix: 'https://aiapiv2.pekpik.com/api/usage/token/', respond: () => new Response('{"error":"unauthorized"}', { status: 401 }) },
   });
   try {
-    const res = await worker.fetch(apiRequest({ provider: 'openrouter' }), createEnv());
+    const res = await worker.fetch(apiRequest({ provider: 'pekpik' }), createEnv());
     const data = await res.json();
     assert.equal(data.ok, false);
     assert.equal(data.status, 401);

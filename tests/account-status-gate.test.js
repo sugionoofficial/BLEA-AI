@@ -63,7 +63,7 @@ function installMock({ status = 'active', statusMode = 'ok' } = {}) {
 test('akun suspended ditolak di /api/chat sebelum API key provider disentuh', async () => {
   const mock = installMock({ status: 'suspended' });
   try {
-    const res = await worker.fetch(apiRequest('/api/chat', { token: 'suspended-chat', body: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4', messages: [{ role: 'user', content: 'halo' }] } }), createEnv());
+    const res = await worker.fetch(apiRequest('/api/chat', { token: 'suspended-chat', body: { provider: 'pekpik', model: 'anthropic/claude-sonnet-4', messages: [{ role: 'user', content: 'halo' }] } }), createEnv());
     assert.equal(res.status, 403);
     const data = await res.json();
     assert.equal(data.code, 'account_suspended');
@@ -93,7 +93,7 @@ test('akun banned ditolak di /api/image/generate sebelum sesi Freebeat dibuka', 
 test('akun active lolos gerbang dan dilayani seperti biasa', async () => {
   const mock = installMock({ status: 'active' });
   try {
-    const res = await worker.fetch(apiRequest('/api/chat', { token: 'active-chat', body: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4', messages: [{ role: 'user', content: 'halo' }] } }), createEnv());
+    const res = await worker.fetch(apiRequest('/api/chat', { token: 'active-chat', body: { provider: 'pekpik', model: 'anthropic/claude-sonnet-4', messages: [{ role: 'user', content: 'halo' }] } }), createEnv());
     assert.notEqual(res.status, 403);
     const data = await res.json().catch(() => ({}));
     assert.notEqual(data.code, 'account_suspended');
@@ -107,7 +107,7 @@ test('status yang tidak terbaca tidak mengunci user (fail-open, bukan 500)', asy
   for (const statusMode of ['http-error', 'throw', 'bad-json']) {
     const mock = installMock({ statusMode });
     try {
-      const res = await worker.fetch(apiRequest('/api/chat', { token: `failopen-${statusMode}`, body: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4', messages: [{ role: 'user', content: 'halo' }] } }), createEnv());
+      const res = await worker.fetch(apiRequest('/api/chat', { token: `failopen-${statusMode}`, body: { provider: 'pekpik', model: 'anthropic/claude-sonnet-4', messages: [{ role: 'user', content: 'halo' }] } }), createEnv());
       assert.notEqual(res.status, 403, `${statusMode}: tidak boleh 403`);
       assert.notEqual(res.status, 500, `${statusMode}: tidak boleh 500`);
     } finally {
@@ -148,7 +148,7 @@ test('/api/admin/users/action dikecualikan supaya admin bisa memulihkan status',
 test('permintaan tanpa token tetap 401 dari handler, bukan 403 dari gerbang', async () => {
   const mock = installMock({ status: 'suspended' });
   try {
-    const res = await worker.fetch(apiRequest('/api/chat', { token: '', body: { provider: 'openrouter', messages: [] } }), createEnv());
+    const res = await worker.fetch(apiRequest('/api/chat', { token: '', body: { provider: 'pekpik', messages: [] } }), createEnv());
     assert.equal(res.status, 401);
     assert.equal(mock.seen.profiles, 0, 'tanpa token tidak perlu membaca profiles');
   } finally {
@@ -159,8 +159,8 @@ test('permintaan tanpa token tetap 401 dari handler, bukan 403 dari gerbang', as
 test('hasil gerbang di-cache per token: permintaan kedua tidak membaca profiles lagi', async () => {
   const mock = installMock({ status: 'suspended' });
   try {
-    const first = await worker.fetch(apiRequest('/api/chat', { token: 'cached-token', body: { provider: 'openrouter', messages: [] } }), createEnv());
-    const second = await worker.fetch(apiRequest('/api/chat', { token: 'cached-token', body: { provider: 'openrouter', messages: [] } }), createEnv());
+    const first = await worker.fetch(apiRequest('/api/chat', { token: 'cached-token', body: { provider: 'pekpik', messages: [] } }), createEnv());
+    const second = await worker.fetch(apiRequest('/api/chat', { token: 'cached-token', body: { provider: 'pekpik', messages: [] } }), createEnv());
     assert.equal(first.status, 403);
     assert.equal(second.status, 403);
     assert.equal(mock.seen.profiles, 1, 'profiles cukup dibaca sekali dalam jendela cache');

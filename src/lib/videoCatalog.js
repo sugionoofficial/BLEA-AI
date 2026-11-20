@@ -14,14 +14,6 @@ export const PROVIDER_PRESETS = {
     protocol: 'openai_video',
     description: 'Gateway multi-model UnoRouter (/v1/videos)',
   },
-  openrouter: {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    defaultBaseUrl: 'https://openrouter.ai/api',
-    baseUrl: 'https://openrouter.ai/api',
-    protocol: 'openrouter_video',
-    description: 'OpenRouter Video API (/api/v1/videos)',
-  },
   openai: {
     id: 'openai',
     label: 'OpenAI',
@@ -207,38 +199,6 @@ export const BUILTIN_VIDEO_MODELS = [
     description: 'Model video cepat xAI Grok Imagine dengan dukungan teks, gambar, video & audio.',
   },
   {
-    id: 'google/veo-3.1',
-    name: 'Google: Veo 3.1 (OpenRouter)',
-    provider: 'openrouter',
-    vendor: 'Google',
-    isFree: false,
-    priceLabel: 'Berbayar',
-    aspectRatios: ['16:9', '9:16'],
-    resolutions: ['720p', '1080p', '4K'],
-    durations: [4, 6, 8],
-    supportsImage: true,
-    supportsVideo: false,
-    supportsAudioInput: false,
-    supportsAudioOutput: true,
-    description: 'Google Veo 3.1 melalui OpenRouter Video API (/api/v1/videos).',
-  },
-  {
-    id: 'bytedance/seedance-2.0',
-    name: 'ByteDance: Seedance 2.0 (OpenRouter)',
-    provider: 'openrouter',
-    vendor: 'ByteDance',
-    isFree: false,
-    priceLabel: 'Berbayar',
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
-    resolutions: ['480p', '720p', '1080p', '4K'],
-    durations: [4, 5, 6, 8, 10, 12, 15],
-    supportsImage: true,
-    supportsVideo: true,
-    supportsAudioInput: true,
-    supportsAudioOutput: true,
-    description: 'Seedance 2.0 multimodal dengan dukungan gambar, referensi video & audio.',
-  },
-  {
     id: 'wan3.0-video',
     name: 'Alibaba: Wan 3.0 Video',
     provider: 'alibaba',
@@ -253,54 +213,6 @@ export const BUILTIN_VIDEO_MODELS = [
     supportsAudioInput: true,
     supportsAudioOutput: true,
     description: 'Wan 3.0 Video (Model Studio ap-southeast-1): text-to-video, image-to-video (first/last frame, mode frame) ATAU referensi multi-modal (maks 10 foto + 5 video + 5 audio; video/audio total ≤15 dtk; total ≤20) — kedua mode tidak bisa digabung. Base URL workspace wajib diisi di Admin Panel → API Key.',
-  },
-  {
-    id: 'alibaba/wan-2.7',
-    name: 'Alibaba: Wan 2.7 (OpenRouter)',
-    provider: 'openrouter',
-    vendor: 'Alibaba',
-    isFree: false,
-    priceLabel: 'Berbayar',
-    aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
-    resolutions: ['480p', '720p', '1080p'],
-    durations: [5, 10, 15],
-    supportsImage: true,
-    supportsVideo: true,
-    supportsAudioInput: true,
-    supportsAudioOutput: true,
-    description: 'Alibaba Wan 2.7 untuk text-to-video, image-to-video & style guidance.',
-  },
-  {
-    id: 'kwaivgi/kling-3.0',
-    name: 'Kuaishou: Kling 3.0 (OpenRouter)',
-    provider: 'openrouter',
-    vendor: 'Kuaishou',
-    isFree: false,
-    priceLabel: 'Berbayar',
-    aspectRatios: ['16:9', '9:16', '1:1', '21:9'],
-    resolutions: ['720p', '1080p'],
-    durations: [5, 10],
-    supportsImage: true,
-    supportsVideo: true,
-    supportsAudioInput: true,
-    supportsAudioOutput: true,
-    description: 'Kling 3.0 dengan kontrol gerak sinematik dan referensi multimodal.',
-  },
-  {
-    id: 'minimax/hailuo-3',
-    name: 'MiniMax: Hailuo 3 (OpenRouter)',
-    provider: 'openrouter',
-    vendor: 'MiniMax',
-    isFree: false,
-    priceLabel: 'Berbayar',
-    aspectRatios: ['16:9', '9:16', '1:1'],
-    resolutions: ['720p', '1080p', '2K'],
-    durations: [5, 6, 10],
-    supportsImage: true,
-    supportsVideo: true,
-    supportsAudioInput: true,
-    supportsAudioOutput: true,
-    description: 'MiniMax Hailuo 3 mendukung gambar, referensi video & audio hingga 2K.',
   },
 ].map(withAudioFlag);
 
@@ -652,11 +564,6 @@ export function resolveProviderApiBase(provider, baseUrl) {
     .replace(/\/chat\/completions$/i, '')
     .replace(/\/videos(?:\/generations)?$/i, '')
     .replace(/\/+$/, '');
-  if (provider === 'openrouter') {
-    if (base.endsWith('/api/v1') || base.endsWith('/v1')) return base;
-    if (base.endsWith('/api')) return `${base}/v1`;
-    return `${base}/api/v1`;
-  }
   if (provider === 'alibaba') {
     // Model Studio memakai prefix {WorkspaceId}.<region>.maas.aliyuncs.com
     // tanpa akhiran /v1; endpoint dibangun worker dari base apa adanya.

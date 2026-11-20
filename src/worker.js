@@ -1382,7 +1382,7 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
   const refAudios = asUrlList(payload.reference_audios, 5);
 
   // Google Veo & Gemini Omni on UnoRouter/Google/Vertex plugins require inline data URLs
-  if (imageUrl && provider !== 'openrouter' && (provider === 'google' || lowerModel.includes('veo') || lowerModel.includes('gemini-omni'))) {
+  if (imageUrl && (provider === 'google' || lowerModel.includes('veo') || lowerModel.includes('gemini-omni'))) {
     imageUrl = await maybeInlineImage(imageUrl);
   }
 
@@ -1390,35 +1390,7 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
     'content-type': 'application/json',
     authorization: `Bearer ${apiKey}`,
     ...(provider === 'unorouter' ? { 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' } : {}),
-    ...(provider === 'openrouter' ? { 'HTTP-Referer': 'https://blea-ai.blea-ai.workers.dev', 'X-Title': 'BLEA AI' } : {}),
   };
-
-  if (provider === 'openrouter') {
-    const body = {
-      model,
-      prompt: prompt || 'Generate a smooth, natural video guided by the attached media references.',
-      duration,
-      resolution: resolution.toLowerCase(),
-      aspect_ratio: aspectRatio,
-      generate_audio: generateAudio,
-    };
-    if (imageUrl) {
-      body.frame_images = [
-        { type: 'image_url', image_url: { url: imageUrl }, frame_type: 'first_frame' },
-        ...(imageLastUrl ? [{ type: 'image_url', image_url: { url: imageLastUrl }, frame_type: 'last_frame' }] : []),
-      ];
-    }
-    const refs = [];
-    if (videoUrl) refs.push({ type: 'video_url', video_url: { url: videoUrl } });
-    if (audioUrl) refs.push({ type: 'audio_url', audio_url: { url: audioUrl } });
-    if (refs.length) body.input_references = refs;
-    return {
-      submitUrl: `${apiBase}/videos`,
-      headers,
-      body,
-      pollBaseUrl: `${apiBase}/videos`,
-    };
-  }
 
   if (provider === 'alibaba') {
     // Alibaba Model Studio (Wan 3.0): async task API.
@@ -1816,7 +1788,7 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, configured, providers: configuredProviders, workersAiBound: hasWorkersAiBinding(env) });
     }
 
-    // ---- /verify: validate API key for UnoRouter, OpenRouter, Cloudflare Workers AI, or custom provider ----
+    // ---- /verify: validate API key for UnoRouter, Cloudflare Workers AI, or custom provider ----
     if (path === 'verify' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
       const provider = String(body.provider || 'unorouter').trim().toLowerCase();
@@ -1915,7 +1887,7 @@ async function handleApi(request, url, env) {
       }
       const apiKey = body.apiKey ?? '';
       try {
-        // Prefer standard GET /models (supported by OpenRouter, OpenAI, xAI, UnoRouter)
+        // Prefer standard GET /models (supported by OpenAI, xAI, UnoRouter, PEKPIK, etc.)
         const modelsRes = await fetch(`${apiBase}/models`, {
           method: 'GET',
           headers: { authorization: 'Bearer ' + apiKey },
@@ -1935,7 +1907,7 @@ async function handleApi(request, url, env) {
         const r = await fetch(pingUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey },
-          body: JSON.stringify({ model: provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
+          body: JSON.stringify({ model: 'gpt-oss-120b:free', messages: [{ role: 'user', content: 'ping' }] }),
           signal: AbortSignal.timeout(30_000),
         });
         if (r.ok) return jsonResponse({ ok: true, valid: true, verifiedVia: 'chat', modelsCount: 0 });
@@ -1966,7 +1938,6 @@ async function handleApi(request, url, env) {
         kling: 'https://app.klingai.com',
         hailuo: 'https://platform.minimax.io',
         cloudflare: 'https://dash.cloudflare.com',
-        openrouter: 'https://openrouter.ai/keys',
         unorouter: 'https://unorouter.com',
       };
       const keyRow = await fetchProviderKeyRecord(env, provider);
@@ -1977,31 +1948,6 @@ async function handleApi(request, url, env) {
       }
 
       const apiBase = resolveProviderApiBase(provider, keyRow?.base_url);
-
-      // OpenRouter: GET /api/v1/key memakai inference key langsung.
-      if (provider === 'openrouter') {
-        try {
-          const res = await fetch('https://openrouter.ai/api/v1/key', {
-            headers: { authorization: `Bearer ${apiKey}` },
-            signal: AbortSignal.timeout(15_000),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (res.status === 401 || res.status === 403) return jsonResponse({ ok: false, status: res.status, error: 'API key OpenRouter ditolak.' });
-          if (!res.ok) return jsonResponse({ ok: false, status: res.status, error: `Kuota OpenRouter gagal dimuat (HTTP ${res.status}).` });
-          const d = data?.data || {};
-          const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-          return jsonResponse({
-            ok: true, supported: true, provider,
-            label: d.label || 'OpenRouter key',
-            limit: num(d.limit), limitRemaining: num(d.limit_remaining), limitReset: d.limit_reset || null,
-            usage: num(d.usage) ?? 0, usageDaily: num(d.usage_daily) ?? 0, usageWeekly: num(d.usage_weekly) ?? 0, usageMonthly: num(d.usage_monthly) ?? 0,
-            isFreeTier: Boolean(d.is_free_tier),
-            freeRequests: d.free_model_daily_requests && typeof d.free_model_daily_requests === 'object'
-              ? { used: Number(d.free_model_daily_requests.used) || 0, limit: Number(d.free_model_daily_requests.limit) || 0, remaining: Number(d.free_model_daily_requests.remaining) || 0 }
-              : null,
-          });
-        } catch (e) { return jsonResponse({ ok: false, error: `OpenRouter tidak dapat dihubungi (${String(e)}).` }); }
-      }
 
       // Gateway gaya one-api/new-api (UnoRouter, PEKPIK): GET {root}/api/usage/token/
       if (provider === 'unorouter' || provider === 'pekpik') {
@@ -2077,7 +2023,7 @@ async function handleApi(request, url, env) {
       return jsonResponse({ models, modelItems });
     }
 
-    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid), OpenRouter, or Cloudflare Workers AI ----
+    // ---- /catalog: full catalog from UnoRouter (plus Video models free & paid), Cloudflare Workers AI, or generic provider /v1/models ----
     if (path === 'catalog' && (method === 'GET' || method === 'POST')) {
       const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
       const provider = String(body.provider || url.searchParams.get('provider') || 'unorouter').toLowerCase();
@@ -2093,39 +2039,6 @@ async function handleApi(request, url, env) {
             isFree: true,
             online: true,
             priceLabel: 'Gratis 10K Neurons/hr',
-          })),
-        });
-      }
-
-      if (provider === 'openrouter') {
-        try {
-          const upstream = await fetch('https://openrouter.ai/api/v1/videos/models', {
-            signal: AbortSignal.timeout(20_000),
-          });
-          const payload = upstream.ok ? await upstream.json().catch(() => ({})) : {};
-          const list = Array.isArray(payload?.data) ? payload.data : [];
-          const models = list.map((item) => ({
-            id: item.id,
-            provider: 'openrouter',
-            category: 'Video',
-            tags: ['Video', 'OpenRouter'],
-            description: item.description || item.name || '',
-            isFree: false,
-            online: true,
-            priceLabel: item.pricing_skus?.['per-video-second'] ? `$${item.pricing_skus['per-video-second']}/s` : 'Berbayar',
-          }));
-          if (models.length) return jsonResponse({ models });
-        } catch {}
-        return jsonResponse({
-          models: BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'openrouter').map((m) => ({
-            id: m.id,
-            provider: 'openrouter',
-            category: 'Video',
-            tags: ['Video', m.vendor],
-            description: m.description,
-            isFree: m.isFree,
-            online: true,
-            priceLabel: m.priceLabel,
           })),
         });
       }
@@ -2158,7 +2071,7 @@ async function handleApi(request, url, env) {
         return jsonResponse({ models: [...builtin, ...freeQuota] });
       }
 
-      if (provider !== 'unorouter' && provider !== 'openrouter') {
+      if (provider !== 'unorouter') {
         try {
           const keyRow = await fetchProviderKeyRecord(env, provider);
           const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
@@ -2461,42 +2374,7 @@ async function handleApi(request, url, env) {
         });
       }
 
-      // 2. Discoverable OpenRouter video models if OpenRouter is configured
-      if (configuredByProvider.get('openrouter')?.configured) {
-        try {
-          const orRes = await fetch('https://openrouter.ai/api/v1/videos/models', { signal: AbortSignal.timeout(8_000) });
-          if (orRes.ok) {
-            const orData = await orRes.json().catch(() => ({}));
-            for (const item of Array.isArray(orData?.data) ? orData.data : []) {
-              const key = `openrouter:${item.id}`;
-              const profile = getVideoModelProfile(item.id, 'openrouter');
-              const existing = merged.get(key);
-              merged.set(key, {
-                ...profile,
-                ...(existing || {}),
-                id: item.id,
-                name: item.name || profile.name,
-                provider: 'openrouter',
-                providerLabel: configuredByProvider.get('openrouter')?.label || 'OpenRouter',
-                providerConfigured: true,
-                activeInAdmin: Boolean(existing?.activeInAdmin),
-                online: true,
-                aspectRatios: Array.isArray(item.supported_aspect_ratios) && item.supported_aspect_ratios.length
-                  ? item.supported_aspect_ratios : profile.aspectRatios,
-                resolutions: Array.isArray(item.supported_resolutions) && item.supported_resolutions.length
-                  ? item.supported_resolutions : profile.resolutions,
-                durations: Array.isArray(item.supported_durations) && item.supported_durations.length
-                  ? item.supported_durations : profile.durations,
-                priceLabel: item.pricing_skus?.['per-video-second']
-                  ? `$${item.pricing_skus['per-video-second']}/s` : profile.priceLabel,
-                description: item.description || profile.description,
-              });
-            }
-          }
-        } catch {}
-      }
-
-      // 3. Built-in video catalog entries (ensures dropdown always has video options & capabilities)
+      // 2. Built-in video catalog entries (ensures dropdown always has video options & capabilities)
       for (const item of BUILTIN_VIDEO_MODELS) {
         if (item.provider === 'unorouter') continue;
         const key = `${item.provider}:${item.id}`;
