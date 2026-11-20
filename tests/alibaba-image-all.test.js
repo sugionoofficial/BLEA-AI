@@ -39,7 +39,7 @@ function apiRequest(path, { method = 'POST', body, token = 'user-jwt' } = {}) {
   });
 }
 
-function installMock({ baseUrl = BASE_INTL, pollResponse = null } = {}) {
+function installMock({ baseUrl = BASE_INTL, pollResponse = null, role = 'user', prices = PRICES, activeModels = ACTIVE_MODELS } = {}) {
   const realFetch = globalThis.fetch;
   const capture = { submits: [], spends: [], statusRow: null };
   let storedRow = null;
@@ -49,7 +49,7 @@ function installMock({ baseUrl = BASE_INTL, pollResponse = null } = {}) {
     const jsonBody = () => { try { return JSON.parse(init.body || '{}'); } catch { return {}; } };
 
     if (url === 'https://supabase.example/auth/v1/user') {
-      return Response.json({ id: 'user-123', email: 'creator@example.com', app_metadata: { role: 'user' } });
+      return Response.json({ id: 'user-123', email: 'creator@example.com', app_metadata: { role } });
     }
     if (url.startsWith('https://supabase.example/rest/v1/profiles')) return Response.json([{ id: 'user-123', status: 'active' }]);
     if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) {
@@ -57,8 +57,8 @@ function installMock({ baseUrl = BASE_INTL, pollResponse = null } = {}) {
       return Response.json([{ id: 'pool-1', provider: 'alibaba', label: 'Akun', api_key: 'sk-test', base_url: baseUrl, priority: 10, consecutive_failures: 0, cooldown_until: null }]);
     }
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([]);
-    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json(ACTIVE_MODELS);
-    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) return Response.json(PRICES);
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json(activeModels);
+    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) return Response.json(prices);
     if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) { capture.spends.push(jsonBody()); return Response.json(true); }
     if (url.startsWith('https://supabase.example/rest/v1/rpc/refund_credits')) return Response.json(true);
     if (url.startsWith('https://supabase.example/rest/v1/image_generations')) {
@@ -324,6 +324,101 @@ test('GenerateImagePanel: input upload hanya muncul saat model memiliki maxInput
     assert.match(document.body.textContent, /Gambar sumber \(wajib\)/);
   } finally {
     await React.act(async () => root.unmount());
+    supabase.auth.getSession = oldGet; supabase.auth.onAuthStateChange = oldOn; globalThis.fetch = oldFetch;
+    await supabase.auth.dispose();
+    await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.localStorage; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('/api/image/config: admin melihat alibaba_unpriced bila model aktif belum punya harga; seluruh 21 model muncul setelah berharga', async () => {
+  const { ALIBABA_FREE_QUOTA_MODELS } = await import('../src/lib/alibabaFreeQuota.js');
+  const allImageIds = ALIBABA_FREE_QUOTA_MODELS.filter((m) => m.blea === 'image').map((m) => m.id);
+  const allActive = allImageIds.map((model) => ({ provider: 'alibaba', model }));
+
+  // 1. Admin tanpa harga kredit untuk Alibaba: models masih hanya Freebeat, tetapi admin mendapat alibaba_unpriced
+  const mockAdminUnpriced = installMock({ role: 'admin', activeModels: allActive, prices: [] });
+  try {
+    const res = await worker.fetch(apiRequest('/api/image/config', { method: 'GET' }), createEnv());
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.models.filter((m) => m.provider === 'alibaba').length, 0);
+    assert.equal(data.alibaba_unpriced.length, 21);
+  } finally {
+    mockAdminUnpriced.restore();
+  }
+
+  // 2. User biasa tidak mendapat detail alibaba_unpriced
+  const mockUserUnpriced = installMock({ role: 'user', activeModels: allActive, prices: [] });
+  try {
+    const res = await worker.fetch(apiRequest('/api/image/config', { method: 'GET' }), createEnv());
+    const data = await res.json();
+    assert.equal(data.alibaba_unpriced, undefined);
+  } finally {
+    mockUserUnpriced.restore();
+  }
+
+  // 3. Semua 21 model aktif + berharga -> seluruh 21 muncul alongside Freebeat
+  const allPrices = allImageIds.map((model) => ({ provider: 'alibaba', model, credits: 15 }));
+  const mockAllPriced = installMock({ role: 'admin', activeModels: allActive, prices: allPrices });
+  try {
+    const res = await worker.fetch(apiRequest('/api/image/config', { method: 'GET' }), createEnv());
+    const data = await res.json();
+    assert.equal(data.alibaba_unpriced, undefined);
+    assert.equal(data.models.filter((m) => m.provider === 'alibaba').length, 21);
+    assert.ok(data.models.some((m) => m.provider === 'freebeat'));
+  } finally {
+    mockAllPriced.restore();
+  }
+});
+
+test('GenerateImagePanel: tampilkan pengingat admin saat ada model Alibaba aktif tanpa harga kredit', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/generate' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.localStorage = dom.window.localStorage;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', resolve: { alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }] } });
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { GenerateImagePanel } = await vite.ssrLoadModule('/src/auth/GenerateImagePanel.jsx');
+  const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
+  const session = { access_token: 'mock', user: { id: 'admin-1', email: 'admin@example.com', app_metadata: { role: 'admin' }, user_metadata: {} } };
+  const oldGet = supabase.auth.getSession, oldOn = supabase.auth.onAuthStateChange, oldFetch = globalThis.fetch;
+  supabase.auth.getSession = async () => ({ data: { session } });
+  supabase.auth.onAuthStateChange = () => ({ data: { subscription: { unsubscribe() {} } } });
+  globalThis.fetch = async (url) => {
+    if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'admin' });
+    if (url === '/api/image/config') {
+      return Response.json({
+        ok: true,
+        model_id: 122,
+        credits: 15,
+        provider_ready: true,
+        models: [
+          { provider: 'freebeat', model: '122', name: 'Freebeat: model 122', credits: 15, ready: true, params: null },
+        ],
+        alibaba_unpriced: [
+          { model: 'wan2.7-image', name: 'Alibaba: Wan 2.7 Image' },
+          { model: 'qwen-image-3.0', name: 'Alibaba: Qwen-Image 3.0' },
+        ],
+      });
+    }
+    if (url === '/api/image/history') return Response.json({ ok: true, generations: [] });
+    if (String(url).includes('/rest/v1/credit_wallets')) return Response.json({ balance: 500 });
+    return Response.json({});
+  };
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await React.act(async () => root.render(
+      React.createElement(MemoryRouter, { initialEntries: ['/generate'] },
+        React.createElement(AuthProvider, { initialSession: session }, React.createElement(GenerateImagePanel))),
+    ));
+    assert.match(document.body.textContent, /2 model gambar Alibaba sudah aktif di Katalog Model tetapi belum punya harga kredit BLEA/);
+    assert.ok(document.querySelector('a[href="/credits"]'));
+  } finally {
+    await React.act(async () => root.unmount());
+    await new Promise((resolve) => setTimeout(resolve, 25));
     supabase.auth.getSession = oldGet; supabase.auth.onAuthStateChange = oldOn; globalThis.fetch = oldFetch;
     await supabase.auth.dispose();
     await vite.close(); dom.window.close();

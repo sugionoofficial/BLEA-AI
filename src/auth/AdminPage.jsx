@@ -1,6 +1,8 @@
 import { adminUserAction, adminUserRoles } from '../api/adminUsers';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { AlibabaCloudPanel } from './AlibabaCloudPanel';
+import { ALIBABA_FREE_QUOTA_MODELS } from '../lib/alibabaFreeQuota';
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -150,6 +152,10 @@ const dateFormat = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'sh
 const formatDate = (value) => (value ? dateFormat.format(new Date(value)) : '—');
 const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
 
+const ALIBABA_SUPPORTED_IMAGE_IDS = new Set(
+  ALIBABA_FREE_QUOTA_MODELS.filter((m) => m.blea === 'image').map((m) => m.id),
+);
+
 function isWithinDays(value, days) {
   if (!value) return false;
   const ts = new Date(value).getTime();
@@ -185,6 +191,8 @@ export function AdminPage() {
   const [newProvider, setNewProvider] = useState({ provider: '', label: '', base_url: '' });
   const [catalogProvider, setCatalogProvider] = useState('');
   const [unoModels, setUnoModels] = useState([]);
+  const [imagePrices, setImagePrices] = useState({});
+  const [bulkImageCredits, setBulkImageCredits] = useState('15');
   const [customModels, setCustomModels] = useState([]);
   const [newCustomModel, setNewCustomModel] = useState({ provider: '', model: '' });
   const [modelsLoaded, setModelsLoaded] = useState(false);
@@ -321,19 +329,29 @@ export function AdminPage() {
   const loadCatalogModels = useCallback(async (targetProvider = catalogProvider) => {
     if (!targetProvider) {
       setUnoModels([]);
+      setImagePrices({});
       setModelsLoaded(false);
       setModelNotice({ type: 'error', text: 'Belum ada provider terdaftar. Tambahkan provider terlebih dahulu.' });
       return;
     }
     setModelBusy('load');
     setModelNotice({ type: 'info', text: `Memuat daftar model dari ${PROVIDER_PRESETS[targetProvider]?.label || targetProvider}...` });
-    const [catalog, dbModels] = await Promise.all([
+    const [catalog, dbModels, pricesRes] = await Promise.all([
       fetchCatalog({ provider: targetProvider }),
       fetchAdminModels({}),
-      supabase.from('credit_wallets').select('user_id,balance').limit(1000),
+      supabase
+        .from('credit_model_prices')
+        .select('model,modality,credits,active')
+        .eq('provider', targetProvider)
+        .eq('modality', 'image'),
     ]);
     const allDbModels = dbModels.models || [];
     setCustomModels(allDbModels);
+    const priceMap = {};
+    for (const row of pricesRes?.data || []) {
+      priceMap[row.model] = { credits: row.credits, active: row.active === true };
+    }
+    setImagePrices(priceMap);
 
     const activeMap = new Map(
       allDbModels
@@ -612,13 +630,59 @@ export function AdminPage() {
     setModelBusy('save');
     const { data, status } = await saveProviderModels({ provider: catalogProvider, models: active });
     if (data?.ok) {
-      setModelNotice({ type: 'success', text: `${data.activeCount} model aktif untuk ${catalogProvider} disimpan.` });
+      const unpricedActiveImages = catalogProvider === 'alibaba'
+        ? unoModels.filter((m) => m.active && (m.blea === 'image' || ALIBABA_SUPPORTED_IMAGE_IDS.has(m.id)) && !(imagePrices[m.id]?.active && Number(imagePrices[m.id]?.credits) > 0))
+        : [];
+      setModelNotice({
+        type: 'success',
+        text: unpricedActiveImages.length > 0
+          ? `${data.activeCount} model aktif untuk ${catalogProvider} disimpan. ${unpricedActiveImages.length} model gambar aktif belum memiliki harga kredit — atur harga di bawah agar tampil di Generate Gambar.`
+          : `${data.activeCount} model aktif untuk ${catalogProvider} disimpan.`,
+      });
       await loadData();
     } else {
       const msg = status === 401
         ? 'Sesi expired — login lagi sebelum menyimpan pilihan model.'
         : data?.error || `Penyimpanan model gagal (HTTP ${status ?? '—'}). Cek permission admin.`;
       setModelNotice({ type: 'error', text: msg });
+    }
+    setModelBusy('');
+  }
+
+  async function applyBulkAlibabaImagePrices({ onlyMissing = true } = {}) {
+    const credits = Number(bulkImageCredits);
+    if (!Number.isInteger(credits) || credits < 1 || credits > 1000000000) {
+      setModelNotice({ type: 'error', text: 'Masukkan biaya kredit bilangan bulat minimal 1.' });
+      return;
+    }
+    const activeSupported = unoModels.filter((m) => m.active && (m.blea === 'image' || ALIBABA_SUPPORTED_IMAGE_IDS.has(m.id)));
+    const targets = onlyMissing
+      ? activeSupported.filter((m) => !(imagePrices[m.id]?.active && Number(imagePrices[m.id]?.credits) > 0))
+      : activeSupported;
+    if (!targets.length) {
+      setModelNotice({ type: 'info', text: 'Semua model gambar Alibaba aktif sudah memiliki harga kredit.' });
+      return;
+    }
+    setModelBusy('bulk-price');
+    const rows = targets.map((m) => ({
+      provider: 'alibaba',
+      model: m.id,
+      modality: 'image',
+      credits,
+      active: true,
+    }));
+    const { error } = await supabase
+      .from('credit_model_prices')
+      .upsert(rows, { onConflict: 'provider,model,modality' });
+    if (error) {
+      setModelNotice({ type: 'error', text: `Gagal menyimpan harga kredit: ${error.message}` });
+    } else {
+      setImagePrices((cur) => {
+        const next = { ...cur };
+        for (const r of rows) next[r.model] = { credits, active: true };
+        return next;
+      });
+      setModelNotice({ type: 'success', text: `Harga ${credits} kredit BLEA diterapkan untuk ${rows.length} model gambar Alibaba.` });
     }
     setModelBusy('');
   }
@@ -1192,40 +1256,99 @@ export function AdminPage() {
                           <div className="admin-model-list" style={{ maxHeight: 380, overflowY: 'auto' }}>
                             {unoModels
                               .filter((model) => (modelFilter === 'All' || model.category === modelFilter) && model.id.toLowerCase().includes(modelQuery.toLowerCase()))
-                              .map((model) => (
-                                <div className="admin-model-row" key={`${model.provider || catalogProvider}-${model.id}`}>
-                                  <span className="admin-model-info">
-                                    <span className="admin-model-name">
-                                      {model.id}
-                                      {model.priceLabel && (
-                                        <span className={`admin-model-badge ${model.isFree ? 'is-free' : 'is-paid'}`}>
-                                          {model.priceLabel}
-                                        </span>
-                                      )}
-                                      {model.online === false && <span className="admin-model-badge">Sibuk</span>}
+                              .map((model) => {
+                                const isSupportedAliImage = catalogProvider === 'alibaba' && (model.blea === 'image' || ALIBABA_SUPPORTED_IMAGE_IDS.has(model.id));
+                                const imgPrice = isSupportedAliImage ? imagePrices[model.id] : null;
+                                const hasImgPrice = Boolean(imgPrice?.active && Number(imgPrice?.credits) > 0);
+                                return (
+                                  <div className="admin-model-row" key={`${model.provider || catalogProvider}-${model.id}`}>
+                                    <span className="admin-model-info">
+                                      <span className="admin-model-name">
+                                        {model.id}
+                                        {model.priceLabel && (
+                                          <span className={`admin-model-badge ${model.isFree ? 'is-free' : 'is-paid'}`}>
+                                            {model.priceLabel}
+                                          </span>
+                                        )}
+                                        {isSupportedAliImage && hasImgPrice && (
+                                          <span className="admin-model-badge is-free">{imgPrice.credits} kredit BLEA</span>
+                                        )}
+                                        {isSupportedAliImage && model.active && !hasImgPrice && (
+                                          <span className="admin-model-badge is-paid">Perlu harga kredit</span>
+                                        )}
+                                        {model.online === false && <span className="admin-model-badge">Sibuk</span>}
+                                      </span>
+                                      <span className="admin-model-tags">
+                                        {model.category}
+                                        {model.tags?.length ? ' · ' + model.tags.slice(0, 3).join(' · ') : ''}
+                                      </span>
                                     </span>
-                                    <span className="admin-model-tags">
-                                      {model.category}
-                                      {model.tags?.length ? ' · ' + model.tags.slice(0, 3).join(' · ') : ''}
-                                    </span>
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className={`admin-model-toggle ${model.active ? 'is-active' : 'is-off'}`}
-                                    onClick={() => toggleUnoModel(model.id)}
-                                    aria-pressed={model.active}
-                                  >
-                                    <span className="admin-model-dot" />
-                                    {model.active ? 'Active' : 'OFF'}
-                                  </button>
-                                </div>
-                              ))}
+                                    <button
+                                      type="button"
+                                      className={`admin-model-toggle ${model.active ? 'is-active' : 'is-off'}`}
+                                      onClick={() => toggleUnoModel(model.id)}
+                                      aria-pressed={model.active}
+                                    >
+                                      <span className="admin-model-dot" />
+                                      {model.active ? 'Active' : 'OFF'}
+                                    </button>
+                                  </div>
+                                );
+                              })}
                           </div>
                           <div className="admin-api-input-row" style={{ marginTop: 12 }}>
                             <button type="button" className="admin-api-save" onClick={saveUnoModels} disabled={modelBusy === 'save'}>
                               {modelBusy === 'save' ? 'Menyimpan...' : `Simpan pilihan model (${catalogProvider})`}
                             </button>
                           </div>
+                          {catalogProvider === 'alibaba' && (() => {
+                            const activeSupportedImages = unoModels.filter((m) => m.active && (m.blea === 'image' || ALIBABA_SUPPORTED_IMAGE_IDS.has(m.id)));
+                            if (!activeSupportedImages.length) return null;
+                            const missingCount = activeSupportedImages.filter((m) => !(imagePrices[m.id]?.active && Number(imagePrices[m.id]?.credits) > 0)).length;
+                            return (
+                              <div className={`admin-api-notice ${missingCount > 0 ? 'is-info' : 'is-success'}`} style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+                                <span>
+                                  {missingCount > 0
+                                    ? `${missingCount} dari ${activeSupportedImages.length} model gambar Alibaba aktif belum punya harga kredit BLEA sehingga belum muncul di Generate Gambar.`
+                                    : `Semua ${activeSupportedImages.length} model gambar Alibaba aktif sudah memiliki harga kredit BLEA dan tampil di Generate Gambar.`}
+                                </span>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="1000000000"
+                                    step="1"
+                                    value={bulkImageCredits}
+                                    onChange={(e) => setBulkImageCredits(e.target.value)}
+                                    aria-label="Kredit default model gambar Alibaba"
+                                    style={{ width: 96, padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--background)', color: 'inherit' }}
+                                  />
+                                  <span>kredit / gambar</span>
+                                  {missingCount > 0 && (
+                                    <button
+                                      type="button"
+                                      className="admin-api-save"
+                                      disabled={modelBusy === 'bulk-price'}
+                                      onClick={() => applyBulkAlibabaImagePrices({ onlyMissing: true })}
+                                    >
+                                      {modelBusy === 'bulk-price' ? 'Menyimpan...' : `Isi harga ${missingCount} model yang belum ada`}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="admin-api-verify"
+                                    disabled={modelBusy === 'bulk-price'}
+                                    onClick={() => applyBulkAlibabaImagePrices({ onlyMissing: false })}
+                                  >
+                                    Terapkan ke semua ({activeSupportedImages.length}) model aktif
+                                  </button>
+                                  <Link to="/credits" className="admin-api-verify" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>
+                                    Atur per model di Kredit
+                                  </Link>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </>
                       )}
                     </>

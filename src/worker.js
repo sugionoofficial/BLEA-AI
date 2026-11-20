@@ -2050,11 +2050,12 @@ async function refundImageCredits(env, userId, amount, rowId, description) {
 // Model gambar Alibaba yang bisa dipilih pengguna: harus aktif di Katalog
 // Model (provider alibaba, active) DAN punya harga kredit BLEA (modality
 // image). Yang belum lengkap disembunyikan supaya tidak menampilkan tombol
-// yang pasti gagal.
-async function alibabaImageCatalog(env) {
+// yang pasti gagal. Untuk admin, kembalikan juga daftar model aktif tanpa
+// harga agar admin tahu kenapa belum muncul di Generate Gambar.
+async function loadAlibabaImageCatalogState(env) {
   const [modelsRes, pricesRes] = await Promise.all([
-    servicePostgrest(env, '/provider_models?select=model&provider=eq.alibaba&active=eq.true&limit=100'),
-    servicePostgrest(env, '/credit_model_prices?provider=eq.alibaba&modality=eq.image&active=eq.true&select=model,credits&limit=100'),
+    servicePostgrest(env, '/provider_models?select=model&provider=eq.alibaba&active=eq.true&limit=500'),
+    servicePostgrest(env, '/credit_model_prices?provider=eq.alibaba&modality=eq.image&active=eq.true&select=model,credits&limit=500'),
   ]);
   const activeRows = modelsRes?.ok ? await modelsRes.json().catch(() => []) : [];
   const priceRows = pricesRes?.ok ? await pricesRes.json().catch(() => []) : [];
@@ -2062,7 +2063,7 @@ async function alibabaImageCatalog(env) {
   const prices = new Map((priceRows || []).map((row) => [String(row?.model || ''), Number(row?.credits)]));
   const candidates = await alibabaKeyCandidates(env).catch(() => []);
   const ready = candidates.length > 0;
-  return ALIBABA_IMAGE_MODELS
+  const models = ALIBABA_IMAGE_MODELS
     .filter((spec) => active.has(spec.id) && Number.isSafeInteger(prices.get(spec.id)) && prices.get(spec.id) > 0)
     .map((spec) => ({
       provider: 'alibaba',
@@ -2097,6 +2098,15 @@ async function alibabaImageCatalog(env) {
             requiresImageInput: Boolean(spec.requiresImageInput),
           },
     }));
+  const unpriced = ALIBABA_IMAGE_MODELS
+    .filter((spec) => active.has(spec.id) && !(Number.isSafeInteger(prices.get(spec.id)) && prices.get(spec.id) > 0))
+    .map((spec) => ({ model: spec.id, name: spec.name }));
+  return { models, unpriced };
+}
+
+async function alibabaImageCatalog(env) {
+  const { models } = await loadAlibabaImageCatalogState(env);
+  return models;
 }
 
 function buildAlibabaImageUpstreamRequest(spec, { prompt, size, n, images, base }) {
@@ -2948,6 +2958,7 @@ async function handleApi(request, url, env) {
           id: m.id,
           provider: 'alibaba',
           category: 'Video',
+          blea: 'video',
           tags: ['Video', 'Alibaba'],
           description: m.description,
           isFree: m.isFree,
@@ -2960,6 +2971,7 @@ async function handleApi(request, url, env) {
             id: m.id,
             provider: 'alibaba',
             category: m.category,
+            blea: m.blea || null,
             tags: [m.category, 'Alibaba', 'Free Quota'],
             description: `${m.name} — free quota: ${m.freeQuota}. ${m.note || ''}`.trim(),
             isFree: true,
@@ -3187,6 +3199,7 @@ async function handleApi(request, url, env) {
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
       try {
         const config = await consumerImageConfig(env);
+        const aliState = await loadAlibabaImageCatalogState(env).catch(() => ({ models: [], unpriced: [] }));
         const models = [
           {
             provider: 'freebeat',
@@ -3196,9 +3209,15 @@ async function handleApi(request, url, env) {
             ready: config?.provider_ready === true && Number.isSafeInteger(config?.credits),
             params: null,
           },
-          ...(await alibabaImageCatalog(env).catch(() => [])),
+          ...aliState.models,
         ];
-        return jsonResponse({ ok: true, ...config, models });
+        const isCallerAdmin = user?.app_metadata?.role === 'admin';
+        return jsonResponse({
+          ok: true,
+          ...config,
+          models,
+          ...(isCallerAdmin && aliState.unpriced.length > 0 ? { alibaba_unpriced: aliState.unpriced } : {}),
+        });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Konfigurasi gambar tidak tersedia' }, err?.status || 500);
       }
