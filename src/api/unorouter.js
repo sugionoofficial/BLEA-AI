@@ -223,6 +223,11 @@ export async function githubTool(name, args = {}) {
   return data;
 }
 
+// Admin panel — sisa kuota/saldo API key provider (server-side; admin only).
+export async function fetchProviderQuota(provider) {
+  return edgeRequest('/provider-quota', { provider });
+}
+
 export async function verifyKey({ provider = 'unorouter', apiKey, baseUrl }) {
   return edgeRequest('/verify', { provider, apiKey, baseUrl });
 }
