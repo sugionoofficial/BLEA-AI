@@ -6,14 +6,21 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dropx-shell .generate-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 12px 16px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   border-radius: var(--radius-xl);
   border: 1px solid rgb(245 158 11 / 0.35);
   background: rgb(245 158 11 / 0.1);
@@ -56,6 +63,13 @@
   grid-template-columns: minmax(0, 1.18fr) minmax(0, 0.95fr);
   gap: 18px;
   align-items: start;
+  width: 100%;
+  min-width: 0;
+}
+
+.dropx-shell .generate-grid > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dropx-shell .generate-card {
@@ -67,6 +81,11 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
   box-shadow: var(--shadow-card);
 }
 
@@ -74,9 +93,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
+  min-width: 0;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
+}
+
+.dropx-shell .generate-card-head > div {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 180px;
 }
 
 .dropx-shell .generate-card-title {
@@ -93,6 +120,7 @@
   margin: 3px 0 0;
   font-size: 12.5px;
   color: var(--muted-foreground);
+  overflow-wrap: anywhere;
 }
 
 /* Field wrappers */
@@ -100,13 +128,22 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dropx-shell .generate-field input[type="file"] {
+  max-width: 100%;
+  width: 100%;
 }
 
 .dropx-shell .generate-label-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
 }
 
 .dropx-shell .generate-label {
@@ -124,6 +161,9 @@
 .dropx-shell .generate-select,
 .dropx-shell .generate-textarea {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   background: var(--card);
   color: var(--foreground);
   border: 1px solid var(--border);
@@ -132,6 +172,11 @@
   font-size: 13.5px;
   font-family: inherit;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.dropx-shell .generate-select {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dropx-shell .generate-select:focus,
@@ -149,8 +194,9 @@
 
 .dropx-shell .generate-params-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 .dropx-shell .generate-model-meta {
@@ -158,12 +204,19 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dropx-shell .generate-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 3px 9px;
   border-radius: 999px;
   font-size: 11px;
@@ -202,6 +255,8 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dropx-shell .generate-upload-box {
@@ -212,6 +267,10 @@
   gap: 8px;
   padding: 12px;
   min-height: 140px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
   border-radius: var(--radius-lg);
   border: 1px dashed var(--border);
   background: var(--muted);
@@ -288,6 +347,8 @@
 
 .dropx-shell .generate-preview-audio {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   height: 36px;
 }
 
@@ -296,6 +357,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
   font-size: 11px;
   color: var(--muted-foreground);
 }
@@ -304,7 +366,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 120px;
+  flex: 1;
+  min-width: 0;
 }
 
 .dropx-shell .generate-clear-btn {
@@ -431,6 +494,8 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dropx-shell .generate-player-frame {
@@ -461,7 +526,8 @@
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  max-width: 340px;
+  max-width: min(100%, 340px);
+  overflow-wrap: anywhere;
 }
 
 .dropx-shell .generate-empty-stage strong {
@@ -672,9 +738,11 @@
 
 .dropx-shell .generate-model-desc {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 @keyframes gen-spin {
@@ -739,6 +807,8 @@
   gap: 10px;
   max-height: 460px;
   overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
   padding-right: 4px;
 }
 
@@ -747,6 +817,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: var(--muted);
@@ -763,7 +836,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .dropx-shell .generate-history-prompt {
@@ -771,6 +846,7 @@
   font-size: 13px;
   color: var(--foreground);
   line-height: 1.45;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -789,6 +865,7 @@
 
 .dropx-shell .generate-history-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
@@ -814,13 +891,13 @@
 
 @media (max-width: 1024px) {
   .dropx-shell .generate-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 @media (max-width: 640px) {
   .dropx-shell .generate-media-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
   }
 
@@ -830,8 +907,10 @@
   }
 
   .dropx-shell .generate-params-grid .generate-select {
-    font-size: 13px;
+    font-size: 14px;
     padding: 7px 6px;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .dropx-shell .generate-mode-tabs {
@@ -843,6 +922,8 @@
     padding: 7px 10px;
     font-size: 12.5px;
     flex: 1 1 0;
+    min-width: 0;
+    white-space: normal;
     justify-content: center;
     text-align: center;
   }
@@ -851,13 +932,17 @@
     flex-direction: column;
     align-items: stretch;
   }
+
+  .dropx-shell .generate-history-list {
+    padding-right: 0;
+  }
 }
 
-.dropx-shell .generate-mode-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.dropx-shell .generate-mode-tabs{display:flex;gap:8px;flex-wrap:wrap;min-width:0}
 .dropx-shell .generate-mode-tabs button{min-height:40px;padding:9px 16px;border:1px solid var(--border);border-radius:9px;background:var(--card);color:var(--foreground);font-weight:700;cursor:pointer}
 .dropx-shell .generate-mode-tabs button[aria-selected="true"]{background:var(--primary-600);border-color:var(--primary-600);color:#fff}
 .dropx-shell .generate-mode-tabs button:focus-visible{outline:3px solid var(--ring);outline-offset:2px}
-.dropx-shell .generate-image-panel{width:100%;max-width:900px;box-sizing:border-box;margin:0;}
+.dropx-shell .generate-image-panel{width:100%;min-width:0;max-width:900px;box-sizing:border-box;margin:0;overflow-x:hidden}
 .generate-source-preview{margin-top:10px}
 .generate-source-preview img{max-width:180px;max-height:180px;border-radius:10px;border:1px solid var(--border);display:block}
 
@@ -866,29 +951,37 @@
   flex-direction: column;
   gap: 12px;
   margin-top: 6px;
+  min-width: 0;
 }
 .generate-ref-row {
   border: 1px dashed var(--border, #2a2a2a);
   border-radius: 12px;
   padding: 10px 12px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .generate-ref-row-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
 }
 .generate-ref-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+  min-width: 0;
 }
 .generate-ref-chip {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: 220px;
+  max-width: min(100%, 220px);
+  min-width: 0;
   padding: 4px 10px 4px 4px;
   border: 1px solid var(--border, #2a2a2a);
   border-radius: 999px;

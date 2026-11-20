@@ -117,6 +117,8 @@
 .dropx-shell {
   display: flex;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   font-family: var(--font-sans);
   font-size: 14px;
@@ -453,12 +455,16 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .dropx-header {
   position: sticky;
   top: 0;
-  z-index: 30;
+  z-index: 40;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -727,8 +733,11 @@
 .dropx-content {
   flex: 1;
   min-width: 0;
-  overflow-x: hidden;
+  min-height: 0;
+  overflow-x: clip;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
   padding: 16px 24px;
 }
 
@@ -1529,7 +1538,7 @@ a.dropx-recent-row:hover {
   .dx-grid-2,
   .dx-grid-3,
   .dx-grid-7 {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dx-grid-4 {
@@ -1667,6 +1676,19 @@ a.dropx-recent-row:hover {
 
 /* ---------- Responsive: sidebar becomes overlay drawer ---------- */
 @media (max-width: 1023px) {
+  .dropx-header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    z-index: 45;
+  }
+
+  .dropx-main {
+    padding-top: 68px;
+  }
+
   .dropx-sidebar {
     transform: translateX(-100%);
   }
