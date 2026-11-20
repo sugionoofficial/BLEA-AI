@@ -1,4 +1,5 @@
 import {
+  Activity,
   Clapperboard,
   Coins,
   LayoutDashboard,
@@ -34,6 +35,13 @@ export const navigation = [
         icon: Clapperboard,
         description: 'Generate gambar dan video AI',
         keywords: ['generate', 'gambar', 'image', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
+      },
+      {
+        title: 'Proses Live',
+        href: '/live',
+        icon: Activity,
+        description: 'Pantau proses generate aktif secara langsung',
+        keywords: ['live', 'proses', 'antrean', 'queue', 'berjalan', 'runtime', 'cancel'],
       },
       {
         title: 'Kredit',

@@ -13,6 +13,7 @@ import {
 import { useAuth } from './AuthProvider';
 import { useCredits } from '../lib/useCredits';
 import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
+import { formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
 import { ModelSelect } from './ModelSelect';
 import './generate.css';
 import './history.css';
@@ -23,6 +24,7 @@ const STATUS_LABEL = {
   processing: 'Sedang diproses',
   completed: 'Selesai',
   failed: 'Gagal',
+  cancelled: 'Dibatalkan',
   unknown: 'Hasil tidak pasti',
 };
 const isPending = (item) => item.status === 'queued' || item.status === 'processing' || item.status === 'submitted';
@@ -49,7 +51,10 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
   const [notice, setNotice] = useState('');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [submitStartedAt, setSubmitStartedAt] = useState(null);
   const pollVersion = useRef(0);
+  const hasActiveImageJobs = busy || items.some(isPending);
+  const liveNowMs = useNowTick(hasActiveImageJobs, 1000);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -183,6 +188,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       return;
     }
     setBusy(true); setError(''); setNotice('');
+    setSubmitStartedAt(Date.now());
     const res = await generateImage(
       text,
       active
@@ -197,6 +203,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     if (!res.ok) {
       setError(res.data?.error || 'Generasi gambar gagal. Kredit tidak dipotong bila kegagalan terjadi sebelum pengiriman.');
       setBusy(false);
+      setSubmitStartedAt(null);
       return;
     }
     const generation = res.data?.generation || null;
@@ -211,6 +218,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     }
     refreshBalance();
     setBusy(false);
+    setSubmitStartedAt(null);
   }
 
   const price = active && Number.isSafeInteger(active.credits) ? active.credits : null;
@@ -342,6 +350,8 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       const stageStatus = busy ? 'Mengirim ke Studio AI…' : (STATUS_LABEL[pendingItem?.status] || 'Sedang diproses');
       const stageModel = formatModelDisplayName(pendingItem?.model || active?.name || 'AI Image', active?.provider);
       const stagePrompt = (pendingItem?.prompt || prompt || '').trim();
+      const stageStartedAt = busy ? submitStartedAt : (pendingItem?.created_at || null);
+      const stageRuntime = stageStartedAt ? formatElapsedRuntime(stageStartedAt, liveNowMs) : '00:00';
       return (
         <div className="generate-img-live-stage" role="status" aria-live="polite">
           <div className="generate-aurora" aria-hidden="true" />
@@ -368,8 +378,11 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
               <div className="generate-progress-fill is-animated" style={{ width: busy ? '38%' : '72%' }} />
             </div>
             <span className="generate-loader-sub">
-              {stageModel} · Merender komposisi &amp; pencahayaan AI…
+              {stageModel} · Berjalan {stageRuntime} · Merender komposisi &amp; pencahayaan AI…
             </span>
+            <Link className="generate-banner-link" style={{ alignSelf: 'center', marginTop: 4 }} to="/live">
+              Pantau di Proses Live
+            </Link>
           </div>
           {stagePrompt && (
             <p className="generate-img-live-prompt">{stagePrompt}</p>
@@ -402,13 +415,16 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
                   <span className="generate-pulse-dot" aria-hidden="true" />
                   {STATUS_LABEL[item.status] || 'Memproses…'}
                 </span>
-                <span className="generate-img-loader-sub">Merender gambar AI…</span>
+                <span className="generate-img-loader-sub">Berjalan {formatElapsedRuntime(item.created_at, liveNowMs)} · Merender gambar AI…</span>
               </div>
             ) : (
               <div className="history-preview">{STATUS_LABEL[item.status] || item.status}</div>
             )}
             <div className="history-card-body">
-              <span className={`history-status status-${item.status}`}>{STATUS_LABEL[item.status] || item.status}</span>
+              <span className={`history-status status-${item.status}`}>
+                {STATUS_LABEL[item.status] || item.status}
+                {isLoadingItem ? ` · ${formatElapsedRuntime(item.created_at, liveNowMs)}` : ''}
+              </span>
               <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>
               <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · model {item.model} · {formatCredits(item.credits_charged)} kredit{item.credits_refunded > 0 ? ` · ${formatCredits(item.credits_refunded)} dikembalikan` : ''}</p>
               {item.error_message && <p className="history-error-text">{item.error_message}</p>}

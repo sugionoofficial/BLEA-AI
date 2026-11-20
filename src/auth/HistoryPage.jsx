@@ -11,6 +11,7 @@ import {
 } from '../api/generation';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { Pager, PerPageSelect, usePagedList } from '../components/Pagination';
+import { formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
 import './history.css';
 
 const labels = { queued: 'Dalam antrean', in_progress: 'Sedang diproses', processing: 'Sedang diproses', completed: 'Selesai', failed: 'Gagal', cancelled: 'Dibatalkan', expired: 'Kedaluwarsa', unknown: 'Hasil tidak pasti' };
@@ -114,6 +115,8 @@ export function HistoryPage() {
   }, [items]);
 
   const filtered = items.filter((item) => filter === 'all' || item.kind === filter);
+  const hasPendingItems = items.some((item) => (item.kind === 'image' ? isImagePending(item) : isVideoPending(item)));
+  const liveNowMs = useNowTick(hasPendingItems, 1000);
   const { perPage, setPerPage, page, setPage, pageCount, slice, total } = usePagedList(filtered);
   const visible = slice;
   // Tautan dari Riwayat Kredit selalu menunjukkan halaman pertama (item sorotan diangkat paling atas).
@@ -150,15 +153,18 @@ export function HistoryPage() {
                   ? (item.status === 'completed' && imageUrls[0]
                     ? <img src={imageUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
                     : pending
-                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status}</span></div>
+                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status} · {formatElapsedRuntime(item.created_at, liveNowMs)}</span></div>
                       : <div className="history-preview">{labels[item.status] || item.status}</div>)
                   : (item.status === 'completed' && item.result_url
                     ? <video controls preload="metadata" src={item.result_url} />
                     : pending
-                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status}</span></div>
+                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status} · {formatElapsedRuntime(item.created_at, liveNowMs)}</span></div>
                       : <div className="history-preview">{labels[item.status] || item.status}</div>)}
                 <div className="history-card-body">
-                  <span className={`history-status status-${item.status}`}>{labels[item.status] || item.status}</span>
+                  <span className={`history-status status-${item.status}`}>
+                    {labels[item.status] || item.status}
+                    {pending ? ` · Berjalan ${formatElapsedRuntime(item.created_at, liveNowMs)}` : ''}
+                  </span>
                   <h2>{item.kind === 'image' ? `Gambar · ${item.model || '—'}` : (item.model || 'Video')}</h2>
                   <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>
                   <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · {item.provider}{item.credits_charged ? ` · ${item.credits_charged} kredit${item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}` : ''}</p>

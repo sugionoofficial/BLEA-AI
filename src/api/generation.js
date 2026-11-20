@@ -49,6 +49,16 @@ export async function fetchImageHistory() {
   return edgeRequest('/image/history', {});
 }
 
+// Proses Live — daftar generasi aktif di platform (user biasa: milik lain disamarkan, admin: lengkap).
+export async function fetchLiveGenerations({ poll = false } = {}) {
+  return edgeRequest('/generations/live', { poll: Boolean(poll) });
+}
+
+// Admin-only — batalkan proses generasi yang macet/berjalan & kembalikan kredit yang belum dikembalikan.
+export async function cancelAdminGeneration({ id, kind, reason = '' }) {
+  return edgeRequest('/admin/generations/cancel', { id, kind, reason });
+}
+
 export function withDownloadParam(url) {
   if (typeof url !== 'string' || !url) return '';
   if (/^\/api\/(?:video|image)\/content\//.test(url)) {

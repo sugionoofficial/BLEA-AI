@@ -20,6 +20,7 @@ import {
 import { availableVideoModels, generationModelKey } from '../lib/generationCatalog';
 import { useCredits } from '../lib/useCredits';
 import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
+import { formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
 import { GenerateImagePanel } from './GenerateImagePanel';
 import { ModelSelect } from './ModelSelect';
 import './generate.css';
@@ -620,10 +621,16 @@ export function GeneratePage() {
     () => history.find((item) => item.id === activeId) || history[0] || null,
     [history, activeId],
   );
+  const hasActiveJobs = useMemo(
+    () => history.some((item) => item.status === 'queued' || item.status === 'in_progress'),
+    [history],
+  );
+  const liveNowMs = useNowTick(hasActiveJobs, 1000);
 
   const filteredHistory = useMemo(() => {
     if (historyFilter === 'all') return history;
     if (historyFilter === 'processing') return history.filter((g) => g.status === 'queued' || g.status === 'in_progress');
+    if (historyFilter === 'failed') return history.filter((g) => ['failed', 'cancelled', 'expired'].includes(g.status));
     return history.filter((g) => g.status === historyFilter);
   }, [history, historyFilter]);
 
@@ -1224,15 +1231,18 @@ export function GeneratePage() {
                         />
                       </div>
                       <span className="generate-loader-sub">
-                        {activeGeneration.progress || 15}% · Merender frame &amp; memantau progres...
+                        {activeGeneration.progress || 15}% · Berjalan {formatElapsedRuntime(activeGeneration.created_at, liveNowMs)} · Merender frame &amp; memantau progres...
                       </span>
+                      <Link className="generate-banner-link" style={{ alignSelf: 'center', marginTop: 4 }} to="/live">
+                        Pantau di Proses Live
+                      </Link>
                     </div>
                   </div>
                 )}
 
-                {activeGeneration && activeGeneration.status === 'failed' && (
+                {activeGeneration && (activeGeneration.status === 'failed' || activeGeneration.status === 'cancelled' || activeGeneration.status === 'expired') && (
                   <div className="generate-empty-stage">
-                    <strong style={{ color: '#fca5a5' }}>Generasi Gagal</strong>
+                    <strong style={{ color: '#fca5a5' }}>{STATUS_LABELS[activeGeneration.status] || 'Generasi Gagal'}</strong>
                     <span>{activeGeneration.error_message || 'Provider tidak dapat memproses permintaan ini.'}</span>
                     <button
                       type="button"
@@ -1333,12 +1343,15 @@ export function GeneratePage() {
                           className={`generate-pill ${
                             item.status === 'completed'
                               ? 'is-free'
-                              : item.status === 'failed'
+                              : ['failed', 'cancelled', 'expired'].includes(item.status)
                                 ? 'is-warn'
                                 : 'is-accent'
                           }`}
                         >
                           {STATUS_LABELS[item.status] || item.status}
+                          {(item.status === 'queued' || item.status === 'in_progress')
+                            ? ` · ${formatElapsedRuntime(item.created_at, liveNowMs)}`
+                            : ''}
                         </span>
                       </div>
                       <p className="generate-history-prompt">
