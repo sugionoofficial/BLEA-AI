@@ -26,6 +26,7 @@ import {
   CLOUDFLARE_FREE_LLM_MODELS,
   PROVIDER_PRESETS,
   computeVideoSize,
+  getAlibabaVideoModelSpec,
   getVideoModelProfile,
   isAlibabaVideoModelSupported,
   isValidHttpBaseUrl,
@@ -1360,6 +1361,411 @@ async function maybeInlineImage(imageUrl) {
   }
 }
 
+const WAN_VIDEO_SIZE_TABLE = {
+  '480p': { '16:9': '832*480', '9:16': '480*832', '1:1': '624*624', '4:3': '832*480', '3:4': '480*832' },
+  '720p': { '16:9': '1280*720', '9:16': '720*1280', '1:1': '960*960', '4:3': '1088*832', '3:4': '832*1088' },
+  '1080p': { '16:9': '1920*1080', '9:16': '1080*1920', '1:1': '1440*1440', '4:3': '1632*1248', '3:4': '1248*1632' },
+};
+
+function mapWanVideoSize(resolution, aspectRatio) {
+  const tier = WAN_VIDEO_SIZE_TABLE[String(resolution || '720p').toLowerCase()] || WAN_VIDEO_SIZE_TABLE['720p'];
+  return tier[aspectRatio] || tier['16:9'];
+}
+
+function buildAlibabaVideoRequest({ model, apiBase, headers, payload }) {
+  const spec = getAlibabaVideoModelSpec(model);
+  if (!spec) {
+    return { error: 'Model video ini belum diverifikasi untuk BLEA (belum ada adapter + pengujian).', status: 400 };
+  }
+  const upstreamModel = resolveAlibabaCnModelId(spec, apiBase);
+  const prompt = String(payload.prompt || '').trim();
+  const maxPrompt = spec.maxPrompt || 1500;
+  if (prompt.length > maxPrompt) {
+    return { error: `${spec.name}: panjang prompt maksimal ${maxPrompt} karakter.`, status: 400 };
+  }
+
+  const checkUrl = (value, label) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return '';
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || trimmed.length > 2048) {
+        return { error: `${label} wajib berupa tautan HTTPS yang valid.` };
+      }
+      return parsed.toString();
+    } catch {
+      return { error: `${label} wajib berupa tautan HTTPS yang valid.` };
+    }
+  };
+  const checkList = (arr, label) => {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const item of arr) {
+      if (!String(item || '').trim()) continue;
+      const checked = checkUrl(item, label);
+      if (typeof checked === 'object') return checked;
+      out.push(checked);
+    }
+    return out;
+  };
+
+  const imageUrl = checkUrl(payload.image_url, 'First Frame / gambar');
+  if (typeof imageUrl === 'object') return { error: imageUrl.error, status: 400 };
+  const imageLastUrl = checkUrl(payload.image_last_url, 'Last Frame');
+  if (typeof imageLastUrl === 'object') return { error: imageLastUrl.error, status: 400 };
+  const videoUrl = checkUrl(payload.video_url, 'Video referensi');
+  if (typeof videoUrl === 'object') return { error: videoUrl.error, status: 400 };
+  const audioUrl = checkUrl(payload.audio_url, 'Audio referensi');
+  if (typeof audioUrl === 'object') return { error: audioUrl.error, status: 400 };
+  const refImages = checkList(payload.reference_images, 'Foto referensi');
+  if (!Array.isArray(refImages)) return { error: refImages.error, status: 400 };
+  const refVideos = checkList(payload.reference_videos, 'Video referensi');
+  if (!Array.isArray(refVideos)) return { error: refVideos.error, status: 400 };
+  const refAudios = checkList(payload.reference_audios, 'Audio referensi');
+  if (!Array.isArray(refAudios)) return { error: refAudios.error, status: 400 };
+
+  const defaultRes = spec.resolutions.includes('720p') ? '720p' : spec.resolutions[0];
+  const resKey = String(payload.resolution ?? defaultRes).toLowerCase().trim();
+  const aspectRatio = String(payload.aspect_ratio || spec.aspectRatios?.[0] || '16:9');
+  const defaultDur = spec.durations.includes(5) ? 5 : spec.durations[0];
+  const duration = payload.duration == null ? defaultDur : Number(payload.duration);
+  const generateAudio = payload.generate_audio !== false;
+  const submitUrl = `${apiBase}/api/v1/services/aigc/${spec.endpoint}`;
+  const outHeaders = { ...headers, 'X-DashScope-Async': 'enable' };
+  const pollBaseUrl = `${apiBase}/api/v1/tasks`;
+
+  // 1. Wan 3.0 (dan prime): frame-mode ATAU reference-mode yang saling eksklusif.
+  if (spec.family === 'wan3') {
+    const frameMode = Boolean(imageUrl || imageLastUrl);
+    const refVideoList = [...(videoUrl ? [videoUrl] : []), ...refVideos];
+    const refAudioList = [...(audioUrl ? [audioUrl] : []), ...refAudios];
+    const referenceCount = refImages.length + refVideoList.length + refAudioList.length;
+
+    if (imageLastUrl && !imageUrl) {
+      return { error: 'Last Frame membutuhkan First Frame. Unggah gambar pertama dulu.', status: 400 };
+    }
+    if (frameMode && referenceCount > 0) {
+      return {
+        error: 'Wan 3.0: mode First Frame / First+Last Frame tidak bisa digabung dengan media referensi (foto/video/audio). Hapus salah satu: gunakan mode frame saja, atau mode referensi (maks 10 foto + 5 video + 5 audio).',
+        status: 400,
+      };
+    }
+    if (refImages.length > 10) return { error: 'Wan 3.0: maksimal 10 foto referensi per permintaan.', status: 400 };
+    if (refVideoList.length > 5) return { error: 'Wan 3.0: maksimal 5 video referensi (total durasi ≤15 detik).', status: 400 };
+    if (refAudioList.length > 5) return { error: 'Wan 3.0: maksimal 5 audio referensi (total durasi ≤15 detik).', status: 400 };
+    if (referenceCount > 20) return { error: 'Wan 3.0: maksimal 20 materi referensi (foto+video+audio) per permintaan.', status: 400 };
+
+    const media = [];
+    if (imageUrl) media.push({ type: 'first_frame', url: imageUrl });
+    if (imageLastUrl) media.push({ type: 'last_frame', url: imageLastUrl });
+    for (const url of refImages) media.push({ type: 'reference_image', url });
+    for (const url of refVideoList) media.push({ type: 'reference_video', url });
+    for (const url of refAudioList) media.push({ type: 'reference_audio', url });
+    const resMap = { '480p': '480P', '720p': '720P', '1080p': '1080P', '4k': '1080P' };
+    const wanRatio = ['16:9', '9:16', '1:1', '4:3', '3:4', 'adaptive'].includes(aspectRatio) ? aspectRatio : 'adaptive';
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: { prompt: prompt || 'Generate a smooth, natural video.', ...(media.length ? { media } : {}) },
+        parameters: {
+          resolution: resMap[String(payload.resolution || '720p').toLowerCase()] || '720P',
+          ratio: wanRatio,
+          duration: Math.max(2, Math.min(30, Number.isFinite(duration) ? duration : 5)),
+          prompt_extend: true,
+        },
+      },
+    };
+  }
+
+  // Validasi resolusi & durasi untuk seluruh famili terverifikasi lain.
+  if (!spec.resolutions.includes(resKey)) {
+    return {
+      error: `${spec.name} hanya mendukung resolusi ${spec.resolutions.map((r) => r.toUpperCase()).join(', ')}.`,
+      status: 400,
+    };
+  }
+  const fixedDurationSet = spec.durations.length <= 3 ? spec.durations : null;
+  if (
+    !Number.isInteger(duration)
+    || duration < spec.minDuration
+    || duration > spec.maxDuration
+    || (fixedDurationSet && !fixedDurationSet.includes(duration))
+  ) {
+    return {
+      error: fixedDurationSet
+        ? `${spec.name} hanya mendukung durasi ${fixedDurationSet.join(' / ')} detik.`
+        : `${spec.name} hanya mendukung durasi ${spec.minDuration}–${spec.maxDuration} detik.`,
+      status: 400,
+    };
+  }
+  const upperRes = resKey.toUpperCase();
+
+  // 2. Wan T2V (2.6, 2.5, 2.2, 2.1): input.prompt + opsional audio_url; parameters.size W*H.
+  if (spec.family === 'wan-t2v') {
+    if (!prompt) return { error: `${spec.name} membutuhkan prompt teks.`, status: 400 };
+    if (imageUrl || imageLastUrl || videoUrl || refImages.length || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} adalah model Text-to-Video (tidak menerima media gambar/video/referensi).`, status: 400 };
+    }
+    if (audioUrl && !spec.supportsAudioInput) {
+      return { error: `${spec.name} tidak mendukung input audio referensi.`, status: 400 };
+    }
+    const body = {
+      model: upstreamModel,
+      input: { prompt, ...(spec.supportsAudioInput && audioUrl ? { audio_url: audioUrl } : {}) },
+      parameters: {
+        size: mapWanVideoSize(resKey, aspectRatio),
+        ...(spec.durations.length > 1 || spec.id.startsWith('wan2.1') ? { duration } : {}),
+        prompt_extend: true,
+        ...(spec.supportsAudioOutput ? { audio: generateAudio } : {}),
+        watermark: false,
+      },
+    };
+    return { submitUrl, headers: outHeaders, pollBaseUrl, body };
+  }
+
+  // 3. Wan I2V (2.6, 2.5, 2.2, 2.1): input.img_url wajib; parameters.resolution.
+  if (spec.family === 'wan-i2v') {
+    if (!imageUrl) return { error: `${spec.name} wajib menyertakan gambar First Frame.`, status: 400 };
+    if (imageLastUrl || videoUrl || refImages.length || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} hanya menerima 1 gambar First Frame (tidak menerima Last Frame, video, atau referensi tambahan).`, status: 400 };
+    }
+    if (audioUrl && !spec.supportsAudioInput) {
+      return { error: `${spec.name} tidak mendukung input audio referensi.`, status: 400 };
+    }
+    const body = {
+      model: upstreamModel,
+      input: {
+        ...(prompt ? { prompt } : {}),
+        img_url: imageUrl,
+        ...(spec.supportsAudioInput && audioUrl ? { audio_url: audioUrl } : {}),
+      },
+      parameters: {
+        resolution: upperRes,
+        ...(spec.durations.length > 1 || spec.id.startsWith('wan2.5') ? { duration } : spec.id.startsWith('wan2.1-i2v-turbo') ? { duration } : {}),
+        prompt_extend: true,
+        ...(spec.supportsAudioOutput ? { audio: generateAudio } : {}),
+        watermark: false,
+      },
+    };
+    return { submitUrl, headers: outHeaders, pollBaseUrl, body };
+  }
+
+  // 4. Wan 2.6 R2V: input.prompt + input.reference_urls[]; parameters.size + duration + audio.
+  if (spec.family === 'wan-r2v') {
+    if (!prompt) return { error: `${spec.name} membutuhkan prompt (gunakan character1, character2 untuk merujuk media).`, status: 400 };
+    if (imageLastUrl || audioUrl || refAudios.length) {
+      return { error: `${spec.name} tidak mendukung Last Frame atau audio terpisah.`, status: 400 };
+    }
+    const referenceUrls = [...refImages, ...(videoUrl ? [videoUrl] : []), ...refVideos];
+    if (!referenceUrls.length && imageUrl) referenceUrls.push(imageUrl);
+    if (!referenceUrls.length) return { error: `${spec.name} wajib menyertakan minimal 1 gambar atau video referensi.`, status: 400 };
+    if (refImages.length > 3 && refVideos.length === 0) return { error: `${spec.name} maksimal 3 gambar referensi.`, status: 400 };
+    if (referenceUrls.length > 5) return { error: `${spec.name} maksimal 5 media referensi.`, status: 400 };
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: { prompt, reference_urls: referenceUrls },
+        parameters: {
+          size: mapWanVideoSize(resKey, aspectRatio),
+          duration,
+          audio: generateAudio,
+          watermark: false,
+        },
+      },
+    };
+  }
+
+  // 5. Wan KF2V (2.2-kf2v-flash, 2.1-kf2v-plus): endpoint image2video/video-synthesis; first_frame_url + last_frame_url wajib.
+  if (spec.family === 'wan-kf2v') {
+    if (!imageUrl || !imageLastUrl) {
+      return { error: `${spec.name} wajib menyertakan First Frame dan Last Frame.`, status: 400 };
+    }
+    if (videoUrl || audioUrl || refImages.length || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} hanya mendukung First Frame dan Last Frame.`, status: 400 };
+    }
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: {
+          ...(prompt ? { prompt } : {}),
+          first_frame_url: imageUrl,
+          last_frame_url: imageLastUrl,
+        },
+        parameters: {
+          resolution: upperRes,
+          prompt_extend: true,
+          watermark: false,
+        },
+      },
+    };
+  }
+
+  // 6. Wan Animate (wan2.2-animate-move / -mix): endpoint image2video/video-synthesis; image_url + video_url wajib; mode wan-std/wan-pro.
+  if (spec.family === 'wan-animate') {
+    if (!imageUrl || !videoUrl) {
+      return { error: `${spec.name} wajib menyertakan gambar karakter dan video penggerak.`, status: 400 };
+    }
+    if (imageLastUrl || audioUrl || refImages.length || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} hanya menerima 1 gambar karakter dan 1 video referensi.`, status: 400 };
+    }
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: { image_url: imageUrl, video_url: videoUrl, watermark: false },
+        parameters: { mode: resKey === '1080p' ? 'wan-pro' : 'wan-std' },
+      },
+    };
+  }
+
+  // 7. Wan VACE (wan2.1-vace-plus): input.function (image_reference | video_repainting | video_extension).
+  if (spec.family === 'wan-vace') {
+    if (!prompt) return { error: `${spec.name} membutuhkan prompt teks.`, status: 400 };
+    if (imageLastUrl || audioUrl || refAudios.length) {
+      return { error: `${spec.name} tidak mendukung Last Frame atau audio terpisah.`, status: 400 };
+    }
+    const vaceRefImgs = [...refImages, ...(imageUrl && !refImages.length ? [imageUrl] : [])];
+    const requestedFn = String(payload.vace_function || '').trim();
+    if (videoUrl) {
+      const fn = requestedFn === 'video_extension' ? 'video_extension' : 'video_repainting';
+      return {
+        submitUrl,
+        headers: outHeaders,
+        pollBaseUrl,
+        body: {
+          model: upstreamModel,
+          input: fn === 'video_extension'
+            ? { function: 'video_extension', prompt, first_clip_url: videoUrl }
+            : { function: 'video_repainting', prompt, video_url: videoUrl, control_condition: String(payload.control_condition || 'depth') },
+          parameters: { prompt_extend: true, watermark: false },
+        },
+      };
+    }
+    if (vaceRefImgs.length > 0) {
+      if (vaceRefImgs.length > 4) return { error: `${spec.name} maksimal 4 gambar referensi.`, status: 400 };
+      return {
+        submitUrl,
+        headers: outHeaders,
+        pollBaseUrl,
+        body: {
+          model: upstreamModel,
+          input: { function: 'image_reference', prompt, ref_images_url: vaceRefImgs },
+          parameters: { prompt_extend: true, size: mapWanVideoSize('720p', aspectRatio), watermark: false },
+        },
+      };
+    }
+    return { error: `${spec.name} wajib menyertakan minimal 1 gambar referensi atau 1 video sumber.`, status: 400 };
+  }
+
+  // 8. HappyHorse T2V: input.prompt; tanpa media.
+  if (spec.family === 'happyhorse-t2v') {
+    if (!prompt) return { error: `${spec.name} membutuhkan prompt teks.`, status: 400 };
+    if (imageUrl || imageLastUrl || videoUrl || audioUrl || refImages.length || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} adalah model Text-to-Video (tidak menerima media lampiran).`, status: 400 };
+    }
+    const hhRatio = spec.aspectRatios.includes(aspectRatio) ? aspectRatio : '16:9';
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: { prompt },
+        parameters: { resolution: upperRes, ratio: hhRatio, duration, watermark: false },
+      },
+    };
+  }
+
+  // 9. HappyHorse I2V: wajib First Frame (type: first_frame); tolak reference_images/video/audio; tanpa ratio.
+  if (spec.family === 'happyhorse-i2v') {
+    if (!imageUrl || refImages.length || refVideos.length || refAudios.length || imageLastUrl || videoUrl || audioUrl) {
+      return { error: `${spec.name} wajib menggunakan 1 gambar First Frame (hanya media type first_frame; tidak menerima reference_images, Last Frame, video, atau audio).`, status: 400 };
+    }
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: {
+          ...(prompt ? { prompt } : {}),
+          media: [{ type: 'first_frame', url: imageUrl }],
+        },
+        parameters: { resolution: upperRes, duration, watermark: false },
+      },
+    };
+  }
+
+  // 10. HappyHorse R2V: wajib 1-9 gambar referensi (type: reference_image).
+  if (spec.family === 'happyhorse-r2v') {
+    if (!prompt) return { error: `${spec.name} membutuhkan prompt teks (rujuk [Image 1], [Image 2], ...).`, status: 400 };
+    if (imageLastUrl || videoUrl || audioUrl || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} hanya mendukung gambar referensi (tidak mendukung video, audio, atau Last Frame).`, status: 400 };
+    }
+    const imgs = refImages.length ? refImages : (imageUrl ? [imageUrl] : []);
+    if (!imgs.length || imgs.length > 9) {
+      return { error: `${spec.name} wajib menyertakan 1–9 gambar referensi.`, status: 400 };
+    }
+    const hhRatio = spec.aspectRatios.includes(aspectRatio) ? aspectRatio : '16:9';
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: {
+          prompt,
+          media: imgs.map((url) => ({ type: 'reference_image', url })),
+        },
+        parameters: { resolution: upperRes, ratio: hhRatio, duration, watermark: false },
+      },
+    };
+  }
+
+  // 11. HappyHorse 1.0 Video Edit: wajib 1 video + 0-5 gambar referensi.
+  if (spec.family === 'happyhorse-edit') {
+    if (!videoUrl) return { error: `${spec.name} wajib menyertakan video sumber.`, status: 400 };
+    if (imageLastUrl || audioUrl || refVideos.length || refAudios.length) {
+      return { error: `${spec.name} hanya menerima 1 video sumber dan 0–5 gambar referensi.`, status: 400 };
+    }
+    const imgs = refImages.length ? refImages : (imageUrl ? [imageUrl] : []);
+    if (imgs.length > 5) return { error: `${spec.name} maksimal 5 gambar referensi.`, status: 400 };
+    return {
+      submitUrl,
+      headers: outHeaders,
+      pollBaseUrl,
+      body: {
+        model: upstreamModel,
+        input: {
+          ...(prompt ? { prompt } : {}),
+          media: [
+            { type: 'video', url: videoUrl },
+            ...imgs.map((url) => ({ type: 'reference_image', url })),
+          ],
+        },
+        parameters: {
+          resolution: upperRes,
+          watermark: false,
+          audio_setting: generateAudio ? 'auto' : 'origin',
+        },
+      },
+    };
+  }
+
+  return { error: 'Adapter video Alibaba tidak ditemukan untuk model ini.', status: 400 };
+}
+
 async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload }) {
   const model = String(payload.model || '').trim();
   const prompt = String(payload.prompt || '').trim();
@@ -1395,66 +1801,7 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
   };
 
   if (provider === 'alibaba') {
-    // Alibaba Model Studio (Wan 3.0): async task API.
-    // Submit -> X-DashScope-Async -> output.task_id; poll GET {base}/api/v1/tasks/{task_id}.
-    // Batas resmi: first_frame 1, last_frame 1, reference_image ≤10, reference_video
-    // ≤5 (total ≤15 dtk), reference_audio ≤5 (total ≤15 dtk), total materi referensi
-    // ≤20. Mode frame TIDAK bisa digabung dengan media referensi.
-    const frameMode = Boolean(imageUrl || imageLastUrl);
-    const refVideoList = [...(videoUrl ? [videoUrl] : []), ...refVideos];
-    const refAudioList = [...(audioUrl ? [audioUrl] : []), ...refAudios];
-    const referenceCount = refImages.length + refVideoList.length + refAudioList.length;
-
-    if (imageLastUrl && !imageUrl) {
-      return { error: 'Last Frame membutuhkan First Frame. Unggah gambar pertama dulu.', status: 400 };
-    }
-    if (frameMode && referenceCount > 0) {
-      return {
-        error: 'Wan 3.0: mode First Frame / First+Last Frame tidak bisa digabung dengan media referensi (foto/video/audio). Hapus salah satu: gunakan mode frame saja, atau mode referensi (maks 10 foto + 5 video + 5 audio).',
-        status: 400,
-      };
-    }
-    const rawCount = (value) => (Array.isArray(value) ? value.length : 0);
-    if (rawCount(payload.reference_images) > 10) {
-      return { error: 'Wan 3.0: maksimal 10 foto referensi per permintaan.', status: 400 };
-    }
-    if (rawCount(payload.reference_videos) + (videoUrl ? 1 : 0) > 5) {
-      return { error: 'Wan 3.0: maksimal 5 video referensi (total durasi ≤15 detik).', status: 400 };
-    }
-    if (rawCount(payload.reference_audios) + (audioUrl ? 1 : 0) > 5) {
-      return { error: 'Wan 3.0: maksimal 5 audio referensi (total durasi ≤15 detik).', status: 400 };
-    }
-    if (referenceCount > 20) {
-      return { error: 'Wan 3.0: maksimal 20 materi referensi (foto+video+audio) per permintaan.', status: 400 };
-    }
-
-    const media = [];
-    if (imageUrl) media.push({ type: 'first_frame', url: imageUrl });
-    if (imageLastUrl) media.push({ type: 'last_frame', url: imageLastUrl });
-    for (const url of refImages) media.push({ type: 'reference_image', url });
-    for (const url of refVideoList) media.push({ type: 'reference_video', url });
-    for (const url of refAudioList) media.push({ type: 'reference_audio', url });
-    const resMap = { '480p': '480P', '720p': '720P', '1080p': '1080P', '4k': '1080P', '4K': '1080P' };
-    const wanRatio = ['16:9', '9:16', '1:1', '4:3', '3:4', 'adaptive'].includes(aspectRatio) ? aspectRatio : 'adaptive';
-    const body = {
-      model,
-      input: {
-        prompt: prompt || 'Generate a smooth, natural video.',
-        ...(media.length ? { media } : {}),
-      },
-      parameters: {
-        resolution: resMap[String(resolution).toLowerCase()] || '720P',
-        ratio: wanRatio,
-        duration: Math.max(2, Math.min(30, duration)),
-        prompt_extend: true,
-      },
-    };
-    return {
-      submitUrl: `${apiBase}/api/v1/services/aigc/video-generation/video-synthesis`,
-      headers: { ...headers, 'X-DashScope-Async': 'enable' },
-      body,
-      pollBaseUrl: `${apiBase}/api/v1/tasks`,
-    };
+    return buildAlibabaVideoRequest({ model, apiBase, headers, payload });
   }
 
   if (provider === 'xai') {
@@ -1587,29 +1934,85 @@ async function fetchProviderKeyRecord(env, provider) {
 //   'wxh'    → '<lebar>*<tinggi>' bebas 512–2048 (famili qwen-image-2.0)
 //             atau rentang `minSide`–`maxSide` (wan2.6-t2i)
 const ALIBABA_IMAGE_MODELS = [
-  { id: 'wan2.7-image', name: 'Alibaba: Wan 2.7 Image', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false },
-  { id: 'wan2.7-image-pro', name: 'Alibaba: Wan 2.7 Image Pro', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false },
-  { id: 'qwen-image-3.0', name: 'Alibaba: Qwen-Image 3.0', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-3.0-pro', name: 'Alibaba: Qwen-Image 3.0 Pro', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true },
-  // Famili Qwen-Image-2.0 (sinkron & async messages; n 1-6). Dated variants = snapshot model yang sama.
-  { id: 'qwen-image-2.0', name: 'Alibaba: Qwen-Image 2.0', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.0-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.0-pro', name: 'Alibaba: Qwen-Image 2.0 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.0-pro-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.0-pro-2026-04-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-04-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.0-pro-2026-06-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-06-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.1-pro', name: 'Alibaba: Qwen-Image 2.1 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
-  { id: 'qwen-image-2.1-turbo', name: 'Alibaba: Qwen-Image 2.1 Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'wan2.7-image', name: 'Alibaba: Wan 2.7 Image', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 4 },
+  { id: 'wan2.7-image-pro', name: 'Alibaba: Wan 2.7 Image Pro', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 4 },
+  { id: 'qwen-image-3.0', name: 'Alibaba: Qwen-Image 3.0', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-3.0-pro', name: 'Alibaba: Qwen-Image 3.0 Pro', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  // Famili Qwen-Image-2.0 / 2.1 (sinkron & async messages; n 1-6). Dated variants = snapshot model yang sama.
+  { id: 'qwen-image-2.0', name: 'Alibaba: Qwen-Image 2.0', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro', name: 'Alibaba: Qwen-Image 2.0 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro-2026-04-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-04-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.0-pro-2026-06-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-06-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.1-pro', name: 'Alibaba: Qwen-Image 2.1 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
+  { id: 'qwen-image-2.1-turbo', name: 'Alibaba: Qwen-Image 2.1 Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 3 },
   // Wan2.6-T2I: messages async; n 1-4; 1280*1280 s/d 1440*1440.
-  { id: 'wan2.6-t2i', name: 'Alibaba: Wan 2.6 T2I', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 1280, maxSide: 1440, defaultSize: '1280*1280', maxN: 4, promptExtend: true },
+  { id: 'wan2.6-t2i', name: 'Alibaba: Wan 2.6 T2I', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 1280, maxSide: 1440, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'messages', maxPromptChars: 2000, maxInputImages: 0 },
+  // Wan 2.5 & lebih lama (text-to-image V2): HTTP async LEGACY —
+  // POST /api/v1/services/aigc/text2image/image-synthesis, input.prompt STRING,
+  // hasil output.results[].url. Ukuran wan2.5: total piksel 1280^2–1440^2, rasio [1:4, 4:1].
+  { id: 'wan2.5-t2i-preview', name: 'Alibaba: Wan 2.5 T2I Preview', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 1280 * 1280, maxProduct: 1440 * 1440, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 2000, sizeHint: 'total 1280*1280–1440*1440 piksel, rasio 1:4–4:1', maxInputImages: 0 },
+  // Wan 2.2: total piksel maks 1440*1440, sisi 512–1440, prompt 500 karakter.
+  { id: 'wan2.2-t2i-plus', name: 'Alibaba: Wan 2.2 T2I Plus', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  { id: 'wan2.2-t2i-flash', name: 'Alibaba: Wan 2.2 T2I Flash', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  // Wan 2.1: Singapore menggunakan wan2.1-t2i-*; Beijing menggunakan wanx2.1-t2i-*.
+  { id: 'wan2.1-t2i-plus', cnId: 'wanx2.1-t2i-plus', name: 'Alibaba: Wan 2.1 T2I Plus', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  { id: 'wan2.1-t2i-turbo', cnId: 'wanx2.1-t2i-turbo', name: 'Alibaba: Wan 2.1 T2I Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 1440, maxProduct: 1440 * 1440, defaultSize: '1024*1024', maxN: 4, promptExtend: true, payloadMode: 'legacy', maxPromptChars: 500, sizeHint: 'sisi 512–1440 piksel, total maks 1440*1440', maxInputImages: 0 },
+  // Wan2.6-Image: async messages (image-generation).
+  // Tanpa gambar input: interleaved mode (enable_interleave=true, n=1, max_images 1-5, total 768^2–1280^2).
+  // Dengan 1-4 gambar input: edit mode (enable_interleave=false, n 1-4, prompt_extend=true, size 1K/2K atau 768^2–2048^2).
+  { id: 'wan2.6-image', name: 'Alibaba: Wan 2.6 Image', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 768 * 768, maxProduct: 1280 * 1280, editMaxProduct: 2048 * 2048, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 5, promptExtend: false, payloadMode: 'interleave', maxPromptChars: 2000, maxInputImages: 4, sizeHint: 'total 768*768–1280*1280 piksel (edit s/d 2048*2048 atau 1K/2K), rasio 1:4–4:1' },
+  // Wan2.5-I2I-Preview: editing only (1-4 gambar sumber wajib), async image2image/image-synthesis,
+  // total piksel 768^2–1280^2, rasio [1:4, 4:1], n 1-4.
+  { id: 'wan2.5-i2i-preview', name: 'Alibaba: Wan 2.5 I2I Preview (Edit Gambar)', vendor: 'Alibaba', sizeMode: 'wxh', minProduct: 768 * 768, maxProduct: 1280 * 1280, minRatio: 0.25, maxRatio: 4, defaultSize: '1280*1280', maxN: 4, promptExtend: true, payloadMode: 'legacy-i2i', maxPromptChars: 2000, maxInputImages: 4, requiresImageInput: true, sizeHint: 'wajib 1–4 gambar sumber · total 768*768–1280*1280 piksel, rasio 1:4–4:1' },
+  // Z-Image-Turbo: SYNC (multimodal-generation), messages, prompt_extend default false,
+  // prompt maks 800 karakter, n tetap 1; ukuran sisi 512–2048; hasil di output.choices[0].message.content[0].image.
+  { id: 'z-image-turbo', name: 'Alibaba: Z-Image Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '1024*1024', maxN: 1, promptExtend: false, payloadMode: 'zimage', maxPromptChars: 800, sizeHint: 'sisi 512–2048 piksel', maxInputImages: 0 },
 ];
 
-function validateAlibabaWxh(size, spec) {
+function validateAlibabaWxh(size, spec, override = {}) {
   const match = /^(\d{3,4})\*(\d{3,4})$/.exec(String(size || ''));
   if (!match) return false;
   const w = Number(match[1]);
   const h = Number(match[2]);
-  return w >= spec.minSide && w <= spec.maxSide && h >= spec.minSide && h <= spec.maxSide;
+  if (w < 3 || h < 3) return false;
+  const minSide = override.minSide ?? spec.minSide;
+  const maxSide = override.maxSide ?? spec.maxSide;
+  const minProduct = override.minProduct ?? spec.minProduct;
+  const maxProduct = override.maxProduct ?? spec.maxProduct;
+  const minRatio = override.minRatio ?? spec.minRatio;
+  const maxRatio = override.maxRatio ?? spec.maxRatio;
+  if (minSide && (w < minSide || h < minSide)) return false;
+  if (maxSide && (w > maxSide || h > maxSide)) return false;
+  const product = w * h;
+  if (minProduct && product < minProduct) return false;
+  if (maxProduct && product > maxProduct) return false;
+  if (minRatio && w / h < minRatio) return false;
+  if (maxRatio && w / h > maxRatio) return false;
+  return true;
+}
+
+function alibabaWxhHint(spec) {
+  if (spec.sizeHint) return spec.sizeHint;
+  const bits = [];
+  if (spec.minSide && spec.maxSide) bits.push(`sisi ${spec.minSide}–${spec.maxSide} piksel`);
+  if (spec.minProduct && spec.maxProduct) {
+    bits.push(`total ${spec.minProduct}–${spec.maxProduct} piksel`);
+  } else if (spec.maxProduct) {
+    bits.push(`total maks ${spec.maxProduct} piksel`);
+  }
+  if (spec.minRatio || spec.maxRatio) bits.push('rasio antara 1:4 dan 4:1');
+  return bits.join(', ') || 'LEBAR*TINGGI';
+}
+
+function resolveAlibabaCnModelId(spec, baseUrl) {
+  if (!spec?.cnId) return spec?.id || '';
+  const lowerBase = String(baseUrl || '').toLowerCase();
+  if (lowerBase.includes('cn-beijing') || /dashscope\.aliyuncs\.com/.test(lowerBase)) {
+    return spec.cnId;
+  }
+  return spec.id;
 }
 
 // Upstream Alibaba bisa menyelipkan URL bertanda tangan / secret di teks error.
@@ -1668,23 +2071,149 @@ async function alibabaImageCatalog(env) {
       credits: prices.get(spec.id),
       ready,
       params: spec.sizeMode === 'wxh'
-        ? { sizeMode: 'wxh', minSide: spec.minSide, maxSide: spec.maxSide, defaultSize: spec.defaultSize, maxN: spec.maxN, sizes: null }
-        : { sizeMode: 'preset', sizes: spec.sizes, defaultSize: spec.defaultSize, maxN: spec.maxN },
+        ? {
+            sizeMode: 'wxh',
+            minSide: spec.minSide,
+            maxSide: spec.maxSide,
+            minProduct: spec.minProduct,
+            maxProduct: spec.maxProduct,
+            minRatio: spec.minRatio,
+            maxRatio: spec.maxRatio,
+            sizeHint: spec.sizeHint || null,
+            defaultSize: spec.defaultSize,
+            maxN: spec.maxN,
+            maxPromptChars: spec.maxPromptChars || 2000,
+            maxInputImages: spec.maxInputImages || 0,
+            requiresImageInput: Boolean(spec.requiresImageInput),
+            sizes: null,
+          }
+        : {
+            sizeMode: 'preset',
+            sizes: spec.sizes,
+            defaultSize: spec.defaultSize,
+            maxN: spec.maxN,
+            maxPromptChars: spec.maxPromptChars || 2000,
+            maxInputImages: spec.maxInputImages || 0,
+            requiresImageInput: Boolean(spec.requiresImageInput),
+          },
     }));
+}
+
+function buildAlibabaImageUpstreamRequest(spec, { prompt, size, n, images, base }) {
+  const upstreamModel = resolveAlibabaCnModelId(spec, base);
+  if (spec.payloadMode === 'legacy') {
+    return {
+      url: `${base}/api/v1/services/aigc/text2image/image-synthesis`,
+      headers: { 'X-DashScope-Async': 'enable' },
+      isSync: false,
+      body: {
+        model: upstreamModel,
+        input: { prompt },
+        parameters: { size, n, prompt_extend: true, watermark: false },
+      },
+    };
+  }
+  if (spec.payloadMode === 'legacy-i2i') {
+    return {
+      url: `${base}/api/v1/services/aigc/image2image/image-synthesis`,
+      headers: { 'X-DashScope-Async': 'enable' },
+      isSync: false,
+      body: {
+        model: upstreamModel,
+        input: { prompt, images },
+        parameters: { size, n, prompt_extend: true, watermark: false },
+      },
+    };
+  }
+  if (spec.payloadMode === 'zimage') {
+    return {
+      url: `${base}/api/v1/services/aigc/multimodal-generation/generation`,
+      headers: {},
+      isSync: true,
+      body: {
+        model: upstreamModel,
+        input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
+        parameters: { prompt_extend: false, size },
+      },
+    };
+  }
+  const content = [...images.map((url) => ({ image: url })), { text: prompt }];
+  if (spec.payloadMode === 'interleave') {
+    if (images.length > 0) {
+      return {
+        url: `${base}/api/v1/services/aigc/image-generation/generation`,
+        headers: { 'X-DashScope-Async': 'enable' },
+        isSync: false,
+        body: {
+          model: upstreamModel,
+          input: { messages: [{ role: 'user', content }] },
+          parameters: { size, n, enable_interleave: false, prompt_extend: true, watermark: false },
+        },
+      };
+    }
+    return {
+      url: `${base}/api/v1/services/aigc/image-generation/generation`,
+      headers: { 'X-DashScope-Async': 'enable' },
+      isSync: false,
+      body: {
+        model: upstreamModel,
+        input: { messages: [{ role: 'user', content }] },
+        parameters: { size, n: 1, max_images: n, enable_interleave: true, watermark: false },
+      },
+    };
+  }
+  return {
+    url: `${base}/api/v1/services/aigc/image-generation/generation`,
+    headers: { 'X-DashScope-Async': 'enable' },
+    isSync: false,
+    body: {
+      model: upstreamModel,
+      input: { messages: [{ role: 'user', content }] },
+      parameters: { size, n, watermark: false, ...(spec.promptExtend ? { prompt_extend: true } : {}) },
+    },
+  };
 }
 
 async function alibabaImageGenerate(env, user, rawInput) {
   const fail = ALIBABA_IMAGE_ERROR;
   const input = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {};
-  const allowed = new Set(['prompt', 'provider', 'model', 'size', 'n']);
+  const allowed = new Set(['prompt', 'provider', 'model', 'size', 'n', 'images']);
   for (const key of Object.keys(input)) {
     if (!allowed.has(key)) throw fail('Permintaan tidak valid.', 400);
   }
-  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
-  if (!prompt || prompt.length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
   const modelId = String(input.model || '').trim();
   const spec = ALIBABA_IMAGE_MODELS.find((item) => item.id === modelId);
   if (!spec) throw fail('Model gambar Alibaba tidak dikenal.', 400);
+  const maxPrompt = spec.maxPromptChars || 2000;
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  if (!prompt || prompt.length > maxPrompt) throw fail(`Masukkan prompt sepanjang 1-${maxPrompt} karakter.`, 400);
+
+  // Validasi input gambar referensi bila model mendukung / mewajibkannya.
+  let images = [];
+  if (input.images != null) {
+    if (!Array.isArray(input.images)) throw fail('Format daftar gambar tidak valid.', 400);
+    if (!spec.maxInputImages && input.images.length > 0) {
+      throw fail(`Model ${spec.name} hanya mendukung teks ke gambar (tidak menerima gambar input).`, 400);
+    }
+    if (input.images.length > (spec.maxInputImages || 0)) {
+      throw fail(`Maksimal ${spec.maxInputImages} gambar referensi untuk ${spec.name}.`, 400);
+    }
+    images = input.images.map((item) => {
+      const value = typeof item === 'string' ? item.trim() : '';
+      try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password || value.length > 2048) {
+          throw new Error('invalid');
+        }
+        return parsed.toString();
+      } catch {
+        throw fail('URL gambar referensi tidak valid (wajib HTTPS).', 400);
+      }
+    });
+  }
+  if (spec.requiresImageInput && images.length === 0) {
+    throw fail(`Model ${spec.name} wajib menyertakan 1–${spec.maxInputImages} gambar sumber.`, 400);
+  }
 
   // Akun ditangguhkan/diblokir ditolak sebelum kredit disentuh (konsisten dgn Freebeat).
   const profileRes = await servicePostgrest(env, `/profiles?id=eq.${encodeURIComponent(user.id)}&select=status&limit=1`).catch(() => null);
@@ -1700,17 +2229,25 @@ async function alibabaImageGenerate(env, user, rawInput) {
     throw fail('Model ini belum diaktifkan admin di Katalog Model.', 409);
   }
 
-  // Parameter resmi: size & n per model.
+  // Parameter resmi: size & n per model (wan2.6-image edit mode juga menerima 1K/2K dan maks n=4).
+  const isInterleaveEdit = spec.payloadMode === 'interleave' && images.length > 0;
+  const maxN = isInterleaveEdit ? 4 : spec.maxN;
   const size = input.size == null ? spec.defaultSize : String(input.size);
-  if (spec.sizeMode === 'wxh') {
-    if (!validateAlibabaWxh(size, spec)) throw fail(`Ukuran tidak valid untuk ${spec.name}. Gunakan format LEBAR*TINGGI dengan sisi ${spec.minSide}–${spec.maxSide} piksel, mis. ${spec.defaultSize}.`, 400);
+  if (isInterleaveEdit) {
+    const validPreset = size === '1K' || size === '2K';
+    const validWxh = validateAlibabaWxh(size, spec, { maxProduct: spec.editMaxProduct });
+    if (!validPreset && !validWxh) {
+      throw fail(`Ukuran tidak valid untuk ${spec.name} mode edit. Gunakan 1K, 2K, atau LEBAR*TINGGI (${alibabaWxhHint(spec)}).`, 400);
+    }
+  } else if (spec.sizeMode === 'wxh') {
+    if (!validateAlibabaWxh(size, spec)) throw fail(`Ukuran tidak valid untuk ${spec.name}. Gunakan format LEBAR*TINGGI (${alibabaWxhHint(spec)}), mis. ${spec.defaultSize}.`, 400);
   } else if (!spec.sizes.includes(size)) {
     throw fail(`Ukuran tidak valid untuk ${spec.name}. Pilih: ${spec.sizes.join(', ')}.`, 400);
   }
   let n = 1;
   if (input.n != null) {
     n = Number(input.n);
-    if (!Number.isSafeInteger(n) || n < 1 || n > spec.maxN) throw fail(`Jumlah gambar harus 1-${spec.maxN}.`, 400);
+    if (!Number.isSafeInteger(n) || n < 1 || n > maxN) throw fail(`Jumlah gambar harus 1-${maxN}.`, 400);
   }
 
   // Harga kredit BLEA wajib diatur admin (credit_model_prices, modality image).
@@ -1726,13 +2263,14 @@ async function alibabaImageGenerate(env, user, rawInput) {
   const spent = await creditRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Alibaba model ${modelId}`, p_generation_id: rowId });
   if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
 
-  const parameters = { size, n, watermark: false, ...(spec.promptExtend ? { prompt_extend: true } : {}) };
-  const body = {
-    model: modelId,
-    input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
-    parameters,
+  const genMode = images.length > 0 ? 'edit' : 'text';
+  const baseMetadata = {
+    mode: genMode,
+    provider: 'alibaba',
+    size,
+    n,
+    ...(images.length ? { source_image_url: images[0], source_images: images } : {}),
   };
-  const baseMetadata = { mode: 'text', provider: 'alibaba', size, n };
 
   const insertedRes = await servicePostgrest(env, '/image_generations', {
     method: 'POST',
@@ -1751,12 +2289,13 @@ async function alibabaImageGenerate(env, user, rawInput) {
   for (const cand of candidates) {
     const base = resolveProviderApiBase('alibaba', cand.base_url);
     if (!base) { sawDefiniteFailure = true; continue; }
+    const req = buildAlibabaImageUpstreamRequest(spec, { prompt, size, n, images, base });
     let res = null;
     try {
-      res = await fetch(`${base}/api/v1/services/aigc/image-generation/generation`, {
+      res = await fetch(req.url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${cand.api_key}`, 'X-DashScope-Async': 'enable' },
-        body: JSON.stringify(body),
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${cand.api_key}`, ...req.headers },
+        body: JSON.stringify(req.body),
         signal: AbortSignal.timeout(60_000),
       });
     } catch (e) {
@@ -1768,18 +2307,32 @@ async function alibabaImageGenerate(env, user, rawInput) {
     if (res.ok) {
       const data = (() => { try { return JSON.parse(text); } catch { return {}; } })();
       const taskId = String(data?.output?.task_id || data?.task_id || '').trim();
+      const syncUrls = extractImageResultUrls(data);
+      if (req.isSync && syncUrls.length > 0) {
+        await markPoolKeyResult(env, cand, { success: true });
+        const patch = {
+          status: 'completed',
+          image_url: syncUrls[0],
+          provider_key_id: cand.id || null,
+          error_message: null,
+          metadata: { ...baseMetadata, base_url: base, ...(syncUrls.length > 1 ? { image_urls: syncUrls } : {}) },
+          updated_at: new Date().toISOString(),
+        };
+        await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: patch }).catch(() => {});
+        return { status: 'completed', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], ...patch }) };
+      }
       if (!taskId) {
         uncertain += 1;
         await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, {
           method: 'PATCH',
-          body: { status: 'unknown', error_message: 'Respons provider tidak berisi task_id; kredit mungkin terpakai. Jangan ulangi.', updated_at: new Date().toISOString() },
+          body: { status: 'unknown', error_message: req.isSync ? 'Respons provider tidak berisi URL gambar maupun task_id; kredit mungkin terpakai. Jangan ulangi.' : 'Respons provider tidak berisi task_id; kredit mungkin terpakai. Jangan ulangi.', updated_at: new Date().toISOString() },
         }).catch(() => {});
-        return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
+        return { status: 'unknown', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
       }
       await markPoolKeyResult(env, cand, { success: true });
       const patch = { external_job_id: taskId, status: 'processing', provider_key_id: cand.id || null, metadata: { ...baseMetadata, base_url: base }, updated_at: new Date().toISOString() };
       await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: patch }).catch(() => {});
-      return { status: 'submitted', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], ...patch }) };
+      return { status: 'submitted', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], ...patch }) };
     }
     if (isAlibabaQuotaError(res.status, text)) {
       await markPoolKeyResult(env, cand, { success: false, error: text.slice(0, 280) });
@@ -1800,7 +2353,7 @@ async function alibabaImageGenerate(env, user, rawInput) {
       method: 'PATCH',
       body: { status: 'unknown', error_message: 'Hasil pengiriman tidak pasti; periksa status sebelum mengulang.', updated_at: new Date().toISOString() },
     }).catch(() => {});
-    return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
+    return { status: 'unknown', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
   }
   // Kegagalan definitif sebelum tugas terdaftar → refund kredit.
   const refunded = sawDefiniteFailure
@@ -1814,21 +2367,39 @@ async function alibabaImageGenerate(env, user, rawInput) {
   throw fail(message, 502);
 }
 
-function extractImageResultUrl(data) {
+function extractImageResultUrls(data) {
   const output = data?.output && typeof data.output === 'object' ? data.output : data || {};
-  const first = Array.isArray(output?.results) ? output.results[0] : null;
-  const candidates = [
-    first?.url,
-    first?.image_url,
-    output?.image_url,
-    output?.url,
-    data?.data?.url,
-  ];
-  for (const candidate of candidates) {
-    const value = String(candidate || '').trim();
-    if (/^https?:\/\//i.test(value)) return value;
+  const found = [];
+  const push = (val) => {
+    const s = String(val || '').trim();
+    if (/^https?:\/\//i.test(s) && !found.includes(s)) found.push(s);
+  };
+  if (Array.isArray(output?.choices)) {
+    for (const choice of output.choices) {
+      const content = choice?.message?.content;
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          push(item?.image);
+          push(item?.url);
+        }
+      }
+    }
   }
-  return '';
+  if (Array.isArray(output?.results)) {
+    for (const item of output.results) {
+      push(item?.url);
+      push(item?.image_url);
+      push(item?.image);
+    }
+  }
+  push(output?.image_url);
+  push(output?.url);
+  push(data?.data?.url);
+  return found;
+}
+
+function extractImageResultUrl(data) {
+  return extractImageResultUrls(data)[0] || '';
 }
 
 async function alibabaImageStatus(env, user, row) {
@@ -1875,9 +2446,13 @@ async function alibabaImageStatus(env, user, row) {
   const raw = String(pollData?.output?.task_status || pollData?.task_status || '').toUpperCase();
   let patch = null;
   if (raw === 'SUCCEEDED') {
-    const url = extractImageResultUrl(pollData);
+    const urls = extractImageResultUrls(pollData);
+    const url = urls[0] || '';
+    const nextMeta = urls.length > 1
+      ? { ...(row.metadata && typeof row.metadata === 'object' ? row.metadata : {}), image_urls: urls }
+      : undefined;
     patch = url
-      ? { status: 'completed', image_url: url, error_message: null, updated_at: new Date().toISOString() }
+      ? { status: 'completed', image_url: url, ...(nextMeta ? { metadata: nextMeta } : {}), error_message: null, updated_at: new Date().toISOString() }
       : { status: 'failed', error_message: 'Tugas selesai tetapi URL gambar tidak ditemukan di respons provider.', updated_at: new Date().toISOString() };
   } else if (raw === 'FAILED' || raw === 'CANCELED' || raw === 'UNKNOWN') {
     const detail = redactUpstreamDetail(extractUpstreamError(pollData));
@@ -2814,7 +3389,7 @@ async function handleApi(request, url, env) {
       if (!provider || provider === 'unorouter' || provider === 'freebeat') return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
       if (provider === 'alibaba' && !isAlibabaVideoModelSupported(model)) {
-        return jsonResponse({ error: 'Model video ini belum diverifikasi untuk BLEA (belum ada adapter + pengujian). Pilih Wan 3.0 Video.' }, 400);
+        return jsonResponse({ error: 'Model video ini belum diverifikasi untuk BLEA (belum ada adapter + pengujian). Pilih model video Alibaba yang didukung.' }, 400);
       }
       const hasReferencePayload = ['reference_images', 'reference_videos', 'reference_audios']
         .some((key) => Array.isArray(payload[key]) && payload[key].some((item) => String(item || '').trim()));
@@ -2901,7 +3476,7 @@ async function handleApi(request, url, env) {
         break;
       }
 
-      if (isAlibabaGenerate && (!keyRow || !upstreamRes?.ok)) {
+      if (isAlibabaGenerate && !keyRow) {
         if (attemptedFetches === 0) {
           return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
         }
@@ -2913,7 +3488,7 @@ async function handleApi(request, url, env) {
       }
 
       if (!upstreamRes.ok) {
-        const detail = extractUpstreamError(upstreamData) || rawText.slice(0, 300);
+        const detail = redactUpstreamDetail(extractUpstreamError(upstreamData) || rawText.slice(0, 300), 300);
         const statusMsg = upstreamRes.status === 402
           ? 'Saldo / kuota provider tidak mencukupi untuk model ini.'
           : upstreamRes.status === 429
@@ -2959,7 +3534,7 @@ async function handleApi(request, url, env) {
         status,
         progress,
         upstream_result_url: immediateContentUrl || null,
-        error_message: status === 'failed' ? (extractUpstreamError(upstreamData) || 'Generasi gagal') : null,
+        error_message: status === 'failed' ? (redactUpstreamDetail(extractUpstreamError(upstreamData), 300) || 'Generasi gagal') : null,
         metadata: {
           mode: videoUrl ? 'video_to_video' : imageUrl ? 'image_to_video' : audioUrl ? 'audio_to_video' : 'text_to_video',
           ...(payload.image_last_url ? { image_last_url: payload.image_last_url } : {}),
@@ -3085,7 +3660,7 @@ async function handleApi(request, url, env) {
         ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
         : row.upstream_result_url;
       const errMsg = nextStatus === 'failed'
-        ? (extractUpstreamError(pollData) || 'Generasi video gagal di server provider.')
+        ? (redactUpstreamDetail(extractUpstreamError(pollData), 300) || 'Generasi video gagal di server provider.')
         : row.error_message;
 
       const patchRes = await servicePostgrest(

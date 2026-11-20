@@ -1323,6 +1323,9 @@ async function loadProviderSession(env) {
 }
 export function sanitizeImageRow(row) {
   const statuses = new Set(['queued', 'processing', 'completed', 'failed', 'unknown']);
+  const extraUrls = Array.isArray(row.metadata?.image_urls)
+    ? row.metadata.image_urls.map(safeImageUrl).filter(Boolean)
+    : [];
   return {
     id: row.id,
     provider: typeof row.provider === 'string' && row.provider ? row.provider.slice(0, 40) : 'freebeat',
@@ -1330,6 +1333,7 @@ export function sanitizeImageRow(row) {
     prompt: typeof row.prompt === 'string' ? row.prompt.slice(0, 2000) : '',
     status: statuses.has(row.status) ? row.status : 'unknown',
     image_url: safeImageUrl(row.image_url),
+    ...(extraUrls.length > 1 ? { image_urls: extraUrls } : {}),
     source_image_url: safeImageUrl(row.metadata?.source_image_url),
     credits_charged: Number.isSafeInteger(row.credits_charged) ? row.credits_charged : 0,
     credits_refunded: Number.isSafeInteger(row.credits_refunded) ? row.credits_refunded : 0,

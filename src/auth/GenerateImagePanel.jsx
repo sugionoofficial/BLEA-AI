@@ -15,6 +15,8 @@ const STATUS_LABEL = {
   unknown: 'Hasil tidak pasti',
 };
 const isPending = (item) => item.status === 'queued' || item.status === 'processing';
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 // Generate gambar untuk semua pengguna. Model dikunci admin (Freebeat 122,
 // atau model gambar Alibaba yang diaktifkan admin di Katalog Model) dan biayanya
@@ -29,6 +31,8 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
   const [size, setSize] = useState('');
   const [count, setCount] = useState(1);
   const [prompt, setPrompt] = useState(initialPrompt);
+  const [sourceImages, setSourceImages] = useState([]);
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -62,21 +66,42 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       params: null,
     }];
   })();
+  const active = models.find((model) => `${model.provider}:${model.model}` === selected) || models.find((model) => model.ready) || models[0] || null;
+  const maxInputImages = Number(active?.params?.maxInputImages) || 0;
+  const requiresImageInput = Boolean(active?.params?.requiresImageInput);
+  const maxPromptChars = Number(active?.params?.maxPromptChars) || 2000;
+  const isWan26InterleaveImage = active?.model === 'wan2.6-image';
+  const effectiveMaxN = isWan26InterleaveImage && sourceImages.length > 0 ? 4 : (active?.params?.maxN || 1);
+
   const isWxhValid = (value, params) => {
     if (params?.sizeMode !== 'wxh') return false;
     const match = /^(\d{3,4})\*(\d{3,4})$/.exec(String(value || ''));
     if (!match) return false;
-    const min = Number(params.minSide), max = Number(params.maxSide);
-    return [Number(match[1]), Number(match[2])].every((n) => n >= min && n <= max);
+    const w = Number(match[1]);
+    const h = Number(match[2]);
+    if (params.minSide && (w < Number(params.minSide) || h < Number(params.minSide))) return false;
+    if (params.maxSide && (w > Number(params.maxSide) || h > Number(params.maxSide))) return false;
+    const product = w * h;
+    if (params.minProduct && product < Number(params.minProduct)) return false;
+    const maxProduct = isWan26InterleaveImage && sourceImages.length > 0 ? 2048 * 2048 : params.maxProduct;
+    if (maxProduct && product > Number(maxProduct)) return false;
+    if (params.minRatio && w / h < Number(params.minRatio)) return false;
+    if (params.maxRatio && w / h > Number(params.maxRatio)) return false;
+    return true;
   };
-  const isSizeOk = (value, params) => (params?.sizes?.includes(value) || isWxhValid(value, params));
-  const active = models.find((model) => `${model.provider}:${model.model}` === selected) || models.find((model) => model.ready) || models[0] || null;
+  const isSizeOk = (value, params) => {
+    if (params?.sizes?.includes(value)) return true;
+    if (isWan26InterleaveImage && sourceImages.length > 0 && (value === '1K' || value === '2K')) return true;
+    return isWxhValid(value, params);
+  };
+
   useEffect(() => {
     if (!active) return;
     if (selected !== `${active.provider}:${active.model}`) setSelected(`${active.provider}:${active.model}`);
     const nextSize = active.params?.defaultSize || '';
     setSize((current) => (isSizeOk(current, active.params) ? current : nextSize));
-    setCount((current) => (active.params?.maxN ? Math.min(Math.max(1, Number(current) || 1), active.params.maxN) : 1));
+    setCount((current) => (active.params?.maxN ? Math.min(Math.max(1, Number(current) || 1), effectiveMaxN) : 1));
+    setSourceImages((current) => (maxInputImages > 0 ? current.slice(0, maxInputImages) : []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.provider, active?.model]);
 
@@ -96,12 +121,68 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     return () => { clearInterval(timer); };
   }, [items, refreshBalance]);
 
+  async function handleImageFiles(event) {
+    const files = [...(event.target.files || [])];
+    event.target.value = '';
+    if (!files.length || !maxInputImages) return;
+    if (!userId) {
+      setError('Sesi belum siap untuk mengunggah gambar.');
+      return;
+    }
+    const slotsLeft = maxInputImages - sourceImages.length;
+    if (slotsLeft <= 0) {
+      setError(`Maksimal ${maxInputImages} gambar sumber untuk model ini.`);
+      return;
+    }
+    setUploading(true);
+    setError('');
+    setNotice('');
+    try {
+      const uploaded = [];
+      for (const file of files.slice(0, slotsLeft)) {
+        if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+          throw new Error('Format gambar hanya mendukung PNG, JPG, atau WEBP.');
+        }
+        if (file.size > MAX_UPLOAD_BYTES) {
+          throw new Error('Ukuran tiap gambar maksimal 10 MB.');
+        }
+        const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+        const path = `${userId}/image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const { data, error: uploadError } = await supabase.storage
+          .from('ai-studio-uploads')
+          .upload(path, file, { contentType: file.type || 'image/png' });
+        if (uploadError) throw uploadError;
+        const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
+        if (pub?.publicUrl) uploaded.push(pub.publicUrl);
+      }
+      if (uploaded.length) setSourceImages((current) => [...current, ...uploaded].slice(0, maxInputImages));
+    } catch (err) {
+      setError(err?.message || 'Gagal mengunggah gambar sumber.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function submit(event) {
     event.preventDefault();
     const text = prompt.trim();
-    if (busy || !text) return;
+    if (busy || uploading || !text) return;
+    if (requiresImageInput && sourceImages.length === 0) {
+      setError(`Model ${active?.name || 'ini'} wajib menyertakan minimal 1 gambar sumber.`);
+      return;
+    }
     setBusy(true); setError(''); setNotice('');
-    const res = await generateImage(text, active ? { provider: active.provider, model: active.model, ...(active.params ? { size, n: count } : {}) } : {});
+    const res = await generateImage(
+      text,
+      active
+        ? {
+            provider: active.provider,
+            model: active.model,
+            ...(active.params ? { size, n: Math.min(count, effectiveMaxN) } : {}),
+            ...(maxInputImages > 0 && sourceImages.length > 0 ? { images: sourceImages } : {}),
+          }
+        : {},
+    );
     if (!res.ok) {
       setError(res.data?.error || 'Generasi gambar gagal. Kredit tidak dipotong bila kegagalan terjadi sebelum pengiriman.');
       setBusy(false);
@@ -109,10 +190,13 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     }
     const generation = res.data?.generation || null;
     if (generation) setItems((current) => [generation, ...current.filter((item) => item.id !== generation.id)]);
+    const billed = res.data?.credits ?? config?.credits ?? 0;
     if (res.data?.status === 'unknown') {
       setError('Hasil pengiriman tidak pasti dan kredit mungkin sudah terpakai. Jangan ulangi; periksa status di riwayat terlebih dahulu.');
+    } else if (res.data?.status === 'completed') {
+      setNotice(`Permintaan diterima dan selesai (${billed} kredit BLEA).`);
     } else {
-      setNotice(`Permintaan diterima (${res.data?.credits ?? config?.credits ?? 0} kredit BLEA). Gambar biasanya selesai dalam beberapa detik hingga satu menit.`);
+      setNotice(`Permintaan diterima (${billed} kredit BLEA). Gambar biasanya selesai dalam beberapa detik hingga satu menit.`);
     }
     refreshBalance();
     setBusy(false);
@@ -121,10 +205,22 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
   const price = active && Number.isSafeInteger(active.credits) ? active.credits : null;
   const ready = active?.ready === true && price !== null;
   const insufficient = price !== null && balance !== null && balance < price;
-  const isFreebeat = active?.provider === 'freebeat';
+  const missingRequiredImage = requiresImageInput && sourceImages.length === 0;
   const headerSub = active
-    ? `Dari teks · ${active.name} · ${price !== null ? `${price} kredit BLEA per gambar` : 'harga belum diatur admin'}`
+    ? `${requiresImageInput ? 'Dari gambar + teks' : maxInputImages > 0 ? 'Dari teks / gambar' : 'Dari teks'} · ${active.name} · ${price !== null ? `${price} kredit BLEA per gambar` : 'harga belum diatur admin'}`
     : 'Dari teks · belum ada model yang diaktifkan admin';
+
+  const wxhSuggestions = [...new Set([
+    active?.params?.defaultSize,
+    ...(isWan26InterleaveImage && sourceImages.length > 0 ? ['1K', '2K'] : []),
+    ...(active?.params?.minSide && active.params.minSide >= 1280 ? ['1280*1280', '1440*1440', '1440*1080', '1080*1440'] : ['2048*2048', '1664*928', '1472*1104', '1328*1328', '1280*1280', '1024*1024', '1104*1472', '928*1664']),
+  ].filter(Boolean))];
+
+  const sizeHintText = active?.params?.sizeHint
+    ? `Format ${active.params.sizeHint}`
+    : active?.params?.minSide && active?.params?.maxSide
+      ? `Format LEBAR*TINGGI · sisi ${active.params.minSide}–${active.params.maxSide} piksel`
+      : 'Format LEBAR*TINGGI';
 
   return <div className="generate-card">
     <div className="generate-card-head">
@@ -154,6 +250,8 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
           const nextSize = next?.params?.defaultSize || '';
           setSize(nextSize);
           setCount(1);
+          const nextMaxImgs = Number(next?.params?.maxInputImages) || 0;
+          setSourceImages((current) => (nextMaxImgs > 0 ? current.slice(0, nextMaxImgs) : []));
         }}>
           {models.map((model) => <option key={`${model.provider}:${model.model}`} value={`${model.provider}:${model.model}`}>{model.name}{Number.isSafeInteger(model.credits) ? ` · ${model.credits} kredit` : ' · harga belum diatur'}</option>)}
         </select>
@@ -163,11 +261,11 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
           <span className="generate-label">Ukuran</span>
           {active.params.sizeMode === 'wxh'
             ? <>
-                <input className="generate-select generate-size-input" type="text" inputMode="numeric" list="alibaba-size-suggest" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }} placeholder={active.params.defaultSize} aria-label="Ukuran gambar (lebar*tinggi)" />
+                <input className="generate-select generate-size-input" type="text" list="alibaba-size-suggest" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }} placeholder={active.params.defaultSize} aria-label="Ukuran gambar (lebar*tinggi)" />
                 <datalist id="alibaba-size-suggest">
-                  {[...new Set([active.params.defaultSize, '2048*2048', '1664*928', '1472*1104', '1328*1328', '1280*1280', '1104*1472', '928*1664'])].map((option) => <option key={option} value={option} />)}
+                  {wxhSuggestions.map((option) => <option key={option} value={option} />)}
                 </datalist>
-                <span className="generate-hint">Format LEBAR*TINGGI · sisi {active.params.minSide}–{active.params.maxSide} piksel</span>
+                <span className="generate-hint">{sizeHintText}</span>
               </>
             : <select className="generate-select" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }}>
                 {active.params.sizes.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -175,18 +273,31 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
         </label>
         <label className="generate-field">
           <span className="generate-label">Jumlah gambar</span>
-          <select className="generate-select" value={String(count)} onChange={(event) => { setCount(Number(event.target.value)); setNotice(''); }}>
-            {Array.from({ length: active.params.maxN }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
+          <select className="generate-select" value={String(Math.min(count, effectiveMaxN))} onChange={(event) => { setCount(Number(event.target.value)); setNotice(''); }}>
+            {Array.from({ length: effectiveMaxN }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
       </div>}
+      {maxInputImages > 0 && <div className="generate-field">
+        <span className="generate-label">Gambar sumber {requiresImageInput ? '(wajib)' : `(opsional, maks ${maxInputImages})`}</span>
+        <input type="file" accept="image/png,image/jpeg,image/webp" multiple={maxInputImages > 1} disabled={busy || uploading || sourceImages.length >= maxInputImages} onChange={handleImageFiles} aria-label="Unggah gambar sumber" />
+        {uploading && <span className="generate-hint">Mengunggah gambar sumber…</span>}
+        {sourceImages.length > 0 && <div className="history-grid">
+          {sourceImages.map((url, idx) => <div key={`${url}-${idx}`} className="history-card">
+            <img src={url} alt={`Gambar sumber ${idx + 1}`} />
+            <div className="history-card-body">
+              <button type="button" className="generate-secondary-btn" onClick={() => setSourceImages((current) => current.filter((_, itemIdx) => itemIdx !== idx))}>Hapus</button>
+            </div>
+          </div>)}
+        </div>}
+      </div>}
       <label className="generate-field">
         <span className="generate-label">Prompt gambar</span>
-        <textarea className="generate-textarea" rows={4} maxLength={2000} value={prompt} placeholder="Contoh: potret studio seekor kucing hitam, cahaya lembut, latar abu-abu" onChange={(event) => { setPrompt(event.target.value); setNotice(''); }} />
+        <textarea className="generate-textarea" rows={4} maxLength={maxPromptChars} value={prompt} placeholder="Contoh: potret studio seekor kucing hitam, cahaya lembut, latar abu-abu" onChange={(event) => { setPrompt(event.target.value); setNotice(''); }} />
       </label>
-      <p className="generate-hint">{prompt.trim().length}/2000 karakter · biaya {price !== null ? price : '—'} kredit dipotong saat pengiriman berhasil.</p>
+      <p className="generate-hint">{prompt.trim().length}/{maxPromptChars} karakter · biaya {price !== null ? price : '—'} kredit dipotong saat pengiriman berhasil.</p>
       <div className="generate-actions">
-        <button className="generate-submit-btn" type="submit" disabled={busy || !ready || insufficient || !prompt.trim()}>
+        <button className="generate-submit-btn" type="submit" disabled={busy || uploading || !ready || insufficient || missingRequiredImage || !prompt.trim()}>
           {busy ? 'Mengirim…' : `Buat gambar${price !== null ? ` (${price} kredit)` : ''}`}
         </button>
         <button className="generate-secondary-btn" type="button" disabled={busy || loading} onClick={load}>Perbarui</button>
@@ -196,19 +307,26 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     {items.length > 0 && <div className="generate-history">
       <h3 className="generate-card-title">Riwayat gambar</h3>
       <div className="history-grid">
-        {items.slice(0, 12).map((item) => <article className="history-card" key={item.id}>
-          {item.status === 'completed' && item.image_url
-            ? <img src={item.image_url} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
-            : <div className="history-preview">{STATUS_LABEL[item.status] || item.status}</div>}
-          <div className="history-card-body">
-            <span className={`history-status status-${item.status}`}>{STATUS_LABEL[item.status] || item.status}</span>
-            <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>
-            <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · model {item.model} · {item.credits_charged} kredit{item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}</p>
-            {item.error_message && <p className="history-error-text">{item.error_message}</p>}
-            {item.status === 'unknown' && <p className="history-error-text">Jangan ulangi sebelum statusnya jelas; kredit mungkin sudah terpakai.</p>}
-            {item.status === 'completed' && item.image_url && <div className="history-card-actions"><a href={item.image_url} target="_blank" rel="noopener noreferrer">Buka gambar</a></div>}
-          </div>
-        </article>)}
+        {items.slice(0, 12).map((item) => {
+          const allUrls = Array.isArray(item.image_urls) && item.image_urls.length > 0
+            ? item.image_urls
+            : (item.image_url ? [item.image_url] : []);
+          return <article className="history-card" key={item.id}>
+            {item.status === 'completed' && allUrls[0]
+              ? <img src={allUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
+              : <div className="history-preview">{STATUS_LABEL[item.status] || item.status}</div>}
+            <div className="history-card-body">
+              <span className={`history-status status-${item.status}`}>{STATUS_LABEL[item.status] || item.status}</span>
+              <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>
+              <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · model {item.model} · {item.credits_charged} kredit{item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}</p>
+              {item.error_message && <p className="history-error-text">{item.error_message}</p>}
+              {item.status === 'unknown' && <p className="history-error-text">Jangan ulangi sebelum statusnya jelas; kredit mungkin sudah terpakai.</p>}
+              {item.status === 'completed' && allUrls.length > 0 && <div className="history-card-actions">
+                {allUrls.map((url, idx) => <a key={`${item.id}-${idx}`} href={url} target="_blank" rel="noopener noreferrer">{allUrls.length > 1 ? `Buka gambar #${idx + 1}` : 'Buka gambar'}</a>)}
+              </div>}
+            </div>
+          </article>;
+        })}
       </div>
       <p className="generate-hint">Riwayat lengkap tersedia di <Link to="/history">halaman History</Link>.</p>
     </div>}
