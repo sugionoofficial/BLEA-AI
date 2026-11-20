@@ -34,6 +34,7 @@ import {
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
+import { handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
   consumerImageConfig,
   consumerImageGenerate,
@@ -2007,6 +2008,17 @@ async function handleApi(request, url, env) {
         return jsonResponse({ ok: true, ...(await handleAdminUserRoles(env, request, user)) });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Memuat peran gagal' }, err?.status || 500);
+      }
+    }
+
+    // ---- /admin/purchase-toggle: aktif/nonaktifkan pembelian kredit (wajib password) ----
+    if (path === 'admin/purchase-toggle' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      try {
+        return jsonResponse({ ok: true, ...(await handlePurchaseToggle(env, request, user)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Mengubah status pembelian gagal' }, err?.status || 500);
       }
     }
 
