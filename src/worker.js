@@ -3609,9 +3609,9 @@ async function handleApi(request, url, env) {
         const dancePriced = Number.isSafeInteger(danceCredits) && danceCredits > 0;
         merged.set('freebeat:generate_dance_video', {
           id: 'generate_dance_video',
-          name: 'Freebeat AI Dance Video (720p)',
+          name: 'Freebeat Music-to-Dance Video (720p)',
           provider: 'freebeat',
-          providerLabel: 'Freebeat AI Dance',
+          providerLabel: 'Freebeat Dance (Music-to-Dance)',
           providerConfigured: danceCfg.provider_ready === true,
           activeInAdmin: dancePriced,
           online: danceCfg.provider_ready === true,
@@ -3629,7 +3629,7 @@ async function handleApi(request, url, env) {
           supportsAudioOutput: true,
           requiresAudio: true,
           maxImages: 5,
-          description: 'Buat video dance koreografi otomatis dari lagu (MP3/WAV/link musik) & hingga 5 foto penari (720p, estimasi 15–60 menit).',
+          description: 'Koreografi dance AI otomatis dari lagu/audio (MP3/WAV/link musik) & hingga 5 foto karakter/penari (bukan motion transfer video). Resolusi 720p, estimasi 15–60 menit.',
         });
       }
 
@@ -3643,7 +3643,7 @@ async function handleApi(request, url, env) {
 
       const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
       if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
-        providers.push({ id: 'freebeat', label: 'Freebeat AI Dance', configured: danceCfg.provider_ready === true, hasBaseUrl: false });
+        providers.push({ id: 'freebeat', label: 'Freebeat Dance (Music-to-Dance)', configured: danceCfg.provider_ready === true, hasBaseUrl: false });
       }
       for (const preset of Object.values(PROVIDER_PRESETS)) {
         if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;
