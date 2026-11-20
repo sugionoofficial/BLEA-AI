@@ -83,9 +83,15 @@ test('Freebeat OAuth requests read and generation, enforces admin, PKCE and brow
     const aes = await crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['decrypt']);
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: encoded.encode('session') }, aes, ciphertext);
     const stored = JSON.parse(new TextDecoder().decode(plaintext));
-    assert.deepEqual(Object.keys(stored).sort(), ['accessToken', 'clientId', 'expiresAt', 'imageAccess', 'uid']);
+    assert.deepEqual(Object.keys(stored).sort(), ['accessToken', 'clientId', 'expiresAt', 'imageAccess', 'issuedAt', 'refreshToken', 'sid', 'uid']);
     assert.equal(stored.imageAccess, true);
-    assert.equal(JSON.stringify(stored).includes('NEVER-STORE-REFRESH'), false);
+    // Sejak fix15 refresh token memang disimpan di dalam cookie TERENKRIPSI agar
+    // sesi dapat diperpanjang otomatis tanpa consent ulang. Invariant yang tetap
+    // dijaga: token tidak pernah muncul sebagai plaintext di header (diassert di
+    // atas) maupun di badan respons API mana pun.
+    assert.equal(stored.refreshToken, 'NEVER-STORE-REFRESH');
+    assert.equal(Number.isFinite(stored.issuedAt), true);
+    assert.equal(typeof stored.sid, 'string');
     assert.equal((await (await call('/api/freebeat/status', { token: 'other-admin', cookie: session })).json()).connected, false);
     assert.equal((await call('/api/freebeat/balance', { token: 'other-admin', cookie: session, method: 'POST' })).status, 401);
     assert.equal((await call('/api/freebeat/balance', { token: 'user-token', cookie: session, method: 'POST' })).status, 403);
@@ -391,7 +397,7 @@ test('admin image discovery uses only read-only MCP tools, filters schema and mo
     const modelRes = await call('/api/freebeat/image-models', { token: 'admin-token', cookie, method: 'POST' });
     const modelText = await modelRes.text();
     assert.equal(modelRes.status, 200);
-    assert.deepEqual(JSON.parse(modelText).models, [{ model_id: 108, name: 'Example image' }, { model_id: 'other-model', name: 'Other image' }]);
+    assert.deepEqual(JSON.parse(modelText).models, [{ model_id: 108, name: 'Example image', member_only: false, available: true }, { model_id: 'other-model', name: 'Other image', member_only: false, available: true }]);
     assert.doesNotMatch(modelText, /SECRET|ACCESS-TOKEN/);
     assert.deepEqual(providerCalls.map((body) => body.method), ['initialize', 'notifications/initialized', 'tools/list', 'tools/list', 'initialize', 'notifications/initialized', 'tools/call']);
   } finally { globalThis.fetch = originalFetch; }
@@ -597,7 +603,7 @@ test('video discovery is read-only and admin-isolated, filtering tool schemas an
     const models = await call('/api/freebeat/video-models', { token: 'admin-token', cookie, method: 'POST' });
     assert.equal(models.status, 200);
     const modelText = await models.text();
-    assert.deepEqual(JSON.parse(modelText).models, [{ model_id: 50, name: 'Example Video' }]);
+    assert.deepEqual(JSON.parse(modelText).models, [{ model_id: 50, name: 'Example Video', member_only: false, available: true }]);
     assert.doesNotMatch(modelText, /SECRET/);
     const schemas = await call('/api/freebeat/video-schemas', { token: 'admin-token', cookie, method: 'POST' });
     assert.equal(schemas.status, 200);
@@ -632,7 +638,7 @@ test('Wan video help and quote are admin-only, bounded read-only diagnostics wit
       assert.deepEqual(body.params.arguments, { type: 'video', model_id: 182 });
       return Response.json({ id: body.id, result: { structuredContent: { generation_types: ['image', 'text'], resolutions: ['720p', '1080p', 'SECRET'], duration: [5, 10], description: 'SECRET-MESSAGE', token: 'SECRET-TOKEN', url: 'https://SECRET.example' } } });
     }
-    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: 'Seekor kucing berjalan', generation_type: 'image', duration: 5, resolution: '480p', images: ['https://images.example/cat.png?signature=SECRET'] } } });
+    assert.deepEqual(body.params, { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 182, prompt: 'Seekor kucing berjalan', generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9', images: ['https://images.example/cat.png?signature=SECRET'] } } });
     return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: 42, prompt: 'SECRET-PROMPT', images: ['https://images.example/SECRET'], message: 'SECRET-MESSAGE' } } });
   };
   const invoke = (action, { cookie, token = 'admin-token', origin = 'https://blea-ai.blea-ai.workers.dev', contentType = 'application/json', data = {} } = {}) => worker.fetch(new Request(`https://blea-ai.blea-ai.workers.dev/api/freebeat/${action}`, { method: 'POST', headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}), 'content-type': contentType }, body: JSON.stringify(data) }), env);
@@ -750,14 +756,17 @@ test('other video model help and quote are read-only, validate input, and use th
     const quote = await invoke('video-model-quote', { cookie, data: { model_id: 184, prompt: ' Kucing berjalan ', image_url: ' https://images.example/a.png?signature=SECRET ' } });
     const text = await quote.text();
     assert.equal(quote.status, 200); assert.doesNotMatch(text, /SECRET|Kucing berjalan|images.example/);
-    assert.deepEqual(JSON.parse(text).settings, { model_id: 184, generation_type: 'image', duration: 5, resolution: '480p' });
+    assert.deepEqual(JSON.parse(text).settings, { model_id: 184, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9' });
     assert.deepEqual(calls, [
       { name: 'get_model_help', arguments: { type: 'video', model_id: 184 } },
-      { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 184, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'Kucing berjalan', images: ['https://images.example/a.png?signature=SECRET'] } } },
+      // video-model-quote membaca help model sekali lagi untuk menormalkan
+      // duration/resolution/generation_type sebelum meminta quote.
+      { name: 'get_model_help', arguments: { type: 'video', model_id: 184 } },
+      { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { model_id: 184, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9', prompt: 'Kucing berjalan', images: ['https://images.example/a.png?signature=SECRET'] } } },
     ]);
     const other = await invoke('video-model-help', { cookie, data: { model_id: 200 } });
     assert.equal((await other.json()).model_id, 200);
-    assert.equal(calls[2].arguments.model_id, 200);
+    assert.equal(calls[3].arguments.model_id, 200);
     assert.ok(calls.every((item) => ['get_model_help', 'quote_generation'].includes(item.name)));
   } finally { globalThis.fetch = originalFetch; }
 });

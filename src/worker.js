@@ -33,7 +33,15 @@ import {
   normalizeVideoStatus,
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
-import { freebeatCallback, handleFreebeat } from './lib/freebeatMcp.js';
+import { handleAdminUserAction } from './lib/adminUserControls.js';
+import {
+  consumerImageConfig,
+  consumerImageGenerate,
+  consumerImageHistory,
+  consumerImageStatus,
+  freebeatCallback,
+  handleFreebeat,
+} from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
@@ -193,6 +201,82 @@ async function getUser(env, token) {
 async function isAdmin(env, token) {
   const user = await getUser(env, token);
   return user?.app_metadata?.role === 'admin';
+}
+
+// ---- Pintu masuk status akun (fix39) --------------------------------------
+// Akun yang di-suspend/banned ditolak di SEMUA jalur /api/* yang butuh login,
+// bukan hanya di jalur berbayar. Jalur worker memakai service_role sehingga
+// menembus RLS: policy database saja tidak cukup menahan akun yang diblokir.
+// Hanya status yang TERBACA banned/suspended yang memblokir; kegagalan membaca
+// database tidak boleh mengunci semua orang (semantik sama dengan
+// assertAccountActive() di freebeatMcp.js).
+const ACCOUNT_BLOCK_MESSAGE = {
+  banned: 'Akun Anda diblokir. Hubungi admin BLEA.',
+  suspended: 'Akun Anda sedang ditangguhkan sementara. Hubungi admin BLEA.',
+};
+// 'account' harus tetap terbaca supaya UI bisa menampilkan alasannya;
+// 'admin/users/action' harus tetap terbuka supaya admin bisa memulihkan status.
+const ACCOUNT_GATE_EXEMPT = new Set(['account', 'admin/users/action']);
+const ACCOUNT_STATUS_TTL = 30_000;
+const accountStatusCache = new Map();      // user_id  -> { status, at }
+const accountTokenCache = new Map();       // sidik token -> { status, at }
+
+function pruneAccountCache(cache) {
+  if (cache.size <= 500) return;
+  for (const [key, value] of cache) {
+    if (Date.now() - value.at >= ACCOUNT_STATUS_TTL) cache.delete(key);
+  }
+}
+
+// Sidik jari token (bukan token mentah) supaya gerbang tidak perlu memanggil
+// /auth/v1/user dua kali pada setiap permintaan dalam jendela cache.
+async function tokenFingerprint(token) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`blea-account-gate-v1:${token}`));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function readAccountStatus(env, userId) {
+  const cached = accountStatusCache.get(userId);
+  if (cached && Date.now() - cached.at < ACCOUNT_STATUS_TTL) return cached.status;
+  let status = null;
+  try {
+    const res = await servicePostgrest(env, `/profiles?id=eq.${encodeURIComponent(userId)}&select=status&limit=1`);
+    const rows = await res.json().catch(() => null);
+    if (Array.isArray(rows)) status = rows[0]?.status ?? null;
+  } catch {
+    status = null;
+  }
+  accountStatusCache.set(userId, { status, at: Date.now() });
+  pruneAccountCache(accountStatusCache);
+  return status;
+}
+
+function isBlockedAccountStatus(status) {
+  return status === 'banned' || status === 'suspended';
+}
+
+async function accountGate(request, env, path) {
+  if (ACCOUNT_GATE_EXEMPT.has(path)) return null;
+  const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+  if (!token) return null;              // jalur tanpa login: handler-nya sendiri yang menolak
+  let status = null;
+  try {
+    const fingerprint = await tokenFingerprint(token);
+    const cached = accountTokenCache.get(fingerprint);
+    if (cached && Date.now() - cached.at < ACCOUNT_STATUS_TTL) {
+      status = cached.status;
+    } else {
+      const user = await getUser(env, token);
+      if (!user?.id) return null;       // token tidak sah: biar handler mengembalikan 401
+      status = await readAccountStatus(env, user.id);
+      accountTokenCache.set(fingerprint, { status, at: Date.now() });
+      pruneAccountCache(accountTokenCache);
+    }
+  } catch {
+    return null;                        // gerbang tidak boleh menjatuhkan permintaan
+  }
+  if (!isBlockedAccountStatus(status)) return null;
+  return jsonResponse({ error: ACCOUNT_BLOCK_MESSAGE[status], code: `account_${status}`, account_status: status }, 403);
 }
 
 // Service-role PostgREST client (bypasses RLS — admin panel & server jobs need this)
@@ -1401,6 +1485,28 @@ async function handleApi(request, url, env) {
       return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
 
+    const blockedAccount = await accountGate(request, env, path);
+    if (blockedAccount) return blockedAccount;
+
+    // ---- /account: status akun untuk UI. Satu-satunya jalur yang tetap bisa
+    // dibaca akun yang ditangguhkan, supaya alasannya bisa ditampilkan. ----
+    if (path === 'account' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      let user = null;
+      try { user = token ? await getUser(env, token) : null; } catch { user = null; }
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401);
+      const status = await readAccountStatus(env, user.id);
+      const blocked = isBlockedAccountStatus(status);
+      return jsonResponse({
+        ok: true,
+        status: status || 'active',
+        blocked,
+        message: blocked ? ACCOUNT_BLOCK_MESSAGE[status] : null,
+        code: blocked ? `account_${status}` : null,
+        role: user.app_metadata?.role === 'admin' ? 'admin' : 'user',
+      });
+    }
+
     if (path === 'freebeat/callback' && method === 'GET') return freebeatCallback(request, env);
     if (path.startsWith('freebeat/')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
@@ -1882,6 +1988,62 @@ async function handleApi(request, url, env) {
     }
 
     // ---- /video/models: multi-provider video generation models & provider statuses ----
+    // ---- /admin/users/action: saldo, suspend/banned, hapus akun (wajib password) ----
+    if (path === 'admin/users/action' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      try {
+        return jsonResponse({ ok: true, ...(await handleAdminUserAction(env, request, user)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Aksi admin gagal' }, err?.status || 500);
+      }
+    }
+
+    // ---- /image/*: generate gambar Freebeat untuk semua user (kredit BLEA) ----
+    if (path === 'image/config' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        return jsonResponse({ ok: true, ...(await consumerImageConfig(env)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Konfigurasi gambar tidak tersedia' }, err?.status || 500);
+      }
+    }
+
+    if (path === 'image/generate' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        return jsonResponse({ ok: true, ...(await consumerImageGenerate(env, request, user)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Generasi gambar gagal' }, err?.status || 500);
+      }
+    }
+
+    if (path === 'image/status' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        return jsonResponse({ ok: true, ...(await consumerImageStatus(env, request, user)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Status gambar tidak tersedia' }, err?.status || 500);
+      }
+    }
+
+    if (path === 'image/history' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        return jsonResponse({ ok: true, ...(await consumerImageHistory(env, user)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Riwayat gambar tidak tersedia' }, err?.status || 500);
+      }
+    }
+
     if (path === 'video/models' && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const user = token ? await getUser(env, token) : null;
@@ -2035,10 +2197,20 @@ async function handleApi(request, url, env) {
       const videoUrl = String(payload.video_url || '').trim();
       const audioUrl = String(payload.audio_url || '').trim();
 
+      // Validasi input murah lebih dulu: permintaan yang pasti ditolak tidak
+      // perlu membebani database, dan penolakannya tidak bergantung pada
+      // ketersediaan tabel profil.
       if (!provider || provider === 'unorouter' || provider === 'freebeat') return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
       if (!prompt && !imageUrl && !videoUrl && !audioUrl) {
         return jsonResponse({ error: 'Masukkan prompt atau unggah minimal satu media (gambar, video, atau audio).' }, 400);
+      }
+
+      // Lapis kedua setelah accountGate(): jalur berbayar tetap memeriksa status
+      // akun sendiri (cache 30 detik membuatnya nyaris gratis).
+      const videoAccountStatus = await readAccountStatus(env, user.id);
+      if (isBlockedAccountStatus(videoAccountStatus)) {
+        return jsonResponse({ error: ACCOUNT_BLOCK_MESSAGE[videoAccountStatus], code: `account_${videoAccountStatus}`, account_status: videoAccountStatus }, 403);
       }
 
       const keyRow = await fetchProviderKeyRecord(env, provider);

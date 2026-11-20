@@ -3,6 +3,11 @@ import { supabase } from '../lib/supabase';
 // API routes served by the Cloudflare Worker (same origin — no CORS).
 // Env vars for the Worker: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
 export const EDGE_BASE = '/api';
+// Dikirim worker bila akun ditangguhkan/diblokir (fix39). AuthProvider
+// mendengarkannya supaya layar pemblokiran muncul walau status berubah di
+// tengah sesi.
+export const ACCOUNT_BLOCKED_EVENT = 'blea:account-blocked';
+export const ACCOUNT_BLOCKED_CODES = ['account_suspended', 'account_banned'];
 export const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz';
 
 export async function getAccessToken() {
@@ -41,6 +46,9 @@ export async function edgeRequest(path, body) {
       };
     }
     const data = await res.json().catch(() => ({}));
+    if (res.status === 403 && ACCOUNT_BLOCKED_CODES.includes(data?.code) && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(ACCOUNT_BLOCKED_EVENT, { detail: data }));
+    }
     return { ok: res.ok, status: res.status, data };
   } catch (error) {
     return {

@@ -15,7 +15,6 @@ import {
   generateVideo,
 } from '../api/generation';
 import { availableVideoModels, generationModelKey } from '../lib/generationCatalog';
-import { freebeatRequest } from '../api/freebeat';
 import { GenerateImagePanel } from './GenerateImagePanel';
 import './generate.css';
 
@@ -375,7 +374,7 @@ export function GeneratePage() {
           <button type="button" role="tab" aria-selected={mode === 'image'} onClick={() => setMode('image')}>Generate gambar</button>
           <button type="button" role="tab" aria-selected={mode === 'video'} onClick={() => setMode('video')}>Generate video</button>
         </div>
-        {mode === 'image' ? <GenerateImagePanel isAdmin={isAdmin} initialPrompt={searchParams.get('prompt') || ''} request={freebeatRequest} /> : <>
+        {mode === 'image' ? <GenerateImagePanel initialPrompt={searchParams.get('prompt') || ''} /> : <>
         {workerMode === 'unavailable' && (
           <div className="generate-banner" role="status">
             <span>

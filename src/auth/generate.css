@@ -593,3 +593,5 @@
 .dropx-shell .generate-mode-tabs button[aria-selected="true"]{background:var(--primary-600);border-color:var(--primary-600);color:#fff}
 .dropx-shell .generate-mode-tabs button:focus-visible{outline:3px solid var(--ring);outline-offset:2px}
 .dropx-shell .generate-image-panel{width:100%;max-width:900px;box-sizing:border-box;margin:0;}
+.generate-source-preview{margin-top:10px}
+.generate-source-preview img{max-width:180px;max-height:180px;border-radius:10px;border:1px solid var(--border);display:block}

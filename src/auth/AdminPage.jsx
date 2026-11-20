@@ -1,3 +1,4 @@
+import { adminUserAction } from '../api/adminUsers';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownToLine,
@@ -122,6 +123,7 @@ const QUICK_PROVIDER_PRESETS = [
   PROVIDER_PRESETS.hailuo,
 ].filter(Boolean);
 
+const USER_STATUS_LABEL = { active: 'Aktif', suspended: 'Suspended', banned: 'Banned' };
 const VIDEO_STATUS_LABEL = {
   queued: 'Antrean',
   in_progress: 'Diproses',
@@ -179,6 +181,43 @@ export function AdminPage() {
   const [search, setSearch] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [wallets, setWallets] = useState({});
+  const [userAction, setUserAction] = useState(null);
+  const [actionPassword, setActionPassword] = useState('');
+  const [actionDelta, setActionDelta] = useState('100');
+  const [actionDescription, setActionDescription] = useState('');
+  const [actionStatus, setActionStatus] = useState('active');
+  const [actionReason, setActionReason] = useState('');
+  const [actionConfirmEmail, setActionConfirmEmail] = useState('');
+  const [actionBusy, setActionBusy] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
+
+  function openUserAction(profile) {
+    setUserAction(profile);
+    setActionPassword(''); setActionDelta('100'); setActionDescription('');
+    setActionStatus(profile.status || 'active'); setActionReason(profile.status_reason || '');
+    setActionConfirmEmail(''); setActionBusy(''); setActionError(''); setActionNotice('');
+  }
+  async function runUserAction(kind, extra = {}) {
+    if (!userAction || actionBusy) return;
+    if (actionPassword.length < 6) { setActionError('Masukkan password aksi admin (minimal 6 karakter).'); return; }
+    setActionBusy(kind); setActionError(''); setActionNotice('');
+    const res = await adminUserAction({ action: kind, user_id: userAction.id, password: actionPassword, ...extra });
+    setActionBusy('');
+    if (!res.ok) { setActionError(res.data?.error || 'Aksi gagal.'); return; }
+    if (kind === 'delete') {
+      setActionNotice('Akun dihapus permanen beserta seluruh datanya.');
+      setUserAction(null);
+      await loadData();
+      return;
+    }
+    setActionNotice(kind === 'credits'
+      ? `Saldo diperbarui menjadi ${res.data?.balance ?? '—'} kredit.`
+      : `Status akun diubah menjadi ${res.data?.status}.`);
+    setActionPassword('');
+    await loadData();
+  }
 
   const activeSubTab = subTab[tab] || 'all';
   const apiSection = subTab['api-keys'] || 'providers';
@@ -203,13 +242,14 @@ export function AdminPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     setErrorMessage('');
-    const [profileResult, videoResult, conversationResult, waitlistResult, providerKeyResult, dbModelsResult] = await Promise.all([
-      supabase.from('profiles').select('id,email,full_name,created_at').order('created_at', { ascending: false }).limit(500),
+    const [profileResult, videoResult, conversationResult, waitlistResult, providerKeyResult, dbModelsResult, walletResult] = await Promise.all([
+      supabase.from('profiles').select('id,email,full_name,created_at,status,status_reason').order('created_at', { ascending: false }).limit(500),
       supabase.from('video_generations').select('id,user_id,provider,model,prompt,aspect_ratio,resolution,duration,status,created_at,updated_at').order('created_at', { ascending: false }).limit(500),
       supabase.from('ai_conversations').select('id,user_id,title,created_at,updated_at').order('updated_at', { ascending: false }).limit(500),
       supabase.from('waitlist_signups').select('id,email,created_at').order('created_at', { ascending: false }).limit(500),
       supabase.from('provider_api_keys').select('provider,label,api_key,base_url,key_version,min_verified_at').order('provider'),
       fetchAdminModels({}),
+      supabase.from('credit_wallets').select('user_id,balance').limit(1000),
     ]);
     const errors = [profileResult.error, videoResult.error, conversationResult.error, waitlistResult.error, providerKeyResult.error].filter(Boolean);
     if (errors.length) {
@@ -220,6 +260,7 @@ export function AdminPage() {
       setVideos(videoResult.data ?? []);
       setConversations(conversationResult.data ?? []);
       setWaitlist(waitlistResult.data ?? []);
+      setWallets(Object.fromEntries((walletResult.data ?? []).map((row) => [row.user_id, Number(row.balance ?? 0)])));
       const keys = providerKeyResult.data ?? [];
       setProviderKeys(keys);
       setBaseUrlDrafts((prev) => {
@@ -260,6 +301,7 @@ export function AdminPage() {
     const [catalog, dbModels] = await Promise.all([
       fetchCatalog({ provider: targetProvider }),
       fetchAdminModels({}),
+      supabase.from('credit_wallets').select('user_id,balance').limit(1000),
     ]);
     const allDbModels = dbModels.models || [];
     setCustomModels(allDbModels);
@@ -1251,7 +1293,7 @@ export function AdminPage() {
                       <thead>
                         <tr>
                           {tab === 'users' ? (
-                            <><th>PENGGUNA</th><th>ID AKUN</th><th>BERGABUNG</th><th>STATUS</th></>
+                            <><th>PENGGUNA</th><th>ID AKUN</th><th>BERGABUNG</th><th>SALDO</th><th>STATUS</th><th></th></>
                           ) : tab === 'videos' ? (
                             <><th>MODEL &amp; PROMPT</th><th>SPESIFIKASI</th><th>PEMILIK</th><th>STATUS</th><th></th></>
                           ) : tab === 'conversations' ? (
@@ -1275,7 +1317,9 @@ export function AdminPage() {
                               </td>
                               <td className="admin-id-cell">{profile.id.slice(0, 8)}…</td>
                               <td>{formatDate(profile.created_at)}</td>
-                              <td><span className="admin-status-pill"><i /> Terdaftar</span></td>
+                              <td>{wallets[profile.id] ?? 0} kredit</td>
+                              <td><span className={`admin-status-pill status-${profile.status || 'active'}`}><i /> {USER_STATUS_LABEL[profile.status || 'active']}</span></td>
+                              <td><button type="button" className="admin-refresh-button" onClick={() => openUserAction(profile)}>Kelola</button></td>
                             </tr>
                           ))
                         ) : tab === 'videos' ? (
@@ -1362,6 +1406,64 @@ export function AdminPage() {
         </div>
       </main>
 
+      {userAction && (
+        <div className="admin-modal-backdrop">
+          <section className="admin-delete-modal admin-user-modal" role="dialog" aria-modal="true" aria-labelledby="admin-user-title">
+            <button type="button" className="admin-modal-close" onClick={() => setUserAction(null)} aria-label="Tutup"><X size={16} /></button>
+            <h2 id="admin-user-title">Kelola pengguna</h2>
+            <p><b>{userAction.full_name || 'Nama belum diatur'}</b><br />{userAction.email || '—'} · <code>{userAction.id}</code><br />Saldo saat ini: <b>{wallets[userAction.id] ?? 0} kredit</b> · status <b>{USER_STATUS_LABEL[userAction.status || 'active']}</b></p>
+
+            <label className="admin-field"><span>Password aksi admin (wajib untuk setiap perubahan)</span>
+              <input type="text" className="admin-secret-input" value={actionPassword} autoComplete="off" inputMode="text" spellCheck={false} onChange={(event) => { setActionPassword(event.target.value); setActionError(''); }} placeholder="Password yang Anda setel di Supabase" />
+            </label>
+            {actionError && <div className="admin-error" role="alert"><span>{actionError}</span></div>}
+            {actionNotice && <div className="admin-notice" role="status"><span>{actionNotice}</span></div>}
+
+            <fieldset disabled={Boolean(actionBusy)}>
+              <legend>Saldo kredit</legend>
+              <label className="admin-field"><span>Jumlah kredit</span>
+                <input type="number" min={1} max={1000000} step={1} value={actionDelta} onChange={(event) => setActionDelta(event.target.value)} />
+              </label>
+              <label className="admin-field"><span>Catatan (masuk ke ledger pengguna)</span>
+                <input type="text" maxLength={200} value={actionDescription} onChange={(event) => setActionDescription(event.target.value)} placeholder="Contoh: kompensasi gangguan layanan" />
+              </label>
+              <div className="admin-modal-actions">
+                <button type="button" className="admin-refresh-button" disabled={Boolean(actionBusy) || !(Number(actionDelta) > 0)} onClick={() => runUserAction('credits', { delta: Number(actionDelta), description: actionDescription })}>{actionBusy === 'credits_add' ? 'Memproses…' : 'Tambah saldo'}</button>
+                <button type="button" className="admin-cancel-button" disabled={Boolean(actionBusy) || !(Number(actionDelta) > 0)} onClick={() => runUserAction('credits', { delta: -Number(actionDelta), description: actionDescription })}>Kurangi saldo</button>
+              </div>
+            </fieldset>
+
+            <fieldset disabled={Boolean(actionBusy)}>
+              <legend>Status akun</legend>
+              <label className="admin-field"><span>Status</span>
+                <select value={actionStatus} onChange={(event) => setActionStatus(event.target.value)}>
+                  <option value="active">Aktif</option>
+                  <option value="suspended">Suspended (sementara)</option>
+                  <option value="banned">Banned (permanen)</option>
+                </select>
+              </label>
+              <label className="admin-field"><span>Alasan (opsional, terlihat di jejak audit)</span>
+                <input type="text" maxLength={300} value={actionReason} onChange={(event) => setActionReason(event.target.value)} />
+              </label>
+              <div className="admin-modal-actions">
+                <button type="button" className="admin-refresh-button" disabled={Boolean(actionBusy)} onClick={() => runUserAction('status', { status: actionStatus, reason: actionReason || null })}>Simpan status</button>
+              </div>
+              <p className="admin-hint">Suspended/banned menutup seluruh jalur API untuk user itu (chat, gambar, video, riwayat) dan menampilkan layar penahan begitu dia masuk — dia tidak bisa memakai fitur apa pun sampai statusnya Anda pulihkan. Pemulihan berlaku maksimal 30 detik (cache gerbang).</p>
+            </fieldset>
+
+            <fieldset disabled={Boolean(actionBusy)} className="admin-danger-zone">
+              <legend>Hapus akun permanen</legend>
+              <p className="admin-hint">Menghapus akun Supabase beserta profil, dompet kredit, ledger, riwayat gambar/video, dan percakapan. Tidak dapat dibatalkan.</p>
+              <label className="admin-field"><span>Ketik email pengguna untuk konfirmasi: <b>{userAction.email || '—'}</b></span>
+                <input type="email" value={actionConfirmEmail} onChange={(event) => setActionConfirmEmail(event.target.value)} autoComplete="off" />
+              </label>
+              <div className="admin-modal-actions">
+                <button type="button" className="admin-confirm-delete" disabled={Boolean(actionBusy) || actionConfirmEmail.trim().toLowerCase() !== String(userAction.email || '').trim().toLowerCase()} onClick={() => runUserAction('delete', { confirm_email: actionConfirmEmail.trim() })}>{actionBusy === 'delete' ? 'Menghapus…' : 'Hapus akun ini'}</button>
+              </div>
+            </fieldset>
+          </section>
+        </div>
+      )}
       {deleteTarget && (
         <div className="admin-modal-backdrop">
           <section className="admin-delete-modal" role="dialog" aria-modal="true" aria-labelledby="admin-delete-title">

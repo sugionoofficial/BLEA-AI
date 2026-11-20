@@ -29,27 +29,6 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [freebeatUploadConsent, setFreebeatUploadConsent] = useState(false);
   const [freebeatUploadCheck, setFreebeatUploadCheck] = useState(null);
   const [freebeatUploadResult, setFreebeatUploadResult] = useState(null);
-  const [proxyConsent, setProxyConsent] = useState(false);
-  const [proxyCreateConsent, setProxyCreateConsent] = useState(false);
-  const [proxyProbe, setProxyProbe] = useState(null);
-  const [proxyBusy, setProxyBusy] = useState(false);
-  const [proxyError, setProxyError] = useState('');
-  const proxyVersion = useRef(0);
-  async function runProxyProbe(stage) {
-    const version = ++proxyVersion.current;
-    setProxyBusy(true); setError(''); setProxyError(''); setProxyProbe(null);
-    try {
-      const picked = modelOptions.find((item) => String(item.id) === model);
-      const payload = { stage, acknowledge: true, model_slug: picked?.slug || '', prompt: prompt.trim(), image_url: imageUrl.trim(), ...durationPayload(), ...resolutionPayload() };
-      if (picked) payload.model_id = picked.id;
-      const result = await request('proxy-probe', 'POST', payload);
-      if (version === proxyVersion.current) setProxyProbe(result?.probe || null);
-    } catch (err) {
-      if (version === proxyVersion.current) setProxyError(err?.message || 'Probe gerbang web gagal tanpa pesan dari server.');
-    } finally {
-      if (version === proxyVersion.current) setProxyBusy(false);
-    }
-  }
   useEffect(() => {
     uploadCheckVersion.current += 1;
     setUploadCheckConsent(false); setFreebeatUploadConsent(false); setFreebeatUploadCheck(null); setFreebeatUploadResult(null);
@@ -137,7 +116,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     const number = Number(id);
     if (!Number.isSafeInteger(number) || number < 0 || typeof item.name !== 'string' || seen.has(number)) continue;
     seen.add(number);
-    modelOptions.push({ id: number, name: item.member_only === true ? `${item.name} · khusus member` : item.name, member_only: item.member_only === true, slug: typeof item.model_slug === 'string' ? item.model_slug : '' });
+    modelOptions.push({ id: number, name: item.member_only === true ? `${item.name} · khusus member` : item.name, member_only: item.member_only === true });
   }
   const selected = model !== '' && modelOptions.some((item) => String(item.id) === model);
   async function inspect(action) {
@@ -355,34 +334,6 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       </> : <p role="status">{freebeatUploadCheck.reason === 'cap_unavailable' ? 'Skema Freebeat tidak menyediakan batas kredit yang dapat digunakan. Upload diblokir.' : 'Quote nol tidak tersedia. Upload diblokir.'}</p>)}
       {freebeatUploadResult === 'uploaded' && <p role="status">Freebeat melaporkan upload berhasil dan mengembalikan URL gambar. Ini bukan jaminan generasi video akan berhasil; URL tidak disimpan atau dipakai otomatis.</p>}
       {freebeatUploadResult === 'unknown' && <p role="alert">Hasil upload tidak pasti; Freebeat mungkin sudah menyimpan salinan. Jangan ulangi sebelum memeriksa akun Freebeat.</p>}
-    </details>
-    <details className="freebeat-upload"><summary>Uji gerbang web Freebeat (diagnostik tingkat lanjut)</summary>
-      <p>Memeriksa apakah token OAuth BLEA diterima oleh gerbang web internal Freebeat (<code>/api/proxy/v1</code>), yang dipakai situs web mereka sendiri. Kedua langkah diagnostik di bawah <strong>gratis dan hanya-baca</strong>: tidak ada generasi, tidak ada kredit. Langkah ketiga mengirim video sungguhan melalui gerbang itu dan <strong>menagih kredit</strong>; langkah itu tetap diblokir server kecuali <code>FREEBEAT_ALLOW_PROXY_CREATE=1</code> disetel di Worker.</p>
-      <p>Gerbang web tidak terdokumentasi dan bukan jalur resmi MCP. Respons mentahnya dapat berisi data akun, jadi jangan bagikan tangkapan layarnya secara publik. Peringatan: gerbang ini menegakkan satu perangkat, sehingga probe dapat mengeluarkan Anda dari freebeat.ai di browser (masuk ulang saja bila itu terjadi); koneksi MCP BLEA terpisah dan tidak terpengaruh.</p>
-      <label className="freebeat-confirm"><input type="checkbox" checked={proxyConsent} disabled={proxyBusy || !connected} onChange={(event) => { setProxyConsent(event.target.checked); setProxyProbe(null); setProxyError(''); }} /> Saya mengizinkan permintaan diagnostik hanya-baca ke gerbang web Freebeat memakai token sesi BLEA.</label>
-      <div className="freebeat-actions">
-        <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy || proxyBusy || !proxyConsent} onClick={() => runProxyProbe('probe')}>{proxyBusy ? 'Memeriksa…' : 'Probe gerbang web (gratis, 1 GET)'}</button>
-        <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy || proxyBusy || !proxyConsent} onClick={() => runProxyProbe('list')}>{proxyBusy ? 'Memeriksa…' : 'Sapu bentuk request daftar video (gratis, hanya-baca)'}</button>
-      </div>
-      {!proxyBusy && !connected && <p role="status">Tombol belum aktif: koneksi Freebeat belum tersedia di halaman ini. Hubungkan atau muat ulang.</p>}
-      {!proxyBusy && connected && !proxyConsent && <p role="status">Tombol belum aktif: centang izin probe di atas lebih dulu.</p>}
-      {proxyError && <p role="alert">{proxyError}</p>}
-      {proxyProbe?.stage === 'probe' && <div className="freebeat-upload">
-        <p role="status">Status HTTP <strong>{proxyProbe.status}</strong> · vonis <strong>{proxyProbe.verdict}</strong> · {proxyProbe.accepted ? 'gerbang web MENERIMA token OAuth' : 'gerbang web menolak token OAuth'}{proxyProbe.location ? ` · lokasi: ${proxyProbe.location}` : ''}</p>
-        <p>URL: {proxyProbe.url}</p>
-        <pre className="freebeat-raw">{proxyProbe.body || '(respons kosong)'}</pre>
-        {proxyProbe.accepted && (proxyProbe.body || '').length > 2 && <><p>Token diterima. Langkah berikut mengirim video sungguhan lewat gerbang web dan menagih kredit sesuai harga model. Jangan lanjut tanpa persetujuan pengeluaran.</p>
-          <label className="freebeat-confirm"><input type="checkbox" checked={proxyCreateConsent} disabled={proxyBusy} onChange={(event) => setProxyCreateConsent(event.target.checked)} /> Saya menyetujui satu pengiriman video berbayar melalui gerbang web Freebeat memakai model, prompt, dan gambar yang sedang dipilih.</label>
-          <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={proxyBusy || !proxyCreateConsent || !prompt.trim() || !imageUrl.trim()} onClick={() => runProxyProbe('create')}>Kirim satu video via gerbang web (berbayar)</button></div></>}
-      </div>}
-      {proxyProbe?.stage === 'list' && <div className="freebeat-upload">
-        <p role="status">Vonis: <strong>{proxyProbe.verdict}</strong> · {proxyProbe.answered ? `satu bentuk request dijawab (HTTP ${proxyProbe.status})` : 'tidak ada bentuk request yang mengembalikan isi'}</p>
-        {(proxyProbe.attempts || []).map((item) => <p key={`${item.method}${item.url}${item.status}`}>{item.method} {item.url} → HTTP {item.status} · {item.length} byte · {item.verdict}</p>)}
-        <pre className="freebeat-raw">{proxyProbe.body || '(semua respons kosong)'}</pre>
-        {proxyProbe.answered && <p>Gerbang web menjawab permintaan hanya-baca dengan token OAuth BLEA (HTTP 2xx). Langkah pengiriman video tetap berbayar dan tetap butuh persetujuan Anda.</p>}
-        {!proxyProbe.answered && <p>Tidak ada bentuk request yang diterima (HTTP 2xx). Gerbang web Freebeat terikat cookie sesi/perangkat, bukan token OAuth, jadi BLEA tidak dapat memakai jalur ini. Pesan 401 di atas juga dapat mematikan sesi web Anda di freebeat.ai; bila itu terjadi, masuk ulang di situs mereka — koneksi MCP BLEA tidak terpengaruh. Jangan ulangi probe ini.</p>}
-      </div>}
-      {proxyProbe?.stage === 'create' && <div className="freebeat-upload"><p role="status">Status HTTP <strong>{proxyProbe.status}</strong> · vonis <strong>{proxyProbe.verdict}</strong> · {proxyProbe.accepted ? 'gerbang web menerima pengiriman' : 'gerbang web menolak pengiriman'}</p><pre className="freebeat-raw">{proxyProbe.body || '(respons kosong)'}</pre>{proxyProbe.accepted && <p>Jika respons berisi nomor seri, video mungkin sedang diproses dan kredit sudah tertagih. Periksa akun Freebeat sebelum mengulang.</p>}</div>}
     </details>
   </div>;
 }

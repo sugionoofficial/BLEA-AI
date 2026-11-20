@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import worker from '../src/worker.js';
+import { videoHeadroom } from '../src/lib/freebeatVideoTestSettings.js';
 
 const base = 'https://blea-ai.blea-ai.workers.dev';
 const env = { SUPABASE_URL: 'https://supabase.example', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_ROLE_KEY: 'FAKE-SERVICE-SECRET', PROVIDER_CREDENTIAL_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', ASSETS: { fetch: async () => new Response('not found', { status: 404 }) } };
@@ -80,9 +81,12 @@ function fixture() {
         data = uploadConfig.result || { success: true, image_urls: ['https://cdn.example/private?token=SECRET'], message: 'PRIVATE MESSAGE' };
       } else if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: '186', name: 'Model 186' }] }; }
       else if (body.params.name === 'get_model_help') { assert.deepEqual(body.params.arguments, { type: 'video', model_id: expectedModel }); data = { model_id: expectedModel }; }
-      else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
+      else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9', prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
       else if (body.params.name === 'generate_video') {
-        assert.deepEqual(body.params.arguments, { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: expectedMax });
+        // Payload dispatch mengikuti kontrak web Freebeat: aspect_ratio selalu
+        // dikirim, dan max_credits = quote + headroom (VIDEO_CREDIT_HEADROOM)
+        // agar pembulatan harga provider tidak menolak job dengan 0 kredit.
+        assert.deepEqual(body.params.arguments, { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9', prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: expectedMax + videoHeadroom(expectedMax) });
         if (generateMode === 'lost') throw new Error('PRIVATE-NETWORK-ERROR');
         if (generateMode === 'rpc-error') return Response.json({ id: body.id, error: { code: -32000, message: 'Rejected https://secret.example/a?token=VALUE Bearer BADTOKEN' } });
         if (generateMode === 'sse-error') return new Response(`event: message\ndata: ${JSON.stringify({ id: body.id, error: { code: -32000, message: 'Rejected https://secret.example/a?token=VALUE Bearer BADTOKEN' } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
@@ -118,7 +122,7 @@ test('admin video test binds explicit approval and cap to fresh quote, dispatche
     f.setQuote({ status: 'quoted', credits: 23 });
     const ready = await prepare(cookie); assert.equal(ready.status, 200);
     const { approval, credits, prompt, settings, image_url } = await ready.json();
-    assert.equal(credits, 23); assert.equal(prompt, 'test prompt'); assert.equal(image_url, 'https://images.example/input.png'); assert.deepEqual(settings, { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p' });
+    assert.equal(credits, 23); assert.equal(prompt, 'test prompt'); assert.equal(image_url, 'https://images.example/input.png'); assert.deepEqual(settings, { model_id: 182, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9' });
     assert.doesNotMatch(approval, /test prompt|PROVIDER-SECRET/);
     assert.equal((await submit(cookie, approval, { confirm: false })).status, 400);
     assert.equal((await submit(cookie, approval, { max_credits: 999 })).status, 400);
@@ -175,7 +179,11 @@ test('admin video test binds explicit approval and cap to fresh quote, dispatche
     assert.equal((await api('video-task', { cookie, token: 'other-admin', method: 'POST', data: { id: accepted.id } })).status, 401);
     f.setToken('NEW-PROVIDER-SECRET'); const newCookie = await connect();
     assert.equal((await api('video-task', { cookie: newCookie, method: 'POST', data: { id: accepted.id } })).status, 404);
-    assert.equal((await api('video-private-failure', { cookie: newCookie, method: 'POST', data: { id: accepted.id, acknowledge: true } })).status, 404);
+    // Dengan acknowledge, admin PEMILIK baris boleh memeriksa job dari sesi
+    // Freebeat sebelumnya (baris lama tetap terdiagnosis). Status tugas di titik
+    // ini 'completed', jadi alasan kegagalan memang tidak tersedia -> 409.
+    // Admin lain tetap 401/404 karena filter admin_id di query.
+    assert.equal((await api('video-private-failure', { cookie: newCookie, method: 'POST', data: { id: accepted.id, acknowledge: true } })).status, 409);
   } finally { globalThis.fetch = original; }
 });
 
@@ -229,12 +237,15 @@ test('expired, changed-session, invalid inputs and unavailable storage fail with
       { model_id: 186, image_url: 'https://images.example/input.png', prompt: 'test prompt', max_credits: 999 },
       { model_id: -1, image_url: 'https://images.example/input.png', prompt: 'test prompt' },
       { model_id: '186', image_url: 'https://images.example/input.png', prompt: 'test prompt' },
-      { model_id: 987, image_url: 'https://images.example/input.png', prompt: 'test prompt' },
       { model_id: 182, image_url: 'http://images.example/input.png', prompt: 'test prompt' },
       { model_id: 182, image_url: 'https://images.example/input.png', prompt: ' '.repeat(10) },
       { model_id: 182, image_url: 'https://images.example/input.png', prompt: 'x'.repeat(2001) },
-      { model_id: 182, image_url: 'https://images.example/input.png', prompt: 'test prompt', duration: 10 },
     ]) assert.equal((await api('video-prepare', { cookie, method: 'POST', data: body })).status, 400);
+    // ID model arbitrer (mis. 987) tidak lagi ditolak di depan: settingnya
+    // dinormalkan terhadap get_model_help hidup lalu di-quote, jadi penolakannya
+    // datang dari provider. Jalur ini dicakup test model 186 di bawah.
+    // duration/resolution yang tidak didukung model juga tidak lagi 400: nilainya
+    // dinormalkan (adjusted) terhadap opsi dari get_model_help sebelum quote.
     let { approval } = await (await prepare(cookie)).json();
     Date.now = () => originalNow() + 6 * 60 * 1000;
     assert.equal((await submit(cookie, approval)).status, 400);
@@ -258,7 +269,7 @@ test('selected model 186 is bound to the fresh quote, approval, dispatch and dur
     const ready = await prepare(cookie, 'admin', 186);
     assert.equal(ready.status, 200);
     const { approval, settings, credits } = await ready.json();
-    assert.deepEqual(settings, { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p' });
+    assert.deepEqual(settings, { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9' });
     assert.equal(credits, 135);
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
     assert.equal((await submit(cookie, approval, { model_id: 182 })).status, 400);
@@ -272,7 +283,7 @@ test('selected model 186 is bound to the fresh quote, approval, dispatch and dur
     const submitted = await result.json();
     assert.equal(submitted.status, 'submitted');
     assert.equal(f.rows.get(submitted.id).model_id, 186);
-    assert.equal(f.rows.get(submitted.id).max_credits, 135);
+    assert.equal(f.rows.get(submitted.id).max_credits, 135 + videoHeadroom(135));
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
     assert.equal((await submit(cookie, approval)).status, 409);
   } finally { globalThis.fetch = original; }

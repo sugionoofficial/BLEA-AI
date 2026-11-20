@@ -7,8 +7,14 @@ test('removed website-cookie balance route does not contact Freebeat even for ad
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (input) => {
-    calls.push(String(input));
-    assert.equal(String(input), 'https://supabase.example/auth/v1/user');
+    const url = String(input);
+    calls.push(url);
+    // Inti test ini: rute yang sudah dihapus tidak boleh menghubungi Freebeat
+    // atau membocorkan cookie. Sejak fix39 gerbang status akun menambahkan dua
+    // panggilan Supabase (auth + profiles) sebelum rute menjawab 404.
+    assert.ok(url.startsWith('https://supabase.example/'), `tidak boleh ada panggilan ke luar Supabase: ${url}`);
+    if (url.startsWith('https://supabase.example/rest/v1/profiles')) return Response.json([{ id: 'admin', status: 'active' }]);
+    assert.equal(url, 'https://supabase.example/auth/v1/user');
     return Response.json({ id: 'admin', app_metadata: { role: 'admin' } });
   };
   try {
@@ -17,7 +23,12 @@ test('removed website-cookie balance route does not contact Freebeat even for ad
     const result = await worker.fetch(request, env);
     assert.equal(result.status, 404);
     assert.doesNotMatch(await result.text(), /secret/);
-    assert.deepEqual(calls, ['https://supabase.example/auth/v1/user']);
+    assert.deepEqual(calls, [
+      'https://supabase.example/auth/v1/user',
+      'https://supabase.example/rest/v1/profiles?id=eq.admin&select=status&limit=1',
+      'https://supabase.example/auth/v1/user',
+    ]);
+    assert.equal(calls.some((url) => url.includes('freebeat.ai')), false, 'Freebeat tidak boleh dihubungi');
   } finally { globalThis.fetch = original; }
 });
 
