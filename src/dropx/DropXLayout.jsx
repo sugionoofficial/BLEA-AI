@@ -382,8 +382,8 @@ export function DropXLayout({ children, title, description, actions, footer = tr
               <span>© {new Date().getFullYear()} BLEA AI v1.0</span>
               <span>
                 Designed &amp; developed by{' '}
-                <a href="https://themewagon.com/" target="_blank" rel="noopener noreferrer">
-                  DropX Admin
+                <a href="http://BLEA.AI" target="_blank" rel="noopener noreferrer">
+                  BLEA.AI
                 </a>
               </span>
             </footer>

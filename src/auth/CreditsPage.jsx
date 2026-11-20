@@ -97,7 +97,7 @@ export function CreditsPage() {
 
   return <DropXLayout title="Kredit" description="Saldo, paket, dan riwayat pembelian kredit Anda.">
     <div className="credits-page">
-      {!data.settings?.purchases_enabled && <div className="credits-notice"><strong>Pembelian belum aktif.</strong> Kredit belum dapat digunakan untuk generasi; integrasi Freebeat dan pemotongan kredit belum tersedia. Jangan melakukan transfer sebelum fitur pembelian diaktifkan.</div>}
+      {!data.settings?.purchases_enabled && <div className="credits-notice"><strong>Pembelian kredit belum dibuka.</strong> Jangan melakukan transfer dulu. Kredit BLEA sudah bisa dipakai untuk generasi di halaman Generate; pembelian kredit akan diumumkan setelah diaktifkan.</div>}
       {error && <div role="alert" className="credits-error">{error}</div>}
       {notice && <div role="status" className="credits-notice">{notice}</div>}
       {loading ? <p role="status">Memuat kredit…</p> : !loaded ? <button type="button" onClick={load}>Coba lagi</button> : <>

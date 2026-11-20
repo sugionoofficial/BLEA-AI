@@ -229,8 +229,8 @@ test('Credits page shows the pending rollout notice to signed-in users', async (
   const { CreditsPage } = await vite.ssrLoadModule('/src/auth/CreditsPage.jsx');
   const session = { access_token: 'test-token', user: { id: 'u1', email: 'creator@example.com', user_metadata: {}, app_metadata: {} } };
   const html = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: ['/credits'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(CreditsPage))));
-  assert.ok(html.includes('Pembelian belum aktif'));
-  assert.ok(html.includes('integrasi Freebeat dan pemotongan kredit belum tersedia'));
+  assert.ok(html.includes('Pembelian kredit belum dibuka'));
+  assert.ok(html.includes('Jangan melakukan transfer'));
   assert.equal(html.includes('Admin · Kelola paket'), false);
 });
 
