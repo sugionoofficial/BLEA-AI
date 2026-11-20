@@ -62,12 +62,20 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       params: null,
     }];
   })();
+  const isWxhValid = (value, params) => {
+    if (params?.sizeMode !== 'wxh') return false;
+    const match = /^(\d{3,4})\*(\d{3,4})$/.exec(String(value || ''));
+    if (!match) return false;
+    const min = Number(params.minSide), max = Number(params.maxSide);
+    return [Number(match[1]), Number(match[2])].every((n) => n >= min && n <= max);
+  };
+  const isSizeOk = (value, params) => (params?.sizes?.includes(value) || isWxhValid(value, params));
   const active = models.find((model) => `${model.provider}:${model.model}` === selected) || models.find((model) => model.ready) || models[0] || null;
   useEffect(() => {
     if (!active) return;
     if (selected !== `${active.provider}:${active.model}`) setSelected(`${active.provider}:${active.model}`);
     const nextSize = active.params?.defaultSize || '';
-    setSize((current) => (active.params?.sizes?.includes(current) ? current : nextSize));
+    setSize((current) => (isSizeOk(current, active.params) ? current : nextSize));
     setCount((current) => (active.params?.maxN ? Math.min(Math.max(1, Number(current) || 1), active.params.maxN) : 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.provider, active?.model]);
@@ -150,12 +158,20 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
           {models.map((model) => <option key={`${model.provider}:${model.model}`} value={`${model.provider}:${model.model}`}>{model.name}{Number.isSafeInteger(model.credits) ? ` · ${model.credits} kredit` : ' · harga belum diatur'}</option>)}
         </select>
       </label>}
-      {active?.params?.sizes?.length > 0 && <div className="generate-params-row">
+      {active?.params && (active.params.sizeMode === 'wxh' || active.params.sizes?.length > 0) && <div className="generate-params-row">
         <label className="generate-field">
           <span className="generate-label">Ukuran</span>
-          <select className="generate-select" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }}>
-            {active.params.sizes.map((option) => <option key={option} value={option}>{option}</option>)}
-          </select>
+          {active.params.sizeMode === 'wxh'
+            ? <>
+                <input className="generate-select generate-size-input" type="text" inputMode="numeric" list="alibaba-size-suggest" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }} placeholder={active.params.defaultSize} aria-label="Ukuran gambar (lebar*tinggi)" />
+                <datalist id="alibaba-size-suggest">
+                  {[...new Set([active.params.defaultSize, '2048*2048', '1664*928', '1472*1104', '1328*1328', '1280*1280', '1104*1472', '928*1664'])].map((option) => <option key={option} value={option} />)}
+                </datalist>
+                <span className="generate-hint">Format LEBAR*TINGGI · sisi {active.params.minSide}–{active.params.maxSide} piksel</span>
+              </>
+            : <select className="generate-select" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }}>
+                {active.params.sizes.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>}
         </label>
         <label className="generate-field">
           <span className="generate-label">Jumlah gambar</span>

@@ -1582,12 +1582,35 @@ async function fetchProviderKeyRecord(env, provider) {
 // Katalog model gambar Alibaba Model Studio (ap-southeast-1) yang sudah
 // diverifikasi (async image-generation API, messages format). Lanjutkan hanya
 // model dengan parameter terdokumentasi; region lain menyerupai.
+// sizeMode:
+//   'preset' → size harus dari daftar `sizes` (mode lama)
+//   'wxh'    → '<lebar>*<tinggi>' bebas 512–2048 (famili qwen-image-2.0)
+//             atau rentang `minSide`–`maxSide` (wan2.6-t2i)
 const ALIBABA_IMAGE_MODELS = [
   { id: 'wan2.7-image', name: 'Alibaba: Wan 2.7 Image', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false },
   { id: 'wan2.7-image-pro', name: 'Alibaba: Wan 2.7 Image Pro', vendor: 'Alibaba', sizes: ['1K', '2K'], defaultSize: '2K', maxN: 1, promptExtend: false },
   { id: 'qwen-image-3.0', name: 'Alibaba: Qwen-Image 3.0', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true },
   { id: 'qwen-image-3.0-pro', name: 'Alibaba: Qwen-Image 3.0 Pro', vendor: 'Alibaba', sizes: ['1664*928', '1472*1104', '1328*1328', '1104*1472', '928*1664'], defaultSize: '1664*928', maxN: 6, promptExtend: true },
+  // Famili Qwen-Image-2.0 (sinkron & async messages; n 1-6). Dated variants = snapshot model yang sama.
+  { id: 'qwen-image-2.0', name: 'Alibaba: Qwen-Image 2.0', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.0-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.0-pro', name: 'Alibaba: Qwen-Image 2.0 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.0-pro-2026-03-03', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-03-03)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.0-pro-2026-04-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-04-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.0-pro-2026-06-22', name: 'Alibaba: Qwen-Image 2.0 Pro (2026-06-22)', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.1-pro', name: 'Alibaba: Qwen-Image 2.1 Pro', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  { id: 'qwen-image-2.1-turbo', name: 'Alibaba: Qwen-Image 2.1 Turbo', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 512, maxSide: 2048, defaultSize: '2048*2048', maxN: 6, promptExtend: true },
+  // Wan2.6-T2I: messages async; n 1-4; 1280*1280 s/d 1440*1440.
+  { id: 'wan2.6-t2i', name: 'Alibaba: Wan 2.6 T2I', vendor: 'Alibaba', sizeMode: 'wxh', minSide: 1280, maxSide: 1440, defaultSize: '1280*1280', maxN: 4, promptExtend: true },
 ];
+
+function validateAlibabaWxh(size, spec) {
+  const match = /^(\d{3,4})\*(\d{3,4})$/.exec(String(size || ''));
+  if (!match) return false;
+  const w = Number(match[1]);
+  const h = Number(match[2]);
+  return w >= spec.minSide && w <= spec.maxSide && h >= spec.minSide && h <= spec.maxSide;
+}
 
 // Upstream Alibaba bisa menyelipkan URL bertanda tangan / secret di teks error.
 // Jangan pernah meneruskan mentah; buang semua URL dan potong panjangnya.
@@ -1644,7 +1667,9 @@ async function alibabaImageCatalog(env) {
       name: spec.name,
       credits: prices.get(spec.id),
       ready,
-      params: { sizes: spec.sizes, defaultSize: spec.defaultSize, maxN: spec.maxN },
+      params: spec.sizeMode === 'wxh'
+        ? { sizeMode: 'wxh', minSide: spec.minSide, maxSide: spec.maxSide, defaultSize: spec.defaultSize, maxN: spec.maxN, sizes: null }
+        : { sizeMode: 'preset', sizes: spec.sizes, defaultSize: spec.defaultSize, maxN: spec.maxN },
     }));
 }
 
@@ -1677,7 +1702,11 @@ async function alibabaImageGenerate(env, user, rawInput) {
 
   // Parameter resmi: size & n per model.
   const size = input.size == null ? spec.defaultSize : String(input.size);
-  if (!spec.sizes.includes(size)) throw fail(`Ukuran tidak valid untuk ${spec.name}. Pilih: ${spec.sizes.join(', ')}.`, 400);
+  if (spec.sizeMode === 'wxh') {
+    if (!validateAlibabaWxh(size, spec)) throw fail(`Ukuran tidak valid untuk ${spec.name}. Gunakan format LEBAR*TINGGI dengan sisi ${spec.minSide}–${spec.maxSide} piksel, mis. ${spec.defaultSize}.`, 400);
+  } else if (!spec.sizes.includes(size)) {
+    throw fail(`Ukuran tidak valid untuk ${spec.name}. Pilih: ${spec.sizes.join(', ')}.`, 400);
+  }
   let n = 1;
   if (input.n != null) {
     n = Number(input.n);
