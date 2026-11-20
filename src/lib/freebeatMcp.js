@@ -1937,3 +1937,430 @@ export async function consumerImageHistory(env, user) {
   const rows = await dbJson(env, `/image_generations?user_id=eq.${encodeURIComponent(user.id)}&select=*&order=created_at.desc,id.desc&limit=40`);
   return { generations: (Array.isArray(rows) ? rows : []).map(sanitizeImageRow) };
 }
+
+// ===================== Generasi Freebeat Dance Video (konsumen) =====================
+function consumerDanceCeiling(env) {
+  const n = Number(env?.FREEBEAT_DANCE_MAX_PROVIDER_CREDITS);
+  return Number.isSafeInteger(n) && n >= 100 && n <= 100000 ? n : 2000;
+}
+
+export async function consumerDanceConfig(env) {
+  let credits = null;
+  try { credits = await consumerImagePrice(env, 'generate_dance_video', 'video'); } catch { credits = null; }
+  let ready = false;
+  try { const session = await loadProviderSession(env); ready = Boolean(session?.imageAccess); } catch { ready = false; }
+  return { model: 'generate_dance_video', credits, provider_ready: ready };
+}
+
+function validateConsumerDancePayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw fail('Permintaan dance video tidak valid.', 400);
+  }
+  const model = String(payload.model || '').trim();
+  if (model !== 'generate_dance_video') {
+    throw fail('Model video Freebeat tidak didukung. Pilih generate_dance_video.', 400);
+  }
+  const audioUrl = consumerImageUrl(typeof payload.audio_url === 'string' ? payload.audio_url : '');
+  if (!audioUrl) {
+    throw fail('Unggah file audio / lagu atau masukkan URL musik HTTPS publik yang valid.', 400);
+  }
+  const rawRefs = Array.isArray(payload.reference_images) && payload.reference_images.length > 0
+    ? payload.reference_images
+    : (typeof payload.image_url === 'string' && payload.image_url.trim() ? [payload.image_url] : []);
+  if (rawRefs.length > 5) throw fail('Maksimal 5 foto penari.', 400);
+  const imageUrls = rawRefs.map((raw) => {
+    const safe = consumerImageUrl(typeof raw === 'string' ? raw : '');
+    if (!safe) throw fail('Setiap foto penari harus berupa URL HTTPS publik yang valid.', 400);
+    return safe;
+  });
+  const aspectRatio = typeof payload.aspect_ratio === 'string' && DANCE_RATIOS.has(payload.aspect_ratio.trim())
+    ? payload.aspect_ratio.trim()
+    : '9:16';
+  const prompt = typeof payload.prompt === 'string' ? payload.prompt.trim() : '';
+  if (prompt.length > 2000) throw fail('Prompt maksimal 2000 karakter.', 400);
+  let startMs;
+  let endMs;
+  if (payload.start_ms !== undefined && payload.start_ms !== null && payload.start_ms !== '') {
+    if (!Number.isSafeInteger(payload.start_ms) || payload.start_ms < 0 || payload.start_ms > 600000) {
+      throw fail('start_ms tidak valid.', 400);
+    }
+    startMs = payload.start_ms;
+  }
+  if (payload.end_ms !== undefined && payload.end_ms !== null && payload.end_ms !== '') {
+    if (!Number.isSafeInteger(payload.end_ms) || payload.end_ms <= 0 || payload.end_ms > 600000) {
+      throw fail('end_ms tidak valid.', 400);
+    }
+    endMs = payload.end_ms;
+  }
+  if ((startMs !== undefined) !== (endMs !== undefined)) {
+    throw fail('Isi start_ms dan end_ms bersama-sama.', 400);
+  }
+  if (startMs !== undefined && endMs <= startMs) {
+    throw fail('end_ms harus lebih besar dari start_ms.', 400);
+  }
+  return { audioUrl, imageUrls, aspectRatio, prompt, startMs, endMs };
+}
+
+export async function consumerDanceGenerate(env, user, payload) {
+  const input = validateConsumerDancePayload(payload);
+  await assertAccountActive(env, user.id);
+
+  const price = await consumerImagePrice(env, 'generate_dance_video', 'video');
+  if (price === null) {
+    const err = fail('Harga kredit untuk model video "generate_dance_video" (freebeat) belum diatur admin. Atur dulu di Kredit → Admin · Harga generasi.', 409);
+    err.code = 'video_price_missing';
+    throw err;
+  }
+
+  const loaded = await loadProviderSession(env);
+  if (!loaded?.imageAccess) {
+    throw fail('Provider Freebeat Dance belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.', 503);
+  }
+
+  // Handshake, upload_audio, dan quote_generation dilakukan SEBELUM memotong
+  // kredit BLEA sehingga kegagalan validasi/musik tidak membebani saldo pengguna.
+  const opened = await openMcpSession(env, loaded);
+  const session = opened.session;
+  const headers = opened.headers;
+
+  let musicId;
+  try {
+    const { result: audioRes } = await rpc(session.accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'upload_audio', arguments: { url: input.audioUrl } },
+    }, 'upload', headers, 262144);
+    if (audioRes?.isError) throw new Error('upload_audio rejected');
+    const audioContent = modelContent(audioRes);
+    const rawId = audioContent?.music_id ?? audioContent?.musicId ?? audioContent?.id;
+    if (rawId === undefined || rawId === null || !/^[A-Za-z0-9_.:-]{1,256}$/.test(String(rawId).trim())) {
+      throw new Error('missing music_id');
+    }
+    musicId = normalizeDanceMusicId(String(rawId).trim());
+  } catch {
+    throw fail('Audio atau tautan lagu tidak dapat diproses oleh Freebeat. Periksa format file atau URL publik Anda.', 400);
+  }
+
+  const danceParams = {
+    music_id: musicId,
+    auto_mode: true,
+    aspect_ratio: input.aspectRatio,
+    ...(input.prompt ? { prompt: input.prompt } : {}),
+    ...(input.imageUrls.length ? { image_urls: input.imageUrls } : {}),
+    ...(input.startMs !== undefined ? { start_ms: input.startMs, end_ms: input.endMs } : {}),
+  };
+
+  let acceptUnknownCost = true;
+  let maxCredits = null;
+  let providerQuote = null;
+  try {
+    const quoteContent = await rawToolQuote(session.accessToken, 'generate_dance_video', danceParams, headers);
+    providerQuote = quotedCredits(quoteContent);
+    if (providerQuote !== null) {
+      const ceiling = consumerDanceCeiling(env);
+      if (providerQuote > ceiling) {
+        throw fail(`Biaya provider (${providerQuote} kredit Freebeat) melebihi plafon layanan (${ceiling}); generasi tidak dikirim.`, 409);
+      }
+      acceptUnknownCost = false;
+      maxCredits = providerQuote + videoHeadroom(providerQuote);
+    }
+  } catch (err) {
+    if (err?.status === 409) throw err;
+  }
+
+  const genId = crypto.randomUUID();
+  const spent = await dbRpc(env, 'spend_credits', {
+    p_user_id: user.id,
+    p_amount: price,
+    p_description: 'Generasi video freebeat model generate_dance_video',
+    p_generation_id: genId,
+  });
+  if (!spent) {
+    const err = fail(`Kredit BLEA tidak cukup untuk generasi ini (butuh ${price} kredit).`, 402);
+    err.code = 'insufficient_credits';
+    err.credits_required = price;
+    throw err;
+  }
+
+  const metadata = {
+    mode: 'dance_video',
+    music_id: String(musicId),
+    ...(input.imageUrls.length ? { image_urls: input.imageUrls } : {}),
+    accept_unknown_cost: acceptUnknownCost,
+    ...(maxCredits !== null ? { max_credits: maxCredits } : {}),
+    ...(providerQuote !== null ? { provider_quote: providerQuote } : {}),
+    ...(input.startMs !== undefined ? { start_ms: input.startMs, end_ms: input.endMs } : {}),
+  };
+
+  const insertBody = {
+    id: genId,
+    user_id: user.id,
+    provider: 'freebeat',
+    model: 'generate_dance_video',
+    prompt: input.prompt,
+    aspect_ratio: input.aspectRatio,
+    resolution: '720p',
+    duration: 15,
+    generate_audio: true,
+    image_url: input.imageUrls[0] || null,
+    video_url: null,
+    audio_url: input.audioUrl,
+    external_job_id: null,
+    polling_url: null,
+    credits_charged: price,
+    credits_refunded: 0,
+    status: 'queued',
+    progress: 5,
+    metadata,
+  };
+
+  let inserted = null;
+  try {
+    inserted = await dbJson(env, '/video_generations', { method: 'POST', prefer: 'return=representation', body: insertBody });
+  } catch { inserted = null; }
+  if (!Array.isArray(inserted) || inserted.length !== 1) {
+    try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat dance video tidak tersimpan', p_generation_id: genId }); } catch { /* manual review */ }
+    throw fail('Riwayat generasi dance tidak dapat disimpan; kredit BLEA dikembalikan.', 503);
+  }
+  const row = inserted[0];
+
+  const dispatchArgs = {
+    ...danceParams,
+    ...(acceptUnknownCost ? { accept_unknown_cost: true } : { max_credits: maxCredits }),
+  };
+
+  let content;
+  try {
+    const { result } = await rpc(session.accessToken, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'generate_dance_video', arguments: dispatchArgs },
+    }, 'generate', headers, 262144);
+    if (result?.isError) throw new Error('rejected');
+    content = modelContent(result);
+    if (!content || typeof content !== 'object') throw new Error('invalid');
+  } catch {
+    const refunded = await dbRpc(env, 'refund_credits', {
+      p_user_id: user.id,
+      p_amount: price,
+      p_description: 'Refund: Freebeat generate_dance_video gagal dikirim',
+      p_generation_id: genId,
+    }).catch(() => false);
+    const failedPatch = {
+      status: 'failed',
+      progress: 0,
+      error_message: `Permintaan dance video gagal dikirim ke Freebeat.${refunded ? ' Kredit BLEA dikembalikan.' : ''}`,
+      ...(refunded ? { credits_refunded: price } : {}),
+    };
+    await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
+    throw fail(failedPatch.error_message, 502);
+  }
+
+  if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
+    const prepMeta = { ...metadata, preparing_music_id: String(content.music_id), retry_after_seconds: Number(content.retry_after_seconds) || 10 };
+    const prepRows = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, {
+      method: 'PATCH',
+      prefer: 'return=representation',
+      body: { status: 'queued', progress: 5, metadata: prepMeta },
+    }).catch(() => null);
+    return { credits: price, row: prepRows?.[0] || { ...row, status: 'queued', progress: 5, metadata: prepMeta } };
+  }
+
+  const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
+  if (!taskId) {
+    const refunded = await dbRpc(env, 'refund_credits', {
+      p_user_id: user.id,
+      p_amount: price,
+      p_description: 'Refund: ID tugas dance video tidak diterima dari Freebeat',
+      p_generation_id: genId,
+    }).catch(() => false);
+    const failedPatch = {
+      status: 'failed',
+      progress: 0,
+      error_message: `Freebeat tidak mengembalikan ID tugas yang valid.${refunded ? ' Kredit BLEA dikembalikan.' : ''}`,
+      ...(refunded ? { credits_refunded: price } : {}),
+    };
+    await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
+    throw fail(failedPatch.error_message, 502);
+  }
+
+  const sessionUrl = safeImageUrl(content.session_url);
+  const submittedPatch = {
+    external_job_id: taskId,
+    polling_url: sessionUrl || null,
+    status: 'in_progress',
+    progress: 10,
+  };
+  const updated = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, {
+    method: 'PATCH',
+    prefer: 'return=representation',
+    body: submittedPatch,
+  }).catch(() => null);
+  return { credits: price, row: updated?.[0] || { ...row, ...submittedPatch } };
+}
+
+export async function consumerDanceStatus(env, row) {
+  const loaded = await loadProviderSession(env);
+  if (!loaded?.imageAccess) {
+    return {
+      nextStatus: row.status,
+      nextProgress: Number(row.progress || 0),
+      upstreamUrl: row.upstream_result_url || null,
+      errMsg: row.error_message || null,
+      pollWarning: 'Sesi Freebeat tidak tersedia sementara.',
+    };
+  }
+  const opened = await openMcpSession(env, loaded);
+  const session = opened.session;
+  const headers = opened.headers;
+  const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? { ...row.metadata } : {};
+
+  if (meta.preparing_music_id && !row.external_job_id) {
+    const args = {
+      music_id: normalizeDanceMusicId(meta.preparing_music_id),
+      auto_mode: true,
+      aspect_ratio: DANCE_RATIOS.has(row.aspect_ratio) ? row.aspect_ratio : '9:16',
+      ...(row.prompt ? { prompt: row.prompt } : {}),
+      ...(Array.isArray(meta.image_urls) && meta.image_urls.length ? { image_urls: meta.image_urls } : {}),
+      ...(meta.start_ms !== undefined ? { start_ms: meta.start_ms, end_ms: meta.end_ms } : {}),
+      ...(meta.accept_unknown_cost !== false ? { accept_unknown_cost: true } : { max_credits: meta.max_credits }),
+    };
+    try {
+      const { result } = await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'generate_dance_video', arguments: args },
+      }, 'generate', headers, 262144);
+      if (result?.isError) {
+        return { nextStatus: 'failed', nextProgress: 0, upstreamUrl: null, errMsg: 'Persiapan audio dance video ditolak oleh Freebeat.' };
+      }
+      const prepContent = modelContent(result);
+      if (prepContent?.status === 'preparing' && !prepContent?.task_id) {
+        return { nextStatus: 'queued', nextProgress: 5, upstreamUrl: null, errMsg: null };
+      }
+      const taskId = typeof prepContent?.task_id === 'string' && TASK_ID.test(prepContent.task_id) ? prepContent.task_id : null;
+      if (!taskId) {
+        return { nextStatus: 'failed', nextProgress: 0, upstreamUrl: null, errMsg: 'ID tugas dance video tidak tersedia setelah persiapan audio.' };
+      }
+      const nextMeta = { ...meta };
+      delete nextMeta.preparing_music_id;
+      return {
+        nextStatus: 'in_progress',
+        nextProgress: 10,
+        upstreamUrl: null,
+        errMsg: null,
+        externalJobId: taskId,
+        pollingUrl: safeImageUrl(prepContent.session_url) || row.polling_url || null,
+        metadata: nextMeta,
+      };
+    } catch {
+      return { nextStatus: 'queued', nextProgress: 5, upstreamUrl: null, errMsg: null, pollWarning: 'Menunggu persiapan audio selesai.' };
+    }
+  }
+
+  if (typeof row.external_job_id !== 'string' || !TASK_ID.test(row.external_job_id)) {
+    return { nextStatus: row.status, nextProgress: Number(row.progress || 0), upstreamUrl: row.upstream_result_url || null, errMsg: row.error_message || null };
+  }
+
+  const { result: statusRes } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_task_status', arguments: { task_id: row.external_job_id } },
+  }, 'task', headers, 262144);
+  const statusContent = modelContent(statusRes);
+  if (!statusContent || typeof statusContent !== 'object' || Array.isArray(statusContent)) {
+    throw mcpFailure('task', 'response');
+  }
+  const summary = safeTask(statusContent);
+
+  if (summary.status === 'completed') {
+    let resultContent = statusContent;
+    try {
+      const { result: finalRes } = await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_task_result', arguments: { task_id: row.external_job_id } },
+      }, 'task', headers, 262144);
+      const parsed = modelContent(finalRes);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
+    } catch { /* fallback to statusContent */ }
+
+    if (String(resultContent?.status || '').toLowerCase() === 'running') {
+      return { nextStatus: 'in_progress', nextProgress: 92, upstreamUrl: null, errMsg: null };
+    }
+    const videoUrl = safeImageUrl(
+      resultContent?.result?.video_url
+      || resultContent?.video_url
+      || (Array.isArray(resultContent?.items) ? resultContent.items[0]?.video_url : null),
+    );
+    if (!videoUrl) {
+      return { nextStatus: 'in_progress', nextProgress: 95, upstreamUrl: null, errMsg: null };
+    }
+    return {
+      nextStatus: 'completed',
+      nextProgress: 100,
+      upstreamUrl: videoUrl,
+      errMsg: null,
+      metadata: { ...meta, provider_billing: safeTask(resultContent).billing },
+    };
+  }
+
+  if (['failed', 'partial_failed', 'cancelled', 'expired'].includes(summary.status)) {
+    let resultContent = statusContent;
+    try {
+      const { result: finalRes } = await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_task_result', arguments: { task_id: row.external_job_id } },
+      }, 'task', headers, 262144);
+      const parsed = modelContent(finalRes);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
+    } catch { /* fallback to statusContent */ }
+    const failureInfo = safeVideoFailure(resultContent?.failure || statusContent?.failure);
+    const reasonCode = Array.isArray(imageFailureReasons(resultContent)) && imageFailureReasons(resultContent)[0];
+    const errMsg = reasonCode
+      ? `Freebeat gagal memproses dance video (${reasonCode}).`
+      : (failureInfo?.stage && !failureInfo.stage_hidden ? `Freebeat gagal pada tahap ${failureInfo.stage}.` : 'Freebeat melaporkan dance video gagal dibuat.');
+    return {
+      nextStatus: summary.status === 'cancelled' ? 'cancelled' : summary.status === 'expired' ? 'expired' : 'failed',
+      nextProgress: 0,
+      upstreamUrl: null,
+      errMsg,
+      metadata: { ...meta, provider_billing: safeTask(resultContent).billing },
+    };
+  }
+
+  if (summary.status === 'action_required' && !meta.auto_nudged) {
+    try {
+      await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'send_video_agent_message',
+          arguments: { task_id: row.external_job_id, message: 'Continue automatically and finish the dance video.', auto_mode: true },
+        },
+      }, 'task', headers, 262144);
+      return {
+        nextStatus: 'in_progress',
+        nextProgress: Math.min(90, Math.max(20, Number(row.progress || 10) + 5)),
+        upstreamUrl: null,
+        errMsg: null,
+        metadata: { ...meta, auto_nudged: true },
+      };
+    } catch { /* fall through */ }
+  }
+
+  return {
+    nextStatus: 'in_progress',
+    nextProgress: Math.min(90, Math.max(15, Number(row.progress || 10) + 5)),
+    upstreamUrl: null,
+    errMsg: null,
+  };
+}

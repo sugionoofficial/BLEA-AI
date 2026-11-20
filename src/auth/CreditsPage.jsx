@@ -19,6 +19,7 @@ import './credits.css';
 
 const ALIBABA_IMAGE_SUGGESTIONS = ALIBABA_FREE_QUOTA_MODELS.filter((m) => m.blea === 'image');
 const VIDEO_PROVIDER_MODEL_SUGGESTIONS = {
+  freebeat: [{ id: 'generate_dance_video', name: 'Freebeat AI Dance Video (720p)' }],
   openai: [{ id: 'sora-2', name: 'OpenAI Sora 2' }, { id: 'sora-2-pro', name: 'OpenAI Sora 2 Pro' }],
   google: [
     { id: 'veo3.1', name: 'Google Veo 3.1' },

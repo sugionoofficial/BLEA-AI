@@ -39,6 +39,9 @@ import { ALIBABA_FREE_QUOTA_MODELS } from './lib/alibabaFreeQuota.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
 import { handleOrderReview, handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
+  consumerDanceConfig,
+  consumerDanceGenerate,
+  consumerDanceStatus,
   consumerImageConfig,
   consumerImageGenerate,
   consumerImageHistory,
@@ -3520,10 +3523,11 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
 
-      const [keysRes, modelsRes, pricesRes] = await Promise.all([
+      const [keysRes, modelsRes, pricesRes, danceCfg] = await Promise.all([
         servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label'),
         servicePostgrest(env, '/provider_models?select=provider,model,active&active=eq.true&order=created_at.desc&limit=500'),
         servicePostgrest(env, '/credit_model_prices?modality=eq.video&active=eq.true&select=provider,model,credits&limit=500').catch(() => null),
+        consumerDanceConfig(env).catch(() => null),
       ]);
       const keyRows = await keysRes.json().catch(() => []);
       const dbModelRows = await modelsRes.json().catch(() => []);
@@ -3599,6 +3603,36 @@ async function handleApi(request, url, env) {
         });
       }
 
+      // 3. Freebeat MCP Dance Video (OAuth provider session + credit_model_prices)
+      if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
+        const danceCredits = Number.isSafeInteger(danceCfg.credits) ? danceCfg.credits : null;
+        const dancePriced = Number.isSafeInteger(danceCredits) && danceCredits > 0;
+        merged.set('freebeat:generate_dance_video', {
+          id: 'generate_dance_video',
+          name: 'Freebeat AI Dance Video (720p)',
+          provider: 'freebeat',
+          providerLabel: 'Freebeat AI Dance',
+          providerConfigured: danceCfg.provider_ready === true,
+          activeInAdmin: dancePriced,
+          online: danceCfg.provider_ready === true,
+          credits: dancePriced ? danceCredits : null,
+          priced: dancePriced,
+          isFree: false,
+          priceLabel: dancePriced ? `${danceCredits} kredit` : 'Tarif belum diatur',
+          aspectRatios: ['9:16', '16:9', '1:1', '4:3', '3:4'],
+          resolutions: ['720p'],
+          durations: [15],
+          supportsImage: true,
+          supportsVideo: false,
+          supportsAudio: true,
+          supportsAudioInput: true,
+          supportsAudioOutput: true,
+          requiresAudio: true,
+          maxImages: 5,
+          description: 'Buat video dance koreografi otomatis dari lagu (MP3/WAV/link musik) & hingga 5 foto penari (720p, estimasi 15–60 menit).',
+        });
+      }
+
       const models = Array.from(merged.values()).sort((a, b) => {
         if (a.activeInAdmin !== b.activeInAdmin) return a.activeInAdmin ? -1 : 1;
         if (a.providerConfigured !== b.providerConfigured) return a.providerConfigured ? -1 : 1;
@@ -3608,6 +3642,9 @@ async function handleApi(request, url, env) {
       });
 
       const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
+      if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
+        providers.push({ id: 'freebeat', label: 'Freebeat AI Dance', configured: danceCfg.provider_ready === true, hasBaseUrl: false });
+      }
       for (const preset of Object.values(PROVIDER_PRESETS)) {
         if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;
         if (!configuredByProvider.has(preset.id)) {
@@ -3656,8 +3693,22 @@ async function handleApi(request, url, env) {
       // Validasi input murah lebih dulu: permintaan yang pasti ditolak tidak
       // perlu membebani database, dan penolakannya tidak bergantung pada
       // ketersediaan tabel profil.
-      if (!provider || provider === 'unorouter' || provider === 'freebeat') return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
+      if (!provider || provider === 'unorouter' || (provider === 'freebeat' && model !== 'generate_dance_video')) {
+        return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
+      }
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
+      if (provider === 'freebeat') {
+        try {
+          const out = await consumerDanceGenerate(env, user, payload);
+          return jsonResponse({ ok: true, credits: out.credits, generation: await sanitizeGenerationRow(out.row, env) });
+        } catch (err) {
+          return jsonResponse({
+            error: err?.message || 'Gagal memulai generasi dance video.',
+            ...(err?.code ? { code: err.code } : {}),
+            ...(err?.credits_required ? { credits_required: err.credits_required } : {}),
+          }, err?.status || 502);
+        }
+      }
       if (provider === 'alibaba' && !isAlibabaVideoModelSupported(model)) {
         return jsonResponse({ error: 'Model video ini belum diverifikasi untuk BLEA (belum ada adapter + pengujian). Pilih model video Alibaba yang didukung.' }, 400);
       }
@@ -3903,8 +3954,32 @@ async function handleApi(request, url, env) {
       let apiBase = '';
       let pollUrl = '';
       let pollRes = null;
+      let nextStatus = row.status;
+      let nextProgress = Number(row.progress || 0);
+      let upstreamUrl = row.upstream_result_url;
+      let errMsg = row.error_message;
+      let extraPatch = {};
 
-      if (row.provider === 'alibaba') {
+      if (row.provider === 'freebeat') {
+        let dancePoll;
+        try {
+          dancePoll = await consumerDanceStatus(env, row);
+        } catch (err) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: err?.message || 'Freebeat status gagal diperiksa.' });
+        }
+        if (dancePoll.pollWarning && dancePoll.nextStatus === row.status && !dancePoll.externalJobId) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: dancePoll.pollWarning });
+        }
+        nextStatus = dancePoll.nextStatus;
+        nextProgress = dancePoll.nextProgress;
+        upstreamUrl = dancePoll.upstreamUrl || row.upstream_result_url;
+        errMsg = dancePoll.errMsg || row.error_message;
+        extraPatch = {
+          ...(dancePoll.externalJobId ? { external_job_id: dancePoll.externalJobId } : {}),
+          ...(dancePoll.pollingUrl ? { polling_url: dancePoll.pollingUrl } : {}),
+          ...(dancePoll.metadata ? { metadata: dancePoll.metadata } : {}),
+        };
+      } else if (row.provider === 'alibaba') {
         // Task milik workspace akun tertentu: coba akun yang submit dulu
         // (provider_key_id tersimpan), lalu akun pool lain sebagai cadangan.
         const seeded = [];
@@ -3964,19 +4039,21 @@ async function handleApi(request, url, env) {
           signal: AbortSignal.timeout(30_000),
         });
       }
-      if (!pollRes.ok) {
-        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: `HTTP ${pollRes.status}` });
-      }
+      if (row.provider !== 'freebeat') {
+        if (!pollRes.ok) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: `HTTP ${pollRes.status}` });
+        }
 
-      const pollData = await pollRes.json().catch(() => ({}));
-      const nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || pollData?.output?.task_status || row.status);
-      const nextProgress = extractProgressPercent(pollData, nextStatus);
-      const upstreamUrl = nextStatus === 'completed'
-        ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
-        : row.upstream_result_url;
-      const errMsg = nextStatus === 'failed'
-        ? (redactUpstreamDetail(extractUpstreamError(pollData), 300) || 'Generasi video gagal di server provider.')
-        : row.error_message;
+        const pollData = await pollRes.json().catch(() => ({}));
+        nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || pollData?.output?.task_status || row.status);
+        nextProgress = extractProgressPercent(pollData, nextStatus);
+        upstreamUrl = nextStatus === 'completed'
+          ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
+          : row.upstream_result_url;
+        errMsg = nextStatus === 'failed'
+          ? (redactUpstreamDetail(extractUpstreamError(pollData), 300) || 'Generasi video gagal di server provider.')
+          : row.error_message;
+      }
 
       const charged = Number(row.credits_charged || 0);
       const shouldRefund = ['failed', 'cancelled', 'expired'].includes(nextStatus)
@@ -3996,6 +4073,7 @@ async function handleApi(request, url, env) {
             progress: nextProgress,
             ...(upstreamUrl ? { upstream_result_url: upstreamUrl } : {}),
             ...(errMsg ? { error_message: errMsg } : {}),
+            ...extraPatch,
             ...(shouldRefund ? { credits_refunded: charged } : {}),
           },
         },
