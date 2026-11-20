@@ -10,12 +10,15 @@ import {
   getAlibabaVideoModelSpec,
 } from '../lib/videoCatalog';
 import {
+  buildDownloadFilename,
   fetchVideoHistory,
   fetchVideoModels,
   fetchVideoStatus,
   generateVideo,
+  withDownloadParam,
 } from '../api/generation';
 import { availableVideoModels, generationModelKey } from '../lib/generationCatalog';
+import { useCredits } from '../lib/useCredits';
 import { GenerateImagePanel } from './GenerateImagePanel';
 import './generate.css';
 
@@ -80,6 +83,7 @@ const modelKey = generationModelKey;
 export function GeneratePage() {
   const { user } = useAuth();
   const isAdmin = user?.app_metadata?.role === 'admin';
+  const { balance, refresh: refreshBalance } = useCredits(user?.id);
   const [searchParams] = useSearchParams();
 
   const [mode, setMode] = useState(() => searchParams.get('mode') === 'image' ? 'image' : 'video');
@@ -222,11 +226,12 @@ export function GeneratePage() {
       const byId = new Map(updates.filter(Boolean).map((u) => [u.id, u]));
       if (byId.size) {
         setHistory((prev) => prev.map((row) => byId.get(row.id) || row));
+        if (updates.some((u) => u && Number(u.credits_refunded) > 0)) refreshBalance();
       }
     }, 4000);
 
     return () => clearInterval(timer);
-  }, [history, workerMode]);
+  }, [history, workerMode, refreshBalance]);
 
   const handleUploadMedia = async (slot, file) => {
     if (!file || !user?.id) return;
@@ -511,11 +516,13 @@ export function GeneratePage() {
       const created = res.data.generation;
       setHistory((prev) => [created, ...prev.filter((g) => g.id !== created.id)]);
       setActiveId(created.id);
+      refreshBalance();
+      const chargedCredits = Number(res.data?.credits || created?.credits_charged || 0);
       setBanner({
         type: 'success',
         text: created.status === 'completed'
-          ? 'Video berhasil dibuat dan siap diputar.'
-          : `Generasi dimulai menggunakan ${selectedModel.name}. Status akan diperbarui otomatis.`,
+          ? `Video berhasil dibuat dan siap diputar.${chargedCredits ? ` (${chargedCredits} kredit BLEA)` : ''}`
+          : `Generasi dimulai menggunakan ${selectedModel.name}${chargedCredits ? ` (${chargedCredits} kredit BLEA)` : ''}. Status akan diperbarui otomatis.`,
       });
     } finally {
       setSubmitting(false);
@@ -607,7 +614,23 @@ export function GeneratePage() {
           </div>
         )}
 
-        {selectedModel && <div className="generate-banner" role="status"><span>Generasi video melalui provider yang dikonfigurasi dapat memakai saldo provider. Alur video lama belum memotong kredit BLEA atau memverifikasi biaya aktual.</span></div>}
+        {selectedModel && selectedModel.priced === false && (
+          <div className="generate-banner is-error" role="status">
+            <span>
+              Tarif kredit untuk model video <strong>{selectedModel.name}</strong> belum diatur admin. Isi tarif di Kredit → Admin · Harga generasi sebelum membuat video.
+            </span>
+            {isAdmin && <Link className="generate-banner-link" to="/credits">Atur harga kredit</Link>}
+          </div>
+        )}
+
+        {selectedModel && Number.isSafeInteger(selectedModel.credits) && selectedModel.credits > 0 && balance !== null && balance < selectedModel.credits && (
+          <div className="generate-banner is-error" role="status">
+            <span>
+              Saldo kredit Anda ({balance} kredit) tidak cukup untuk model ini (butuh {selectedModel.credits} kredit).
+            </span>
+            <Link className="generate-banner-link" to="/credits">Lihat saldo &amp; kredit</Link>
+          </div>
+        )}
 
         {banner && (
           <div
@@ -631,14 +654,24 @@ export function GeneratePage() {
                   Pilih model, unggah referensi media opsional, atur rasio, resolusi, dan durasi.
                 </p>
               </div>
-              {selectedModel && <span className="generate-pill">Biaya sesuai provider</span>}
+              {selectedModel && (
+                <span className={`generate-pill ${selectedModel.priced === false ? 'is-warn' : 'is-accent'}`}>
+                  {Number.isSafeInteger(selectedModel.credits) && selectedModel.credits > 0
+                    ? `${selectedModel.credits} kredit BLEA`
+                    : selectedModel.priced === false
+                      ? 'Tarif belum diatur'
+                      : 'Tarif sesuai kredit BLEA'}
+                </span>
+              )}
             </div>
 
             {/* 1. Pilih Model */}
             <div className="generate-field">
               <div className="generate-label-row">
                 <label className="generate-label" htmlFor="gen-model">Pilih Model</label>
-                <span className="generate-hint">{models.length} model tersedia</span>
+                <span className="generate-hint">
+                  {models.length} model tersedia{balance !== null ? ` · Saldo: ${balance} kredit` : ''}
+                </span>
               </div>
               <select
                 id="gen-model"
@@ -651,7 +684,7 @@ export function GeneratePage() {
                 {!models.length && <option value="">Tidak ada model video aktif</option>}
                 {models.map((m) => (
                   <option key={modelKey(m)} value={modelKey(m)}>
-                    {`[${m.providerLabel || m.provider}] ${m.name}${m.online === false ? ' • Sibuk' : ''}`}
+                    {`[${m.providerLabel || m.provider}] ${m.name}${Number.isSafeInteger(m.credits) && m.credits > 0 ? ` · ${m.credits} kredit` : m.priced === false ? ' · Belum bertarif' : ''}${m.online === false ? ' • Sibuk' : ''}`}
                   </option>
                 ))}
               </select>
@@ -1081,7 +1114,14 @@ export function GeneratePage() {
               <button
                 type="submit"
                 className="generate-submit-btn"
-                disabled={!selectedModel || workerMode !== 'ready' || submitting || Boolean(uploadingSlot)}
+                disabled={
+                  !selectedModel
+                  || workerMode !== 'ready'
+                  || submitting
+                  || Boolean(uploadingSlot)
+                  || selectedModel?.priced === false
+                  || (Number.isSafeInteger(selectedModel?.credits) && selectedModel.credits > 0 && balance !== null && balance < selectedModel.credits)
+                }
               >
                 {submitting ? 'Memproses Generate...' : uploadingSlot ? 'Mengunggah Media...' : 'Generate'}
               </button>
@@ -1176,8 +1216,8 @@ export function GeneratePage() {
                     {activeGeneration.status === 'completed' && activeGeneration.result_url && (
                       <a
                         className="generate-secondary-btn"
-                        href={activeGeneration.result_url}
-                        download={`blea-video-${activeGeneration.id.slice(0, 8)}.mp4`}
+                        href={withDownloadParam(activeGeneration.result_url)}
+                        download={buildDownloadFilename({ kind: 'video', id: activeGeneration.id })}
                       >
                         Unduh Video
                       </a>
@@ -1257,6 +1297,16 @@ export function GeneratePage() {
                           {item.aspect_ratio} · {item.resolution} · {item.duration}s · {formatDateTime(item.created_at)}
                         </span>
                         <div className="generate-history-actions">
+                          {item.status === 'completed' && item.result_url && (
+                            <a
+                              className="generate-history-download-btn"
+                              href={withDownloadParam(item.result_url)}
+                              download={buildDownloadFilename({ kind: 'video', id: item.id })}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              Unduh
+                            </a>
+                          )}
                           <button
                             type="button"
                             className="generate-clear-btn"

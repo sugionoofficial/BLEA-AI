@@ -58,6 +58,16 @@ function installMock({ poolRows = POOL, singleAl = [], capture = [], chatBehavio
     if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
       return Response.json([{ provider: 'alibaba', model: 'qwen3.8-max' }]);
     }
+    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) {
+      return Response.json([{ provider: 'alibaba', model: 'wan3.0-video', modality: 'video', credits: 60, active: true }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) {
+      return Response.json(true);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/refund_credits')) {
+      capture.push({ type: 'refund', body: JSON.parse(init.body || '{}') });
+      return Response.json(true);
+    }
     if (url.startsWith('https://supabase.example/rest/v1/ai_messages') && method === 'POST') {
       const payload = JSON.parse(init.body || '{}');
       return Response.json([{ id: 'msg-1', ...payload }]);

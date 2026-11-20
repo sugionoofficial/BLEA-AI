@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { History, RefreshCw } from 'lucide-react';
-import { fetchImageHistory, fetchImageStatus, fetchVideoHistory, fetchVideoStatus } from '../api/generation';
+import { Download, History, RefreshCw } from 'lucide-react';
+import {
+  buildDownloadFilename,
+  fetchImageHistory,
+  fetchImageStatus,
+  fetchVideoHistory,
+  fetchVideoStatus,
+  withDownloadParam,
+} from '../api/generation';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { Pager, PerPageSelect, usePagedList } from '../components/Pagination';
 import './history.css';
@@ -130,11 +137,17 @@ export function HistoryPage() {
           <div className="history-empty"><History size={28} /><h2>Belum ada riwayat</h2><p>Video dan gambar yang dibuat akan muncul di sini.</p><Link to="/generate">Buat generasi</Link></div>
         ) : (
           <div className="history-grid">
-            {visible.map((item) => (
+            {visible.map((item) => {
+              const imageUrls = item.kind === 'image'
+                ? (Array.isArray(item.image_urls) && item.image_urls.length > 0
+                  ? item.image_urls
+                  : (item.image_url ? [item.image_url] : []))
+                : [];
+              return (
               <article className={`history-card${highlight === item.id ? ' is-highlighted' : ''}`} id={`history-item-${item.id}`} key={`${item.kind}-${item.id}`}>
                 {item.kind === 'image'
-                  ? (item.status === 'completed' && item.image_url
-                    ? <img src={item.image_url} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
+                  ? (item.status === 'completed' && imageUrls[0]
+                    ? <img src={imageUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
                     : <div className="history-preview">{labels[item.status] || item.status}</div>)
                   : (item.status === 'completed' && item.result_url
                     ? <video controls preload="metadata" src={item.result_url} />
@@ -143,13 +156,51 @@ export function HistoryPage() {
                   <span className={`history-status status-${item.status}`}>{labels[item.status] || item.status}</span>
                   <h2>{item.kind === 'image' ? `Gambar · ${item.model || '—'}` : (item.model || 'Video')}</h2>
                   <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>
-                  <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · {item.provider}{item.kind === 'image' && item.credits_charged ? ` · ${item.credits_charged} kredit${item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}` : ''}</p>
+                  <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · {item.provider}{item.credits_charged ? ` · ${item.credits_charged} kredit${item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}` : ''}</p>
                   {item.error_message && <p className="history-error-text">{item.error_message}</p>}
-                  {item.kind === 'image' && item.status === 'completed' && item.image_url && <div className="history-card-actions"><a href={item.image_url} target="_blank" rel="noopener noreferrer">Buka gambar</a></div>}
-                  {item.kind === 'video' && item.status === 'completed' && item.result_url && <div className="history-card-actions"><a href={item.result_url} target="_blank" rel="noopener noreferrer">Buka video</a></div>}
+                  {item.kind === 'image' && item.status === 'completed' && imageUrls.length > 0 && (
+                    <div className="history-card-actions">
+                      {imageUrls.map((url, idx) => {
+                        const downloadHref = withDownloadParam(
+                          (Array.isArray(item.download_urls) && item.download_urls[idx])
+                          || (idx === 0 ? item.download_url : '')
+                          || url,
+                        );
+                        return (
+                          <div className="history-action-pair" key={`${item.id}-${idx}`}>
+                            <a
+                              className="history-download-btn"
+                              href={downloadHref}
+                              download={buildDownloadFilename({ kind: 'image', id: item.id, index: idx, total: imageUrls.length, url })}
+                            >
+                              <Download size={14} aria-hidden="true" />
+                              {imageUrls.length > 1 ? `Unduh gambar #${idx + 1}` : 'Unduh gambar'}
+                            </a>
+                            <a href={url} target="_blank" rel="noopener noreferrer">
+                              {imageUrls.length > 1 ? `Buka gambar #${idx + 1}` : 'Buka gambar'}
+                            </a>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {item.kind === 'video' && item.status === 'completed' && item.result_url && (
+                    <div className="history-card-actions">
+                      <a
+                        className="history-download-btn"
+                        href={withDownloadParam(item.result_url)}
+                        download={buildDownloadFilename({ kind: 'video', id: item.id })}
+                      >
+                        <Download size={14} aria-hidden="true" />
+                        Unduh video
+                      </a>
+                      <a href={item.result_url} target="_blank" rel="noopener noreferrer">Buka video</a>
+                    </div>
+                  )}
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         )}
         <Pager page={page} pageCount={pageCount} total={total} onPage={setPage} />

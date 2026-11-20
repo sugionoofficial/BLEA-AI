@@ -45,6 +45,15 @@ function installMock({ baseUrl = BASE_INTL, upstreamError = null } = {}) {
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
       return Response.json([{ provider: 'alibaba', api_key: 'sk-test-video', base_url: baseUrl, label: 'Alibaba' }]);
     }
+    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) {
+      return Response.json([{ credits: 50 }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) {
+      return Response.json(true);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/refund_credits')) {
+      return Response.json(true);
+    }
     if (url.startsWith(`${baseUrl}/api/v1/services/aigc/`) && method === 'POST') {
       submits.push({ url, headers: init.headers || {}, body: jsonBody() });
       if (upstreamError) {
@@ -54,7 +63,7 @@ function installMock({ baseUrl = BASE_INTL, upstreamError = null } = {}) {
     }
     if (url === 'https://supabase.example/rest/v1/video_generations' && method === 'POST') {
       const payload = jsonBody();
-      storedRow = { id: 'gen-fam-1', created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z', ...payload };
+      storedRow = { ...payload, id: 'gen-fam-1', created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z' };
       return Response.json([storedRow]);
     }
     throw new Error(`Unexpected fetch: ${method} ${url}`);

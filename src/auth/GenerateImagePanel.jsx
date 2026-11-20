@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Download } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { fetchImageConfig, fetchImageHistory, fetchImageStatus, generateImage } from '../api/generation';
+import {
+  buildDownloadFilename,
+  fetchImageConfig,
+  fetchImageHistory,
+  fetchImageStatus,
+  generateImage,
+  withDownloadParam,
+} from '../api/generation';
 import { useAuth } from './AuthProvider';
 import { useCredits } from '../lib/useCredits';
 import './generate.css';
@@ -323,7 +331,26 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
               {item.error_message && <p className="history-error-text">{item.error_message}</p>}
               {item.status === 'unknown' && <p className="history-error-text">Jangan ulangi sebelum statusnya jelas; kredit mungkin sudah terpakai.</p>}
               {item.status === 'completed' && allUrls.length > 0 && <div className="history-card-actions">
-                {allUrls.map((url, idx) => <a key={`${item.id}-${idx}`} href={url} target="_blank" rel="noopener noreferrer">{allUrls.length > 1 ? `Buka gambar #${idx + 1}` : 'Buka gambar'}</a>)}
+                {allUrls.map((url, idx) => {
+                  const downloadHref = withDownloadParam(
+                    (Array.isArray(item.download_urls) && item.download_urls[idx])
+                    || (idx === 0 ? item.download_url : '')
+                    || url,
+                  );
+                  return (
+                    <div className="history-action-pair" key={`${item.id}-${idx}`}>
+                      <a
+                        className="history-download-btn"
+                        href={downloadHref}
+                        download={buildDownloadFilename({ kind: 'image', id: item.id, index: idx, total: allUrls.length, url })}
+                      >
+                        <Download size={14} aria-hidden="true" />
+                        {allUrls.length > 1 ? `Unduh gambar #${idx + 1}` : 'Unduh gambar'}
+                      </a>
+                      <a href={url} target="_blank" rel="noopener noreferrer">{allUrls.length > 1 ? `Buka gambar #${idx + 1}` : 'Buka gambar'}</a>
+                    </div>
+                  );
+                })}
               </div>}
             </div>
           </article>;
