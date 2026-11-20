@@ -16,14 +16,18 @@ const STATUS_LABEL = {
 };
 const isPending = (item) => item.status === 'queued' || item.status === 'processing';
 
-// Generate gambar untuk semua pengguna. Model dikunci admin (teks: 122) dan
-// biayanya dipotong dari kredit BLEA di server; kredit Freebeat keluar dari
-// akun admin yang menghubungkan provider. Panel ini tidak pernah melihat token.
+// Generate gambar untuk semua pengguna. Model dikunci admin (Freebeat 122,
+// atau model gambar Alibaba yang diaktifkan admin di Katalog Model) dan biayanya
+// dipotong dari kredit BLEA di server; kredit provider keluar dari akun admin
+// yang menghubungkan provider. Panel ini tidak pernah melihat token.
 export function GenerateImagePanel({ initialPrompt = '' }) {
   const { user } = useAuth();
   const userId = user?.id;
   const { balance, refresh: refreshBalance } = useCredits(userId);
   const [config, setConfig] = useState(null);
+  const [selected, setSelected] = useState('');
+  const [size, setSize] = useState('');
+  const [count, setCount] = useState(1);
   const [prompt, setPrompt] = useState(initialPrompt);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -42,6 +46,31 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
   }, [refreshBalance]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Daftar model: utamakan models dari server; fallback ke entri Freebeat tunggal
+  // dari config lama agar provider_ready=false tetap informatif.
+  const models = (() => {
+    if (Array.isArray(config?.models) && config.models.length) return config.models;
+    if (!config) return [];
+    const fbCredits = Number.isSafeInteger(config.credits) ? config.credits : null;
+    return [{
+      provider: 'freebeat',
+      model: config.model_id == null ? '' : String(config.model_id),
+      name: `Freebeat: model ${config.model_id ?? '—'}`,
+      credits: fbCredits,
+      ready: config.provider_ready === true && fbCredits !== null,
+      params: null,
+    }];
+  })();
+  const active = models.find((model) => `${model.provider}:${model.model}` === selected) || models.find((model) => model.ready) || models[0] || null;
+  useEffect(() => {
+    if (!active) return;
+    if (selected !== `${active.provider}:${active.model}`) setSelected(`${active.provider}:${active.model}`);
+    const nextSize = active.params?.defaultSize || '';
+    setSize((current) => (active.params?.sizes?.includes(current) ? current : nextSize));
+    setCount((current) => (active.params?.maxN ? Math.min(Math.max(1, Number(current) || 1), active.params.maxN) : 1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.provider, active?.model]);
 
   // Perbarui tugas yang masih diproses tanpa mengirim generasi baru.
   useEffect(() => {
@@ -64,7 +93,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     const text = prompt.trim();
     if (busy || !text) return;
     setBusy(true); setError(''); setNotice('');
-    const res = await generateImage(text);
+    const res = await generateImage(text, active ? { provider: active.provider, model: active.model, ...(active.params ? { size, n: count } : {}) } : {});
     if (!res.ok) {
       setError(res.data?.error || 'Generasi gambar gagal. Kredit tidak dipotong bila kegagalan terjadi sebelum pengiriman.');
       setBusy(false);
@@ -81,26 +110,60 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     setBusy(false);
   }
 
-  const price = Number.isSafeInteger(config?.credits) ? config.credits : null;
-  const ready = config?.provider_ready === true && price !== null;
+  const price = active && Number.isSafeInteger(active.credits) ? active.credits : null;
+  const ready = active?.ready === true && price !== null;
   const insufficient = price !== null && balance !== null && balance < price;
+  const isFreebeat = active?.provider === 'freebeat';
+  const headerSub = active
+    ? `Dari teks · ${active.name} · ${price !== null ? `${price} kredit BLEA per gambar` : 'harga belum diatur admin'}`
+    : 'Dari teks · belum ada model yang diaktifkan admin';
 
   return <div className="generate-card">
     <div className="generate-card-head">
       <div>
         <h2 className="generate-card-title">Generate gambar</h2>
-        <p className="generate-card-sub">Dari teks · model {config?.model_id ?? '—'} · {price !== null ? `${price} kredit BLEA per gambar` : 'harga belum diatur admin'}</p>
+        <p className="generate-card-sub">{headerSub}</p>
       </div>
     </div>
 
     {loading && <p className="generate-hint" role="status">Memuat konfigurasi provider…</p>}
-    {!loading && config?.provider_ready === false && <div className="generate-banner" role="status"><span>Provider gambar belum dihubungkan oleh admin, jadi generasi belum dapat dikirim. Tidak ada kredit yang dipotong.</span></div>}
-    {!loading && config?.provider_ready && price === null && <div className="generate-banner" role="status"><span>Harga kredit untuk model ini belum diatur admin. Buka Admin → Kredit untuk mengisinya.</span>{<Link className="generate-banner-link" to="/admin">Atur harga</Link>}</div>}
+    {!loading && models.length === 0 && <div className="generate-banner" role="status"><span>Belum ada model gambar yang diaktifkan admin. Minta admin membuka Katalog Model dan menetapkannya.</span></div>}
+    {!loading && active && !ready && active.provider === 'freebeat' && <div className="generate-banner" role="status"><span>Provider gambar belum dihubungkan oleh admin, jadi generasi belum dapat dikirim. Tidak ada kredit yang dipotong.</span></div>}
+    {!loading && active && !ready && active.provider === 'alibaba' && <div className="generate-banner" role="status"><span>{active.credits == null || price === null ? 'Harga kredit untuk model ini belum diatur admin. Buka Admin → Kredit untuk mengisinya.' : 'Belum ada akun Alibaba Cloud yang terhubung di pool admin, jadi generasi belum dapat dikirim.'}</span><Link className="generate-banner-link" to="/admin">Atur di admin</Link></div>}
+    {!loading && active && ready && price === null && <div className="generate-banner" role="status"><span>Harga kredit untuk model ini belum diatur admin. Buka Admin → Kredit untuk mengisinya.</span><Link className="generate-banner-link" to="/admin">Atur harga</Link></div>}
     {error && <div className="generate-banner is-error" role="alert">{error}</div>}
     {notice && <div className="generate-banner is-success" role="status">{notice}</div>}
     {insufficient && ready && <div className="generate-banner" role="status"><span>Saldo kredit BLEA Anda kurang dari {price} kredit. Saldo ada di pojok kanan atas.</span><Link className="generate-banner-link" to="/credits">Tambah kredit</Link></div>}
 
     <form onSubmit={submit}>
+      {models.length > 0 && <label className="generate-field">
+        <span className="generate-label">Model gambar</span>
+        <select className="generate-select" value={active ? `${active.provider}:${active.model}` : ''} onChange={(event) => {
+          const next = models.find((model) => `${model.provider}:${model.model}` === event.target.value);
+          setSelected(event.target.value);
+          setError('');
+          setNotice('');
+          const nextSize = next?.params?.defaultSize || '';
+          setSize(nextSize);
+          setCount(1);
+        }}>
+          {models.map((model) => <option key={`${model.provider}:${model.model}`} value={`${model.provider}:${model.model}`}>{model.name}{Number.isSafeInteger(model.credits) ? ` · ${model.credits} kredit` : ' · harga belum diatur'}</option>)}
+        </select>
+      </label>}
+      {active?.params?.sizes?.length > 0 && <div className="generate-params-row">
+        <label className="generate-field">
+          <span className="generate-label">Ukuran</span>
+          <select className="generate-select" value={size} onChange={(event) => { setSize(event.target.value); setNotice(''); }}>
+            {active.params.sizes.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <label className="generate-field">
+          <span className="generate-label">Jumlah gambar</span>
+          <select className="generate-select" value={String(count)} onChange={(event) => { setCount(Number(event.target.value)); setNotice(''); }}>
+            {Array.from({ length: active.params.maxN }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+      </div>}
       <label className="generate-field">
         <span className="generate-label">Prompt gambar</span>
         <textarea className="generate-textarea" rows={4} maxLength={2000} value={prompt} placeholder="Contoh: potret studio seekor kucing hitam, cahaya lembut, latar abu-abu" onChange={(event) => { setPrompt(event.target.value); setNotice(''); }} />

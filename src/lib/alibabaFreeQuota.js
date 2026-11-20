@@ -11,6 +11,9 @@
 //
 // `blea` menandai bagaimana model terhubung di BLEA:
 //   'video' → terhubung (wan3.0-video), 'chat' → bisa diaktifkan untuk AI Studio,
+//   'image' → bisa diaktifkan untuk Generate Image (wan2.7-image, wan2.7-image-pro,
+//             qwen-image-3.0, qwen-image-3.0-pro — aktifkan di Katalog Model +
+//             tetapkan harga di Admin → Kredit),
 //   null    → katalog saja (belum ada jalur generasi di BLEA).
 
 export const ALIBABA_FREE_QUOTA_DOCS = 'https://help.aliyun.com/en/model-studio/model-pricing';
@@ -38,12 +41,12 @@ export const ALIBABA_FREE_QUOTA_MODELS = [
   { id: 'qwen3-vl-plus', name: 'Qwen3-VL-Plus (visual understanding)', category: 'Text', freeQuota: '1 juta token / 90 hari', blea: null, note: 'Pemahaman gambar/video; Beijing & Singapore.' },
 
   // ---- Gambar ----
-  { id: 'qwen-image-3.0-pro', name: 'Qwen-Image-3.0-Pro', category: 'Image', freeQuota: '10 gambar / 90 hari', blea: null, note: 'Text-to-image & editing; 4.5k-token layouts; 12 bahasa. Sinkron & async.' },
-  { id: 'qwen-image-3.0', name: 'Qwen-Image-3.0', category: 'Image', freeQuota: '10 gambar / 90 hari', blea: null, note: 'Text-to-image & editing; sinkron & async.' },
+  { id: 'qwen-image-3.0-pro', name: 'Qwen-Image-3.0-Pro', category: 'Image', freeQuota: '10 gambar / 90 hari', blea: 'image', note: 'Text-to-image & editing; 4.5k-token layouts; 12 bahasa. Sinkron & async.' },
+  { id: 'qwen-image-3.0', name: 'Qwen-Image-3.0', category: 'Image', freeQuota: '10 gambar / 90 hari', blea: 'image', note: 'Text-to-image & editing; sinkron & async.' },
   { id: 'qwen-image-2.1-pro', name: 'Qwen-Image-2.1-Pro', category: 'Image', freeQuota: '10 gambar / 90 hari', blea: null, note: 'Output price 0.25 CNY/gambar setelah kuota habis.' },
   { id: 'qwen-image-2.1-turbo', name: 'Qwen-Image-2.1-Turbo', category: 'Image', freeQuota: '10 gambar / 90 hari', blea: null, note: 'Versi turbo; 0.1 CNY/gambar setelah kuota habis.' },
-  { id: 'wan2.7-image', name: 'Wan2.7-Image', category: 'Image', freeQuota: '50 gambar / 90 hari', blea: null, note: 'Text-to-image & editing; RPM 300.' },
-  { id: 'wan2.7-image-pro', name: 'Wan2.7-Image-Pro', category: 'Image', freeQuota: '50 gambar / 90 hari', blea: null, note: 'Text rendering & subject consistency; 0.075 USD/gambar.' },
+  { id: 'wan2.7-image', name: 'Wan2.7-Image', category: 'Image', freeQuota: '50 gambar / 90 hari', blea: 'image', note: 'Text-to-image & editing; RPM 300.' },
+  { id: 'wan2.7-image-pro', name: 'Wan2.7-Image-Pro', category: 'Image', freeQuota: '50 gambar / 90 hari', blea: 'image', note: 'Text rendering & subject consistency; 0.075 USD/gambar.' },
 
   // ---- Video ----
   { id: 'wan3.0-video', name: 'Wan 3.0 Video', category: 'Video', freeQuota: '30 detik / 90 hari (Singapore/internasional)', blea: 'video', note: 'T2V, I2V (first/last frame), referensi; hingga 30 detik. Pricing China: tidak ada free quota.', docs: 'https://help.aliyun.com/en/model-studio/wan3-video-generation-api-reference' },

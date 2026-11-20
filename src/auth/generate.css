@@ -147,6 +147,12 @@
   line-height: 1.55;
 }
 
+.dropx-shell .generate-params-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
 .dropx-shell .generate-model-meta {
   display: flex;
   flex-wrap: wrap;
