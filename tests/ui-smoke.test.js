@@ -371,4 +371,16 @@ test('Mobile polish and animated loading stages are wired across Dashboard, Chat
   assert.match(generateSrc, /generate-loader-stage/);
   assert.match(generateSrc, /generate-btn-spinner/);
   assert.match(imageSrc, /generate-img-loader/);
+
+  const dashSrc = fs.readFileSync(new URL('../src/dropx/DropXDashboard.jsx', import.meta.url), 'utf8');
+  const userDashSrc = fs.readFileSync(new URL('../src/auth/UserDashboard.jsx', import.meta.url), 'utf8');
+  assert.match(dashSrc, /dropx-recent-row/);
+  assert.match(dashSrc, /dropx-metrics-col/);
+  assert.match(dashSrc, /dropx-feed-body/);
+  assert.equal(dashSrc.includes('className="flex items-center gap-3 py-1.5"'), false, 'DropXDashboard must not rely on missing Tailwind utility classes');
+  assert.match(mobileCss, /\.dropx-metrics-col\s*\{\s*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(userDashSrc, /MAX_PROMPT_CHARS\s*=\s*10000/);
+  assert.match(userDashSrc, /MAX_VIDEO_BYTES\s*=\s*100\s*\*\s*1024\s*\*\s*1024/);
+  assert.match(userDashSrc, /Unggah thumbnail/);
+  assert.match(userDashSrc, /uploadTusResumable/);
 });
