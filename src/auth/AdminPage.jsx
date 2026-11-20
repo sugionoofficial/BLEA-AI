@@ -1,4 +1,4 @@
-import { adminUserAction } from '../api/adminUsers';
+import { adminUserAction, adminUserRoles } from '../api/adminUsers';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownToLine,
@@ -182,6 +182,8 @@ export function AdminPage() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [wallets, setWallets] = useState({});
+  // null = peran belum/tidak dapat dimuat dari worker; kolom PEROAN menampilkan '—'.
+  const [adminIds, setAdminIds] = useState(null);
   const [userAction, setUserAction] = useState(null);
   const [actionPassword, setActionPassword] = useState('');
   const [actionDelta, setActionDelta] = useState('100');
@@ -189,6 +191,7 @@ export function AdminPage() {
   const [actionStatus, setActionStatus] = useState('active');
   const [actionReason, setActionReason] = useState('');
   const [actionConfirmEmail, setActionConfirmEmail] = useState('');
+  const [actionRole, setActionRole] = useState('user');
   const [actionBusy, setActionBusy] = useState('');
   const [actionError, setActionError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
@@ -197,7 +200,8 @@ export function AdminPage() {
     setUserAction(profile);
     setActionPassword(''); setActionDelta('100'); setActionDescription('');
     setActionStatus(profile.status || 'active'); setActionReason(profile.status_reason || '');
-    setActionConfirmEmail(''); setActionBusy(''); setActionError(''); setActionNotice('');
+    setActionConfirmEmail(''); setActionRole((adminIds ?? []).includes(profile.id) ? 'admin' : 'user');
+    setActionBusy(''); setActionError(''); setActionNotice('');
   }
   async function runUserAction(kind, extra = {}) {
     if (!userAction || actionBusy) return;
@@ -214,10 +218,15 @@ export function AdminPage() {
     }
     setActionNotice(kind === 'credits'
       ? `Saldo diperbarui menjadi ${res.data?.balance ?? '—'} kredit.`
-      : `Status akun diubah menjadi ${res.data?.status}.`);
+      : kind === 'status'
+        ? `Status akun diubah menjadi ${res.data?.status}.`
+        : `Peran akun diubah menjadi ${res.data?.role}. Berlaku setelah user login ulang atau tokennya diperbarui.`);
     setActionPassword('');
     await loadData();
   }
+
+  const isSelfAction = Boolean(userAction && user && userAction.id === user.id);
+  const targetRole = userAction && adminIds ? (adminIds.includes(userAction.id) ? 'admin' : 'user') : null;
 
   const activeSubTab = subTab[tab] || 'all';
   const apiSection = subTab['api-keys'] || 'providers';
@@ -251,6 +260,9 @@ export function AdminPage() {
       fetchAdminModels({}),
       supabase.from('credit_wallets').select('user_id,balance').limit(1000),
     ]);
+    adminUserRoles()
+      .then((res) => setAdminIds(Array.isArray(res?.data?.admin_ids) ? res.data.admin_ids : null))
+      .catch(() => setAdminIds(null));
     const errors = [profileResult.error, videoResult.error, conversationResult.error, waitlistResult.error, providerKeyResult.error].filter(Boolean);
     if (errors.length) {
       console.error('Admin data load failed:', errors);
@@ -1293,7 +1305,7 @@ export function AdminPage() {
                       <thead>
                         <tr>
                           {tab === 'users' ? (
-                            <><th>PENGGUNA</th><th>ID AKUN</th><th>BERGABUNG</th><th>SALDO</th><th>STATUS</th><th></th></>
+                            <><th>PENGGUNA</th><th>ID AKUN</th><th>BERGABUNG</th><th>SALDO</th><th>STATUS</th><th>PEROAN</th><th></th></>
                           ) : tab === 'videos' ? (
                             <><th>MODEL &amp; PROMPT</th><th>SPESIFIKASI</th><th>PEMILIK</th><th>STATUS</th><th></th></>
                           ) : tab === 'conversations' ? (
@@ -1305,7 +1317,7 @@ export function AdminPage() {
                       </thead>
                       <tbody>
                         {loading ? (
-                          <tr><td colSpan={5} className="admin-table-message">Memuat data...</td></tr>
+                          <tr><td colSpan={tab === 'users' ? 7 : tab === 'videos' ? 5 : tab === 'conversations' ? 4 : 3} className="admin-table-message">Memuat data...</td></tr>
                         ) : tab === 'users' ? (
                           filteredProfiles.map((profile) => (
                             <tr key={profile.id}>
@@ -1319,6 +1331,7 @@ export function AdminPage() {
                               <td>{formatDate(profile.created_at)}</td>
                               <td>{wallets[profile.id] ?? 0} kredit</td>
                               <td><span className={`admin-status-pill status-${profile.status || 'active'}`}><i /> {USER_STATUS_LABEL[profile.status || 'active']}</span></td>
+                              <td><span className={`admin-role-pill${adminIds === null ? '' : adminIds.includes(profile.id) ? ' is-admin' : ' is-user'}`}>{adminIds === null ? '—' : adminIds.includes(profile.id) ? 'Admin' : 'User'}</span></td>
                               <td><button type="button" className="admin-refresh-button" onClick={() => openUserAction(profile)}>Kelola</button></td>
                             </tr>
                           ))
@@ -1388,7 +1401,7 @@ export function AdminPage() {
                           ))
                         )}
                         {!loading && activeRows.length === 0 && (
-                          <tr><td colSpan={5} className="admin-table-message">{query ? 'Tidak ada hasil yang cocok.' : 'Belum ada data.'}</td></tr>
+                          <tr><td colSpan={tab === 'users' ? 7 : tab === 'videos' ? 5 : tab === 'conversations' ? 4 : 3} className="admin-table-message">{query ? 'Tidak ada hasil yang cocok.' : 'Belum ada data.'}</td></tr>
                         )}
                       </tbody>
                     </table>
@@ -1411,7 +1424,8 @@ export function AdminPage() {
           <section className="admin-delete-modal admin-user-modal" role="dialog" aria-modal="true" aria-labelledby="admin-user-title">
             <button type="button" className="admin-modal-close" onClick={() => setUserAction(null)} aria-label="Tutup"><X size={16} /></button>
             <h2 id="admin-user-title">Kelola pengguna</h2>
-            <p className="admin-user-meta"><b>{userAction.full_name || 'Nama belum diatur'}</b><br />{userAction.email || '—'} · Saldo <b>{wallets[userAction.id] ?? 0} kredit</b> · <b>{USER_STATUS_LABEL[userAction.status || 'active']}</b></p>
+            <p className="admin-user-meta"><b>{userAction.full_name || 'Nama belum diatur'}</b>{isSelfAction && <span className="admin-self-tag">akun Anda</span>}<br />{userAction.email || '—'} · Saldo <b>{wallets[userAction.id] ?? 0} kredit</b> · <b>{USER_STATUS_LABEL[userAction.status || 'active']}</b> · Peran <b>{targetRole === null ? '—' : targetRole === 'admin' ? 'Admin' : 'User'}</b></p>
+            {isSelfAction && <div className="admin-notice is-self" role="status"><span>Ini akun Anda sendiri. Hanya <b>Saldo kredit</b> yang bisa diubah dari sini; status, peran, dan penghapusan wajib dilakukan admin lain.</span></div>}
 
             <label className="admin-field admin-field-tight"><span>Password aksi admin (wajib)</span>
               <input type="text" className="admin-secret-input" value={actionPassword} autoComplete="off" inputMode="text" spellCheck={false} onChange={(event) => { setActionPassword(event.target.value); setActionError(''); }} placeholder="Password yang Anda setel di Supabase" />
@@ -1435,7 +1449,23 @@ export function AdminPage() {
               </div>
             </fieldset>
 
-            <fieldset disabled={Boolean(actionBusy)}>
+            <fieldset disabled={Boolean(actionBusy) || isSelfAction || targetRole === null}>
+              <legend>Peran akun</legend>
+              <div className="admin-user-row is-narrow-first">
+                <label className="admin-field admin-field-tight"><span>Peran</span>
+                  <select value={actionRole} onChange={(event) => setActionRole(event.target.value)}>
+                    <option value="user">User (akses standar)</option>
+                    <option value="admin">Admin (panel /admin penuh)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="admin-modal-actions">
+                <button type="button" className="admin-refresh-button" disabled={Boolean(actionBusy) || isSelfAction || targetRole === null || actionRole === targetRole} onClick={() => runUserAction('role', { role: actionRole })}>{actionBusy === 'role' ? 'Memproses…' : actionRole === 'admin' ? 'Jadikan admin' : 'Jadikan user'}</button>
+              </div>
+              <p className="admin-hint is-compact">Perubahan tercatat di jejak audit dan diverifikasi password aksi admin. Berlaku setelah user login ulang (atau tokennya diperbarui).</p>
+            </fieldset>
+
+            <fieldset disabled={Boolean(actionBusy) || isSelfAction}>
               <legend>Status akun</legend>
               <div className="admin-user-row is-narrow-first">
                 <label className="admin-field admin-field-tight"><span>Status</span>
@@ -1455,7 +1485,7 @@ export function AdminPage() {
               <p className="admin-hint is-compact">Suspended/banned menutup seluruh akses API (chat, gambar, video, riwayat). Berlaku maks. 30 detik (cache gerbang).</p>
             </fieldset>
 
-            <fieldset disabled={Boolean(actionBusy)} className="admin-danger-zone">
+            <fieldset disabled={Boolean(actionBusy) || isSelfAction} className="admin-danger-zone">
               <legend>Hapus akun permanen</legend>
               <div className="admin-user-row admin-user-row-danger">
                 <label className="admin-field admin-field-tight"><span>Ketik email konfirmasi: <b>{userAction.email || '—'}</b></span>

@@ -1668,6 +1668,11 @@
 .admin-user-row{display:grid;grid-template-columns:1fr;gap:10px;align-items:end}
 .admin-user-row.is-narrow-first{grid-template-columns:170px 1fr}
 .admin-user-row-danger{grid-template-columns:1fr auto;align-items:end}
+.admin-role-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.04em;border:1px solid var(--border);color:var(--muted-foreground);background:var(--muted, transparent)}
+.admin-role-pill.is-admin{color:#b45309;border-color:rgb(245 158 11 / 0.45);background:rgb(245 158 11 / 0.14)}
+.dark .admin-role-pill.is-admin{color:#fbbf24}
+.admin-self-tag{display:inline-flex;margin-left:8px;padding:1px 8px;border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:.05em;vertical-align:2px;color:var(--foreground);border:1px solid var(--border);background:var(--accent)}
+.admin-notice.is-self{margin:8px 0 0}
 .admin-user-row .admin-field{margin:10px 0 0}
 .admin-field-tight{margin:0}
 .admin-hint.is-compact{font-size:11px;margin:6px 0 0}
