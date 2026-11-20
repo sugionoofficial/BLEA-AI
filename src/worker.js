@@ -33,6 +33,7 @@ import {
   normalizeVideoStatus,
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
+import { ALIBABA_FREE_QUOTA_MODELS } from './lib/alibabaFreeQuota.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
 import { handleOrderReview, handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
@@ -645,7 +646,7 @@ function hasCloudflareRestConfig(keyRow) {
 function isChatCapableModelId(modelId) {
   const id = String(modelId || '').trim();
   if (!id || isVideoModelId(id)) return false;
-  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-)/i.test(id);
+  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-|qwen-image|qwen3-asr|asr-flash)/i.test(id);
 }
 
 function scoreFallbackModel(modelId) {
@@ -795,7 +796,7 @@ async function sendCloudflareBindingChat({ ai, model, payload, stream = false })
   }
 }
 
-function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env }) {
+function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env, poolByProvider }) {
   const seen = new Set([`${primaryProvider}:${primaryModel}`]);
   const raw = [];
   const workersAiBound = hasWorkersAiBinding(env);
@@ -806,6 +807,23 @@ function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvi
     const key = `${prov}:${model}`;
     if (seen.has(key)) continue;
     const keyRow = keyByProvider.get(prov);
+    const poolRows = poolByProvider?.get(prov);
+    if (poolRows?.length) {
+      // Satu kandidat per akun pool: failover lintas-akun berlaku juga untuk
+      // rantai fallback antar-model, bukan hanya permintaan utama.
+      poolRows.forEach((poolRow, index) => {
+        seen.add(`${key}#${index}`);
+        raw.push({
+          provider: prov,
+          model,
+          family: getModelFamily(model),
+          apiKey: poolRow.api_key,
+          baseUrl: poolRow.base_url || '',
+          score: (prov !== primaryProvider ? 30 : 0) + scoreFallbackModel(model) - index,
+        });
+      });
+      continue;
+    }
     let apiKey = keyRow?.api_key || (prov === 'unorouter' && model.endsWith(':free') ? 'use-free' : '');
     if (prov === 'cloudflare') {
       if (!workersAiBound && !hasCloudflareRestConfig(keyRow)) continue;
@@ -853,6 +871,38 @@ function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvi
   return diversified;
 }
 
+// Alibaba: coba akun pool secara berurutan; kuota/rate-limit/auth gagal →
+// akun ditandai cooldown & akun berikutnya dicoba. Mengembalikan { attempt, cand }.
+async function sendWithAlibabaPool({ candidates, model, payload, timeoutMs = 60_000, env, stream = false }) {
+  let lastAttempt = null;
+  let lastCand = null;
+  for (const cand of candidates) {
+    const attempt = await sendChatCompletionRequest({
+      provider: 'alibaba',
+      model,
+      apiKey: cand.api_key,
+      baseUrl: cand.base_url,
+      payload,
+      timeoutMs,
+      env,
+      stream,
+    });
+    if (attempt.ok) {
+      await markPoolKeyResult(env, cand, { success: true });
+      return { attempt, cand };
+    }
+    lastAttempt = attempt;
+    lastCand = cand;
+    const errText = attempt.errorInfo?.rawDetail || '';
+    if (isAlibabaQuotaError(attempt.status, errText)) {
+      await markPoolKeyResult(env, cand, { success: false, error: `HTTP ${attempt.status}: ${errText}`.slice(0, 280) });
+      continue;
+    }
+    return { attempt, cand };
+  }
+  return { attempt: lastAttempt, cand: lastCand };
+}
+
 async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, payload, timeoutMs = 60_000, env, stream = false }) {
   if (provider === 'cloudflare') {
     const restReady = apiKey && apiKey !== 'binding:AI' && hasValidCloudflareRestBase(baseUrl);
@@ -881,7 +931,9 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
       ),
     };
   }
-  const chatUrl = `${resolvedBase}/chat/completions`;
+  const chatUrl = provider === 'alibaba'
+    ? `${resolvedBase}/compatible-mode/v1/chat/completions`
+    : `${resolvedBase}/chat/completions`;
   const upstream = await fetch(chatUrl, {
     method: 'POST',
     headers: {
@@ -1517,6 +1569,70 @@ async function fetchProviderKeyRecord(env, provider) {
   return rows?.[0] || null;
 }
 
+// ---- provider_key_pool: multi-akun Alibaba Cloud dengan failover ----
+// Urutan: prioritas naik, lalu yang paling dulu dibuat. Akun yang sedang
+// cooldown (kuota/rate limit/auth) dilewati sampai cooldown_until lewat.
+async function loadProviderKeyPool(env, provider = 'alibaba') {
+  try {
+    const res = await servicePostgrest(
+      env,
+      `/provider_key_pool?select=id,provider,label,api_key,base_url,priority,consecutive_failures,cooldown_until&provider=eq.${encodeURIComponent(provider)}&enabled=eq.true&order=priority.asc,created_at.asc`,
+    );
+    if (!res.ok) return [];
+    const rows = await res.json().catch(() => []);
+    const now = Date.now();
+    return (Array.isArray(rows) ? rows : []).filter(
+      (row) => !row.cooldown_until || new Date(row.cooldown_until).getTime() <= now,
+    );
+  } catch {
+    return [];
+  }
+}
+
+// Kandidat = akun pool aktif; jika pool kosong, fallback ke baris tunggal
+// provider_api_keys (perilaku lama) sebagai baris semu tanpa id (tidak pernah
+// ditandai cooldown).
+async function alibabaKeyCandidates(env) {
+  const pool = await loadProviderKeyPool(env, 'alibaba');
+  if (pool.length) return pool;
+  const single = await fetchProviderKeyRecord(env, 'alibaba').catch(() => null);
+  return single?.api_key
+    ? [{ id: null, provider: 'alibaba', label: single.label || 'Provider key (tunggal)', api_key: single.api_key, base_url: single.base_url || '', priority: 100, consecutive_failures: 0 }]
+    : [];
+}
+
+async function markPoolKeyResult(env, keyRow, result) {
+  if (!keyRow?.id) return;
+  const now = new Date();
+  let patch;
+  if (result?.success) {
+    patch = { consecutive_failures: 0, cooldown_until: null, last_error: null, last_used_at: now.toISOString(), last_success_at: now.toISOString() };
+  } else {
+    const failures = (Number(keyRow.consecutive_failures) || 0) + 1;
+    const cooldownMinutes = Math.min(60, 10 * (2 ** Math.min(failures - 1, 2)));
+    patch = {
+      consecutive_failures: failures,
+      cooldown_until: new Date(now.getTime() + cooldownMinutes * 60_000).toISOString(),
+      last_error: String(result?.error || '').slice(0, 300),
+      last_used_at: now.toISOString(),
+    };
+  }
+  try {
+    await servicePostgrest(env, `/provider_key_pool?id=eq.${encodeURIComponent(keyRow.id)}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: patch,
+    });
+  } catch { /* penandaan cooldown bersifat best-effort */ }
+}
+
+// Alibaba membalas kuota habis / rate limit / key ditolak dengan beragam kode;
+// kelimpahan body diperiksa agar kuota terdeteksi meski statusnya 400.
+function isAlibabaQuotaError(status, text) {
+  if ([401, 402, 403, 429].includes(Number(status))) return true;
+  return /quota|exhaust|throttl|rate.?limit|insufficient/i.test(String(text || ''));
+}
+
 async function handleApi(request, url, env) {
   const path = url.pathname.replace(/^\/api\/?/, '');
   const method = request.method;
@@ -1979,20 +2095,31 @@ async function handleApi(request, url, env) {
       }
 
       if (provider === 'alibaba') {
-        // Model Studio tidak menyediakan GET /models. Sajikan katalog bawaan
-        // Wan; admin menyalakan model yang ingin dipakai lewat panel.
-        return jsonResponse({
-          models: BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'alibaba').map((m) => ({
+        // Model Studio tidak menyediakan GET /models. Sajikan katalog bawaan:
+        // Wan (video) + daftar free quota resmi (teks/gambar/video/speech).
+        const builtin = BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'alibaba').map((m) => ({
+          id: m.id,
+          provider: 'alibaba',
+          category: 'Video',
+          tags: ['Video', 'Alibaba'],
+          description: m.description,
+          isFree: m.isFree,
+          online: true,
+          priceLabel: m.priceLabel,
+        }));
+        const freeQuota = ALIBABA_FREE_QUOTA_MODELS
+          .filter((m) => !builtin.some((row) => row.id === m.id))
+          .map((m) => ({
             id: m.id,
             provider: 'alibaba',
-            category: 'Video',
-            tags: ['Video', 'Alibaba'],
-            description: m.description,
-            isFree: m.isFree,
+            category: m.category,
+            tags: [m.category, 'Alibaba', 'Free Quota'],
+            description: `${m.name} — free quota: ${m.freeQuota}. ${m.note || ''}`.trim(),
+            isFree: true,
             online: true,
-            priceLabel: m.priceLabel,
-          })),
-        });
+            priceLabel: 'Free Quota',
+          }));
+        return jsonResponse({ models: [...builtin, ...freeQuota] });
       }
 
       if (provider !== 'unorouter' && provider !== 'openrouter') {
@@ -2420,37 +2547,84 @@ async function handleApi(request, url, env) {
         return jsonResponse({ error: ACCOUNT_BLOCK_MESSAGE[videoAccountStatus], code: `account_${videoAccountStatus}`, account_status: videoAccountStatus }, 403);
       }
 
-      const keyRow = await fetchProviderKeyRecord(env, provider);
-      if (!keyRow?.api_key) {
+      const isAlibabaGenerate = provider === 'alibaba';
+      const keyCandidates = isAlibabaGenerate
+        ? await alibabaKeyCandidates(env)
+        : [await fetchProviderKeyRecord(env, provider)].filter((row) => row?.api_key);
+      if (!keyCandidates.length) {
         return jsonResponse({
-          error: `Provider "${PROVIDER_PRESETS[provider]?.label || provider}" belum memiliki API key. Konfigurasikan di Admin Panel -> API Key.`,
+          error: isAlibabaGenerate
+            ? 'API key Alibaba belum dikonfigurasi. Tambahkan akun di Admin Panel → Alibaba Cloud.'
+            : `Provider "${PROVIDER_PRESETS[provider]?.label || provider}" belum memiliki API key. Konfigurasikan di Admin Panel -> API Key.`,
         }, 400);
       }
 
-      if (!resolveProviderApiBase(provider, keyRow.base_url)) return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
-
-      const upstreamReq = await buildUpstreamVideoRequest({
-        provider,
-        baseUrl: keyRow.base_url,
-        apiKey: keyRow.api_key,
-        payload,
-      });
-
-      let upstreamRes;
-      try {
-        upstreamRes = await fetch(upstreamReq.submitUrl, {
-          method: 'POST',
-          headers: upstreamReq.headers,
-          body: JSON.stringify(upstreamReq.body),
-          signal: AbortSignal.timeout(60_000),
-        });
-      } catch (e) {
-        return jsonResponse({ error: `Gagal menghubungi provider (${provider}): ${String(e)}` }, 502);
+      let keyRow = null;
+      let upstreamReq = null;
+      let upstreamRes = null;
+      let rawText = '';
+      let upstreamData = {};
+      const triedAccounts = [];
+      let attemptedFetches = 0;
+      for (const candidate of keyCandidates) {
+        if (!resolveProviderApiBase(provider, candidate.base_url)) {
+          if (!isAlibabaGenerate) return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
+          triedAccounts.push({ label: candidate.label || 'akun', reason: 'base_url tidak valid' });
+          continue;
+        }
+        attemptedFetches += 1;
+        const req = await buildUpstreamVideoRequest({ provider, baseUrl: candidate.base_url, apiKey: candidate.api_key, payload });
+        let res = null;
+        try {
+          res = await fetch(req.submitUrl, {
+            method: 'POST',
+            headers: req.headers,
+            body: JSON.stringify(req.body),
+            signal: AbortSignal.timeout(60_000),
+          });
+        } catch (e) {
+          if (isAlibabaGenerate) {
+            await markPoolKeyResult(env, candidate, { success: false, error: String(e) });
+            triedAccounts.push({ label: candidate.label || 'akun Alibaba', reason: 'jaringan gagal' });
+            continue;
+          }
+          return jsonResponse({ error: `Gagal menghubungi provider (${provider}): ${String(e)}` }, 502);
+        }
+        const text = await res.text().catch(() => '');
+        const data = (() => { try { return JSON.parse(text); } catch { return {}; } })();
+        if (res.ok) {
+          keyRow = candidate;
+          upstreamReq = req;
+          upstreamRes = res;
+          rawText = text;
+          upstreamData = data;
+          await markPoolKeyResult(env, candidate, { success: true });
+          break;
+        }
+        if (isAlibabaGenerate && isAlibabaQuotaError(res.status, text)) {
+          await markPoolKeyResult(env, candidate, { success: false, error: text.slice(0, 280) });
+          triedAccounts.push({ label: candidate.label || 'akun Alibaba', reason: `HTTP ${res.status}` });
+          continue;
+        }
+        // Error non-kuota: tampilkan apa adanya (perilaku lama).
+        keyRow = candidate;
+        upstreamReq = req;
+        upstreamRes = res;
+        rawText = text;
+        upstreamData = data;
+        break;
       }
 
-      const rawText = await upstreamRes.text().catch(() => '');
-      let upstreamData = {};
-      try { upstreamData = JSON.parse(rawText); } catch {}
+      if (isAlibabaGenerate && (!keyRow || !upstreamRes?.ok)) {
+        if (attemptedFetches === 0) {
+          return jsonResponse({ error: 'Base URL provider video belum valid.' }, 400);
+        }
+        return jsonResponse({
+          ok: false,
+          error: `Semua akun Alibaba (${triedAccounts.length || keyCandidates.length}) gagal atau terkena kuota/rate limit. Tambah akun lain di Admin Panel → Alibaba Cloud atau tunggu kuota reset.`,
+          detail: triedAccounts.map((t) => `${t.label}: ${t.reason}`).join('; ').slice(0, 400),
+        }, 429);
+      }
 
       if (!upstreamRes.ok) {
         const detail = extractUpstreamError(upstreamData) || rawText.slice(0, 300);
@@ -2495,6 +2669,7 @@ async function handleApi(request, url, env) {
         audio_url: audioUrl || null,
         external_job_id: externalJobId || null,
         polling_url: pollingUrl || null,
+        provider_key_id: keyRow?.id || null,
         status,
         progress,
         upstream_result_url: immediateContentUrl || null,
@@ -2545,22 +2720,71 @@ async function handleApi(request, url, env) {
         return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
       }
 
-      const keyRow = await fetchProviderKeyRecord(env, row.provider || 'unorouter');
-      if (!keyRow?.api_key) {
-        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
-      }
+      let keyRow = null;
+      let apiBase = '';
+      let pollUrl = '';
+      let pollRes = null;
 
-      const apiBase = resolveProviderApiBase(row.provider || 'unorouter', keyRow.base_url);
-      const pollUrl = row.polling_url || (row.external_job_id ? `${apiBase}/videos/${encodeURIComponent(row.external_job_id)}` : '');
-      if (!pollUrl) {
-        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+      if (row.provider === 'alibaba') {
+        // Task milik workspace akun tertentu: coba akun yang submit dulu
+        // (provider_key_id tersimpan), lalu akun pool lain sebagai cadangan.
+        const seeded = [];
+        if (row.provider_key_id) {
+          try {
+            const res = await servicePostgrest(env, `/provider_key_pool?select=id,provider,label,api_key,base_url,priority,consecutive_failures,cooldown_until&id=eq.${encodeURIComponent(row.provider_key_id)}&limit=1`);
+            const rows = res.ok ? await res.json().catch(() => []) : [];
+            if (rows?.[0]?.api_key) seeded.push(rows[0]);
+          } catch { /* abaikan — coba kandidat pool */ }
+        }
+        for (const cand of await alibabaKeyCandidates(env)) {
+          if (!seeded.some((rowSeed) => rowSeed.id === cand.id)) seeded.push(cand);
+        }
+        if (!seeded.length || !row.external_job_id) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+        }
+        for (const cand of seeded) {
+          const base = resolveProviderApiBase('alibaba', cand.base_url);
+          if (!base) continue;
+          let res = null;
+          try {
+            res = await fetch(`${base}/api/v1/tasks/${encodeURIComponent(row.external_job_id)}`, {
+              method: 'GET',
+              headers: { authorization: `Bearer ${cand.api_key}` },
+              signal: AbortSignal.timeout(30_000),
+            });
+          } catch {
+            await markPoolKeyResult(env, cand, { success: false, error: 'poll jaringan gagal' });
+            continue;
+          }
+          if (isAlibabaQuotaError(res.status, '')) {
+            await markPoolKeyResult(env, cand, { success: false, error: `poll HTTP ${res.status}` });
+            continue;
+          }
+          pollRes = res;
+          keyRow = cand;
+          apiBase = base;
+          if (res.ok) await markPoolKeyResult(env, cand, { success: true });
+          break;
+        }
+        if (!pollRes) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: 'Semua akun Alibaba gagal polling.' });
+        }
+      } else {
+        keyRow = await fetchProviderKeyRecord(env, row.provider || 'unorouter');
+        if (!keyRow?.api_key) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+        }
+        apiBase = resolveProviderApiBase(row.provider || 'unorouter', keyRow.base_url);
+        pollUrl = row.polling_url || (row.external_job_id ? `${apiBase}/videos/${encodeURIComponent(row.external_job_id)}` : '');
+        if (!pollUrl) {
+          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
+        }
+        pollRes = await fetch(pollUrl, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${keyRow.api_key}` },
+          signal: AbortSignal.timeout(30_000),
+        });
       }
-
-      const pollRes = await fetch(pollUrl, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${keyRow.api_key}` },
-        signal: AbortSignal.timeout(30_000),
-      });
       if (!pollRes.ok) {
         return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: `HTTP ${pollRes.status}` });
       }
@@ -2658,7 +2882,12 @@ async function handleApi(request, url, env) {
       const keyByProvider = new Map((keyRows || []).map((r) => [String(r.provider || 'unorouter').toLowerCase(), r]));
       const primaryProvider = String(body.provider || 'unorouter').trim().toLowerCase();
       const requestedModel = String(body.model || 'gpt-oss-120b:free').trim();
-      const primaryKeyRow = keyByProvider.get(primaryProvider);
+      const alibabaCandidates = primaryProvider === 'alibaba' ? await alibabaKeyCandidates(env) : [];
+      if (alibabaCandidates.length) {
+        keyByProvider.set('alibaba', { provider: 'alibaba', api_key: alibabaCandidates[0].api_key, base_url: alibabaCandidates[0].base_url });
+      }
+      const alibabaPoolMap = alibabaCandidates.length ? new Map([['alibaba', alibabaCandidates]]) : undefined;
+      const primaryKeyRow = primaryProvider === 'alibaba' ? (alibabaCandidates[0] || null) : keyByProvider.get(primaryProvider);
       let primaryApiKey = primaryKeyRow?.api_key || (primaryProvider === 'unorouter' ? 'use-free' : '');
       if (primaryProvider === 'cloudflare' && !primaryApiKey && hasWorkersAiBinding(env)) {
         primaryApiKey = 'binding:AI';
@@ -2696,16 +2925,20 @@ async function handleApi(request, url, env) {
         const triedDetails = [];
 
         if (wantStream) {
-          const primaryAttempt = await sendChatCompletionRequest({
-            provider: activeProvider,
-            model: activeModel,
-            apiKey: activeApiKey,
-            baseUrl: activeBaseUrl,
-            payload: fetchBody,
-            timeoutMs: 120_000,
-            env,
-            stream: true,
-          });
+          let alibabaPrimaryCand = null;
+          const primaryAttempt = activeProvider === 'alibaba'
+            ? (await sendWithAlibabaPool({ candidates: alibabaCandidates, model: activeModel, payload: fetchBody, timeoutMs: 120_000, env, stream: true }).then((out) => { alibabaPrimaryCand = out.cand; return out.attempt; }))
+            : await sendChatCompletionRequest({
+              provider: activeProvider,
+              model: activeModel,
+              apiKey: activeApiKey,
+              baseUrl: activeBaseUrl,
+              payload: fetchBody,
+              timeoutMs: 120_000,
+              env,
+              stream: true,
+            });
+          if (alibabaPrimaryCand) { activeApiKey = alibabaPrimaryCand.api_key; activeBaseUrl = alibabaPrimaryCand.base_url; }
           let probed = await probeChatStreamAttempt(primaryAttempt);
           if (!probed.ok) {
             const reasonCode = probed.errorInfo?.code || `http_${probed.status}`;
@@ -2727,6 +2960,7 @@ async function handleApi(request, url, env) {
                 keyByProvider,
                 dbModelRows: cachedDbModels,
                 env,
+                poolByProvider: alibabaPoolMap,
               }).slice(0, 6);
               for (const cand of candidates) {
                 triedModels.push(cand.model);
@@ -2832,15 +3066,19 @@ async function handleApi(request, url, env) {
           );
         }
 
-        let attempt = await sendChatCompletionRequest({
-          provider: activeProvider,
-          model: activeModel,
-          apiKey: activeApiKey,
-          baseUrl: activeBaseUrl,
-          payload: fetchBody,
-          timeoutMs: 120_000,
-          env,
-        });
+        let alibabaPrimaryCand2 = null;
+        let attempt = activeProvider === 'alibaba'
+          ? (await sendWithAlibabaPool({ candidates: alibabaCandidates, model: activeModel, payload: fetchBody, timeoutMs: 120_000, env, stream: false }).then((out) => { alibabaPrimaryCand2 = out.cand; return out.attempt; }))
+          : await sendChatCompletionRequest({
+            provider: activeProvider,
+            model: activeModel,
+            apiKey: activeApiKey,
+            baseUrl: activeBaseUrl,
+            payload: fetchBody,
+            timeoutMs: 120_000,
+            env,
+          });
+        if (alibabaPrimaryCand2) { activeApiKey = alibabaPrimaryCand2.api_key; activeBaseUrl = alibabaPrimaryCand2.base_url; }
         let finalReply = attempt.ok ? extractAssistantReply(attempt.data) : '';
         if (!attempt.ok || !finalReply) {
           const reasonCode = attempt.ok ? 'empty_reply' : (attempt.errorInfo?.code || `http_${attempt.status}`);
@@ -2865,6 +3103,7 @@ async function handleApi(request, url, env) {
             keyByProvider,
             dbModelRows: cachedDbModels,
             env,
+            poolByProvider: alibabaPoolMap,
           }).slice(0, 6);
 
           const primaryReason = attempt.ok ? 'empty_reply' : (attempt.errorInfo?.code || `http_${attempt.status}`);
@@ -2995,6 +3234,7 @@ async function handleApi(request, url, env) {
                 keyByProvider,
                 dbModelRows: cachedDbModels,
                 env,
+                poolByProvider: alibabaPoolMap,
               })[0];
               if (alt) {
                 const altRoundRes = await sendChatCompletionRequest({

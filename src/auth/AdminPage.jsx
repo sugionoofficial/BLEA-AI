@@ -1,10 +1,12 @@
 import { adminUserAction, adminUserRoles } from '../api/adminUsers';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AlibabaCloudPanel } from './AlibabaCloudPanel';
 import {
   ArrowDownToLine,
   ArrowUpRight,
   Check,
   ChevronDown,
+  Cloud,
   Clapperboard,
   Clock3,
   Eye,
@@ -108,6 +110,15 @@ const NAV_GROUPS = [
           { id: 'add-provider', label: 'Tambah Provider' },
         ],
       },
+      {
+        id: 'alibaba',
+        label: 'Alibaba Cloud',
+        icon: Cloud,
+        children: [
+          { id: 'accounts', label: 'Akun & API Key' },
+          { id: 'catalog', label: 'Katalog Free Quota' },
+        ],
+      },
     ],
   },
 ];
@@ -156,6 +167,7 @@ export function AdminPage() {
     conversations: 'all',
     waitlist: 'all',
     'api-keys': 'providers',
+    alibaba: 'accounts',
   });
   const [apiTreeOpen, setApiTreeOpen] = useState(true);
 
@@ -235,11 +247,12 @@ export function AdminPage() {
 
   const activeSubTab = subTab[tab] || 'all';
   const apiSection = subTab['api-keys'] || 'providers';
+  const alibabaSection = subTab.alibaba || 'accounts';
 
   function selectFeature(nextTab, nextChild = null) {
     setTab(nextTab);
     setSearch('');
-    if (nextTab === 'api-keys') {
+    if (nextTab === 'api-keys' || nextTab === 'alibaba') {
       setApiTreeOpen(true);
     }
     if (nextChild) {
@@ -712,6 +725,7 @@ export function AdminPage() {
   };
 
   const subCounts = {
+    alibaba: {},
     'api-keys': {
       providers: providerKeys.length,
       catalog: unoModels.filter((m) => m.active).length,
@@ -803,7 +817,7 @@ export function AdminPage() {
                   <span className="admin-subnav-label">{group.label}</span>
                   {group.items.map(({ id, label, icon: Icon, children }) => {
                     const isActive = tab === id;
-                    const isApiNode = id === 'api-keys';
+                    const isApiNode = id === 'api-keys' || id === 'alibaba';
                     const showChildren = isApiNode ? (isActive || apiTreeOpen) : isActive;
                     return (
                       <div className="admin-subnav-node" key={id}>
@@ -1300,6 +1314,8 @@ export function AdminPage() {
                 </section>
               )}
 
+              {tab === 'alibaba' && <AlibabaCloudPanel subTab={alibabaSection} />}
+
               {tab === 'api-keys' && apiSection === 'add-provider' && (
                 <section className="admin-api-card">
                   <div className="admin-api-heading">
@@ -1355,7 +1371,7 @@ export function AdminPage() {
                 </section>
               )}
 
-              {tab !== 'overview' && tab !== 'api-keys' && (
+              {tab !== 'overview' && tab !== 'api-keys' && tab !== 'alibaba' && (
                 <section className="admin-table-card">
                   <div className="admin-table-toolbar">
                     <label className="admin-search">

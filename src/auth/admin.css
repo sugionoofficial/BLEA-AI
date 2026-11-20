@@ -1692,3 +1692,45 @@
 .admin-status-pill.status-suspended i,.admin-status-pill.status-banned i{background:var(--destructive)}
 .admin-api-help{font-size:11.5px;color:var(--muted-foreground);line-height:1.6;margin:6px 0 0;padding:8px 10px;border:1px dashed var(--border);border-radius:8px}.admin-api-help code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--background);padding:0 4px;border-radius:4px;font-size:10.5px;overflow-wrap:anywhere}
 .admin-api-quota{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--muted-foreground);margin-top:8px;padding:7px 10px;border:1px dashed var(--border);border-radius:8px;line-height:1.6}.admin-api-quota b{color:var(--foreground)}.admin-api-quota .is-error{color:var(--destructive,#f43f5e)}.admin-api-quota a{color:var(--primary);text-decoration:none}.admin-api-quota-refresh{margin-left:auto;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);background:var(--background);color:var(--foreground);border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap}.admin-api-quota-refresh:hover{border-color:var(--primary);color:var(--primary)}.admin-api-quota-refresh:disabled{opacity:.6;cursor:default}
+
+/* ---- Alibaba Cloud pool & katalog free quota ---- */
+.alibaba-add-form{display:grid;grid-template-columns:1fr 1fr 2fr auto;gap:8px;margin:14px 0;align-items:center}
+.alibaba-add-form input{background:var(--background);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:inherit;font:inherit;font-size:13px;min-width:0}
+@media (max-width:1100px){.alibaba-add-form{grid-template-columns:1fr 1fr;}}
+.alibaba-account-card{border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin:10px 0;background:var(--card,var(--background));display:flex;flex-direction:column;gap:8px}
+.alibaba-account-card.is-disabled{opacity:.65}
+.alibaba-account-top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.alibaba-account-title{display:flex;align-items:center;gap:10px;min-width:0}
+.alibaba-account-title small{display:block;color:var(--muted-foreground);font-size:11.5px;margin-top:2px}
+.alibaba-priority{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--muted-foreground);border:1px solid var(--border);border-radius:6px;padding:2px 7px}
+.alibaba-label-input{background:transparent;border:1px solid transparent;border-radius:6px;color:inherit;font:inherit;font-weight:600;font-size:14px;padding:2px 6px;max-width:340px}
+.alibaba-label-input:hover,.alibaba-label-input:focus{border-color:var(--border);outline:none}
+.alibaba-account-actions{display:flex;align-items:center;gap:6px}
+.alibaba-icon-btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--background);color:var(--foreground);border-radius:8px;padding:5px 8px;cursor:pointer}
+.alibaba-icon-btn:hover{border-color:var(--primary);color:var(--primary)}
+.alibaba-icon-btn:disabled{opacity:.5;cursor:default}
+.alibaba-toggle{border:1px solid var(--border);background:var(--background);color:var(--muted-foreground);border-radius:999px;padding:5px 14px;font-size:12px;cursor:pointer;white-space:nowrap}
+.alibaba-toggle.is-on{border-color:#22c55e;color:#22c55e}
+.alibaba-account-foot{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted-foreground)}
+.alibaba-account-foot span{display:inline-flex;align-items:center;gap:4px}
+.alibaba-account-error{color:#f87171;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alibaba-account-foot-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+.alibaba-confirm-text{color:#f87171;font-weight:600}
+.alibaba-catalog-warning{display:flex;gap:8px;align-items:flex-start;border:1px solid rgba(250,204,21,.35);background:rgba(250,204,21,.08);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.6;margin:10px 0}
+.alibaba-catalog-warning a{color:var(--primary);text-decoration:none}
+.alibaba-catalog-filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.alibaba-catalog-chips{display:flex;gap:6px;flex-wrap:wrap}
+.alibaba-catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-top:6px}
+.alibaba-catalog-card{border:1px solid var(--border);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:5px;background:var(--card,var(--background))}
+.alibaba-catalog-card header{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.alibaba-catalog-id{font-size:10.5px;color:var(--muted-foreground);background:var(--background);border:1px solid var(--border);border-radius:6px;padding:2px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alibaba-catalog-name{font-size:13px}
+.alibaba-catalog-quota{font-size:15px;font-weight:700;color:var(--primary)}
+.alibaba-catalog-note{font-size:11px;color:var(--muted-foreground);line-height:1.5;flex:1}
+.alibaba-catalog-card footer{display:flex;justify-content:space-between;align-items:center;margin-top:2px}
+.alibaba-catalog-cat{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-foreground)}
+.alibaba-catalog-doc{font-size:11px;color:var(--primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+.alibaba-blea-badge{font-size:10px;border-radius:999px;padding:2px 8px;white-space:nowrap;border:1px solid var(--border);color:var(--muted-foreground)}
+.alibaba-blea-badge.is-video{border-color:#22c55e;color:#22c55e}
+.alibaba-blea-badge.is-chat{border-color:var(--primary);color:var(--primary)}
+.admin-model-chip.is-on{border-color:var(--primary);color:var(--primary)}
