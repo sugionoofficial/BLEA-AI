@@ -18,16 +18,17 @@ export function usePagedList(items) {
   return { perPage, setPerPage, page: current, setPage, pageCount, slice, total: items.length };
 }
 
-export function PerPageSelect({ value, onChange, id }) {
+export function PerPageSelect({ value, onChange, id, options = PER_PAGE }) {
+  const normalized = options.map((option) => (option === 'all' ? 'all' : Number(option)));
   return (
     <label className="page-size" htmlFor={id}>
       Tampilkan
       <select id={id} value={value === 'all' ? 'all' : String(value)} onChange={(event) => onChange(event.target.value === 'all' ? 'all' : Number(event.target.value))}>
-        <option value="50">50</option>
-        <option value="100">100</option>
-        <option value="all">Semua</option>
+        {normalized.map((option) => (option === 'all'
+          ? <option key="all" value="all">Semua</option>
+          : <option key={option} value={option}>{option}</option>))}
       </select>
-      <span className="page-size-suffix">item</span>
+      <span className="page-size-suffix">item per halaman</span>
     </label>
   );
 }
