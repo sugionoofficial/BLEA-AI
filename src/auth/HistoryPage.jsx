@@ -121,7 +121,7 @@ export function HistoryPage() {
             <button type="button" className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>Semua</button>
             <button type="button" className={filter === 'video' ? 'is-active' : ''} onClick={() => setFilter('video')}>Video</button>
             <button type="button" className={filter === 'image' ? 'is-active' : ''} onClick={() => setFilter('image')}>Gambar</button>
-            <PerPageSelect id="history-per-page" value={perPage} onChange={setPerPage} />
+            <PerPageSelect id="history-per-page" value={perPage} onChange={setPerPage} options={[10, 50, 100]} />
             <button type="button" onClick={() => load()} disabled={loading}><RefreshCw size={15} /> Perbarui</button>
           </div>
         </div>
