@@ -12,6 +12,7 @@ import {
 } from '../api/generation';
 import { useAuth } from './AuthProvider';
 import { useCredits } from '../lib/useCredits';
+import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
 import { ModelSelect } from './ModelSelect';
 import './generate.css';
 import './history.css';
@@ -204,9 +205,9 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     if (res.data?.status === 'unknown') {
       setError('Hasil pengiriman tidak pasti dan kredit mungkin sudah terpakai. Jangan ulangi; periksa status di riwayat terlebih dahulu.');
     } else if (res.data?.status === 'completed') {
-      setNotice(`Permintaan diterima dan selesai (${billed} kredit BLEA).`);
+      setNotice(`Permintaan diterima dan selesai (${formatCredits(billed)} kredit BLEA).`);
     } else {
-      setNotice(`Permintaan diterima (${billed} kredit BLEA). Gambar biasanya selesai dalam beberapa detik hingga satu menit.`);
+      setNotice(`Permintaan diterima (${formatCredits(billed)} kredit BLEA). Gambar biasanya selesai dalam beberapa detik hingga satu menit.`);
     }
     refreshBalance();
     setBusy(false);
@@ -217,7 +218,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
   const insufficient = price !== null && balance !== null && balance < price;
   const missingRequiredImage = requiresImageInput && sourceImages.length === 0;
   const headerSub = active
-    ? `${requiresImageInput ? 'Dari gambar + teks' : maxInputImages > 0 ? 'Dari teks / gambar' : 'Dari teks'} · ${active.name} · ${price !== null ? `${price} kredit BLEA per gambar` : 'harga belum diatur admin'}`
+    ? (requiresImageInput ? 'Dari gambar + teks' : maxInputImages > 0 ? 'Dari teks / gambar' : 'Dari teks')
     : 'Dari teks · belum ada model yang diaktifkan admin';
 
   const wxhSuggestions = [...new Set([
@@ -248,22 +249,30 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     {!loading && active && ready && price === null && <div className="generate-banner" role="status"><span>Harga kredit untuk model ini belum diatur admin. Buka Admin → Kredit untuk mengisinya.</span><Link className="generate-banner-link" to="/admin">Atur harga</Link></div>}
     {error && <div className="generate-banner is-error" role="alert">{error}</div>}
     {notice && <div className="generate-banner is-success" role="status">{notice}</div>}
-    {insufficient && ready && <div className="generate-banner" role="status"><span>Saldo kredit BLEA Anda kurang dari {price} kredit. Saldo ada di pojok kanan atas.</span><Link className="generate-banner-link" to="/credits">Tambah kredit</Link></div>}
+    {insufficient && ready && <div className="generate-banner" role="status"><span>Saldo kredit BLEA Anda kurang dari {formatCredits(price)} kredit. Saldo ada di pojok kanan atas.</span><Link className="generate-banner-link" to="/credits">Tambah kredit</Link></div>}
 
     <form onSubmit={submit}>
       {models.length > 0 && <div className="generate-field">
-        <span className="generate-label">Model gambar</span>
+        <div className="generate-label-row">
+          <span className="generate-label">Model gambar</span>
+          <span className="generate-hint">{models.length} model</span>
+        </div>
         <ModelSelect
           ariaLabel="Model gambar"
           value={active ? `${active.provider}:${active.model}` : ''}
-          options={models.map((model) => ({
-            value: `${model.provider}:${model.model}`,
-            badge: model.provider === 'alibaba' ? 'Alibaba' : 'Freebeat',
-            label: model.name,
-            meta: Number.isSafeInteger(model.credits) ? `${model.credits} kredit` : 'Belum bertarif',
-            tone: Number.isSafeInteger(model.credits) ? 'accent' : 'warn',
-            nativeLabel: `${model.name}${Number.isSafeInteger(model.credits) ? ` · ${model.credits} kredit` : ' · harga belum diatur'}`,
-          }))}
+          options={models.map((model) => {
+            const badge = formatProviderBadge(model.provider);
+            const displayName = formatModelDisplayName(model.name, model.provider);
+            const creditLabel = Number.isSafeInteger(model.credits) ? `${formatCredits(model.credits)} kredit` : 'Belum bertarif';
+            return {
+              value: `${model.provider}:${model.model}`,
+              badge,
+              label: displayName,
+              meta: creditLabel,
+              tone: Number.isSafeInteger(model.credits) ? 'accent' : 'warn',
+              nativeLabel: `[${badge}] ${displayName}${Number.isSafeInteger(model.credits) ? ` · ${creditLabel}` : ' · harga belum diatur'}`,
+            };
+          })}
           onChange={(nextValue) => {
             const next = models.find((model) => `${model.provider}:${model.model}` === nextValue);
             setSelected(nextValue);
@@ -322,7 +331,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       <div className="generate-actions" style={{ marginTop: 10 }}>
         <button className="generate-submit-btn" type="submit" disabled={busy || uploading || !ready || insufficient || missingRequiredImage || !prompt.trim()}>
           {(busy || uploading) && <span className="generate-btn-spinner" aria-hidden="true" />}
-          {busy ? 'Mengirim…' : `Buat gambar${price !== null ? ` (${price} kredit)` : ''}`}
+          {busy ? 'Mengirim…' : 'Buat gambar'}
         </button>
         <button className="generate-secondary-btn" type="button" disabled={busy || loading} onClick={load}>Perbarui</button>
       </div>
@@ -331,7 +340,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     {(busy || items.some(isPending)) && (() => {
       const pendingItem = items.find(isPending);
       const stageStatus = busy ? 'Mengirim ke Studio AI…' : (STATUS_LABEL[pendingItem?.status] || 'Sedang diproses');
-      const stageModel = pendingItem?.model || active?.name || 'AI Image';
+      const stageModel = formatModelDisplayName(pendingItem?.model || active?.name || 'AI Image', active?.provider);
       const stagePrompt = (pendingItem?.prompt || prompt || '').trim();
       return (
         <div className="generate-img-live-stage" role="status" aria-live="polite">
@@ -401,7 +410,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
             <div className="history-card-body">
               <span className={`history-status status-${item.status}`}>{STATUS_LABEL[item.status] || item.status}</span>
               <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>
-              <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · model {item.model} · {item.credits_charged} kredit{item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}</p>
+              <p className="history-meta">{item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · model {item.model} · {formatCredits(item.credits_charged)} kredit{item.credits_refunded > 0 ? ` · ${formatCredits(item.credits_refunded)} dikembalikan` : ''}</p>
               {item.error_message && <p className="history-error-text">{item.error_message}</p>}
               {item.status === 'unknown' && <p className="history-error-text">Jangan ulangi sebelum statusnya jelas; kredit mungkin sudah terpakai.</p>}
               {item.status === 'completed' && allUrls.length > 0 && <div className="history-card-actions">
