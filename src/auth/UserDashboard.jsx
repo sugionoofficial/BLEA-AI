@@ -154,7 +154,7 @@ export function UserDashboard() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [copiedId, setCopiedId] = useState('');
-  const [editMode, setEditMode] = useState(false);
+  const [editingId, setEditingId] = useState('');
   const [form, setForm] = useState(emptyForm());
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -308,6 +308,7 @@ export function UserDashboard() {
     }).eq('id', id);
     setBusyId('');
     if (updateError) { setError('Gagal menyimpan perubahan.'); return; }
+    setEditingId('');
     setNotice('Perubahan disimpan.');
     await load();
   }
@@ -338,42 +339,56 @@ export function UserDashboard() {
           <p>Salin prompt dari contoh di bawah lalu pakai langsung di halaman Generate.</p>
         </div>
         {isAdmin && (
-          <button type="button" className={`showcase-admin-toggle ${editMode ? 'is-active' : ''}`} onClick={() => setEditMode((v) => !v)} aria-pressed={editMode}>
-            {editMode ? <X size={14} /> : <Pencil size={14} />}
-            {editMode ? 'Selesai' : 'Mode edit (admin)'}
-          </button>
+          <div className="showcase-hero-actions">
+            <button
+              type="button"
+              className={`showcase-admin-toggle ${addOpen ? 'is-active' : ''}`}
+              onClick={() => {
+                setAddOpen((v) => {
+                  const next = !v;
+                  if (next) setEditingId('');
+                  return next;
+                });
+              }}
+              aria-expanded={addOpen}
+            >
+              {addOpen ? <X size={14} /> : <Plus size={14} />}
+              {addOpen ? 'Tutup form baru' : 'Tambah contoh baru'}
+            </button>
+          </div>
         )}
       </div>
 
       {notice && <div className="showcase-alert" role="status">{notice}</div>}
       {error && <div className="showcase-alert is-error" role="alert">{error}</div>}
 
-      {isAdmin && editMode && (
+      {isAdmin && addOpen && (
         <div className="showcase-admin-panel">
-          <button type="button" className="showcase-add-toggle" onClick={() => setAddOpen((v) => !v)} aria-expanded={addOpen}>
-            {addOpen ? <X size={15} /> : <Plus size={15} />}
-            {addOpen ? 'Tutup formulir' : 'Tambah contoh baru'}
-          </button>
-          {addOpen && (
-            <ExampleForm
-              values={form}
-              onChange={setForm}
-              onSubmit={addExample}
-              submitLabel="Tambah contoh"
-              busy={saving || uploading || uploadingThumb}
-              uploadLabel={uploadButtonText}
-              thumbLabel={thumbButtonText}
-              onUpload={async (file) => {
-                const result = await uploadMedia(file);
-                if (result) setForm((cur) => ({ ...cur, kind: result.isVideo ? 'video' : 'image', media_url: result.url }));
-              }}
-              onUploadThumb={async (file) => {
-                const url = await uploadThumbnail(file);
-                if (url) setForm((cur) => ({ ...cur, kind: 'video', poster_url: url }));
-              }}
-              fileRef={addFileRef}
-            />
-          )}
+          <div className="showcase-admin-panel-head">
+            <strong>Tambah contoh baru</strong>
+            <button type="button" className="showcase-cancel-btn" onClick={() => setAddOpen(false)}>
+              <X size={14} /> Tutup
+            </button>
+          </div>
+          <ExampleForm
+            values={form}
+            onChange={setForm}
+            onSubmit={addExample}
+            onCancel={() => setAddOpen(false)}
+            submitLabel="Tambah contoh"
+            busy={saving || uploading || uploadingThumb}
+            uploadLabel={uploadButtonText}
+            thumbLabel={thumbButtonText}
+            onUpload={async (file) => {
+              const result = await uploadMedia(file);
+              if (result) setForm((cur) => ({ ...cur, kind: result.isVideo ? 'video' : 'image', media_url: result.url }));
+            }}
+            onUploadThumb={async (file) => {
+              const url = await uploadThumbnail(file);
+              if (url) setForm((cur) => ({ ...cur, kind: 'video', poster_url: url }));
+            }}
+            fileRef={addFileRef}
+          />
         </div>
       )}
 
@@ -382,7 +397,7 @@ export function UserDashboard() {
         <div className="showcase-empty">
           <ImageIcon size={26} />
           <h2>Contoh belum tersedia</h2>
-          <p>{isAdmin ? 'Gunakan Mode edit di atas untuk menambahkan contoh gambar atau video pertama.' : 'Galeri contoh sedang disiapkan. Silakan kembali lagi nanti.'}</p>
+          <p>{isAdmin ? 'Klik "Tambah contoh baru" di atas untuk menambahkan contoh gambar atau video pertama.' : 'Galeri contoh sedang disiapkan. Silakan kembali lagi nanti.'}</p>
         </div>
       )}
 
@@ -392,7 +407,12 @@ export function UserDashboard() {
             key={item.id}
             item={item}
             isAdmin={isAdmin}
-            editMode={editMode}
+            isEditing={isAdmin && editingId === item.id}
+            onStartEdit={() => {
+              setAddOpen(false);
+              setEditingId((cur) => (cur === item.id ? '' : item.id));
+            }}
+            onCancelEdit={() => setEditingId('')}
             busy={busyId === item.id}
             copied={copiedId === item.id}
             onCopy={() => copyPrompt(item)}
@@ -411,18 +431,25 @@ export function UserDashboard() {
   );
 }
 
-function ShowcaseCard({ item, isAdmin, editMode, busy, copied, onCopy, onSave, onDelete, onUpload, onUploadThumb, uploadLabel, thumbLabel, uploading }) {
+function ShowcaseCard({ item, isAdmin, isEditing, onStartEdit, onCancelEdit, busy, copied, onCopy, onSave, onDelete, onUpload, onUploadThumb, uploadLabel, thumbLabel, uploading }) {
   const [values, setValues] = useState(item);
   useEffect(() => { setValues(item); }, [item]);
   const isVideo = item.kind === 'video';
 
-  if (isAdmin && editMode) {
+  if (isAdmin && isEditing) {
     return (
       <article className="showcase-card is-editing">
+        <div className="showcase-admin-panel-head">
+          <strong>Edit contoh</strong>
+          <button type="button" className="showcase-cancel-btn" onClick={onCancelEdit} disabled={busy || uploading}>
+            <X size={13} /> Batal
+          </button>
+        </div>
         <ExampleForm
           values={values}
           onChange={setValues}
           onSubmit={() => onSave(values)}
+          onCancel={onCancelEdit}
           submitLabel="Simpan perubahan"
           busy={busy || uploading}
           uploadLabel={uploadLabel}
@@ -479,13 +506,18 @@ function ShowcaseCard({ item, isAdmin, editMode, busy, copied, onCopy, onSave, o
           <Link className="showcase-use-btn" to={`/generate?prompt=${encodeURIComponent(item.prompt || '')}`}>
             <Link2 size={13} /> Pakai prompt
           </Link>
+          {isAdmin && (
+            <button type="button" className="showcase-edit-btn" onClick={onStartEdit} aria-label={`Edit ${item.title || 'contoh'}`}>
+              <Pencil size={12} /> Edit
+            </button>
+          )}
         </div>
       </div>
     </article>
   );
 }
 
-function ExampleForm({ values, onChange, onSubmit, submitLabel, busy, uploadLabel, thumbLabel, onUpload, onUploadThumb, onDelete, fileRef, compact = false }) {
+function ExampleForm({ values, onChange, onSubmit, onCancel, submitLabel, busy, uploadLabel, thumbLabel, onUpload, onUploadThumb, onDelete, fileRef, compact = false }) {
   const set = (patch) => onChange((cur) => ({ ...cur, ...patch }));
   const promptLen = (values.prompt || '').length;
   return (
@@ -537,6 +569,11 @@ function ExampleForm({ values, onChange, onSubmit, submitLabel, busy, uploadLabe
           <input ref={fileRef} type="file" accept={ACCEPT_MEDIA} className="showcase-file-input" disabled={busy} onChange={(event) => { const file = event.target.files?.[0]; if (file && onUpload) onUpload(file); event.target.value = ''; }} />
         </label>
         <button type="submit" className="showcase-primary-btn" disabled={busy}>{busy ? 'Menyimpan…' : submitLabel}</button>
+        {onCancel && (
+          <button type="button" className="showcase-cancel-btn" onClick={onCancel} disabled={busy}>
+            Batal
+          </button>
+        )}
         {onDelete && (
           <button type="button" className="showcase-danger-btn" onClick={onDelete} disabled={busy}>
             <Trash2 size={14} /> Hapus
