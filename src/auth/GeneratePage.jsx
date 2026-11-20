@@ -627,7 +627,7 @@ export function GeneratePage() {
   return (
     <DropXLayout
       title="Generate"
-      description="Studio gambar dan video AI dengan provider yang dapat dikonfigurasi."
+      description="Studio gambar & video AI"
     >
       <div className="generate-page">
         <div className="generate-mode-tabs" role="tablist" aria-label="Jenis generasi">
@@ -637,15 +637,13 @@ export function GeneratePage() {
         {mode === 'image' ? <GenerateImagePanel initialPrompt={searchParams.get('prompt') || ''} /> : <>
         {workerMode === 'unavailable' && (
           <div className="generate-banner" role="status">
-            <span>
-              Katalog provider video belum dapat dimuat. Coba lagi saat API tersedia; riwayat yang sudah ada tetap dapat dilihat.
-            </span>
+            <span>Katalog video sedang tidak dapat dimuat.</span>
           </div>
         )}
 
         {workerMode === 'ready' && models.length === 0 && (
           <div className="generate-banner" role="status">
-            <span>Belum ada model video aktif dari provider yang dikonfigurasi. Freebeat video masih dalam tahap uji dan belum tersedia di sini.</span>
+            <span>Belum ada model video aktif.</span>
             {isAdmin && <Link className="generate-banner-link" to="/admin">Atur provider &amp; model</Link>}
           </div>
         )}
@@ -653,7 +651,7 @@ export function GeneratePage() {
         {selectedModel && selectedModel.priced === false && (
           <div className="generate-banner is-error" role="status">
             <span>
-              Tarif kredit untuk model video <strong>{selectedModel.name}</strong> belum diatur admin. Isi tarif di Kredit → Admin · Harga generasi sebelum membuat video.
+              Tarif kredit untuk <strong>{selectedModel.name}</strong> belum diatur admin.
             </span>
             {isAdmin && <Link className="generate-banner-link" to="/credits">Atur harga kredit</Link>}
           </div>
@@ -662,9 +660,9 @@ export function GeneratePage() {
         {selectedModel && Number.isSafeInteger(selectedModel.credits) && selectedModel.credits > 0 && balance !== null && balance < selectedModel.credits && (
           <div className="generate-banner is-error" role="status">
             <span>
-              Saldo kredit Anda ({balance} kredit) tidak cukup untuk model ini (butuh {selectedModel.credits} kredit).
+              Saldo kredit Anda ({balance} kredit) tidak cukup (butuh {selectedModel.credits} kredit).
             </span>
-            <Link className="generate-banner-link" to="/credits">Lihat saldo &amp; kredit</Link>
+            <Link className="generate-banner-link" to="/credits">Isi kredit</Link>
           </div>
         )}
 
@@ -685,10 +683,7 @@ export function GeneratePage() {
           <form className="generate-card" onSubmit={handleGenerate}>
             <div className="generate-card-head">
               <div>
-                <h2 className="generate-card-title">Komposer Generate Video</h2>
-                <p className="generate-card-sub">
-                  Pilih model, unggah referensi media opsional, atur rasio, resolusi, dan durasi.
-                </p>
+                <h2 className="generate-card-title">Generate Video</h2>
               </div>
               {selectedModel && (
                 <span className={`generate-pill ${selectedModel.priced === false ? 'is-warn' : 'is-accent'}`}>
@@ -706,7 +701,7 @@ export function GeneratePage() {
               <div className="generate-label-row">
                 <label className="generate-label" htmlFor="gen-model">Pilih Model</label>
                 <span className="generate-hint">
-                  {models.length} model tersedia{balance !== null ? ` · Saldo: ${balance} kredit` : ''}
+                  {models.length} model{balance !== null ? ` · Saldo: ${balance} kredit` : ''}
                 </span>
               </div>
               <select
@@ -725,14 +720,10 @@ export function GeneratePage() {
                 ))}
               </select>
 
-              {selectedModel && (
+              {selectedModel && (selectedModel.online === false || selectedModel.description) && (
                 <div className="generate-model-meta">
-                  <span className="generate-pill is-accent">{selectedModel.providerLabel || selectedModel.provider}</span>
-                  {selectedModel.supportsImage && <span className="generate-pill">Image-to-Video</span>}
-                  {selectedModel.supportsVideo && <span className="generate-pill">Video-to-Video</span>}
-                  {selectedModel.supportsAudio && <span className="generate-pill">Audio Native / Ref</span>}
-                  {selectedModel.online === false && <span className="generate-pill is-warn">Antrean Sedang Penuh</span>}
-                  {selectedModel.description && <span className="generate-hint">{selectedModel.description}</span>}
+                  {selectedModel.online === false && <span className="generate-pill is-warn">Antrean Penuh</span>}
+                  {selectedModel.description && <span className="generate-hint generate-model-desc">{selectedModel.description}</span>}
                 </div>
               )}
             </div>
@@ -752,27 +743,24 @@ export function GeneratePage() {
               const showRefVideos = !isFreebeatDance && (showWan3Tabs || aliMediaMode === 'reference_urls');
               const showRefAudios = !isFreebeatDance && showWan3Tabs;
               const isMediaRequired = isFreebeatDance || Boolean(alibabaSpec?.requiresFirstFrame || alibabaSpec?.requiresLastFrame || alibabaSpec?.requiresVideo || alibabaSpec?.requiresReference);
+              const hasAnyMediaInput = showSingleImage || showLastFrame || showSingleVideo || showSingleAudio || showRefSection;
+              if (!hasAnyMediaInput) return null;
               return (
             <div className="generate-field">
               <div className="generate-label-row">
-                <span className="generate-label">{isFreebeatDance ? 'Music-to-Dance: Lagu (Wajib) & Foto Karakter (Opsional)' : isMediaRequired ? 'Media Sumber / Referensi' : 'Media Referensi (Opsional)'}</span>
-                <span className="generate-hint">{isFreebeatDance ? 'Audio ≤25MB · Foto penari JPG/PNG ≤10MB' : 'Gambar ≤20MB · Video ≤100MB · Audio ≤25MB'}</span>
+                <span className="generate-label">{isFreebeatDance ? 'Music-to-Dance (Lagu & Foto Karakter)' : isMediaRequired ? 'Media Sumber' : 'Media Referensi (Opsional)'}</span>
+                <span className="generate-hint">{isFreebeatDance ? 'Audio ≤25MB · Foto ≤10MB' : 'Gambar ≤20MB · Video ≤100MB'}</span>
               </div>
-              <p className="generate-hint">File referensi diunggah ke penyimpanan publik dan dapat diakses melalui tautan; unggah hanya materi yang boleh dibagikan dengan provider.</p>
 
               {showWan3Tabs && (
-                <div className="generate-mode-tabs" role="tablist" aria-label="Mode Wan 3.0" style={{ marginBottom: 12 }}>
+                <div className="generate-mode-tabs is-compact" role="tablist" aria-label="Mode Wan 3.0">
                   <button type="button" role="tab" aria-selected={mediaMode === 'frame'} onClick={() => setMediaMode('frame')}>
-                    Mode Frame (First / Last Frame)
+                    Frame
                   </button>
                   <button type="button" role="tab" aria-selected={mediaMode === 'reference'} onClick={() => setMediaMode('reference')}>
-                    Mode Referensi (maks 10 foto · 5 video · 5 audio)
+                    Referensi ({referenceTotal}/{maxRefTotal})
                   </button>
                 </div>
-              )}
-
-              {isAlibaba && aliMediaMode === 'none' && !showSingleAudio && (
-                <p className="generate-hint" style={{ marginTop: 0 }}>Model Text-to-Video: cukup masukkan prompt teks di bawah.</p>
               )}
 
               {(showSingleImage || showLastFrame || showSingleVideo || showSingleAudio) && (
@@ -1149,19 +1137,16 @@ export function GeneratePage() {
 
             {/* 5. Audio Bawaan + Tombol Generate */}
             <div className="generate-actions">
-              <label className="generate-audio-toggle">
-                <input
-                  type="checkbox"
-                  checked={generateAudio}
-                  disabled={!selectedModel?.supportsAudio}
-                  onChange={(e) => setGenerateAudio(e.target.checked)}
-                />
-                <span>
-                  {selectedModel?.supportsAudio
-                    ? 'Sertakan Audio Bawaan (Native Audio)'
-                    : 'Model ini tidak menghasilkan audio otomatis'}
-                </span>
-              </label>
+              {selectedModel?.supportsAudio && (
+                <label className="generate-audio-toggle">
+                  <input
+                    type="checkbox"
+                    checked={generateAudio}
+                    onChange={(e) => setGenerateAudio(e.target.checked)}
+                  />
+                  <span>Audio bawaan</span>
+                </label>
+              )}
 
               <button
                 type="submit"
@@ -1175,6 +1160,7 @@ export function GeneratePage() {
                   || (Number.isSafeInteger(selectedModel?.credits) && selectedModel.credits > 0 && balance !== null && balance < selectedModel.credits)
                 }
               >
+                {(submitting || uploadingSlot) && <span className="generate-btn-spinner" aria-hidden="true" />}
                 {submitting ? 'Memproses Generate...' : uploadingSlot ? 'Mengunggah Media...' : 'Generate'}
               </button>
             </div>
@@ -1189,7 +1175,7 @@ export function GeneratePage() {
                   <p className="generate-card-sub">
                     {activeGeneration
                       ? `${activeGeneration.model} · ${activeGeneration.aspect_ratio} · ${activeGeneration.resolution} · ${activeGeneration.duration}s`
-                      : 'Hasil generasi video akan muncul langsung di sini'}
+                      : 'Video hasil generasi akan tampil di sini'}
                   </p>
                 </div>
                 {activeGeneration && (
@@ -1211,21 +1197,34 @@ export function GeneratePage() {
                 {!activeGeneration && (
                   <div className="generate-empty-stage">
                     <strong>{selectedModel ? 'Siap Membuat Video' : 'Belum ada model video aktif'}</strong>
-                    <span>{selectedModel ? 'Pilih model, atur parameter, lalu mulai generasi.' : 'Video yang sudah dibuat tetap tersedia di History.'}</span>
+                    <span>{selectedModel ? 'Atur parameter lalu tekan Generate.' : 'Riwayat tetap tersedia di bawah.'}</span>
                   </div>
                 )}
 
                 {activeGeneration && (activeGeneration.status === 'queued' || activeGeneration.status === 'in_progress') && (
-                  <div className="generate-empty-stage">
-                    <strong>{STATUS_LABELS[activeGeneration.status]}</strong>
+                  <div className="generate-loader-stage" role="status" aria-live="polite">
+                    <div className="generate-aurora" aria-hidden="true" />
+                    <div className="generate-orbit" aria-hidden="true">
+                      <span className="generate-orbit-ring" />
+                      <span className="generate-orbit-ring is-inner" />
+                      <span className="generate-eq">
+                        <i /><i /><i /><i /><i />
+                      </span>
+                    </div>
+                    <span className="generate-loader-badge">
+                      <span className="generate-pulse-dot" aria-hidden="true" />
+                      {STATUS_LABELS[activeGeneration.status]}
+                    </span>
                     <div className="generate-progress-wrap">
                       <div className="generate-progress-bar">
                         <div
-                          className="generate-progress-fill"
-                          style={{ width: `${Math.max(8, activeGeneration.progress || 15)}%` }}
+                          className="generate-progress-fill is-animated"
+                          style={{ width: `${Math.max(12, activeGeneration.progress || 15)}%` }}
                         />
                       </div>
-                      <span>{activeGeneration.progress || 15}% · Memantau progres otomatis...</span>
+                      <span className="generate-loader-sub">
+                        {activeGeneration.progress || 15}% · Merender frame &amp; memantau progres...
+                      </span>
                     </div>
                   </div>
                 )}

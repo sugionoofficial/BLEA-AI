@@ -301,12 +301,15 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
         </div>}
       </div>}
       <label className="generate-field">
-        <span className="generate-label">Prompt gambar</span>
+        <div className="generate-label-row">
+          <span className="generate-label">Prompt gambar</span>
+          <span className="generate-hint">{prompt.trim().length}/{maxPromptChars}</span>
+        </div>
         <textarea className="generate-textarea" rows={4} maxLength={maxPromptChars} value={prompt} placeholder="Contoh: potret studio seekor kucing hitam, cahaya lembut, latar abu-abu" onChange={(event) => { setPrompt(event.target.value); setNotice(''); }} />
       </label>
-      <p className="generate-hint">{prompt.trim().length}/{maxPromptChars} karakter · biaya {price !== null ? price : '—'} kredit dipotong saat pengiriman berhasil.</p>
-      <div className="generate-actions">
+      <div className="generate-actions" style={{ marginTop: 10 }}>
         <button className="generate-submit-btn" type="submit" disabled={busy || uploading || !ready || insufficient || missingRequiredImage || !prompt.trim()}>
+          {(busy || uploading) && <span className="generate-btn-spinner" aria-hidden="true" />}
           {busy ? 'Mengirim…' : `Buat gambar${price !== null ? ` (${price} kredit)` : ''}`}
         </button>
         <button className="generate-secondary-btn" type="button" disabled={busy || loading} onClick={load}>Perbarui</button>
@@ -320,10 +323,23 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
           const allUrls = Array.isArray(item.image_urls) && item.image_urls.length > 0
             ? item.image_urls
             : (item.image_url ? [item.image_url] : []);
+          const isLoadingItem = item.status === 'queued' || item.status === 'processing' || item.status === 'submitted';
           return <article className="history-card" key={item.id}>
-            {item.status === 'completed' && allUrls[0]
-              ? <img src={allUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
-              : <div className="history-preview">{STATUS_LABEL[item.status] || item.status}</div>}
+            {item.status === 'completed' && allUrls[0] ? (
+              <img src={allUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
+            ) : isLoadingItem ? (
+              <div className="history-preview generate-img-loader" role="status" aria-live="polite">
+                <div className="generate-aurora is-subtle" aria-hidden="true" />
+                <span className="generate-img-orbit" aria-hidden="true" />
+                <span className="generate-loader-badge">
+                  <span className="generate-pulse-dot" aria-hidden="true" />
+                  {STATUS_LABEL[item.status] || 'Memproses…'}
+                </span>
+                <span className="generate-img-loader-sub">Merender gambar AI…</span>
+              </div>
+            ) : (
+              <div className="history-preview">{STATUS_LABEL[item.status] || item.status}</div>
+            )}
             <div className="history-card-body">
               <span className={`history-status status-${item.status}`}>{STATUS_LABEL[item.status] || item.status}</span>
               <p className="history-prompt">{item.prompt || 'Tanpa prompt'}</p>

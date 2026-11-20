@@ -896,8 +896,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px;
+  gap: 10px;
+  padding: 13px 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -905,13 +905,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
 }
 
 .dropx-card-title .icon {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 
 .dropx-card-link {
@@ -928,11 +928,15 @@
 }
 
 .dropx-card-body {
-  padding: 20px;
+  padding: 16px;
 }
 
 .dropx-card-pad {
-  padding: 16px;
+  padding: 14px;
+}
+
+.dropx-chart-box {
+  height: 230px;
 }
 
 /* ---------- Stat cards ---------- */
@@ -940,20 +944,26 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 20px;
+  gap: 6px;
+  padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--card);
   box-shadow: var(--shadow-card);
   overflow: hidden;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.dropx-stat:hover {
+  border-color: rgb(99 102 241 / 0.28);
+  box-shadow: var(--shadow-dropdown);
 }
 
 .dropx-stat::before {
   content: "";
   position: absolute;
   inset: 0 0 auto 0;
-  height: 3px;
+  height: 2.5px;
   background: var(--stat-accent, linear-gradient(135deg, var(--primary) 0%, var(--purple) 100%));
 }
 
@@ -967,9 +977,9 @@
 .dropx-stat-icon {
   display: inline-grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-lg);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
   background: rgb(99 102 241 / 0.1);
   color: var(--primary);
 }
@@ -979,29 +989,31 @@
 }
 
 .dropx-stat-icon .icon {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
 }
 
 .dropx-stat-title {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   color: var(--muted-foreground);
 }
 
 .dropx-stat-value {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
+  line-height: 1.2;
 }
 
 .dropx-stat-foot {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
   color: var(--muted-foreground);
 }
 
@@ -1009,9 +1021,9 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: var(--radius-md);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1037,12 +1049,13 @@
 .dropx-quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 @media (min-width: 768px) {
   .dropx-quick-grid {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+    gap: 12px;
   }
 }
 
@@ -1050,33 +1063,40 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 20px;
+  gap: 6px;
+  padding: 13px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--card);
   box-shadow: var(--shadow-card);
   text-align: center;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
 
 a.dropx-quick-card:hover {
-  border-color: rgb(99 102 241 / 0.2);
+  transform: translateY(-1px);
+  border-color: rgb(99 102 241 / 0.25);
   box-shadow: var(--shadow-dropdown);
 }
 
 .dropx-quick-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--quick-color, var(--primary)) 12%, transparent);
   color: var(--quick-color, var(--primary));
   transition: transform 0.15s ease;
 }
 
 a.dropx-quick-card:hover .dropx-quick-icon {
-  transform: scale(1.1);
+  transform: scale(1.06);
 }
 
 .dropx-quick-card p {
   margin: 0;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
@@ -1397,15 +1417,18 @@ a.dropx-quick-card:hover .dropx-quick-icon {
 }
 
 .dx-space-y-6 > * + * {
-  margin-top: 24px;
+  margin-top: 16px;
 }
 
 @media (max-width: 1023px) {
   .dx-grid-2,
   .dx-grid-3,
-  .dx-grid-4,
   .dx-grid-7 {
     grid-template-columns: 1fr;
+  }
+
+  .dx-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dx-col-span-1,

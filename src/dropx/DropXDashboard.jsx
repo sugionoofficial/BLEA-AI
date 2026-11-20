@@ -360,9 +360,11 @@ export function DropXDashboard() {
           const Icon = link.icon;
           return (
             <Link key={link.title} to={link.href} className="dropx-quick-card" style={{ '--quick-color': link.color }}>
-              <span className="dropx-quick-icon"><Icon size={20} className="icon" /></span>
-              <p>{link.title}</p>
-              <small>{link.description}</small>
+              <span className="dropx-quick-icon"><Icon size={17} className="icon" /></span>
+              <span className="dropx-quick-copy">
+                <p>{link.title}</p>
+                <small>{link.description}</small>
+              </span>
             </Link>
           );
         })}
@@ -381,7 +383,7 @@ export function DropXDashboard() {
             </Link>
           </div>
           <div className="dropx-card-body">
-            <div style={{ height: 280 }}>
+            <div className="dropx-chart-box">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={weekly}>
                   <defs>
@@ -413,7 +415,7 @@ export function DropXDashboard() {
             </Link>
           </div>
           <div className="dropx-card-body">
-            <div style={{ height: 280 }}>
+            <div className="dropx-chart-box">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={monthly}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />

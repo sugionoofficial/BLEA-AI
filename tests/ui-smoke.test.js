@@ -345,3 +345,30 @@ test('Generate page offers both modes without defaulting to UnoRouter', async ()
   assert.doesNotMatch(imageAdmin, /Siapkan quote/);
   assert.doesNotMatch(imageAdmin, /UnoRouter/i);
 });
+
+test('Mobile polish and animated loading stages are wired across Dashboard, Chat AI, and Generate', async () => {
+  const fs = await import('node:fs');
+  const dropxCss = fs.readFileSync(new URL('../src/dropx/dropx.css', import.meta.url), 'utf8');
+  const mobileCss = fs.readFileSync(new URL('../src/mobile.css', import.meta.url), 'utf8');
+  const showcaseCss = fs.readFileSync(new URL('../src/auth/showcase.css', import.meta.url), 'utf8');
+  const studioCss = fs.readFileSync(new URL('../src/auth/studio.css', import.meta.url), 'utf8');
+  const generateCss = fs.readFileSync(new URL('../src/auth/generate.css', import.meta.url), 'utf8');
+  const studioSrc = fs.readFileSync(new URL('../src/auth/AIStudio.jsx', import.meta.url), 'utf8');
+  const generateSrc = fs.readFileSync(new URL('../src/auth/GeneratePage.jsx', import.meta.url), 'utf8');
+  const imageSrc = fs.readFileSync(new URL('../src/auth/GenerateImagePanel.jsx', import.meta.url), 'utf8');
+
+  assert.match(dropxCss, /\.dx-grid-4\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(mobileCss, /\.dropx-quick-card\s*\{[^}]*flex-direction:\s*row/);
+  assert.match(mobileCss, /\.showcase-prompt\s*\{[^}]*max-height:/);
+  assert.match(showcaseCss, /\.showcase-card-actions/);
+  assert.match(studioCss, /\.studio-shell\.is-history-open\s+\.studio-sidebar/);
+  assert.match(studioCss, /\.studio-composer-note\s*\{\s*display:\s*none;/);
+  assert.match(studioSrc, /studio-history-toggle/);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-params-grid\s*\{\s*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-loader-stage/);
+  assert.match(generateCss, /\.dropx-shell\s+\.history-preview\.generate-img-loader/);
+  assert.match(generateCss, /@keyframes gen-spin/);
+  assert.match(generateSrc, /generate-loader-stage/);
+  assert.match(generateSrc, /generate-btn-spinner/);
+  assert.match(imageSrc, /generate-img-loader/);
+});
