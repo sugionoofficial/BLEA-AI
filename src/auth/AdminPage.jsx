@@ -1411,9 +1411,9 @@ export function AdminPage() {
           <section className="admin-delete-modal admin-user-modal" role="dialog" aria-modal="true" aria-labelledby="admin-user-title">
             <button type="button" className="admin-modal-close" onClick={() => setUserAction(null)} aria-label="Tutup"><X size={16} /></button>
             <h2 id="admin-user-title">Kelola pengguna</h2>
-            <p><b>{userAction.full_name || 'Nama belum diatur'}</b><br />{userAction.email || '—'} · <code>{userAction.id}</code><br />Saldo saat ini: <b>{wallets[userAction.id] ?? 0} kredit</b> · status <b>{USER_STATUS_LABEL[userAction.status || 'active']}</b></p>
+            <p className="admin-user-meta"><b>{userAction.full_name || 'Nama belum diatur'}</b><br />{userAction.email || '—'} · Saldo <b>{wallets[userAction.id] ?? 0} kredit</b> · <b>{USER_STATUS_LABEL[userAction.status || 'active']}</b></p>
 
-            <label className="admin-field"><span>Password aksi admin (wajib untuk setiap perubahan)</span>
+            <label className="admin-field admin-field-tight"><span>Password aksi admin (wajib)</span>
               <input type="text" className="admin-secret-input" value={actionPassword} autoComplete="off" inputMode="text" spellCheck={false} onChange={(event) => { setActionPassword(event.target.value); setActionError(''); }} placeholder="Password yang Anda setel di Supabase" />
             </label>
             {actionError && <div className="admin-error" role="alert"><span>{actionError}</span></div>}
@@ -1421,12 +1421,14 @@ export function AdminPage() {
 
             <fieldset disabled={Boolean(actionBusy)}>
               <legend>Saldo kredit</legend>
-              <label className="admin-field"><span>Jumlah kredit</span>
-                <input type="number" min={1} max={1000000} step={1} value={actionDelta} onChange={(event) => setActionDelta(event.target.value)} />
-              </label>
-              <label className="admin-field"><span>Catatan (masuk ke ledger pengguna)</span>
-                <input type="text" maxLength={200} value={actionDescription} onChange={(event) => setActionDescription(event.target.value)} placeholder="Contoh: kompensasi gangguan layanan" />
-              </label>
+              <div className="admin-user-row is-narrow-first">
+                <label className="admin-field admin-field-tight"><span>Jumlah kredit</span>
+                  <input type="number" min={1} max={1000000} step={1} value={actionDelta} onChange={(event) => setActionDelta(event.target.value)} />
+                </label>
+                <label className="admin-field admin-field-tight"><span>Catatan (masuk ke ledger)</span>
+                  <input type="text" maxLength={200} value={actionDescription} onChange={(event) => setActionDescription(event.target.value)} placeholder="Contoh: kompensasi gangguan layanan" />
+                </label>
+              </div>
               <div className="admin-modal-actions">
                 <button type="button" className="admin-refresh-button" disabled={Boolean(actionBusy) || !(Number(actionDelta) > 0)} onClick={() => runUserAction('credits', { delta: Number(actionDelta), description: actionDescription })}>{actionBusy === 'credits_add' ? 'Memproses…' : 'Tambah saldo'}</button>
                 <button type="button" className="admin-cancel-button" disabled={Boolean(actionBusy) || !(Number(actionDelta) > 0)} onClick={() => runUserAction('credits', { delta: -Number(actionDelta), description: actionDescription })}>Kurangi saldo</button>
@@ -1435,31 +1437,33 @@ export function AdminPage() {
 
             <fieldset disabled={Boolean(actionBusy)}>
               <legend>Status akun</legend>
-              <label className="admin-field"><span>Status</span>
-                <select value={actionStatus} onChange={(event) => setActionStatus(event.target.value)}>
-                  <option value="active">Aktif</option>
-                  <option value="suspended">Suspended (sementara)</option>
-                  <option value="banned">Banned (permanen)</option>
-                </select>
-              </label>
-              <label className="admin-field"><span>Alasan (opsional, terlihat di jejak audit)</span>
-                <input type="text" maxLength={300} value={actionReason} onChange={(event) => setActionReason(event.target.value)} />
-              </label>
+              <div className="admin-user-row is-narrow-first">
+                <label className="admin-field admin-field-tight"><span>Status</span>
+                  <select value={actionStatus} onChange={(event) => setActionStatus(event.target.value)}>
+                    <option value="active">Aktif</option>
+                    <option value="suspended">Suspended (sementara)</option>
+                    <option value="banned">Banned (permanen)</option>
+                  </select>
+                </label>
+                <label className="admin-field admin-field-tight"><span>Alasan (opsional, jejak audit)</span>
+                  <input type="text" maxLength={300} value={actionReason} onChange={(event) => setActionReason(event.target.value)} />
+                </label>
+              </div>
               <div className="admin-modal-actions">
                 <button type="button" className="admin-refresh-button" disabled={Boolean(actionBusy)} onClick={() => runUserAction('status', { status: actionStatus, reason: actionReason || null })}>Simpan status</button>
               </div>
-              <p className="admin-hint">Suspended/banned menutup seluruh jalur API untuk user itu (chat, gambar, video, riwayat) dan menampilkan layar penahan begitu dia masuk — dia tidak bisa memakai fitur apa pun sampai statusnya Anda pulihkan. Pemulihan berlaku maksimal 30 detik (cache gerbang).</p>
+              <p className="admin-hint is-compact">Suspended/banned menutup seluruh akses API (chat, gambar, video, riwayat). Berlaku maks. 30 detik (cache gerbang).</p>
             </fieldset>
 
             <fieldset disabled={Boolean(actionBusy)} className="admin-danger-zone">
               <legend>Hapus akun permanen</legend>
-              <p className="admin-hint">Menghapus akun Supabase beserta profil, dompet kredit, ledger, riwayat gambar/video, dan percakapan. Tidak dapat dibatalkan.</p>
-              <label className="admin-field"><span>Ketik email pengguna untuk konfirmasi: <b>{userAction.email || '—'}</b></span>
-                <input type="email" value={actionConfirmEmail} onChange={(event) => setActionConfirmEmail(event.target.value)} autoComplete="off" />
-              </label>
-              <div className="admin-modal-actions">
-                <button type="button" className="admin-confirm-delete" disabled={Boolean(actionBusy) || actionConfirmEmail.trim().toLowerCase() !== String(userAction.email || '').trim().toLowerCase()} onClick={() => runUserAction('delete', { confirm_email: actionConfirmEmail.trim() })}>{actionBusy === 'delete' ? 'Menghapus…' : 'Hapus akun ini'}</button>
+              <div className="admin-user-row admin-user-row-danger">
+                <label className="admin-field admin-field-tight"><span>Ketik email konfirmasi: <b>{userAction.email || '—'}</b></span>
+                  <input type="email" value={actionConfirmEmail} onChange={(event) => setActionConfirmEmail(event.target.value)} autoComplete="off" />
+                </label>
+                <button type="button" className="admin-confirm-delete" disabled={Boolean(actionBusy) || actionConfirmEmail.trim().toLowerCase() !== String(userAction.email || '').trim().toLowerCase()} onClick={() => runUserAction('delete', { confirm_email: actionConfirmEmail.trim() })}>{actionBusy === 'delete' ? 'Menghapus…' : 'Hapus akun'}</button>
               </div>
+              <p className="admin-hint is-compact">Menghapus akun Supabase beserta profil, dompet, ledger, riwayat, dan percakapan. Tidak dapat dibatalkan.</p>
             </fieldset>
           </section>
         </div>
