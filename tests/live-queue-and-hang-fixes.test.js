@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import worker, {
+import worker from '../src/worker.js';
+import {
   diagnosePendingGeneration,
   formatLiveQueueItem,
   patchImageGeneration,
-} from '../src/worker.js';
+} from '../src/lib/liveQueue.js';
 import { consumerDanceStatus } from '../src/lib/freebeatMcp.js';
 import { formatElapsedHuman, formatElapsedRuntime, getElapsedMs } from '../src/lib/formatRuntime.js';
 
