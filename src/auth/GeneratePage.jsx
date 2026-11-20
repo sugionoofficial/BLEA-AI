@@ -41,6 +41,21 @@ const PROMPT_CHIPS = [
   },
 ];
 
+const DANCE_PROMPT_CHIPS = [
+  {
+    label: 'Rooftop Neon',
+    text: 'K-pop synchronized dance choreography on a glowing neon rooftop stage at night, dynamic camera tracking.',
+  },
+  {
+    label: 'Studio Pop',
+    text: 'Energetic pop dance performance in a clean minimalist LED studio with warm cinematic rim lights.',
+  },
+  {
+    label: 'Street Urban',
+    text: 'High-energy hip-hop street dance choreography under city bridge lights with smooth handheld camera motion.',
+  },
+];
+
 const STATUS_LABELS = {
   queued: 'Dalam Antrean',
   in_progress: 'Sedang Diproses',
@@ -51,11 +66,11 @@ const STATUS_LABELS = {
 };
 
 const MAX_BYTES = {
-  // Batas resmi Wan 3.0 (Alibaba Model Studio): gambar ≤20MB, video ≤100MB,
-  // audio ≤15MB. Dipakai sebagai batas atas untuk semua provider video.
+  // Batas resmi Wan 3.0 & Freebeat Dance: gambar ≤20MB, video ≤100MB,
+  // audio ≤25MB (Freebeat MP3/WAV/M4A hingga 25MB).
   image: 20 * 1024 * 1024,
   video: 100 * 1024 * 1024,
-  audio: 15 * 1024 * 1024,
+  audio: 25 * 1024 * 1024,
 };
 
 const MAX_REFERENCES = { image: 10, video: 5, audio: 5 };
@@ -101,6 +116,7 @@ export function GeneratePage() {
   const [imageLastMedia, setImageLastMedia] = useState(null); // last frame (Wan 3.0)
   const [videoMedia, setVideoMedia] = useState(null);
   const [audioMedia, setAudioMedia] = useState(null);
+  const [audioUrlInput, setAudioUrlInput] = useState('');
   // Wan 3.0 multi-referensi (mode referensi): maks 10 foto, 5 video, 5 audio.
   const [refImages, setRefImages] = useState([]);
   const [refVideos, setRefVideos] = useState([]);
@@ -128,15 +144,16 @@ export function GeneratePage() {
     return models.find((m) => modelKey(m) === selectedModelKey) || models[0] || null;
   }, [models, selectedModelKey]);
   const isAlibaba = selectedModel?.provider === 'alibaba';
+  const isFreebeatDance = selectedModel?.provider === 'freebeat';
   const alibabaSpec = useMemo(
     () => (isAlibaba ? getAlibabaVideoModelSpec(selectedModel?.id) : null),
     [isAlibaba, selectedModel?.id],
   );
   const aliMediaMode = alibabaSpec?.mediaMode || (isAlibaba ? 'wan3' : null);
-  const maxRefImages = alibabaSpec?.maxRefImages ?? MAX_REFERENCES.image;
-  const maxRefVideos = alibabaSpec?.maxRefVideos ?? MAX_REFERENCES.video;
-  const maxRefAudios = alibabaSpec?.maxRefAudios ?? MAX_REFERENCES.audio;
-  const maxRefTotal = alibabaSpec?.maxRefTotal ?? MAX_TOTAL_REFERENCES;
+  const maxRefImages = isFreebeatDance ? 5 : (alibabaSpec?.maxRefImages ?? MAX_REFERENCES.image);
+  const maxRefVideos = isFreebeatDance ? 0 : (alibabaSpec?.maxRefVideos ?? MAX_REFERENCES.video);
+  const maxRefAudios = isFreebeatDance ? 0 : (alibabaSpec?.maxRefAudios ?? MAX_REFERENCES.audio);
+  const maxRefTotal = isFreebeatDance ? 5 : (alibabaSpec?.maxRefTotal ?? MAX_TOTAL_REFERENCES);
   const referenceTotal = refImages.length + refVideos.length + refAudios.length;
 
   const ratioOptions = useMemo(
@@ -395,13 +412,22 @@ export function GeneratePage() {
       }
     }
 
+    const effectiveAudioUrl = audioMedia?.url || (isFreebeatDance ? audioUrlInput.trim() : '');
+    if (isFreebeatDance && !effectiveAudioUrl) {
+      setBanner({
+        type: 'error',
+        text: 'Freebeat Dance Video wajib menyertakan file audio/lagu (MP3/WAV/M4A) atau tautan musik HTTPS publik.',
+      });
+      return;
+    }
+
     const frameEmpty = !imageMedia?.url && !imageLastMedia?.url;
     const referenceEmpty = referenceTotal === 0;
     if (alibabaFrame && imageLastMedia?.url && !imageMedia?.url) {
       setBanner({ type: 'error', text: 'Last Frame membutuhkan First Frame. Unggah gambar pertama dulu.' });
       return;
     }
-    const hasMedia = alibabaFrame ? !frameEmpty : alibabaReference ? !referenceEmpty : Boolean(imageMedia?.url || videoMedia?.url || audioMedia?.url || refImages.length || refVideos.length);
+    const hasMedia = alibabaFrame ? !frameEmpty : alibabaReference ? !referenceEmpty : Boolean(imageMedia?.url || videoMedia?.url || effectiveAudioUrl || refImages.length || refVideos.length);
     if (!cleanPrompt && !hasMedia) {
       setBanner({
         type: 'error',
@@ -422,7 +448,14 @@ export function GeneratePage() {
     setSubmitting(true);
     try {
       let referencePayload;
-      if (!isAlibaba) {
+      if (isFreebeatDance) {
+        referencePayload = {
+          image_url: '',
+          video_url: '',
+          audio_url: effectiveAudioUrl,
+          reference_images: refImages.map((m) => m.url),
+        };
+      } else if (!isAlibaba) {
         referencePayload = {
           image_url: imageMedia?.url || '',
           video_url: videoMedia?.url || '',
@@ -544,14 +577,17 @@ export function GeneratePage() {
     }
     if (item.duration) setDuration(Number(item.duration));
     setGenerateAudio(item.generate_audio !== false);
-    if (item.image_url) setImageMedia({ url: item.image_url, name: 'First Frame', size: 0, localPreview: item.image_url });
+    if (item.image_url && item.provider !== 'freebeat') setImageMedia({ url: item.image_url, name: 'First Frame', size: 0, localPreview: item.image_url });
     if (item.image_last_url || item.metadata?.image_last_url) setImageLastMedia({ url: item.image_last_url || item.metadata.image_last_url, name: 'Last Frame', size: 0, localPreview: item.image_last_url || item.metadata.image_last_url });
     if (item.video_url) setVideoMedia({ url: item.video_url, name: 'Referensi Video', size: 0, localPreview: item.video_url });
     if (item.audio_url) setAudioMedia({ url: item.audio_url, name: 'Referensi Audio', size: 0, localPreview: item.audio_url });
     const meta = item.metadata || {};
-    if (Array.isArray(meta.reference_images) && meta.reference_images.length) {
+    const reuseImages = Array.isArray(meta.reference_images) && meta.reference_images.length
+      ? meta.reference_images
+      : (Array.isArray(meta.image_urls) ? meta.image_urls : []);
+    if (reuseImages.length) {
       setMediaMode('reference');
-      setRefImages(meta.reference_images.map((url, i) => ({ url, name: `Referensi Gambar ${i + 1}`, size: 0, localPreview: url })));
+      setRefImages(reuseImages.map((url, i) => ({ url, name: `Referensi Gambar ${i + 1}`, size: 0, localPreview: url })));
     }
     if (Array.isArray(meta.reference_videos) && meta.reference_videos.length) {
       setMediaMode('reference');
@@ -704,22 +740,23 @@ export function GeneratePage() {
             {/* 2. Media referensi */}
             {(() => {
               const showWan3Tabs = isAlibaba && aliMediaMode === 'wan3';
-              const showSingleImage = !isAlibaba
+              const showSingleImage = (!isAlibaba && !isFreebeatDance)
                 || (showWan3Tabs && mediaMode === 'frame')
                 || ['first_frame', 'keyframes', 'animate'].includes(aliMediaMode);
               const showLastFrame = (showWan3Tabs && mediaMode === 'frame') || aliMediaMode === 'keyframes';
-              const showSingleVideo = !isAlibaba || ['animate', 'video_edit', 'vace'].includes(aliMediaMode);
-              const showSingleAudio = !isAlibaba || (['none', 'first_frame'].includes(aliMediaMode) && Boolean(alibabaSpec?.supportsAudioInput));
-              const showRefSection = (showWan3Tabs && mediaMode === 'reference')
+              const showSingleVideo = (!isAlibaba && !isFreebeatDance) || ['animate', 'video_edit', 'vace'].includes(aliMediaMode);
+              const showSingleAudio = isFreebeatDance || !isAlibaba || (['none', 'first_frame'].includes(aliMediaMode) && Boolean(alibabaSpec?.supportsAudioInput));
+              const showRefSection = isFreebeatDance
+                || (showWan3Tabs && mediaMode === 'reference')
                 || ['reference_urls', 'reference_images', 'video_edit', 'vace'].includes(aliMediaMode);
-              const showRefVideos = showWan3Tabs || aliMediaMode === 'reference_urls';
-              const showRefAudios = showWan3Tabs;
-              const isMediaRequired = Boolean(alibabaSpec?.requiresFirstFrame || alibabaSpec?.requiresLastFrame || alibabaSpec?.requiresVideo || alibabaSpec?.requiresReference);
+              const showRefVideos = !isFreebeatDance && (showWan3Tabs || aliMediaMode === 'reference_urls');
+              const showRefAudios = !isFreebeatDance && showWan3Tabs;
+              const isMediaRequired = isFreebeatDance || Boolean(alibabaSpec?.requiresFirstFrame || alibabaSpec?.requiresLastFrame || alibabaSpec?.requiresVideo || alibabaSpec?.requiresReference);
               return (
             <div className="generate-field">
               <div className="generate-label-row">
-                <span className="generate-label">{isMediaRequired ? 'Media Sumber / Referensi' : 'Media Referensi (Opsional)'}</span>
-                <span className="generate-hint">Gambar ≤20MB · Video ≤100MB · Audio ≤15MB</span>
+                <span className="generate-label">{isFreebeatDance ? 'Lagu (Wajib) & Foto Penari (Opsional)' : isMediaRequired ? 'Media Sumber / Referensi' : 'Media Referensi (Opsional)'}</span>
+                <span className="generate-hint">Gambar ≤20MB · Video ≤100MB · Audio ≤25MB</span>
               </div>
               <p className="generate-hint">File referensi diunggah ke penyimpanan publik dan dapat diakses melalui tautan; unggah hanya materi yang boleh dibagikan dengan provider.</p>
 
@@ -885,7 +922,7 @@ export function GeneratePage() {
                 {showSingleAudio && (
                 <div className={`generate-upload-box ${audioMedia ? 'has-file' : ''}`}>
                   <div className="generate-upload-top">
-                    <span className="generate-upload-title">{!isAlibaba ? 'Upload Audio' : 'Audio Referensi (Opsional)'}</span>
+                    <span className="generate-upload-title">{isFreebeatDance ? 'Lagu / Audio (Wajib)' : !isAlibaba ? 'Upload Audio' : 'Audio Referensi (Opsional)'}</span>
                     {audioMedia && (
                       <button type="button" className="generate-clear-btn" onClick={() => clearMedia('audio')}>
                         Hapus
@@ -895,7 +932,7 @@ export function GeneratePage() {
                   <input
                     ref={audioInputRef}
                     type="file"
-                    accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac"
+                    accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/ogg,audio/mp4,audio/x-m4a,audio/aac,audio/flac,audio/webm"
                     aria-label="Upload Audio"
                     className="generate-upload-input"
                     onChange={(e) => handleUploadMedia('audio', e.target.files?.[0])}
@@ -914,7 +951,7 @@ export function GeneratePage() {
                       onClick={() => audioInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'audio' ? 'Mengunggah...' : '+ Pilih Audio'}</strong>
-                      <span>MP3, WAV, M4A · maks 15MB</span>
+                      <span>MP3, WAV, M4A · maks 25MB</span>
                     </button>
                   )}
                   <div className="generate-upload-footer">
@@ -923,6 +960,17 @@ export function GeneratePage() {
                     </span>
                     {audioMedia?.size ? <span>{formatBytes(audioMedia.size)}</span> : null}
                   </div>
+                  {isFreebeatDance && !audioMedia && (
+                    <input
+                      type="url"
+                      aria-label="URL Lagu HTTPS"
+                      className="generate-select"
+                      style={{ marginTop: 8 }}
+                      value={audioUrlInput}
+                      onChange={(e) => setAudioUrlInput(e.target.value)}
+                      placeholder="Atau tempel URL HTTPS lagu / Suno / YouTube..."
+                    />
+                  )}
                 </div>
                 )}
               </div>
@@ -932,7 +980,9 @@ export function GeneratePage() {
               {showRefSection && (
                 <div className="generate-ref-sections">
                   <p className="generate-hint" style={{ marginTop: 4 }}>
-                    {aliMediaMode === 'reference_images'
+                    {isFreebeatDance
+                      ? `Opsional 0–${maxRefImages} foto penari. Freebeat Dance Video berjalan di resolusi 720p (durasi lagu ~15 detik awal, proses sutradara AI umumnya 15–60 menit).`
+                      : aliMediaMode === 'reference_images'
                       ? `Wajib 1–${maxRefImages} foto referensi (rujuk di prompt: [Image 1], [Image 2], ...).`
                       : aliMediaMode === 'reference_urls'
                         ? `Wajib 1–${maxRefTotal} media referensi (maks ${maxRefImages} foto atau ${maxRefVideos} video; rujuk di prompt: character1, character2).`
@@ -946,7 +996,7 @@ export function GeneratePage() {
                   {maxRefImages > 0 && (
                   <div className="generate-ref-row">
                     <div className="generate-ref-row-head">
-                      <span className="generate-upload-title">Foto Referensi ({refImages.length}/{maxRefImages})</span>
+                      <span className="generate-upload-title">{isFreebeatDance ? `Foto Penari (${refImages.length}/${maxRefImages})` : `Foto Referensi (${refImages.length}/${maxRefImages})`}</span>
                       <input ref={refImageInputRef} type="file" multiple accept="image/jpeg,image/png,image/webp,image/bmp" aria-label="Foto Referensi" className="generate-upload-input" onChange={(e) => { handleUploadReference('image', e.target.files); e.target.value = ''; }} />
                       <button type="button" className="generate-clear-btn" disabled={!selectedModel || Boolean(uploadingSlot) || refImages.length >= maxRefImages} onClick={() => refImageInputRef.current?.click()}>
                         {uploadingSlot === 'ref-image' ? 'Mengunggah...' : '+ Tambah'}
@@ -1028,10 +1078,12 @@ export function GeneratePage() {
                 className="generate-textarea"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Deskripsikan adegan video secara detail: subjek, gerakan kamera, pencahayaan, atmosfer, dan efek suara yang diinginkan..."
+                placeholder={isFreebeatDance
+                  ? 'Opsional: arahkan gaya koreografi, suasana panggung, kostum, atau gerakan kamera (kosongkan untuk mode otomatis penuh)...'
+                  : 'Deskripsikan adegan video secara detail: subjek, gerakan kamera, pencahayaan, atmosfer, dan efek suara yang diinginkan...'}
               />
               <div className="generate-chips">
-                {PROMPT_CHIPS.map((chip) => (
+                {(isFreebeatDance ? DANCE_PROMPT_CHIPS : PROMPT_CHIPS).map((chip) => (
                   <button
                     key={chip.label}
                     type="button"
