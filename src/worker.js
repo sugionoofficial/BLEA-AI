@@ -1373,6 +1373,13 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
   const imageLastUrl = String(payload.image_last_url || '').trim();
   const videoUrl = String(payload.video_url || '').trim();
   const audioUrl = String(payload.audio_url || '').trim();
+  const asUrlList = (value, limit) => (Array.isArray(value) ? value : [])
+    .map((item) => String(item || '').trim())
+    .filter((item) => /^https:\/\//i.test(item))
+    .slice(0, limit);
+  const refImages = asUrlList(payload.reference_images, 10);
+  const refVideos = asUrlList(payload.reference_videos, 5);
+  const refAudios = asUrlList(payload.reference_audios, 5);
 
   // Google Veo & Gemini Omni on UnoRouter/Google/Vertex plugins require inline data URLs
   if (imageUrl && provider !== 'openrouter' && (provider === 'google' || lowerModel.includes('veo') || lowerModel.includes('gemini-omni'))) {
@@ -1416,16 +1423,45 @@ async function buildUpstreamVideoRequest({ provider, baseUrl, apiKey, payload })
   if (provider === 'alibaba') {
     // Alibaba Model Studio (Wan 3.0): async task API.
     // Submit -> X-DashScope-Async -> output.task_id; poll GET {base}/api/v1/tasks/{task_id}.
-    const media = [];
-    if (imageUrl && imageLastUrl) {
-      media.push({ type: 'first_frame', url: imageUrl }, { type: 'last_frame', url: imageLastUrl });
-    } else if (imageUrl) {
-      media.push({ type: 'first_frame', url: imageUrl });
+    // Batas resmi: first_frame 1, last_frame 1, reference_image ≤10, reference_video
+    // ≤5 (total ≤15 dtk), reference_audio ≤5 (total ≤15 dtk), total materi referensi
+    // ≤20. Mode frame TIDAK bisa digabung dengan media referensi.
+    const frameMode = Boolean(imageUrl || imageLastUrl);
+    const refVideoList = [...(videoUrl ? [videoUrl] : []), ...refVideos];
+    const refAudioList = [...(audioUrl ? [audioUrl] : []), ...refAudios];
+    const referenceCount = refImages.length + refVideoList.length + refAudioList.length;
+
+    if (imageLastUrl && !imageUrl) {
+      return { error: 'Last Frame membutuhkan First Frame. Unggah gambar pertama dulu.', status: 400 };
     }
-    if (videoUrl) media.push({ type: 'reference_video', url: videoUrl });
-    if (audioUrl) media.push({ type: 'reference_audio', url: audioUrl });
+    if (frameMode && referenceCount > 0) {
+      return {
+        error: 'Wan 3.0: mode First Frame / First+Last Frame tidak bisa digabung dengan media referensi (foto/video/audio). Hapus salah satu: gunakan mode frame saja, atau mode referensi (maks 10 foto + 5 video + 5 audio).',
+        status: 400,
+      };
+    }
+    const rawCount = (value) => (Array.isArray(value) ? value.length : 0);
+    if (rawCount(payload.reference_images) > 10) {
+      return { error: 'Wan 3.0: maksimal 10 foto referensi per permintaan.', status: 400 };
+    }
+    if (rawCount(payload.reference_videos) + (videoUrl ? 1 : 0) > 5) {
+      return { error: 'Wan 3.0: maksimal 5 video referensi (total durasi ≤15 detik).', status: 400 };
+    }
+    if (rawCount(payload.reference_audios) + (audioUrl ? 1 : 0) > 5) {
+      return { error: 'Wan 3.0: maksimal 5 audio referensi (total durasi ≤15 detik).', status: 400 };
+    }
+    if (referenceCount > 20) {
+      return { error: 'Wan 3.0: maksimal 20 materi referensi (foto+video+audio) per permintaan.', status: 400 };
+    }
+
+    const media = [];
+    if (imageUrl) media.push({ type: 'first_frame', url: imageUrl });
+    if (imageLastUrl) media.push({ type: 'last_frame', url: imageLastUrl });
+    for (const url of refImages) media.push({ type: 'reference_image', url });
+    for (const url of refVideoList) media.push({ type: 'reference_video', url });
+    for (const url of refAudioList) media.push({ type: 'reference_audio', url });
     const resMap = { '480p': '480P', '720p': '720P', '1080p': '1080P', '4k': '1080P', '4K': '1080P' };
-    const wanRatio = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'].includes(aspectRatio) ? aspectRatio : 'adaptive';
+    const wanRatio = ['16:9', '9:16', '1:1', '4:3', '3:4', 'adaptive'].includes(aspectRatio) ? aspectRatio : 'adaptive';
     const body = {
       model,
       input: {
@@ -2536,7 +2572,9 @@ async function handleApi(request, url, env) {
       // ketersediaan tabel profil.
       if (!provider || provider === 'unorouter' || provider === 'freebeat') return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
-      if (!prompt && !imageUrl && !videoUrl && !audioUrl) {
+      const hasReferencePayload = ['reference_images', 'reference_videos', 'reference_audios']
+        .some((key) => Array.isArray(payload[key]) && payload[key].some((item) => String(item || '').trim()));
+      if (!prompt && !imageUrl && !videoUrl && !audioUrl && !hasReferencePayload) {
         return jsonResponse({ error: 'Masukkan prompt atau unggah minimal satu media (gambar, video, atau audio).' }, 400);
       }
 
@@ -2574,6 +2612,10 @@ async function handleApi(request, url, env) {
         }
         attemptedFetches += 1;
         const req = await buildUpstreamVideoRequest({ provider, baseUrl: candidate.base_url, apiKey: candidate.api_key, payload });
+        if (req?.error) {
+          // Input tidak valid — bukan masalah key, tidak perlu rotasi akun.
+          return jsonResponse({ error: req.error }, req.status || 400);
+        }
         let res = null;
         try {
           res = await fetch(req.submitUrl, {
@@ -2677,6 +2719,9 @@ async function handleApi(request, url, env) {
         metadata: {
           mode: videoUrl ? 'video_to_video' : imageUrl ? 'image_to_video' : audioUrl ? 'audio_to_video' : 'text_to_video',
           ...(payload.image_last_url ? { image_last_url: payload.image_last_url } : {}),
+          ...(Array.isArray(payload.reference_images) && payload.reference_images.length ? { reference_images: payload.reference_images.slice(0, 10) } : {}),
+          ...(Array.isArray(payload.reference_videos) && payload.reference_videos.length ? { reference_videos: payload.reference_videos.slice(0, 5) } : {}),
+          ...(Array.isArray(payload.reference_audios) && payload.reference_audios.length ? { reference_audios: payload.reference_audios.slice(0, 5) } : {}),
         },
       };
 
