@@ -405,8 +405,10 @@ test('Mobile polish and animated loading stages are wired across Dashboard, Chat
   // Zero right-edge horizontal overflow on Generate Video
   assert.match(generateCss, /\.dropx-shell\s+\.generate-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(generateCss, /\.dropx-shell\s+\.generate-media-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
-  assert.match(generateCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*hidden;/s);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*clip;/s);
   assert.match(generateCss, /\.dropx-shell\s+\.generate-pill\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*text-overflow:\s*ellipsis;/s);
   assert.match(generateCss, /\.dropx-shell\s+\.generate-model-desc\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
-  assert.match(mobileCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*overflow-x:\s*hidden;/s);
+  assert.match(mobileCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*overflow-x:\s*clip;/s);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-model-popover/);
+  assert.match(generateCss, /\.dropx-shell\s+\.generate-img-live-stage/);
 });

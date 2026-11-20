@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Download } from 'lucide-react';
+import { Download, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
   buildDownloadFilename,
@@ -12,17 +12,19 @@ import {
 } from '../api/generation';
 import { useAuth } from './AuthProvider';
 import { useCredits } from '../lib/useCredits';
+import { ModelSelect } from './ModelSelect';
 import './generate.css';
 import './history.css';
 
 const STATUS_LABEL = {
+  submitted: 'Sedang diproses',
   queued: 'Dalam antrean',
   processing: 'Sedang diproses',
   completed: 'Selesai',
   failed: 'Gagal',
   unknown: 'Hasil tidak pasti',
 };
-const isPending = (item) => item.status === 'queued' || item.status === 'processing';
+const isPending = (item) => item.status === 'queued' || item.status === 'processing' || item.status === 'submitted';
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
@@ -249,22 +251,32 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     {insufficient && ready && <div className="generate-banner" role="status"><span>Saldo kredit BLEA Anda kurang dari {price} kredit. Saldo ada di pojok kanan atas.</span><Link className="generate-banner-link" to="/credits">Tambah kredit</Link></div>}
 
     <form onSubmit={submit}>
-      {models.length > 0 && <label className="generate-field">
+      {models.length > 0 && <div className="generate-field">
         <span className="generate-label">Model gambar</span>
-        <select className="generate-select" value={active ? `${active.provider}:${active.model}` : ''} onChange={(event) => {
-          const next = models.find((model) => `${model.provider}:${model.model}` === event.target.value);
-          setSelected(event.target.value);
-          setError('');
-          setNotice('');
-          const nextSize = next?.params?.defaultSize || '';
-          setSize(nextSize);
-          setCount(1);
-          const nextMaxImgs = Number(next?.params?.maxInputImages) || 0;
-          setSourceImages((current) => (nextMaxImgs > 0 ? current.slice(0, nextMaxImgs) : []));
-        }}>
-          {models.map((model) => <option key={`${model.provider}:${model.model}`} value={`${model.provider}:${model.model}`}>{model.name}{Number.isSafeInteger(model.credits) ? ` · ${model.credits} kredit` : ' · harga belum diatur'}</option>)}
-        </select>
-      </label>}
+        <ModelSelect
+          ariaLabel="Model gambar"
+          value={active ? `${active.provider}:${active.model}` : ''}
+          options={models.map((model) => ({
+            value: `${model.provider}:${model.model}`,
+            badge: model.provider === 'alibaba' ? 'Alibaba' : 'Freebeat',
+            label: model.name,
+            meta: Number.isSafeInteger(model.credits) ? `${model.credits} kredit` : 'Belum bertarif',
+            tone: Number.isSafeInteger(model.credits) ? 'accent' : 'warn',
+            nativeLabel: `${model.name}${Number.isSafeInteger(model.credits) ? ` · ${model.credits} kredit` : ' · harga belum diatur'}`,
+          }))}
+          onChange={(nextValue) => {
+            const next = models.find((model) => `${model.provider}:${model.model}` === nextValue);
+            setSelected(nextValue);
+            setError('');
+            setNotice('');
+            const nextSize = next?.params?.defaultSize || '';
+            setSize(nextSize);
+            setCount(1);
+            const nextMaxImgs = Number(next?.params?.maxInputImages) || 0;
+            setSourceImages((current) => (nextMaxImgs > 0 ? current.slice(0, nextMaxImgs) : []));
+          }}
+        />
+      </div>}
       {active?.params && (active.params.sizeMode === 'wxh' || active.params.sizes?.length > 0) && <div className="generate-params-row">
         <label className="generate-field">
           <span className="generate-label">Ukuran</span>
@@ -316,6 +328,47 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       </div>
     </form>
 
+    {(busy || items.some(isPending)) && (() => {
+      const pendingItem = items.find(isPending);
+      const stageStatus = busy ? 'Mengirim ke Studio AI…' : (STATUS_LABEL[pendingItem?.status] || 'Sedang diproses');
+      const stageModel = pendingItem?.model || active?.name || 'AI Image';
+      const stagePrompt = (pendingItem?.prompt || prompt || '').trim();
+      return (
+        <div className="generate-img-live-stage" role="status" aria-live="polite">
+          <div className="generate-aurora" aria-hidden="true" />
+          <div className="generate-scanbeam" aria-hidden="true" />
+          <div className="generate-img-reticle" aria-hidden="true">
+            <span /><span /><span /><span />
+          </div>
+          <div className="generate-orbit is-image" aria-hidden="true">
+            <span className="generate-orbit-ring" />
+            <span className="generate-orbit-ring is-inner" />
+            <span className="generate-img-core">
+              <Sparkles size={18} />
+            </span>
+          </div>
+          <span className="generate-loader-badge">
+            <span className="generate-pulse-dot" aria-hidden="true" />
+            {stageStatus}
+          </span>
+          <div className="generate-eq" aria-hidden="true">
+            <i /><i /><i /><i /><i />
+          </div>
+          <div className="generate-progress-wrap">
+            <div className="generate-progress-bar">
+              <div className="generate-progress-fill is-animated" style={{ width: busy ? '38%' : '72%' }} />
+            </div>
+            <span className="generate-loader-sub">
+              {stageModel} · Merender komposisi &amp; pencahayaan AI…
+            </span>
+          </div>
+          {stagePrompt && (
+            <p className="generate-img-live-prompt">{stagePrompt}</p>
+          )}
+        </div>
+      );
+    })()}
+
     {items.length > 0 && <div className="generate-history">
       <h3 className="generate-card-title">Riwayat gambar</h3>
       <div className="history-grid">
@@ -330,7 +383,12 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
             ) : isLoadingItem ? (
               <div className="history-preview generate-img-loader" role="status" aria-live="polite">
                 <div className="generate-aurora is-subtle" aria-hidden="true" />
-                <span className="generate-img-orbit" aria-hidden="true" />
+                <div className="generate-scanbeam" aria-hidden="true" />
+                <div className="generate-orbit is-compact" aria-hidden="true">
+                  <span className="generate-orbit-ring" />
+                  <span className="generate-orbit-ring is-inner" />
+                  <Sparkles size={13} className="generate-img-core-icon" />
+                </div>
                 <span className="generate-loader-badge">
                   <span className="generate-pulse-dot" aria-hidden="true" />
                   {STATUS_LABEL[item.status] || 'Memproses…'}

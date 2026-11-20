@@ -20,6 +20,7 @@ import {
 import { availableVideoModels, generationModelKey } from '../lib/generationCatalog';
 import { useCredits } from '../lib/useCredits';
 import { GenerateImagePanel } from './GenerateImagePanel';
+import { ModelSelect } from './ModelSelect';
 import './generate.css';
 
 const PROMPT_CHIPS = [
@@ -704,21 +705,25 @@ export function GeneratePage() {
                   {models.length} model{balance !== null ? ` · Saldo: ${balance} kredit` : ''}
                 </span>
               </div>
-              <select
+              <ModelSelect
                 id="gen-model"
-                aria-label="Pilih Model"
-                className="generate-select"
+                ariaLabel="Pilih Model"
                 value={selectedModelKey}
                 disabled={!models.length}
-                onChange={(e) => setSelectedModelKey(e.target.value)}
-              >
-                {!models.length && <option value="">Tidak ada model video aktif</option>}
-                {models.map((m) => (
-                  <option key={modelKey(m)} value={modelKey(m)}>
-                    {`[${m.providerLabel || m.provider}] ${m.name}${Number.isSafeInteger(m.credits) && m.credits > 0 ? ` · ${m.credits} kredit` : m.priced === false ? ' · Belum bertarif' : ''}${m.online === false ? ' • Sibuk' : ''}`}
-                  </option>
-                ))}
-              </select>
+                placeholder="Tidak ada model video aktif"
+                options={models.map((m) => ({
+                  value: modelKey(m),
+                  badge: m.providerLabel || m.provider,
+                  label: m.name,
+                  sub: m.online === false ? 'Antrean penuh' : (m.description || ''),
+                  meta: Number.isSafeInteger(m.credits) && m.credits > 0
+                    ? `${m.credits} kredit`
+                    : (m.priced === false ? 'Belum bertarif' : ''),
+                  tone: m.online === false || m.priced === false ? 'warn' : 'accent',
+                  nativeLabel: `[${m.providerLabel || m.provider}] ${m.name}${Number.isSafeInteger(m.credits) && m.credits > 0 ? ` · ${m.credits} kredit` : m.priced === false ? ' · Belum bertarif' : ''}${m.online === false ? ' • Sibuk' : ''}`,
+                }))}
+                onChange={(nextKey) => setSelectedModelKey(nextKey)}
+              />
 
               {selectedModel && (selectedModel.online === false || selectedModel.description) && (
                 <div className="generate-model-meta">
