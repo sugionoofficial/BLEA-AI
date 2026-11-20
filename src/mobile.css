@@ -35,14 +35,14 @@ iframe {
 /* ---------- Shell DropX (semua halaman app) ---------- */
 @media (max-width: 640px) {
   .dropx-header {
-    height: 58px;
-    gap: 8px;
+    height: 52px;
+    gap: 6px;
     padding: 0 10px;
   }
 
   .dropx-header-btn {
-    width: 34px;
-    height: 34px;
+    width: 32px;
+    height: 32px;
   }
 
   .dropx-search-wrap {
@@ -50,17 +50,17 @@ iframe {
   }
 
   .dropx-header-actions {
-    gap: 6px;
+    gap: 5px;
   }
 
   .dropx-credit-chip {
-    padding: 5px 8px 5px 5px;
-    gap: 6px;
+    padding: 4px 8px 4px 4px;
+    gap: 5px;
   }
 
   .dropx-credit-icon {
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
   }
 
   .dropx-credit-label {
@@ -68,11 +68,27 @@ iframe {
   }
 
   .dropx-content {
-    padding: 14px 12px;
+    padding: 10px 10px 18px;
+  }
+
+  .dx-grid {
+    gap: 10px;
+  }
+
+  .dx-space-y-6 > * + * {
+    margin-top: 12px;
+  }
+
+  .dropx-page-header {
+    gap: 8px;
   }
 
   .dropx-page-title h1 {
-    font-size: 20px;
+    font-size: 16.5px;
+  }
+
+  .dropx-page-title p {
+    font-size: 12px;
   }
 
   .dropx-breadcrumb {
@@ -88,6 +104,81 @@ iframe {
     justify-content: center;
   }
 
+  .dropx-stat {
+    padding: 11px 12px;
+    gap: 4px;
+    border-radius: 12px;
+  }
+
+  .dropx-stat-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .dropx-stat-icon .icon {
+    width: 14px;
+    height: 14px;
+  }
+
+  .dropx-stat-title {
+    font-size: 10px;
+  }
+
+  .dropx-stat-value {
+    font-size: 17px;
+  }
+
+  .dropx-stat-foot {
+    font-size: 10.5px;
+  }
+
+  .dropx-quick-grid {
+    gap: 8px;
+  }
+
+  .dropx-quick-card {
+    flex-direction: row;
+    align-items: center;
+    text-align: left;
+    gap: 9px;
+    padding: 9px 10px;
+    border-radius: 12px;
+  }
+
+  .dropx-quick-icon {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+  }
+
+  .dropx-quick-copy {
+    min-width: 0;
+  }
+
+  .dropx-quick-card p {
+    font-size: 12px;
+  }
+
+  .dropx-quick-card small {
+    display: block;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dropx-card-header {
+    padding: 10px 12px;
+  }
+
+  .dropx-card-body {
+    padding: 12px;
+  }
+
+  .dropx-chart-box {
+    height: 170px;
+  }
+
   .dropx-header-menu,
   .dropx-profile-menu {
     min-width: 200px;
@@ -96,7 +187,7 @@ iframe {
 
   .dropx-search-results {
     position: fixed;
-    top: 64px;
+    top: 58px;
     left: 8px;
     right: 8px;
     max-height: 70vh;
@@ -104,10 +195,10 @@ iframe {
   }
 
   .dropx-sidebar {
-    width: min(84vw, 320px);
+    width: min(82vw, 300px);
   }
 
-  /* Input 16px mencegah auto-zoom saat fokus di iOS */
+  /* Input 16px mencegah auto-zoom iOS dengan padding ringkas agar tidak terasa kebesaran */
   .dropx-shell input,
   .dropx-shell select,
   .dropx-shell textarea {
@@ -143,12 +234,42 @@ iframe {
 /* ---------- Dashboard contoh (pengguna) ---------- */
 @media (max-width: 640px) {
   .showcase {
-    padding-bottom: 24px;
-    gap: 14px;
+    padding-bottom: 16px;
+    gap: 10px;
   }
 
-  .showcase-prompt-wrap {
-    max-height: none;
+  .showcase-hero {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 12px 14px;
+    gap: 8px;
+    border-radius: 12px;
+  }
+
+  .showcase-hero h1 {
+    font-size: 16px;
+  }
+
+  .showcase-hero p {
+    font-size: 11.5px;
+  }
+
+  .showcase-grid {
+    gap: 10px;
+  }
+
+  .showcase-media {
+    aspect-ratio: 16 / 9;
+  }
+
+  .showcase-body {
+    padding: 10px 11px;
+    gap: 7px;
+  }
+
+  .showcase-prompt {
+    max-height: 68px;
+    font-size: 11.5px;
   }
 
   .showcase-form-actions {
@@ -163,22 +284,48 @@ iframe {
 
 /* ---------- Generate & riwayat ---------- */
 @media (max-width: 640px) {
-  .generate-card {
-    padding: 16px !important;
+  .dropx-shell .generate-page {
+    gap: 10px;
   }
 
-  .generate-card-head {
-    flex-direction: column;
-    align-items: flex-start !important;
-    gap: 8px !important;
+  .dropx-shell .generate-grid {
+    gap: 12px;
   }
 
-  .generate-submit-btn {
-    width: 100%;
+  .dropx-shell .generate-card {
+    padding: 12px !important;
+    gap: 12px;
+    border-radius: 12px;
   }
 
-  .generate-textarea {
+  .dropx-shell .generate-card-head {
+    padding-bottom: 8px;
+    gap: 6px !important;
+  }
+
+  .dropx-shell .generate-card-title {
+    font-size: 14px;
+  }
+
+  .dropx-shell .generate-textarea {
+    min-height: 82px;
     font-size: 16px;
+    padding: 8px 10px;
+  }
+
+  .dropx-shell .generate-select {
+    padding: 8px 10px;
+  }
+
+  .dropx-shell .generate-upload-box {
+    min-height: 94px;
+    padding: 10px;
+    gap: 6px;
+  }
+
+  .dropx-shell .generate-submit-btn {
+    width: 100%;
+    padding: 10px 16px;
   }
 
   .history-grid {

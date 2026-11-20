@@ -143,15 +143,20 @@ export function HistoryPage() {
                   ? item.image_urls
                   : (item.image_url ? [item.image_url] : []))
                 : [];
+              const pending = item.kind === 'image' ? isImagePending(item) : isVideoPending(item);
               return (
               <article className={`history-card${highlight === item.id ? ' is-highlighted' : ''}`} id={`history-item-${item.id}`} key={`${item.kind}-${item.id}`}>
                 {item.kind === 'image'
                   ? (item.status === 'completed' && imageUrls[0]
                     ? <img src={imageUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
-                    : <div className="history-preview">{labels[item.status] || item.status}</div>)
+                    : pending
+                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status}</span></div>
+                      : <div className="history-preview">{labels[item.status] || item.status}</div>)
                   : (item.status === 'completed' && item.result_url
                     ? <video controls preload="metadata" src={item.result_url} />
-                    : <div className="history-preview">{labels[item.status] || item.status}</div>)}
+                    : pending
+                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status}</span></div>
+                      : <div className="history-preview">{labels[item.status] || item.status}</div>)}
                 <div className="history-card-body">
                   <span className={`history-status status-${item.status}`}>{labels[item.status] || item.status}</span>
                   <h2>{item.kind === 'image' ? `Gambar · ${item.model || '—'}` : (item.model || 'Video')}</h2>

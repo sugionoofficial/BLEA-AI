@@ -176,13 +176,13 @@ export function UserDashboard() {
       <div className="showcase-hero">
         <div>
           <span className="showcase-kicker">GALERI CONTOH</span>
-          <h1>Inspirasi dari karya BLEA AI</h1>
-          <p>Lihat contoh gambar dan video buatan AI beserta prompt-nya. Salin prompt, lalu buat versi Anda sendiri di halaman Generate.</p>
+          <h1>Inspirasi karya BLEA AI</h1>
+          <p>Salin prompt dari contoh di bawah lalu pakai langsung di halaman Generate.</p>
         </div>
         {isAdmin && (
           <button type="button" className={`showcase-admin-toggle ${editMode ? 'is-active' : ''}`} onClick={() => setEditMode((v) => !v)} aria-pressed={editMode}>
-            {editMode ? <X size={15} /> : <Pencil size={15} />}
-            {editMode ? 'Selesai mengedit' : 'Mode edit (admin)'}
+            {editMode ? <X size={14} /> : <Pencil size={14} />}
+            {editMode ? 'Selesai' : 'Mode edit (admin)'}
           </button>
         )}
       </div>
@@ -299,15 +299,19 @@ function ShowcaseCard({ item, isAdmin, editMode, busy, copied, onCopy, onSave, o
         {item.prompt && (
           <div className="showcase-prompt-wrap">
             <p className="showcase-prompt">{item.prompt}</p>
-            <button type="button" className="showcase-copy-btn" onClick={onCopy} aria-label="Salin prompt">
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-              {copied ? 'Tersalin' : 'Salin prompt'}
-            </button>
           </div>
         )}
-        <Link className="showcase-use-btn" to={`/generate?prompt=${encodeURIComponent(item.prompt || '')}`}>
-          <Link2 size={14} /> Gunakan prompt di Generate
-        </Link>
+        <div className="showcase-card-actions">
+          {item.prompt && (
+            <button type="button" className="showcase-copy-btn" onClick={onCopy} aria-label="Salin prompt">
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+              {copied ? 'Tersalin' : 'Salin prompt'}
+            </button>
+          )}
+          <Link className="showcase-use-btn" to={`/generate?prompt=${encodeURIComponent(item.prompt || '')}`}>
+            <Link2 size={13} /> Pakai prompt
+          </Link>
+        </div>
       </div>
     </article>
   );
