@@ -3,60 +3,107 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 
-test('Generate image admin test prepares read-only quote and requires separate consent to submit', async () => {
+const session = { access_token: 'mock-session', user: { id: 'user-1', email: 'user@example.com', app_metadata: { role: 'user' }, user_metadata: {} } };
+const configOk = { ok: true, model_id: 122, credits: 15, provider_ready: true, ceiling: 50, min_margin: 1 };
+const generation = { id: 'gen-1', status: 'completed', image_url: 'https://img.example/hasil.png', prompt: 'Kucing tidur', model: '122', credits_charged: 15, credits_refunded: 0, created_at: '2026-11-20T05:10:20Z' };
+
+async function mount(GenerateImagePanel, React, MemoryRouter, AuthProvider, root, supabase, mock) {
+  const { act } = React;
+  const calls = [];
+  const oldGet = supabase.auth.getSession, oldOn = supabase.auth.onAuthStateChange, oldFetch = globalThis.fetch;
+  supabase.auth.getSession = async () => ({ data: { session } });
+  supabase.auth.onAuthStateChange = () => ({ data: { subscription: { unsubscribe() {} } } });
+  globalThis.fetch = async (url, init) => mock(url, init, calls);
+  await act(async () => root.render(
+    React.createElement(MemoryRouter, { initialEntries: ['/generate'] },
+      React.createElement(AuthProvider, { initialSession: session }, React.createElement(GenerateImagePanel))),
+  ));
+  return {
+    calls,
+    unmount: async () => {
+      await act(async () => root.unmount());
+      supabase.auth.getSession = oldGet; supabase.auth.onAuthStateChange = oldOn; globalThis.fetch = oldFetch;
+      await supabase.auth.dispose();
+    },
+  };
+}
+
+test('panel generate gambar memotong kredit BLEA dengan model 122 (teks saja)', async () => {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/generate' });
-  globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.localStorage = dom.window.localStorage;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const React = await import('react');
   const { createRoot } = await import('react-dom/client');
   const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', resolve: { alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }] } });
   const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
   const { GenerateImagePanel } = await vite.ssrLoadModule('/src/auth/GenerateImagePanel.jsx');
-  const calls = [];
-  const request = async (action, method, body) => {
-    calls.push({ action, method, body });
-    if (action === 'status') return { connected: true, imageAccess: true };
-    if (action === 'image-models') return { models: [{ model_id: 80, name: 'Image Example' }] };
-    if (action === 'image-tests') return { tests: [] };
-    if (action === 'image-prepare') return { model_id: 80, prompt: body.prompt.trim(), credits: 23, approval: 'encrypted-receipt', expiresAt: Date.now() + 300000 };
-    if (action === 'image-submit') return { id: 'test', status: 'submitted' };
-    throw new Error('Unexpected action');
-  };
+  const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
   const root = createRoot(document.getElementById('root'));
-  const button = (text) => [...document.querySelectorAll('button')].find((b) => b.textContent.includes(text));
-  const setText = async (element, value) => React.act(async () => {
-    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set.call(element, value);
-    element.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-  });
+  const fetchMock = (url, init, calls) => {
+    calls.push([url, init?.method || 'GET']);
+    if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'user' });
+    if (url === '/api/image/config') return Response.json(configOk);
+    if (url === '/api/image/history') return Response.json({ ok: true, generations: [] });
+    if (url === '/api/image/generate') return Response.json({ ok: true, status: 'submitted', credits: 15, generation });
+    if (String(url).includes('/rest/v1/credit_wallets')) return Response.json({ balance: 100 });
+    throw new Error(`Unexpected call ${url}`);
+  };
+  const handle = await mount(GenerateImagePanel, React, MemoryRouter, AuthProvider, root, supabase, fetchMock);
+  const { calls } = handle;
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent.includes(label));
   try {
-    await React.act(async () => root.render(React.createElement(MemoryRouter, null, React.createElement(GenerateImagePanel, { isAdmin: true, request }))));
-    assert.ok(document.body.textContent.includes('Image Example'));
-    assert.equal(button('Siapkan quote').disabled, true);
-    await setText(document.querySelector('textarea'), 'Test gambar');
-    assert.equal(button('Siapkan quote').disabled, false);
-    await React.act(async () => button('Siapkan quote').click());
-    assert.equal(calls.filter((c) => c.action === 'image-prepare').length, 1);
-    assert.equal(calls.filter((c) => c.action === 'image-submit').length, 0);
-    assert.match(document.body.textContent, /23 kredit/);
-    assert.match(document.body.textContent, /Test gambar/);
-    assert.equal(button('Setujui dan buat gambar').disabled, true);
-    // Changing the prompt invalidates the visible approval.
-    await setText(document.querySelector('textarea'), 'Prompt baru');
-    assert.equal(button('Setujui dan buat gambar'), undefined);
-    await React.act(async () => button('Siapkan quote').click());
-    const checkbox = document.querySelector('input[type=checkbox]');
-    await React.act(async () => checkbox.click());
-    assert.equal(button('Setujui dan buat gambar').disabled, false);
-    await React.act(async () => button('Setujui dan buat gambar').click());
-    const submissions = calls.filter((c) => c.action === 'image-submit');
-    assert.deepEqual(submissions.map((c) => c.body), [{ approval: 'encrypted-receipt', confirm: true }]);
-    assert.match(document.body.textContent, /Permintaan diterima/);
-    // Non-admin users see no provider and make no admin API calls.
-    calls.length = 0;
-    await React.act(async () => root.render(React.createElement(MemoryRouter, null, React.createElement(GenerateImagePanel, { isAdmin: false, request }))));
-    assert.match(document.body.textContent, /Generasi gambar untuk pengguna belum tersedia/);
-    assert.equal(calls.length, 0);
+    assert.match(document.body.textContent, /model 122/);
+    assert.match(document.body.textContent, /15 kredit BLEA per gambar/);
+    assert.equal(button('Buat gambar').disabled, true);
+    const prompt = document.querySelector('textarea');
+    await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set.call(prompt, 'Kucing tidur'); prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    assert.equal(button('Buat gambar').disabled, false);
+    await React.act(async () => button('Buat gambar').click());
+    assert.equal(calls.filter(([path]) => path === '/api/image/generate').length, 1);
+    const generateCall = calls.find(([path]) => path === '/api/image/generate');
+    assert.equal(generateCall[1], 'POST');
+    assert.match(document.body.textContent, /Permintaan diterima \(15 kredit BLEA\)/);
+    assert.match(document.body.textContent, /Kucing tidur/);
+    // Tidak ada mode unggah/edit foto di panel pengguna.
+    assert.equal(document.querySelector('input[type=file]'), null);
+    assert.doesNotMatch(document.body.textContent, /mode edit/i);
   } finally {
-    await React.act(async () => root.unmount());
-    await vite.close(); dom.window.close(); delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    await handle.unmount();
+    await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.localStorage; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('panel nonaktif saat provider belum dihubungkan', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/generate' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.localStorage = dom.window.localStorage;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', resolve: { alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }] } });
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { GenerateImagePanel } = await vite.ssrLoadModule('/src/auth/GenerateImagePanel.jsx');
+  const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
+  const root = createRoot(document.getElementById('root'));
+  const fetchMock = (url, init, calls) => {
+    calls.push([url, init?.method || 'GET']);
+    if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'user' });
+    if (url === '/api/image/config') return Response.json({ ...configOk, provider_ready: false });
+    if (url === '/api/image/history') return Response.json({ ok: true, generations: [] });
+    if (String(url).includes('/rest/v1/credit_wallets')) return Response.json({ balance: 100 });
+    throw new Error(`Unexpected call ${url}`);
+  };
+  const handle = await mount(GenerateImagePanel, React, MemoryRouter, AuthProvider, root, supabase, fetchMock);
+  try {
+    assert.match(document.body.textContent, /Provider gambar belum dihubungkan/);
+    assert.equal(document.querySelector('textarea') !== null, true);
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Buat gambar'));
+    assert.equal(button.disabled, true);
+  } finally {
+    await handle.unmount();
+    await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.localStorage; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });

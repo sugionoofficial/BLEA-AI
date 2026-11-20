@@ -26,9 +26,11 @@ import './auth/settings.css';
 import './auth/generate.css';
 import './auth/admin.css';
 import './auth/drawer.css';
+import './auth/showcase.css';
 import './landing.css';
 import './styles.css';
 import './readability.css';
+import './mobile.css';
 
 function App() {
   return (

@@ -335,11 +335,13 @@ test('Generate page offers both modes without defaulting to UnoRouter', async ()
   assert.match(video, /Tidak ada model video aktif/);
   assert.doesNotMatch(video, /UnoRouter/i);
   const imageUser = view('/generate?mode=image', user);
-  assert.match(imageUser, /Generasi gambar untuk pengguna belum tersedia/);
-  assert.doesNotMatch(imageUser, /Setujui dan buat gambar/);
+  assert.match(imageUser, /Prompt gambar/);
+  assert.doesNotMatch(imageUser, /UnoRouter/i);
+  assert.doesNotMatch(imageUser, /mode edit/i);
+  // Panel gambar bersifat konsumen untuk semua peran; diagnostik admin
+  // Freebeat berada di /admin/freebeat, bukan di halaman ini.
   const imageAdmin = view('/generate?mode=image', admin);
-  assert.match(imageAdmin, /Freebeat · uji admin/);
-  assert.match(imageAdmin, /Siapkan quote/);
-  assert.doesNotMatch(imageAdmin, /Setujui dan buat gambar/);
+  assert.match(imageAdmin, /Prompt gambar/);
+  assert.doesNotMatch(imageAdmin, /Siapkan quote/);
   assert.doesNotMatch(imageAdmin, /UnoRouter/i);
 });

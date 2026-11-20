@@ -41,7 +41,7 @@ test('admin explicitly uploads a public image, uses its link for quote and delet
     const prompt = document.querySelector('input[type=text]');
     await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(prompt, 'Kucing berjalan'); prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
     await React.act(async () => button('Periksa quote').click());
-    assert.deepEqual(calls[0], ['video-model-quote', 'POST', { model_id: 182, prompt: 'Kucing berjalan', image_url: url }]);
+    assert.deepEqual(calls[0], ['video-model-quote', 'POST', { model_id: 182, prompt: 'Kucing berjalan', image_url: url, duration: 5 }]);
     await React.act(async () => button('Hapus gambar dari Supabase').click());
     assert.deepEqual(storageCalls[1], ['remove', storageCalls[0][1]]);
     assert.equal(document.querySelector('input[type=url]').value, '');
@@ -63,7 +63,7 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
   const calls = [];
   const request = async (...args) => {
     calls.push(args);
-    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
     if (args[0] === 'video-tests') return { tests: [] };
     if (args[0] === 'video-submit') return { status: 'submitted' };
     throw new Error('unexpected action');
@@ -78,7 +78,7 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
     assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
     await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
     assert.deepEqual(calls.map((c) => c[0]), ['video-prepare', 'video-tests']);
-    assert.deepEqual(calls[0][2], { model_id: 186, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png' });
+    assert.deepEqual(calls[0][2], { model_id: 186, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png', duration: 5 });
     assert.match(document.body.textContent, /Model 186 · ID 186/);
     assert.match(document.body.textContent, /135 kredit Freebeat/);
     assert.equal(button('Setujui dan kirim satu video').disabled, true);
@@ -156,7 +156,7 @@ test('one dropdown uses the live model list for help and quote and invalidates o
   const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
   const calls = [];
   let failQuote = false;
-  const request = async (...args) => { calls.push(args); if (failQuote) throw new Error('Freebeat tidak dapat dihubungi.'); return args[0] === 'video-model-help' ? { model_id: args[2].model_id, help: { available: true } } : { settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p' }, quote: { status: 'unavailable' } }; };
+  const request = async (...args) => { calls.push(args); if (failQuote) throw new Error('Freebeat tidak dapat dihubungi.'); return args[0] === 'video-model-help' ? { model_id: args[2].model_id, help: { available: true } } : { settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, quote: { status: 'unavailable' } }; };
   const root = createRoot(document.getElementById('root'));
   const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
   async function change(selector, value) { const input = document.querySelector(selector); await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }); }
@@ -168,7 +168,7 @@ test('one dropdown uses the live model list for help and quote and invalidates o
     await render({});
     assert.equal(document.querySelectorAll('#freebeat-video-model option').length, 5);
     assert.match(document.body.textContent, /ID lain atau duplikat tidak ditampilkan/);
-    assert.equal(document.querySelectorAll('input[type=text]').length, 1);
+    assert.equal(document.querySelectorAll('input[type=text]').length, 2);
     assert.equal(document.querySelectorAll('input[type=url]').length, 1);
     assert.equal(button('Periksa quote').disabled, true);
     await selectModel(React, dom, '192');
@@ -177,7 +177,7 @@ test('one dropdown uses the live model list for help and quote and invalidates o
     assert.equal(JSON.parse(document.querySelector('[aria-label="Informasi model video yang disaring"]').value).model_id, 192);
     await change('input[type=text]', 'Kucing berjalan'); await change('input[type=url]', 'https://images.example/cat.png');
     await React.act(async () => button('Periksa quote').click());
-    assert.deepEqual(calls[1], ['video-model-quote', 'POST', { model_id: 192, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png' }]);
+    assert.deepEqual(calls[1], ['video-model-quote', 'POST', { model_id: 192, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png', duration: 5 }]);
     const text = document.querySelector('[aria-label="Quote video yang disaring"]').value;
     assert.equal(JSON.parse(text).model_id, 192); assert.doesNotMatch(text, /Kucing|images.example/);
     assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
@@ -224,12 +224,15 @@ test('admin page automatically loads the model dropdown and can retry after a ca
     calls.push([url, init.method]);
     if (url === '/api/freebeat/status') return Response.json({ connected: true, imageAccess: true });
     if (url === '/api/freebeat/video-models') return failure ? Response.json({ error: 'Katalog gagal dimuat.' }, { status: 502 }) : Response.json(catalog);
+    if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'admin' });
+    if (url.includes('/rest/v1/credit_wallets')) return new Response(JSON.stringify({ code: 'PGRST116', message: '0 rows' }), { status: 406, headers: { 'content-type': 'application/json' } });
     throw new Error(`Unexpected call ${url}`);
   };
   const root = createRoot(document.getElementById('root'));
   try {
     await React.act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(FreebeatPage)))));
-    assert.deepEqual(calls.map(([path]) => path), ['/api/freebeat/status', '/api/freebeat/video-models']);
+    assert.ok(calls.some(([path]) => path === '/api/freebeat/status'));
+    assert.ok(calls.some(([path]) => path === '/api/freebeat/video-models'));
     assert.match(document.body.textContent, /Katalog gagal dimuat/);
     assert.equal(document.querySelector('#freebeat-video-model').disabled, true);
     failure = false;
@@ -355,7 +358,7 @@ test('initial response diagnostics are optional and do not bypass separate spend
   const calls = [];
   const request = async (...args) => {
     calls.push(args);
-    if (args[0] === 'video-prepare') return { approval: 'encrypted', settings: { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-prepare') return { approval: 'encrypted', settings: { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
     if (args[0] === 'video-tests') return { tests: [] };
     if (args[0] === 'video-submit') return { status: 'unknown', initial_diagnostics: { received: true, messages: ['Private provider detail'] } };
     throw new Error('unexpected action');

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ChevronDown, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Search, Settings, ShieldCheck, Sun, X } from 'lucide-react';
+import { ChevronDown, Coins, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Search, Settings, ShieldCheck, Sun, X } from 'lucide-react';
 import { activeNavHref, flattenNavigation, getNavigation, resolveRoute } from './navigation';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../auth/AuthProvider';
+import { useCredits } from '../lib/useCredits';
 
 function useTheme() {
   const [theme, setTheme] = useState(() => localStorage.getItem('dropx-theme') || 'light');
@@ -66,9 +67,12 @@ export function DropXLayout({ children, title, description, actions, footer = tr
 
   const pathname = location.pathname;
   const isAdmin = user?.app_metadata?.role === 'admin';
+  const { balance: creditBalance, refresh: refreshCredits } = useCredits(user?.id);
   const navGroups = useMemo(() => getNavigation({ isAdmin }), [isAdmin]);
   const searchableItems = useMemo(() => flattenNavigation({ isAdmin }), [isAdmin]);
   const activeHref = activeNavHref(pathname, { isAdmin });
+
+  useEffect(() => { refreshCredits(); }, [pathname, refreshCredits]);
 
   const filteredSearchItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -320,18 +324,23 @@ export function DropXLayout({ children, title, description, actions, footer = tr
             <div className="dropx-header-user-wrap" ref={headerMenuRef}>
               <button
                 type="button"
-                className={`dropx-user ${headerMenuOpen ? 'is-open' : ''}`}
+                className={`dropx-user dropx-credit-chip ${headerMenuOpen ? 'is-open' : ''}`}
                 onClick={() => setHeaderMenuOpen((v) => !v)}
                 aria-expanded={headerMenuOpen}
-                aria-label="Menu akun"
+                aria-label={`Saldo kredit ${creditBalance === null ? 'belum dimuat' : creditBalance} — menu akun`}
+                title="Saldo kredit BLEA"
               >
-                <span className="dropx-avatar">{initials}</span>
-                <b>{fullName.split(' ')[0]}</b>
+                <span className="dropx-credit-icon" aria-hidden="true"><Coins size={15} /></span>
+                <b>{creditBalance === null ? '—' : creditBalance}</b>
+                <span className="dropx-credit-label">kredit</span>
                 <ChevronDown size={13} className={`dropx-nav-chevron ${headerMenuOpen ? 'is-open' : ''}`} />
               </button>
               {headerMenuOpen && (
                 <div className="dropx-header-menu">
                   <div className="dropx-profile-menu-email">{user?.email}</div>
+                  <Link to="/credits" onClick={() => setHeaderMenuOpen(false)}>
+                    <Coins size={14} /> Kredit &amp; saldo
+                  </Link>
                   <Link to="/settings" onClick={() => setHeaderMenuOpen(false)}>
                     <Settings size={14} /> Setting
                   </Link>
