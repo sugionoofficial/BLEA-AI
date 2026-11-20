@@ -9,10 +9,12 @@ import {
   Clock3,
   Eye,
   EyeOff,
+  Gauge,
   Globe,
   KeyRound,
   LayoutDashboard,
   LoaderCircle,
+  RefreshCw,
   LockKeyhole,
   Mail,
   MessagesSquare,
@@ -34,6 +36,7 @@ import {
   saveProviderModels,
   saveSingleProviderModel,
   verifyKey,
+  fetchProviderQuota,
 } from '../api/unorouter';
 import { useAuth } from './AuthProvider';
 
@@ -166,6 +169,8 @@ export function AdminPage() {
   const [revealedKeys, setRevealedKeys] = useState({});
   const [keyNotices, setKeyNotices] = useState({});
   const [keyBusy, setKeyBusy] = useState('');
+  const [quotas, setQuotas] = useState({});
+  const [quotaBusy, setQuotaBusy] = useState('');
   const [newProvider, setNewProvider] = useState({ provider: '', label: '', base_url: '' });
   const [catalogProvider, setCatalogProvider] = useState('');
   const [unoModels, setUnoModels] = useState([]);
@@ -432,6 +437,54 @@ export function AdminPage() {
     URL.revokeObjectURL(href);
   }
 
+  async function loadQuota(providerId) {
+    const id = String(providerId || '').trim().toLowerCase();
+    if (!id) return;
+    setQuotaBusy(id);
+    setQuotas((cur) => ({ ...cur, [id]: { ...(cur[id] || {}), state: 'loading' } }));
+    try {
+      const res = await fetchProviderQuota(id);
+      const data = res.data || {};
+      if (!res.ok) setQuotas((cur) => ({ ...cur, [id]: { state: 'error', error: data.error || `HTTP ${res.status}` } }));
+      else if (data.supported === false) setQuotas((cur) => ({ ...cur, [id]: { state: 'unsupported', message: data.message, consoleUrl: data.consoleUrl } }));
+      else if (data.ok === false) setQuotas((cur) => ({ ...cur, [id]: { state: 'error', error: data.error || 'Kuota gagal dimuat.' } }));
+      else if (data.available === false) setQuotas((cur) => ({ ...cur, [id]: { state: 'empty', error: data.error || 'Belum ada API key tersimpan.' } }));
+      else setQuotas((cur) => ({ ...cur, [id]: { state: 'ready', ...data } }));
+    } catch (err) {
+      setQuotas((cur) => ({ ...cur, [id]: { state: 'error', error: String(err?.message || err) } }));
+    } finally {
+      setQuotaBusy('');
+    }
+  }
+
+  function quotaContent(providerId) {
+    const q = quotas[providerId];
+    const usd = (value) => (typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(2)}` : '—');
+    const quotaUsd = (value, perUnit) => (typeof value === 'number' && Number.isFinite(value) ? `$${(value / (perUnit || 500000)).toFixed(2)}` : '—');
+    if (!q) return <span>Kuota belum dimuat.</span>;
+    if (q.state === 'loading') return <span>Memuat kuota…</span>;
+    if (q.state === 'error') return <span className="is-error">Kuota gagal dimuat: {q.error}</span>;
+    if (q.state === 'empty') return <span>{q.error}</span>;
+    if (q.state === 'unsupported') {
+      return <span>{q.message}{q.consoleUrl ? <> <a href={q.consoleUrl} target="_blank" rel="noopener noreferrer">Buka konsol</a></> : null}</span>;
+    }
+    if (providerId === 'openrouter') {
+      return (
+        <span>
+          Sisa <b>{q.limitRemaining == null ? '∞' : usd(q.limitRemaining)}</b>{q.limit != null && <> dari limit <b>{usd(q.limit)}</b></>}
+          {q.limitReset ? <> · reset <b>{q.limitReset}</b></> : null}
+          {' · '}terpakai hari ini <b>{usd(q.usageDaily)}</b> · minggu ini <b>{usd(q.usageWeekly)}</b> · bulan ini <b>{usd(q.usageMonthly)}</b>
+          {q.freeRequests && q.freeRequests.limit > 0 ? <> · free <b>{q.freeRequests.remaining}/{q.freeRequests.limit}</b> req hari ini</> : null}
+        </span>
+      );
+    }
+    if (providerId === 'unorouter' || providerId === 'pekpik') {
+      if (q.unlimitedQuota) return <span>Kuota: <b>unlimited</b> · terpakai <b>{quotaUsd(q.used, q.quotaPerUnit)}</b> ({q.name || providerId})</span>;
+      return <span>Sisa <b>{quotaUsd(q.available, q.quotaPerUnit)}</b> dari <b>{quotaUsd(q.granted, q.quotaPerUnit)}</b> · terpakai <b>{quotaUsd(q.used, q.quotaPerUnit)}</b>{q.expiresAt ? <> · kedaluwarsa <b>{new Date(q.expiresAt * 1000).toLocaleDateString('id-ID')}</b></> : null}</span>;
+    }
+    return <span>Kuota tersedia.</span>;
+  }
+
   async function saveProviderKey(providerRow) {
     const provider = providerRow.provider;
     const rawDraft = String(keyDrafts[provider] || '').trim();
@@ -638,6 +691,15 @@ export function AdminPage() {
     }
     setKeyBusy('');
   }
+
+  useEffect(() => {
+    for (const item of providerKeys) {
+      if (item.api_key && item.api_key !== 'binding:AI' && quotas[item.provider] === undefined) {
+        loadQuota(item.provider);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerKeys]);
 
   const displayedProviderRows = providerKeys;
 
@@ -924,6 +986,20 @@ export function AdminPage() {
                               ? 'Workers AI Binding (env.AI)'
                               : (provider.api_key ? 'Terhubung' : 'Belum terhubung')}
                           </span>
+                        </div>
+
+                        <div className="admin-api-quota" role="status">
+                          <Gauge size={13} aria-hidden="true" />
+                          {quotaContent(provider.provider)}
+                          <button
+                            type="button"
+                            className="admin-api-quota-refresh"
+                            onClick={() => loadQuota(provider.provider)}
+                            disabled={quotaBusy === provider.provider}
+                            aria-label={`Muat ulang kuota ${provider.provider}`}
+                          >
+                            <RefreshCw size={11} aria-hidden="true" /> {quotaBusy === provider.provider ? 'Memuat…' : 'Muat ulang'}
+                          </button>
                         </div>
 
                         <div className="admin-api-input-row">

@@ -1795,6 +1795,91 @@ async function handleApi(request, url, env) {
       }
     }
 
+    // ---- /provider-quota: sisa kuota/saldo API key provider (khusus admin) ----
+    if (path === 'provider-quota' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      if (user.app_metadata?.role !== 'admin') return jsonResponse({ error: 'Hanya admin yang dapat melihat kuota provider.' }, 403);
+      const body = await request.json().catch(() => ({}));
+      const provider = String(body.provider || '').trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(provider)) return jsonResponse({ error: 'Provider tidak valid.' }, 400);
+
+      const CONSOLE_URLS = {
+        alibaba: 'https://modelstudio.console.alibabacloud.com/ap-southeast-1',
+        openai: 'https://platform.openai.com/usage',
+        google: 'https://aistudio.google.com',
+        xai: 'https://console.x.ai',
+        doubao: 'https://console.volcengine.com',
+        kling: 'https://app.klingai.com',
+        hailuo: 'https://platform.minimax.io',
+        cloudflare: 'https://dash.cloudflare.com',
+        openrouter: 'https://openrouter.ai/keys',
+        unorouter: 'https://unorouter.com',
+      };
+      const keyRow = await fetchProviderKeyRecord(env, provider);
+      const apiKey = String(keyRow?.api_key || '').trim();
+      if (!apiKey) return jsonResponse({ ok: true, supported: true, available: false, error: 'Belum ada API key tersimpan untuk provider ini.' });
+      if (provider === 'cloudflare') {
+        return jsonResponse({ ok: true, supported: false, consoleUrl: CONSOLE_URLS.cloudflare, message: apiKey === 'binding:AI' ? 'Cloudflare Workers AI memakai Binding env.AI — kuota 10.000 Neurons/hari tidak bisa dicek via API; pantau di dashboard Cloudflare.' : 'Kuota Workers AI tidak bisa dicek lewat REST dengan API token biasa; pantau di dashboard Cloudflare.' });
+      }
+
+      const apiBase = resolveProviderApiBase(provider, keyRow?.base_url);
+
+      // OpenRouter: GET /api/v1/key memakai inference key langsung.
+      if (provider === 'openrouter') {
+        try {
+          const res = await fetch('https://openrouter.ai/api/v1/key', {
+            headers: { authorization: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(15_000),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 401 || res.status === 403) return jsonResponse({ ok: false, status: res.status, error: 'API key OpenRouter ditolak.' });
+          if (!res.ok) return jsonResponse({ ok: false, status: res.status, error: `Kuota OpenRouter gagal dimuat (HTTP ${res.status}).` });
+          const d = data?.data || {};
+          const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+          return jsonResponse({
+            ok: true, supported: true, provider,
+            label: d.label || 'OpenRouter key',
+            limit: num(d.limit), limitRemaining: num(d.limit_remaining), limitReset: d.limit_reset || null,
+            usage: num(d.usage) ?? 0, usageDaily: num(d.usage_daily) ?? 0, usageWeekly: num(d.usage_weekly) ?? 0, usageMonthly: num(d.usage_monthly) ?? 0,
+            isFreeTier: Boolean(d.is_free_tier),
+            freeRequests: d.free_model_daily_requests && typeof d.free_model_daily_requests === 'object'
+              ? { used: Number(d.free_model_daily_requests.used) || 0, limit: Number(d.free_model_daily_requests.limit) || 0, remaining: Number(d.free_model_daily_requests.remaining) || 0 }
+              : null,
+          });
+        } catch (e) { return jsonResponse({ ok: false, error: `OpenRouter tidak dapat dihubungi (${String(e)}).` }); }
+      }
+
+      // Gateway gaya one-api/new-api (UnoRouter, PEKPIK): GET {root}/api/usage/token/
+      if (provider === 'unorouter' || provider === 'pekpik') {
+        const root = (apiBase || PROVIDER_PRESETS[provider]?.defaultBaseUrl || '').replace(/\/+$/, '').replace(/\/v1$/i, '');
+        if (!root) return jsonResponse({ ok: true, supported: false, consoleUrl: CONSOLE_URLS[provider] || '', message: 'Base URL provider belum disetel.' });
+        try {
+          const res = await fetch(`${root}/api/usage/token/`, {
+            headers: { authorization: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(15_000),
+          });
+          const data = await res.json().catch(() => null);
+          if (res.status === 401 || res.status === 403) return jsonResponse({ ok: false, status: res.status, error: `API key ${provider} ditolak.` });
+          if (!res.ok || !data) return jsonResponse({ ok: true, supported: false, consoleUrl: CONSOLE_URLS[provider] || '', message: 'Provider ini tidak menyediakan kuota lewat API; pantau dari konsol provider.' });
+          const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+          const granted = num(data.total_granted), used = num(data.total_used), available = num(data.total_available);
+          const unlimited = data.unlimited_quota === true;
+          return jsonResponse({
+            ok: true, supported: true, provider,
+            name: data.name || provider,
+            granted, used, available,
+            unlimitedQuota: unlimited,
+            expiresAt: num(data.expires_at) || 0,
+            quotaPerUnit: 500000,
+          });
+        } catch (e) { return jsonResponse({ ok: false, error: `Provider tidak dapat dihubungi (${String(e)}).` }); }
+      }
+
+      return jsonResponse({ ok: true, supported: false, consoleUrl: CONSOLE_URLS[provider] || '', message: 'Provider ini tidak mengekspos kuota lewat API key; pantau dari konsol provider.' });
+    }
+
     // ---- /models & /enabled-models: active models for Chat AI ----
     if ((path === 'models' || path === 'enabled-models') && (method === 'GET' || method === 'POST')) {
       const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
