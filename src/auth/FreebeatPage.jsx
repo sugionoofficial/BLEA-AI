@@ -4,6 +4,7 @@ import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
+import { FreebeatDanceDiagnostic } from './FreebeatDanceDiagnostic';
 import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
@@ -382,6 +383,7 @@ export function FreebeatPage() {
         {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
         <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} videoModels={videoModels} videoBusy={videoBusy} />
       </section>
+      <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
     </div>
   </DropXLayout>;
 }
