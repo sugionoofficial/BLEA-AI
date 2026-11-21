@@ -75,6 +75,7 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState('');
   const [drafts, setDrafts] = useState({});
   const [newForm, setNewForm] = useState({ account_email: '', account_label: '' });
+  const [callbackStatus, setCallbackStatus] = useState('');
   const [policy, setPolicy] = useState({ maxCycles: 3, gatewayExhaustedMessage: 'SALDO GATEWAY HABIS, SILAHKAN HUBUNGI ADMIN.' });
 
   const setBanner = useCallback((msg, type = 'info') => {
@@ -92,8 +93,10 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
       if (res?.policy) setPolicy(res.policy);
       else if (res?.maxCycles) setPolicy((p) => ({ ...p, maxCycles: res.maxCycles }));
       if (typeof onCountChange === 'function') onCountChange(rows.length);
+      return rows;
     } catch (err) {
       setError(err?.message || 'Gagal memuat daftar akun Freebeat OAuth.');
+      return [];
     } finally {
       setLoading(false);
     }
@@ -108,12 +111,28 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
     const url = new URL(window.location.href);
     const fb = url.searchParams.get('freebeat');
     if (!fb) return;
+    setCallbackStatus(fb);
     const info = describeCallbackParam(fb);
     if (info) setBanner(info.text, info.type);
     url.searchParams.delete('freebeat');
     const cleanSearch = url.searchParams.toString();
     window.history.replaceState({}, '', `${url.pathname}${cleanSearch ? `?${cleanSearch}` : ''}${url.hash}`);
   }, [setBanner]);
+
+  useEffect(() => {
+    if (callbackStatus !== 'connected' || loading || accounts.length === 0) return;
+    const latest = [...accounts].sort((a, b) => Date.parse(b.issued_at || b.updated_at || 0) - Date.parse(a.issued_at || a.updated_at || 0))[0];
+    if (!latest) return;
+    if (latest.email_source === 'oauth' && latest.account_email) {
+      setBanner(`Akun Freebeat OAuth (${latest.account_email}) terhubung dan email terdeteksi otomatis dari OAuth.`, 'success');
+    } else {
+      setBanner(
+        'Akun Freebeat OAuth terhubung. Server OAuth Freebeat tidak mengirim alamat email otomatis pada scope ini — pastikan kolom Email Akun di kartu sesuai akun Freebeat yang Anda login lalu klik Simpan.',
+        'warn',
+      );
+    }
+    setCallbackStatus('');
+  }, [callbackStatus, loading, accounts, setBanner]);
 
   const metrics = useMemo(() => {
     const total = accounts.length;
@@ -136,15 +155,15 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
     const email = newForm.account_email.trim().toLowerCase();
     const label = newForm.account_label.trim();
     setError('');
-    if (!EMAIL_RE.test(email)) {
-      setBanner('Masukkan alamat email akun Freebeat yang valid sebelum memulai OAuth.', 'error');
+    if (email && !EMAIL_RE.test(email)) {
+      setBanner('Format email tidak valid. Kosongkan jika ingin deteksi otomatis atau isi email yang valid.', 'error');
       return;
     }
     setStartingOAuth(true);
     try {
       const res = await startFreebeatOAuth({
         email,
-        label: label || email,
+        label: label || email || `Freebeat #${accounts.length + 1}`,
         returnTo: OAUTH_RETURN_PATH,
       });
       if (!res?.url) throw new Error('URL otorisasi Freebeat tidak diterima.');
@@ -159,10 +178,12 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
     setBusyId(row.id);
     setError('');
     try {
+      const draftEmail = drafts[row.id]?.account_email;
+      const draftLabel = drafts[row.id]?.account_label;
       const res = await startFreebeatOAuth({
         accountId: row.id,
-        email: (drafts[row.id]?.account_email ?? row.account_email) || '',
-        label: (drafts[row.id]?.account_label ?? row.account_label) || '',
+        email: typeof draftEmail === 'string' && draftEmail.trim() !== (row.account_email || '') ? draftEmail.trim() : '',
+        label: typeof draftLabel === 'string' && draftLabel.trim() ? draftLabel.trim() : (row.account_label || ''),
         returnTo: OAUTH_RETURN_PATH,
       });
       if (!res?.url) throw new Error('URL otorisasi Freebeat tidak diterima.');
@@ -399,8 +420,7 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
         <form className="freebeat-oauth-add-form" onSubmit={handleConnectNew}>
           <input
             type="email"
-            required
-            placeholder="Email akun Freebeat (mis. akun2@gmail.com)"
+            placeholder="Email akun Freebeat (opsional — otomatis jika dikirim OAuth)"
             aria-label="Email akun Freebeat baru"
             value={newForm.account_email}
             onChange={(e) => setNewForm((f) => ({ ...f, account_email: e.target.value }))}
@@ -521,6 +541,9 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
                   </span>
                   <span className={`freebeat-oauth-pill ${row.auto_renew ? 'is-ok' : 'is-warn'}`}>
                     <RotateCw size={12} /> {row.auto_renew ? 'Auto-Renew Aktif' : 'Perlu OAuth Ulang Saat Habis'}
+                  </span>
+                  <span className={`freebeat-oauth-pill ${row.email_source === 'oauth' ? 'is-ok' : (!row.account_email || row.email_source === 'unverified') ? 'is-warn' : ''}`}>
+                    <Mail size={12} /> {row.email_source === 'oauth' ? 'Email dari OAuth' : (!row.account_email || row.email_source === 'unverified') ? 'Perlu Konfirmasi Email' : 'Email Manual'}
                   </span>
                   {row.expired && (
                     <span className="freebeat-oauth-pill is-danger">

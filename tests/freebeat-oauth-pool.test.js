@@ -318,10 +318,13 @@ test('migration 20261129000000_freebeat_oauth_accounts creates server-only table
 
     const sql = await fs.readFile(new URL('../supabase/migrations/20261129000000_freebeat_oauth_accounts.sql', import.meta.url), 'utf8');
     await db.exec(sql);
+    const sql2 = await fs.readFile(new URL('../supabase/migrations/20261130000000_freebeat_oauth_email_source.sql', import.meta.url), 'utf8');
+    await db.exec(sql2);
 
     const rows = (await db.query('SELECT * FROM public.freebeat_oauth_accounts')).rows;
     assert.equal(rows.length, 1);
     assert.equal(rows[0].account_email, 'utama@gmail.com');
+    assert.equal(rows[0].email_source, 'manual');
     assert.equal(rows[0].account_label, 'Admin BLEA');
     assert.equal(rows[0].image_access, true);
     assert.equal(rows[0].enabled, true);
@@ -649,3 +652,127 @@ test('FreebeatOAuthPanel renders pool add form, failover policy, AdminPage nav g
     await vite.close();
   }
 });
+
+test('OAuth callback updates account_email from JWT/userinfo over stale label and clears stale email if subject changes without email', async () => {
+  const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
+  const makeJwt = (claims) => `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(claims)}.sig`;
+  let exchangeMode = 'initial-sub1';
+  const h = createPoolHarness({
+    onOAuthExchange: () => {
+      if (exchangeMode === 'initial-sub1') {
+        return Response.json({
+          access_token: makeJwt({ sub: 'fb-user-1', email: 'pertama@gmail.com' }),
+          refresh_token: 'ref-a',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'freebeat:read freebeat:generate',
+        });
+      }
+      if (exchangeMode === 'reauth-jwt-email') {
+        return Response.json({
+          access_token: makeJwt({ sub: 'fb-user-2', email: 'kedua-oauth@gmail.com' }),
+          refresh_token: 'ref-b',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'freebeat:read freebeat:generate',
+        });
+      }
+      if (exchangeMode === 'reauth-new-sub-no-email') {
+        return Response.json({
+          access_token: makeJwt({ sub: 'fb-user-3' }),
+          refresh_token: 'ref-c',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'freebeat:read freebeat:generate',
+        });
+      }
+      if (exchangeMode === 'reauth-diff-sub-no-email') {
+        return Response.json({
+          access_token: makeJwt({ sub: 'fb-user-4' }),
+          refresh_token: 'ref-d',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'freebeat:read freebeat:generate',
+        });
+      }
+      return null;
+    },
+  });
+
+  // Stub OAuth userinfo for the userinfo-discovery scenario
+  const innerFetch = globalThis.fetch;
+  let userinfoEmail = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    if (urlStr === 'https://freebeat.ai/.well-known/oauth-authorization-server') {
+      return Response.json({ userinfo_endpoint: 'https://freebeat.ai/oauth/userinfo' });
+    }
+    if (urlStr === 'https://freebeat.ai/oauth/userinfo') {
+      if (userinfoEmail) return Response.json({ email: userinfoEmail, sub: 'fb-user-4' });
+      return Response.json({}, { status: 404 });
+    }
+    return innerFetch(input, init);
+  };
+
+  try {
+    // 1. Koneksi awal via JWT email
+    await connectAccountViaOAuth(h, { email: 'label-awal@gmail.com', label: 'Pool #1' });
+    let list = await (await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'admin-jwt' }), h.env)).json();
+    assert.equal(list.accounts[0].account_email, 'pertama@gmail.com');
+    assert.equal(list.accounts[0].email_source, 'oauth');
+    const rowId = list.accounts[0].id;
+
+    // 2. OAuth Ulang dengan accountId yang sama -> email dari OAuth menimpa email lama walau pending masih mengirim email lama
+    exchangeMode = 'reauth-jwt-email';
+    const start2 = await worker.fetch(apiRequest('/api/freebeat/start', {
+      token: 'admin-jwt',
+      body: { accountId: rowId, email: 'pertama@gmail.com', returnTo: '/admin?tab=freebeat-oauth' },
+    }), h.env);
+    const u2 = new URL((await start2.json()).url);
+    const cookie2 = (start2.headers.get('set-cookie') || '').split(';')[0];
+    await worker.fetch(new Request(`${BASE}/api/freebeat/callback?code=c2&state=${encodeURIComponent(u2.searchParams.get('state'))}`, {
+      headers: { cookie: cookie2 },
+    }), h.env);
+
+    list = await (await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'admin-jwt' }), h.env)).json();
+    assert.equal(list.accounts.length, 1);
+    assert.equal(list.accounts[0].account_email, 'kedua-oauth@gmail.com');
+    assert.equal(list.accounts[0].email_source, 'oauth');
+
+    // 3. OAuth Ulang ke userinfo endpoint saat JWT tidak memuat email
+    exchangeMode = 'reauth-new-sub-no-email';
+    userinfoEmail = 'userinfo-ketiga@gmail.com';
+    const start3 = await worker.fetch(apiRequest('/api/freebeat/start', {
+      token: 'admin-jwt',
+      body: { accountId: rowId, returnTo: '/admin?tab=freebeat-oauth' },
+    }), h.env);
+    const u3 = new URL((await start3.json()).url);
+    const cookie3 = (start3.headers.get('set-cookie') || '').split(';')[0];
+    await worker.fetch(new Request(`${BASE}/api/freebeat/callback?code=c3&state=${encodeURIComponent(u3.searchParams.get('state'))}`, {
+      headers: { cookie: cookie3 },
+    }), h.env);
+    list = await (await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'admin-jwt' }), h.env)).json();
+    assert.equal(list.accounts[0].account_email, 'userinfo-ketiga@gmail.com');
+    assert.equal(list.accounts[0].email_source, 'oauth');
+
+    // 4. Jika OAuth tidak mengembalikan email sama sekali tapi subject (sub) berubah, email lama dibersihkan agar tidak menyesatkan
+    exchangeMode = 'reauth-diff-sub-no-email';
+    userinfoEmail = null;
+    const start4 = await worker.fetch(apiRequest('/api/freebeat/start', {
+      token: 'admin-jwt',
+      body: { accountId: rowId, returnTo: '/admin?tab=freebeat-oauth' },
+    }), h.env);
+    const u4 = new URL((await start4.json()).url);
+    const cookie4 = (start4.headers.get('set-cookie') || '').split(';')[0];
+    await worker.fetch(new Request(`${BASE}/api/freebeat/callback?code=c4&state=${encodeURIComponent(u4.searchParams.get('state'))}`, {
+      headers: { cookie: cookie4 },
+    }), h.env);
+    list = await (await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'admin-jwt' }), h.env)).json();
+    assert.equal(list.accounts[0].account_email, '');
+    assert.equal(list.accounts[0].email_source, 'unverified');
+  } finally {
+    globalThis.fetch = innerFetch;
+    h.cleanup();
+  }
+});
+
