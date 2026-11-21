@@ -523,14 +523,13 @@ export function GeneratePage() {
           ...(audioStartSeconds !== '' ? { audio_start_seconds: Number(audioStartSeconds) } : {}),
         };
       } else if (isFreebeatLipSync) {
-        const resolvedVidMs = Number(videoDurationMs) > 0 ? Math.round(Number(videoDurationMs)) : (Number(duration) * 1000);
         referencePayload = {
           image_url: '',
           video_url: effectiveVideoUrl,
           audio_url: effectiveAudioUrl,
         };
         extraFreebeatPayload = {
-          video_duration_ms: resolvedVidMs,
+          ...(Number(videoDurationMs) > 0 ? { video_duration_ms: Math.round(Number(videoDurationMs)) } : {}),
           ...(Number(audioDurationMs) > 0 ? { audio_duration_ms: Math.round(Number(audioDurationMs)) } : {}),
         };
       } else if (!isAlibaba) {

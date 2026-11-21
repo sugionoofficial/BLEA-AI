@@ -40,7 +40,9 @@ function createHarness({
   quote = { status: 'quoted', credits: 700 },
   generateMode = 'success',
   uploadVideoError = false,
+  uploadVideoDurationMs = null,
   firstTokenExhausted = false,
+  failover400AfterSpend = false,
   taskStatus = { status: 'completed', billing: { charged: 700, refunded: null, net: 700 } },
   taskResult = { status: 'completed', result: { video_url: 'https://cdn.example/vocal-final.mp4', cover_url: 'https://cdn.example/cover.jpg' }, billing: { charged: 700, refunded: null, net: 700 } },
 } = {}) {
@@ -104,7 +106,15 @@ function createHarness({
         if (target) Object.assign(target, patch);
         return Response.json(target ? [target] : []);
       }
-      return Response.json(poolRows);
+      const idFilter = url.searchParams.get('id')?.replace(/^eq\./, '');
+      const emailFilter = url.searchParams.get('account_email')?.replace(/^ilike\./, '').toLowerCase();
+      const subFilter = url.searchParams.get('oauth_subject')?.replace(/^eq\./, '');
+      return Response.json(poolRows.filter((r) => {
+        if (idFilter && r.id !== idFilter) return false;
+        if (emailFilter && String(r.account_email || '').toLowerCase() !== emailFilter) return false;
+        if (subFilter && r.oauth_subject !== subFilter) return false;
+        return true;
+      }));
     }
     if (url.pathname === '/rest/v1/freebeat_provider_sessions') {
       if (method === 'POST') {
@@ -161,6 +171,8 @@ function createHarness({
         return new Response(null, { status: 202 });
       }
       if (rpc.method === 'tools/list') {
+        const isFirstToken = auth === 'Bearer FB-TOKEN-1';
+        const singingMaxDur = (failover400AfterSpend && !isFirstToken) ? 10 : 60;
         return Response.json({
           jsonrpc: '2.0',
           id: rpc.id,
@@ -174,7 +186,7 @@ function createHarness({
                   properties: {
                     mode: { type: 'string', enum: ['solo', 'duet'] },
                     image_urls: { type: 'array', maxItems: 2, items: { type: 'string' } },
-                    duration_seconds: { type: 'number', minimum: 1, maximum: 60 },
+                    duration_seconds: { type: 'number', minimum: 1, maximum: singingMaxDur },
                     music_id: { type: 'integer' },
                     audio_url: { type: 'string' },
                     audio_start_seconds: { type: 'number', minimum: 0 },
@@ -215,12 +227,27 @@ function createHarness({
           if (uploadVideoError) {
             return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { isError: true, content: [{ type: 'text', text: 'upload_video failed' }] } });
           }
-          return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify({ video_url: 'https://freebeat.ai/media/synced-source.mp4' }) }] } });
+          return Response.json({
+            jsonrpc: '2.0',
+            id: rpc.id,
+            result: {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  video_url: 'https://freebeat.ai/media/synced-source.mp4',
+                  ...(uploadVideoDurationMs ? { video_duration_ms: uploadVideoDurationMs } : {}),
+                }),
+              }],
+            },
+          });
         }
         if (name === 'quote_generation') {
           return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(quote) }] } });
         }
         if (name === 'generate_singing_video' || name === 'generate_lip_sync_video') {
+          if (failover400AfterSpend && auth === 'Bearer FB-TOKEN-1') {
+            return Response.json({ jsonrpc: '2.0', id: rpc.id, error: { code: 402, message: 'insufficient credits' } }, { status: 402 });
+          }
           if (genMode === 'error') {
             return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { isError: true, content: [{ type: 'text', text: 'upstream rejected' }] } });
           }
@@ -443,6 +470,52 @@ test('/api/video/generate Lip-Sync Video: upload_video non-Freebeat, skip upload
     assert.equal(dispatch.args.video_duration_ms, 8500);
   } finally {
     hSkipUpload.restore();
+  }
+
+  // 4) Pasted URL without explicit video_duration_ms adopts upload_video duration_ms
+  const hRealDur = createHarness({ uploadVideoDurationMs: 22400 });
+  try {
+    await hRealDur.seedFreebeatAccount();
+    const res = await worker.fetch(apiRequest('/api/video/generate', {
+      body: {
+        provider: 'freebeat',
+        model: 'generate_lip_sync_video',
+        video_url: 'https://storage.example/pasted-face.mp4',
+        duration: 5,
+        audio_url: 'https://storage.example/voice.mp3',
+      },
+    }), hRealDur.env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.generation.duration, 22);
+    const dispatch = hRealDur.mcpCalls.find((c) => c.name === 'generate_lip_sync_video');
+    assert.equal(dispatch.args.video_duration_ms, 22400);
+  } finally {
+    hRealDur.restore();
+  }
+
+  // 5) 400 validation error during failover AFTER spend_credits MUST refund and fail row cleanly
+  const hFailover400 = createHarness({ failover400AfterSpend: true });
+  try {
+    await hFailover400.seedFreebeatAccount('FB-TOKEN-1', 'fb1@example.com');
+    await hFailover400.seedFreebeatAccount('FB-TOKEN-2', 'fb2@example.com');
+    const res = await worker.fetch(apiRequest('/api/video/generate', {
+      body: {
+        provider: 'freebeat',
+        model: 'generate_singing_video',
+        duration: 15,
+        audio_url: 'https://cdn.example/song.mp3',
+        reference_images: ['https://cdn.example/singer.jpg'],
+      },
+    }), hFailover400.env);
+    assert.equal(res.status, 400);
+    assert.equal(hFailover400.spends.length, 1);
+    assert.equal(hFailover400.refunds.length, 1);
+    assert.equal(hFailover400.refunds[0].p_amount, 3000);
+    assert.equal(hFailover400.getRow().status, 'failed');
+    assert.equal(hFailover400.getRow().credits_refunded, 3000);
+  } finally {
+    hFailover400.restore();
   }
 });
 

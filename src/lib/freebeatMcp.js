@@ -4595,7 +4595,10 @@ function validateConsumerVocalPayload(payload) {
   if (!videoUrl) {
     throw fail('Lip-Sync Video wajib menyertakan file video atau URL video HTTPS publik yang valid.', 400);
   }
-  const rawVideoDurMs = payload.video_duration_ms !== undefined && payload.video_duration_ms !== null && payload.video_duration_ms !== ''
+  const videoDurationMsExplicit = payload.video_duration_ms !== undefined
+    && payload.video_duration_ms !== null
+    && payload.video_duration_ms !== '';
+  const rawVideoDurMs = videoDurationMsExplicit
     ? Number(payload.video_duration_ms)
     : Math.round(Number(payload.duration || 5) * 1000);
   if (!Number.isSafeInteger(rawVideoDurMs) || rawVideoDurMs <= 0 || rawVideoDurMs > 600000) {
@@ -4617,6 +4620,7 @@ function validateConsumerVocalPayload(payload) {
     videoUrl,
     audioUrl,
     videoDurationMs: rawVideoDurMs,
+    videoDurationMsExplicit,
     audioDurationMs,
     prompt,
     removeWatermark,
@@ -4680,6 +4684,7 @@ export async function consumerVocalGenerate(env, user, payload) {
       let balanceCheck = { credits: null, payload: null };
       let musicId = null;
       let effectiveVideoUrl = input.videoUrl || null;
+      let effectiveVideoDurationMs = input.videoDurationMs;
       let resolvedMode = input.requestedMode || null;
       let schemaMeta = cachedVocalSchemaMeta;
 
@@ -4715,6 +4720,9 @@ export async function consumerVocalGenerate(env, user, payload) {
           if (!isFreebeatHostedMediaUrl(effectiveVideoUrl)) {
             const uploadedVideo = await vocalUploadVideo(opened.session.accessToken, { video_url: effectiveVideoUrl }, opened.headers, true);
             effectiveVideoUrl = uploadedVideo.video_url || effectiveVideoUrl;
+            if (!input.videoDurationMsExplicit && Number.isSafeInteger(uploadedVideo.duration_ms) && uploadedVideo.duration_ms > 0) {
+              effectiveVideoDurationMs = uploadedVideo.duration_ms;
+            }
           }
         }
 
@@ -4740,8 +4748,8 @@ export async function consumerVocalGenerate(env, user, payload) {
           musicId = Number(String(rawId).trim());
         }
       } catch (err) {
-        if (err?.status === 400) throw err;
-        if (isAccountFailoverError(err)) {
+        if (err?.status === 400 && !spentState) throw err;
+        if (err?.status !== 400 && isAccountFailoverError(err)) {
           if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
           await recordPoolAccountOutcome(env, account, {
             success: false,
@@ -4770,7 +4778,7 @@ export async function consumerVocalGenerate(env, user, payload) {
           }
         : {
             video_url: effectiveVideoUrl,
-            video_duration_ms: input.videoDurationMs,
+            video_duration_ms: effectiveVideoDurationMs,
             ...(musicId !== null ? { music_id: musicId } : { audio_url: input.audioUrl }),
             ...(input.audioDurationMs !== undefined ? { audio_duration_ms: input.audioDurationMs } : {}),
             ...(input.prompt ? { name: input.prompt } : {}),
@@ -4854,7 +4862,7 @@ export async function consumerVocalGenerate(env, user, payload) {
 
         const rawDurationSec = input.tool === 'generate_singing_video'
           ? input.durationSeconds
-          : (input.videoDurationMs / 1000);
+          : (effectiveVideoDurationMs / 1000);
         const clampedDbDuration = Math.max(1, Math.min(120, Math.round(rawDurationSec)));
 
         const metadata = {
