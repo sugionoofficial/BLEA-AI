@@ -778,12 +778,16 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
       input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     });
 
-    // Primary button reads "Scan Metadata"
+    // Primary button reads "Scan Metadata" & no red AI DETECTION stamp before scan
     const primaryBtn = () => document.querySelector('[data-testid="metadata-primary-action"]');
+    const aiStamp = () => document.querySelector('[data-testid="ai-detection-stamp"]');
     assert.match(primaryBtn().textContent, /Scan Metadata/);
+    assert.equal(aiStamp(), null);
 
-    // Click Scan -> calls /api/metadata/scan, displays Cloudflare AI model, detected models, "Akan Dihapus" tags & SAME button becomes Remove Metadata (100 Kredit)
+    // Click Scan -> calls /api/metadata/scan, renders red AI DETECTION stamp on photo, displays Cloudflare AI model, detected models, "Akan Dihapus" tags & SAME button becomes Remove Metadata (100 Kredit)
     await React.act(async () => { primaryBtn().click(); });
+    assert.ok(aiStamp());
+    assert.match(aiStamp().textContent, /AI DETECTION/);
     assert.match(document.body.textContent, /Dipindai dengan Cloudflare AI/);
     assert.match(document.body.textContent, /@cf\/meta\/llama-4-scout-17b-16e-instruct/);
     assert.match(document.body.textContent, /Terdeteksi Nama Model \/ Jejak Buatan AI/);
@@ -791,8 +795,9 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
     assert.match(document.body.textContent, /Akan Dihapus/);
     assert.match(primaryBtn().textContent, /Remove Metadata \(100 Kredit\)/);
 
-    // Click Remove -> executes cleaning & SAME button becomes Download Hasil Bersih
+    // Click Remove -> executes cleaning, red AI DETECTION stamp disappears, & SAME button becomes Download Hasil Bersih
     await React.act(async () => { primaryBtn().click(); });
+    assert.equal(aiStamp(), null);
     assert.match(primaryBtn().textContent, /Download Hasil Bersih/);
     assert.match(document.body.textContent, /0 tersisa · Bersih/);
 
@@ -835,10 +840,14 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
     });
     assert.doesNotMatch(document.body.textContent, /Ukuran file terlalu besar/);
     assert.match(primaryBtn().textContent, /Scan Metadata/);
+    assert.equal(aiStamp(), null);
     await React.act(async () => { primaryBtn().click(); });
+    assert.ok(aiStamp());
+    assert.match(aiStamp().textContent, /AI DETECTION/);
     assert.match(primaryBtn().textContent, /Remove Metadata \(100 Kredit\)/);
     await React.act(async () => { primaryBtn().click(); });
     assert.equal(seenClientCleaned, true);
+    assert.equal(aiStamp(), null);
     assert.match(primaryBtn().textContent, /Download Hasil Bersih/);
     assert.match(document.body.textContent, /langsung dari perangkat Anda/);
   } finally {

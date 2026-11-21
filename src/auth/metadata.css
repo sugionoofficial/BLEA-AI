@@ -319,6 +319,7 @@
 }
 
 .dropx-shell .meta-preview-box {
+  position: relative;
   overflow: hidden;
   border-radius: 12px;
   border: 1px solid var(--border);
@@ -326,6 +327,56 @@
   aspect-ratio: 16 / 10;
   display: grid;
   place-items: center;
+}
+
+.dropx-shell .meta-preview-box.has-ai-stamp {
+  border-color: rgb(220 38 38 / 0.65);
+}
+
+.dropx-shell .meta-ai-stamp-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(127 29 29 / 0.14);
+  pointer-events: none;
+  z-index: 2;
+  animation: metaStampIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dropx-shell .meta-ai-stamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 22px;
+  border: 4px solid #dc2626;
+  outline: 2px solid rgb(220 38 38 / 0.6);
+  outline-offset: 4px;
+  border-radius: 10px;
+  background: rgb(254 242 242 / 0.9);
+  box-shadow: 0 10px 28px rgb(220 38 38 / 0.34);
+  transform: rotate(-12deg);
+}
+
+.dropx-shell .meta-ai-stamp span {
+  font-size: clamp(18px, 3vw, 27px);
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  line-height: 1.1;
+  color: #dc2626;
+  white-space: nowrap;
+}
+
+@keyframes metaStampIn {
+  from {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .dropx-shell .meta-preview-box img,
