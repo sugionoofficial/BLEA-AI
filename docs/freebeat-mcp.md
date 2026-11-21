@@ -64,3 +64,29 @@ Untuk catatan `submitted`, tombol status memakai `get_task_status` dengan batch 
 
 Bagian **Inspeksi skema Singing & Lip-Sync Video** di `/admin/freebeat` memanggil `POST /api/freebeat/vocal-video-schemas` untuk mengambil `inputSchema` resmi dari `tools/list` bagi `generate_singing_video`, `generate_lip_sync_video`, `upload_video`, dan tool pendukung terkait (`upload_audio`, `upload_image`, `quote_generation`, `get_task_status`, `get_task_result`, `get_video_session`, `send_video_agent_message`) tanpa memakai kredit atau menjalankan `tools/call`. Mode bawaan hanya mengembalikan struktur tipe, properti, dan enumerasi aman (`SAFE_VOCAL_VIDEO_SCHEMA_ENUMS`); mode lengkap (`acknowledge: true`) menambahkan deskripsi, batas angka, nilai bawaan, serta daftar enum lengkap setelah penyamaran pola URL, email, dan kredensial, dan dikosongkan otomatis saat sesi diputus.
 
+## Singing Video & Lip-Sync Video (Admin & Konsumen `/generate`)
+
+BLEA mendukung dua tool generasi vokal resmi dari Freebeat Remote MCP:
+
+1. **Singing Video (`generate_singing_video`)**
+   - Input wajib: 1–2 foto karakter/penyanyi (`image_urls`), audio/lagu (`audio_url` via upload atau HTTPS URL → otomatis diteruskan ke `upload_audio` untuk memperoleh `music_id` bila tersedia atau fallback ke `audio_url`), `duration_seconds` (`1..120` di BLEA, atau sesuai batas skema live `tools/list`), serta `mode` (`auto` / mode non-duet resmi dari skema live atau `duet` bila 2 penyanyi).
+   - Opsi tambahan: `aspect_ratio` (`16:9`, `9:16`, `1:1`), `audio_start_seconds` (opsional ≥ 0), `scene_prompt` (opsional, arahan panggung/ekspresi).
+2. **Lip-Sync Video (`generate_lip_sync_video`)**
+   - Input wajib: video wajah/subjek (`video_url`, MP4/MOV/WebM/M4V ≤ 100 MB diunggah ke bucket `ai-studio-uploads` folder `${userId}/freebeat-source-video/` atau URL HTTPS; Worker otomatis meneruskannya ke `upload_video` Freebeat kecuali sudah berada di host `freebeat.ai`/`freebeatfit.com`), `video_duration_ms` (dideteksi otomatis dari metadata video di browser atau diisi manual), serta audio/suara (`audio_url` / `music_id`).
+   - Opsi tambahan: `name` (judul klip opsional) dan `audio_duration_ms` (opsional).
+
+### Admin (`/admin/freebeat`)
+- Memerlukan migrasi `20261202000000_freebeat_admin_vocal_tests.sql` (`freebeat_admin_vocal_tests` dengan lock satu pengiriman aktif per admin `freebeat_one_unresolved_vocal_test_per_admin`).
+- Komponen `FreebeatSingingLipSyncDiagnostic` menyediakan:
+  - Penemuan skema live (`POST /api/freebeat/vocal-video-schemas`),
+  - Upload sumber video/audio ke `ai-studio-uploads`,
+  - Quote (`POST /api/freebeat/vocal-quote`) dan persiapan persetujuan HMAC (`POST /api/freebeat/vocal-prepare`),
+  - Pengiriman satu kali (`POST /api/freebeat/vocal-submit`) dengan opsi `max_credits` + `accept_unknown_cost`,
+  - Riwayat & polling status (`GET /api/freebeat/vocal-tests`, `POST /api/freebeat/vocal-task`), serta agen sesi video (`POST /api/freebeat/vocal-session`, `POST /api/freebeat/vocal-message`).
+
+### Konsumen (`/generate`)
+- Memerlukan migrasi `20261203000000_freebeat_vocal_video_prices.sql` (`credit_model_prices`: `freebeat:generate_singing_video` dan `freebeat:generate_lip_sync_video`, aktif 3000 kredit BLEA).
+- `GET /api/video/models` mengembalikan keduanya melalui `consumerFreebeatVideoConfigs` (tanpa panggilan upstream Freebeat saat pemuatan daftar model).
+- `POST /api/video/generate` merutekan `generate_singing_video` dan `generate_lip_sync_video` ke `consumerVocalGenerate`, yang memvalidasi batas kredit provider (`FREEBEAT_VOCAL_MAX_PROVIDER_CREDITS` / `FREEBEAT_DANCE_MAX_PROVIDER_CREDITS`), saldo pool minimum (`FREEBEAT_VOCAL_MIN_CREDITS`), melakukan `upload_video` dan `upload_audio` sebelum memotong kredit BLEA (`spend_credits`), dan otomatis melakukan refund penuh lewat `pollVideoGenerationRow` bila job berstatus `failed`, `cancelled`, atau `expired`.
+
+

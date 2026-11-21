@@ -1413,8 +1413,14 @@ async function imageJson(request) {
   try { return await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
 }
 async function imageDb(env, path, options = {}, kind = 'image') {
-  const label = kind === 'dance' ? 'dance' : kind === 'video' ? 'video' : 'gambar';
-  const table = kind === 'dance' ? 'freebeat_admin_dance_tests' : kind === 'video' ? 'freebeat_admin_video_tests' : 'freebeat_admin_image_tests';
+  const label = kind === 'vocal' ? 'vokal' : kind === 'dance' ? 'dance' : kind === 'video' ? 'video' : 'gambar';
+  const table = kind === 'vocal'
+    ? 'freebeat_admin_vocal_tests'
+    : kind === 'dance'
+      ? 'freebeat_admin_dance_tests'
+      : kind === 'video'
+        ? 'freebeat_admin_video_tests'
+        : 'freebeat_admin_image_tests';
   if (!env.SUPABASE_SERVICE_ROLE_KEY || !env.SUPABASE_URL) throw fail(`Penyimpanan uji ${label} belum dikonfigurasi; tidak ada generasi yang dikirim.`, 503);
   const base = new URL(env.SUPABASE_URL);
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw fail(`Konfigurasi penyimpanan uji ${label} tidak valid.`, 503);
@@ -2145,6 +2151,638 @@ async function danceMessage(env, user, session, request) {
   };
 }
 
+// --- Singing & Lip-Sync Video Director (generate_singing_video / generate_lip_sync_video) ---
+const SINGING_RATIOS = new Set(['9:16', '16:9', '1:1']);
+const VOCAL_TOOLS_ALLOWED = new Set(['generate_singing_video', 'generate_lip_sync_video']);
+const SINGING_ALLOWED_KEYS = new Set([
+  'tool',
+  'mode',
+  'image_urls',
+  'duration_seconds',
+  'music_id',
+  'audio_url',
+  'audio_start_seconds',
+  'aspect_ratio',
+  'scene_prompt',
+  'remove_watermark',
+]);
+const LIP_SYNC_ALLOWED_KEYS = new Set([
+  'tool',
+  'video_url',
+  'video_duration_ms',
+  'music_id',
+  'audio_url',
+  'audio_duration_ms',
+  'name',
+  'remove_watermark',
+]);
+
+let cachedVocalSchemaMeta = null;
+
+function extractVocalSchemaMetaFromTools(toolList) {
+  const meta = {
+    singingModes: [],
+    singingMinDuration: null,
+    singingMaxDuration: null,
+    singingMaxImages: 5,
+    lipSyncMinDurationMs: null,
+    lipSyncMaxDurationMs: null,
+    lipSyncMinAudioMs: null,
+    lipSyncMaxAudioMs: null,
+  };
+  if (!Array.isArray(toolList)) return meta;
+  for (const tool of toolList) {
+    if (!tool || typeof tool !== 'object') continue;
+    if (tool.name === 'generate_singing_video') {
+      const props = tool.inputSchema?.properties || {};
+      if (Array.isArray(props.mode?.enum)) {
+        meta.singingModes = props.mode.enum
+          .filter((item) => typeof item === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(item))
+          .slice(0, 20);
+      }
+      if (typeof props.duration_seconds?.minimum === 'number' && Number.isFinite(props.duration_seconds.minimum)) {
+        meta.singingMinDuration = props.duration_seconds.minimum;
+      }
+      if (typeof props.duration_seconds?.maximum === 'number' && Number.isFinite(props.duration_seconds.maximum)) {
+        meta.singingMaxDuration = props.duration_seconds.maximum;
+      }
+      if (Number.isSafeInteger(props.image_urls?.maxItems) && props.image_urls.maxItems >= 1 && props.image_urls.maxItems <= 10) {
+        meta.singingMaxImages = props.image_urls.maxItems;
+      }
+    }
+    if (tool.name === 'generate_lip_sync_video') {
+      const props = tool.inputSchema?.properties || {};
+      if (typeof props.video_duration_ms?.minimum === 'number' && Number.isFinite(props.video_duration_ms.minimum)) {
+        meta.lipSyncMinDurationMs = props.video_duration_ms.minimum;
+      }
+      if (typeof props.video_duration_ms?.maximum === 'number' && Number.isFinite(props.video_duration_ms.maximum)) {
+        meta.lipSyncMaxDurationMs = props.video_duration_ms.maximum;
+      }
+      if (typeof props.audio_duration_ms?.minimum === 'number' && Number.isFinite(props.audio_duration_ms.minimum)) {
+        meta.lipSyncMinAudioMs = props.audio_duration_ms.minimum;
+      }
+      if (typeof props.audio_duration_ms?.maximum === 'number' && Number.isFinite(props.audio_duration_ms.maximum)) {
+        meta.lipSyncMaxAudioMs = props.audio_duration_ms.maximum;
+      }
+    }
+  }
+  return meta;
+}
+
+async function discoverVocalToolSchemaMeta(accessToken, existingHeaders = null) {
+  try {
+    const headers = existingHeaders || await openMcp(accessToken);
+    const collected = [];
+    const cursors = new Set();
+    let cursor;
+    for (let page = 0; page < 5; page += 1) {
+      const { result } = await rpc(
+        accessToken,
+        { jsonrpc: '2.0', id: page + 10, method: 'tools/list', params: cursor ? { cursor } : {} },
+        'inspect',
+        headers,
+        262144,
+      );
+      if (!Array.isArray(result?.tools)) break;
+      for (const tool of result.tools) {
+        if (tool && (tool.name === 'generate_singing_video' || tool.name === 'generate_lip_sync_video')) {
+          collected.push(tool);
+        }
+      }
+      if (collected.length >= 2 || !result.nextCursor) break;
+      if (typeof result.nextCursor !== 'string' || result.nextCursor.length > 1024 || cursors.has(result.nextCursor)) break;
+      cursors.add(result.nextCursor);
+      cursor = result.nextCursor;
+    }
+    if (!collected.length) return cachedVocalSchemaMeta;
+    const parsed = extractVocalSchemaMetaFromTools(collected);
+    cachedVocalSchemaMeta = parsed;
+    return parsed;
+  } catch {
+    return cachedVocalSchemaMeta;
+  }
+}
+
+function resolveSingingMode(rawMode, schemaMeta, imageCount = 1) {
+  const clean = typeof rawMode === 'string' ? rawMode.trim() : '';
+  if (clean && !/^[A-Za-z0-9_-]{1,64}$/.test(clean)) {
+    throw fail('Format mode bernyanyi tidak valid.', 400);
+  }
+  const modes = Array.isArray(schemaMeta?.singingModes) ? schemaMeta.singingModes : [];
+  if (modes.length > 0) {
+    if (clean && modes.includes(clean)) return clean;
+    const soloAlias = !clean || ['auto', 'solo', 'single', 'standard', 'normal', 'default'].includes(clean.toLowerCase());
+    if (!clean || clean.toLowerCase() === 'auto') {
+      if (imageCount >= 2 && modes.includes('duet')) return 'duet';
+      return modes.find((m) => m.toLowerCase() !== 'duet') || modes[0];
+    }
+    if (soloAlias) {
+      return modes.find((m) => m.toLowerCase() !== 'duet') || modes[0];
+    }
+    return clean;
+  }
+  if (!clean || clean.toLowerCase() === 'auto') {
+    return imageCount >= 2 ? 'duet' : 'solo';
+  }
+  return clean;
+}
+
+function normalizeVocalMusicId(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw fail('music_id harus berupa bilangan bulat >= 0.', 400);
+    return value;
+  }
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (!s) return null;
+  if (!/^\d{1,15}$/.test(s)) {
+    throw fail('music_id untuk singing/lip-sync video harus berupa bilangan bulat (integer) atau gunakan audio_url.', 400);
+  }
+  return Number(s);
+}
+
+function validateSingingInput(input, schemaMeta = null) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !SINGING_ALLOWED_KEYS.has(k))) {
+    throw fail('Parameter singing video tidak valid.', 400);
+  }
+  const maxImages = schemaMeta?.singingMaxImages || 5;
+  if (!Array.isArray(input.image_urls) || input.image_urls.length === 0) {
+    throw fail('Singing video wajib menyertakan minimal 1 foto karakter/penyanyi.', 400);
+  }
+  if (input.image_urls.length > maxImages) {
+    throw fail(`Maksimal ${maxImages} foto penyanyi.`, 400);
+  }
+  const image_urls = input.image_urls.map((raw) => {
+    const safe = consumerImageUrl(typeof raw === 'string' ? raw : '');
+    if (!safe) throw fail('Setiap foto penyanyi harus berupa URL HTTPS publik yang valid.', 400);
+    return safe;
+  });
+  const durNum = Number(input.duration_seconds);
+  if (!Number.isFinite(durNum) || durNum <= 0 || durNum > 600) {
+    throw fail('duration_seconds harus berupa angka > 0 dan <= 600 detik.', 400);
+  }
+  if (typeof schemaMeta?.singingMinDuration === 'number' && durNum < schemaMeta.singingMinDuration) {
+    throw fail(`duration_seconds minimal ${schemaMeta.singingMinDuration} detik sesuai skema Freebeat.`, 400);
+  }
+  if (typeof schemaMeta?.singingMaxDuration === 'number' && durNum > schemaMeta.singingMaxDuration) {
+    throw fail(`duration_seconds maksimal ${schemaMeta.singingMaxDuration} detik sesuai skema Freebeat.`, 400);
+  }
+  const mode = resolveSingingMode(input.mode, schemaMeta, image_urls.length);
+
+  let music_id = null;
+  if (input.music_id !== undefined && input.music_id !== null && input.music_id !== '') {
+    music_id = normalizeVocalMusicId(input.music_id);
+  }
+  let audio_url = null;
+  if (input.audio_url !== undefined && input.audio_url !== null && String(input.audio_url).trim() !== '') {
+    audio_url = consumerImageUrl(typeof input.audio_url === 'string' ? input.audio_url : '');
+    if (!audio_url) throw fail('audio_url harus berupa URL HTTPS publik yang valid.', 400);
+  }
+  if (music_id === null && !audio_url) {
+    throw fail('Isi music_id atau audio_url HTTPS untuk singing video.', 400);
+  }
+
+  let audio_start_seconds;
+  if (input.audio_start_seconds !== undefined && input.audio_start_seconds !== null && input.audio_start_seconds !== '') {
+    const startNum = Number(input.audio_start_seconds);
+    if (!Number.isFinite(startNum) || startNum < 0 || startNum > 600) {
+      throw fail('audio_start_seconds harus berupa angka >= 0 dan <= 600 detik.', 400);
+    }
+    audio_start_seconds = startNum;
+  }
+
+  const rawRatio = typeof input.aspect_ratio === 'string' ? input.aspect_ratio.trim() : '';
+  if (rawRatio && !SINGING_RATIOS.has(rawRatio)) {
+    throw fail('Rasio aspek singing video harus 9:16, 16:9, atau 1:1.', 400);
+  }
+  const aspect_ratio = rawRatio || '9:16';
+
+  let scene_prompt = '';
+  if (input.scene_prompt !== undefined && input.scene_prompt !== null) {
+    if (typeof input.scene_prompt !== 'string' || input.scene_prompt.trim().length > 2000) {
+      throw fail('scene_prompt maksimal 2000 karakter.', 400);
+    }
+    scene_prompt = input.scene_prompt.trim();
+  }
+  const remove_watermark = input.remove_watermark === true;
+
+  return {
+    mode,
+    image_urls,
+    duration_seconds: durNum,
+    aspect_ratio,
+    ...(music_id !== null ? { music_id } : {}),
+    ...(!music_id && audio_url ? { audio_url } : {}),
+    ...(audio_start_seconds !== undefined ? { audio_start_seconds } : {}),
+    ...(scene_prompt ? { scene_prompt } : {}),
+    ...(remove_watermark ? { remove_watermark: true } : {}),
+  };
+}
+
+function validateLipSyncInput(input, schemaMeta = null) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !LIP_SYNC_ALLOWED_KEYS.has(k))) {
+    throw fail('Parameter lip-sync video tidak valid.', 400);
+  }
+  const video_url = consumerImageUrl(typeof input.video_url === 'string' ? input.video_url : '');
+  if (!video_url) {
+    throw fail('Lip-sync video wajib menyertakan video_url HTTPS publik yang valid.', 400);
+  }
+  const vidDurMs = Number(input.video_duration_ms);
+  if (!Number.isSafeInteger(vidDurMs) || vidDurMs <= 0 || vidDurMs > 600000) {
+    throw fail('video_duration_ms harus berupa bilangan bulat milidetik (> 0 dan <= 600000).', 400);
+  }
+  if (typeof schemaMeta?.lipSyncMinDurationMs === 'number' && vidDurMs < schemaMeta.lipSyncMinDurationMs) {
+    throw fail(`video_duration_ms minimal ${schemaMeta.lipSyncMinDurationMs} ms sesuai skema Freebeat.`, 400);
+  }
+  if (typeof schemaMeta?.lipSyncMaxDurationMs === 'number' && vidDurMs > schemaMeta.lipSyncMaxDurationMs) {
+    throw fail(`video_duration_ms maksimal ${schemaMeta.lipSyncMaxDurationMs} ms sesuai skema Freebeat.`, 400);
+  }
+
+  let music_id = null;
+  if (input.music_id !== undefined && input.music_id !== null && input.music_id !== '') {
+    music_id = normalizeVocalMusicId(input.music_id);
+  }
+  let audio_url = null;
+  if (input.audio_url !== undefined && input.audio_url !== null && String(input.audio_url).trim() !== '') {
+    audio_url = consumerImageUrl(typeof input.audio_url === 'string' ? input.audio_url : '');
+    if (!audio_url) throw fail('audio_url harus berupa URL HTTPS publik yang valid.', 400);
+  }
+  if (music_id === null && !audio_url) {
+    throw fail('Isi music_id atau audio_url HTTPS untuk lip-sync video.', 400);
+  }
+
+  let audio_duration_ms;
+  if (input.audio_duration_ms !== undefined && input.audio_duration_ms !== null && input.audio_duration_ms !== '') {
+    const audDurMs = Number(input.audio_duration_ms);
+    if (!Number.isSafeInteger(audDurMs) || audDurMs <= 0 || audDurMs > 600000) {
+      throw fail('audio_duration_ms harus berupa bilangan bulat milidetik (> 0 dan <= 600000).', 400);
+    }
+    if (typeof schemaMeta?.lipSyncMinAudioMs === 'number' && audDurMs < schemaMeta.lipSyncMinAudioMs) {
+      throw fail(`audio_duration_ms minimal ${schemaMeta.lipSyncMinAudioMs} ms sesuai skema Freebeat.`, 400);
+    }
+    if (typeof schemaMeta?.lipSyncMaxAudioMs === 'number' && audDurMs > schemaMeta.lipSyncMaxAudioMs) {
+      throw fail(`audio_duration_ms maksimal ${schemaMeta.lipSyncMaxAudioMs} ms sesuai skema Freebeat.`, 400);
+    }
+    audio_duration_ms = audDurMs;
+  }
+
+  let name = '';
+  if (input.name !== undefined && input.name !== null) {
+    if (typeof input.name !== 'string' || input.name.trim().length > 200) {
+      throw fail('Nama klip lip-sync maksimal 200 karakter.', 400);
+    }
+    name = input.name.trim();
+  }
+  const remove_watermark = input.remove_watermark === true;
+
+  return {
+    video_url,
+    video_duration_ms: vidDurMs,
+    ...(music_id !== null ? { music_id } : {}),
+    ...(!music_id && audio_url ? { audio_url } : {}),
+    ...(audio_duration_ms !== undefined ? { audio_duration_ms } : {}),
+    ...(name ? { name } : {}),
+    ...(remove_watermark ? { remove_watermark: true } : {}),
+  };
+}
+
+function validateVocalRequest(input, schemaMeta = null) {
+  const tool = typeof input?.tool === 'string' ? input.tool.trim() : '';
+  if (!VOCAL_TOOLS_ALLOWED.has(tool)) {
+    throw fail('Tool tidak valid. Pilih generate_singing_video atau generate_lip_sync_video.', 400);
+  }
+  const parameters = tool === 'generate_singing_video'
+    ? validateSingingInput(input, schemaMeta)
+    : validateLipSyncInput(input, schemaMeta);
+  return { tool, parameters };
+}
+
+async function vocalUploadVideo(accessToken, input, existingHeaders = null, captureToolError = false) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => k !== 'video_url')) {
+    throw fail('Permintaan upload video tidak valid.', 400);
+  }
+  const videoUrl = consumerImageUrl(typeof input.video_url === 'string' ? input.video_url : '');
+  if (!videoUrl) {
+    throw fail('Masukkan URL video HTTPS publik yang valid (MP4, MOV, WebM).', 400);
+  }
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'upload_video', arguments: { url: videoUrl } },
+  }, 'upload', headers, 262144, captureToolError);
+  if (captureToolError && (result?.isError || result?.error)) {
+    if (isFreebeatBalanceExhausted(result)) throw fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 402);
+    throw mcpFailure('upload', 'rpc');
+  }
+  if (result?.isError) throw mcpFailure('upload', 'response');
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('upload', 'response');
+
+  const hostedUrl = safeImageUrl(
+    content.video_url
+    || content.url
+    || content.download_url
+    || content.file_url
+    || content.result?.video_url
+    || content.file?.download_url,
+  );
+  let durationMs = null;
+  const rawMs = content.video_duration_ms ?? content.duration_ms;
+  if (typeof rawMs === 'number' && Number.isFinite(rawMs) && rawMs > 0 && rawMs <= 600000) {
+    durationMs = Math.round(rawMs);
+  } else if (typeof content.duration === 'number' && Number.isFinite(content.duration) && content.duration > 0 && content.duration <= 600) {
+    durationMs = Math.round(content.duration * 1000);
+  }
+  const rawFileId = content.file_id ?? content.video_id ?? content.id;
+  const fileId = (typeof rawFileId === 'string' || typeof rawFileId === 'number')
+    && /^[A-Za-z0-9_.:-]{1,256}$/.test(String(rawFileId).trim())
+    ? String(rawFileId).trim()
+    : null;
+  return {
+    video_url: hostedUrl || videoUrl,
+    hosted: Boolean(hostedUrl),
+    duration_ms: durationMs,
+    file_id: fileId,
+    status: content.status === 'preparing' ? 'preparing' : 'ready',
+  };
+}
+
+async function vocalQuote(accessToken, tool, parameters, raw = false, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'quote_generation', arguments: { tool, parameters } },
+  }, 'quote', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');
+  return raw ? content : safeQuote(content);
+}
+
+const vocalDb = (env, path, options = {}) => imageDb(env, path, options, 'vocal');
+
+async function vocalMark(env, uid, id, status, extra = {}) {
+  const rows = await vocalDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(uid)}&status=eq.dispatching`, {
+    method: 'PATCH',
+    body: { status, ...extra, updated_at: new Date().toISOString() },
+  });
+  if (rows.length !== 1) throw fail('Status penyimpanan uji singing/lip-sync video tidak dapat dipastikan.', 503);
+}
+
+async function prepareVocal(env, user, session, input) {
+  await requireImageSession(session);
+  const headers = await openMcp(session.accessToken);
+  const schemaMeta = await discoverVocalToolSchemaMeta(session.accessToken, headers);
+  const { tool, parameters } = validateVocalRequest(input, schemaMeta);
+  const rawQuote = await vocalQuote(session.accessToken, tool, parameters, true, headers);
+  const credits = quotedCredits(rawQuote);
+  const accept_unknown_cost = credits === null;
+  const max_credits = credits !== null ? credits + videoHeadroom(credits) : null;
+  const expires = Date.now() + APPROVAL_LIFETIME;
+  const approval = await seal({
+    id: crypto.randomUUID(),
+    uid: user.id,
+    sessionHash: await sessionHash(session),
+    tool,
+    parameters,
+    credits,
+    max_credits,
+    accept_unknown_cost,
+    expires,
+  }, env, 'vocal-approval');
+  if (approval.length > 14000) throw fail('Input terlalu besar untuk persetujuan uji singing/lip-sync video.', 400);
+  return {
+    approval,
+    tool,
+    parameters,
+    schema_meta: schemaMeta,
+    credits,
+    max_credits,
+    accept_unknown_cost,
+    cost_mode: accept_unknown_cost ? 'accept_unknown_cost' : 'max_credits',
+    quote: safeQuote(rawQuote),
+    expiresAt: expires,
+  };
+}
+
+async function submitVocal(env, user, session, request) {
+  await requireImageSession(session);
+  const input = await imageJson(request);
+  const allowedKeys = new Set(['approval', 'confirm', 'confirm_unknown_cost']);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !allowedKeys.has(k)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 14000) {
+    throw fail('Persetujuan uji singing/lip-sync video tidak valid.', 400);
+  }
+  const ticket = await unseal(input.approval, env, 'vocal-approval', 14000);
+  if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !VOCAL_TOOLS_ALLOWED.has(ticket.tool) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME) {
+    throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
+  }
+  const { tool, parameters } = validateVocalRequest({ tool: ticket.tool, ...ticket.parameters }, null);
+  if (ticket.accept_unknown_cost === true && input.confirm_unknown_cost !== true) {
+    throw fail('Persetujuan biaya tidak diketahui di awal diperlukan untuk mengirimkan video tanpa quote pasti.', 400);
+  }
+  const headers = await openMcp(session.accessToken);
+  const current = quotedCredits(await vocalQuote(session.accessToken, tool, parameters, true, headers));
+  if (ticket.accept_unknown_cost === false) {
+    if (current === null || current !== ticket.credits) throw fail('Quote berubah atau tidak tersedia. Tidak ada video dikirim; buat quote baru.', 409);
+  } else if (current !== null) {
+    throw fail('Quote numerik kini tersedia. Buat persetujuan ulang agar batas maksimum kredit dikirim.', 409);
+  }
+  if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
+  const rows = await vocalDb(env, '', {
+    method: 'POST',
+    body: {
+      id: ticket.id,
+      admin_id: user.id,
+      session_hash: ticket.sessionHash,
+      tool_name: tool,
+      mode: tool === 'generate_singing_video' ? parameters.mode : null,
+      aspect_ratio: tool === 'generate_singing_video' ? parameters.aspect_ratio : null,
+      duration_seconds: tool === 'generate_singing_video' ? parameters.duration_seconds : null,
+      video_duration_ms: tool === 'generate_lip_sync_video' ? parameters.video_duration_ms : null,
+      quote_credits: ticket.credits,
+      max_credits: ticket.accept_unknown_cost ? null : ticket.max_credits,
+      accept_unknown_cost: ticket.accept_unknown_cost,
+      status: 'dispatching',
+    },
+  });
+  if (rows.length !== 1 || rows[0]?.id !== ticket.id) {
+    throw fail('Pencatatan belum dapat dipastikan. Jangan ulangi sebelum memeriksa catatan.', 503);
+  }
+  if (ticket.expires <= Date.now()) {
+    try { await vocalMark(env, user.id, ticket.id, 'reviewed', { task_id: null }); } catch { /* retain lock */ }
+    throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada video dikirim.', 409);
+  }
+  let content;
+  try {
+    const args = {
+      ...parameters,
+      ...(ticket.accept_unknown_cost ? { accept_unknown_cost: true } : { max_credits: ticket.max_credits }),
+    };
+    const { result } = await rpc(session.accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: tool, arguments: args },
+    }, 'generate', headers, 262144);
+    if (result.isError) throw new Error('unrecognized');
+    content = modelContent(result);
+    if (!content || typeof content !== 'object') throw new Error('unrecognized');
+  } catch {
+    try { await vocalMark(env, user.id, ticket.id, 'unknown', { task_id: null }); } catch { /* retain lock */ }
+    return { id: ticket.id, status: 'unknown' };
+  }
+  if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
+    try { await vocalMark(env, user.id, ticket.id, 'reviewed', { task_id: null }); } catch { /* retain lock */ }
+    return {
+      id: ticket.id,
+      status: 'preparing',
+      music_id: String(content.music_id),
+      retry_after_seconds: Number.isFinite(content.retry_after_seconds) ? content.retry_after_seconds : 10,
+    };
+  }
+  const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
+  if (!taskId) {
+    try { await vocalMark(env, user.id, ticket.id, 'unknown', { task_id: null }); } catch { /* retain lock */ }
+    return { id: ticket.id, status: 'unknown' };
+  }
+  const sessionUrl = safeImageUrl(content.session_url);
+  try {
+    await vocalMark(env, user.id, ticket.id, 'submitted', { task_id: taskId, ...(sessionUrl ? { session_url: sessionUrl } : {}) });
+  } catch {
+    return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId };
+  }
+  return { id: ticket.id, status: 'submitted', ...(sessionUrl ? { session_url: sessionUrl } : {}) };
+}
+
+async function vocalTests(env, user, session) {
+  const rows = await vocalDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,tool_name,mode,aspect_ratio,duration_seconds,video_duration_ms,quote_credits,max_credits,accept_unknown_cost,status,session_url,created_at,session_hash&order=created_at.desc&limit=20`);
+  const hash = await sessionHash(session);
+  return rows.map((row) => ({
+    id: row.id,
+    tool_name: row.tool_name,
+    mode: row.mode,
+    aspect_ratio: row.aspect_ratio,
+    duration_seconds: row.duration_seconds,
+    video_duration_ms: row.video_duration_ms,
+    quote_credits: row.quote_credits,
+    max_credits: row.max_credits,
+    accept_unknown_cost: row.accept_unknown_cost === true,
+    status: row.status,
+    session_url: safeImageUrl(row.session_url),
+    created_at: row.created_at,
+    canPoll: row.status === 'submitted' && row.session_hash === hash,
+  }));
+}
+
+async function vocalRowForTask(env, user, session, input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
+    throw fail('ID uji vokal/lip-sync tidak valid.', 400);
+  }
+  const rows = await vocalDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash,session_url&limit=1`);
+  const row = rows[0];
+  const sameSession = Boolean(row) && row.session_hash === await sessionHash(session);
+  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || (!sameSession && input.acknowledge !== true)) {
+    throw fail('Uji singing/lip-sync video tidak tersedia pada sesi Freebeat ini.', 404);
+  }
+  return row;
+}
+
+async function pollVocal(env, user, session, request) {
+  const input = await imageJson(request);
+  if (Object.keys(input || {}).some((k) => !['id', 'acknowledge'].includes(k))) throw fail('Permintaan tidak valid.', 400);
+  const row = await vocalRowForTask(env, user, session, input);
+  const headers = await openMcp(session.accessToken);
+  const { result: statusRes } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_task_status', arguments: { task_id: row.task_id } },
+  }, 'task', headers, 262144);
+  const statusContent = modelContent(statusRes);
+  if (!statusContent || typeof statusContent !== 'object' || Array.isArray(statusContent)) throw mcpFailure('task', 'response');
+  const summary = safeTask(statusContent);
+  let resultContent = null;
+  if (['completed', 'failed', 'action_required'].includes(summary.status)) {
+    try {
+      const { result: finalRes } = await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_task_result', arguments: { task_id: row.task_id } },
+      }, 'task', headers, 262144);
+      const parsed = modelContent(finalRes);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
+    } catch { /* fallback to statusContent */ }
+  }
+  const source = resultContent || statusContent;
+  const billingSummary = safeTask(source).billing;
+  const videos = [];
+  const pushVideo = (rawUrl) => {
+    const safe = safeImageUrl(rawUrl);
+    if (safe && !videos.includes(safe)) videos.push(safe);
+  };
+  pushVideo(source?.result?.video_url);
+  pushVideo(source?.video_url);
+  if (Array.isArray(source?.items)) for (const item of source.items.slice(0, 10)) pushVideo(item?.video_url);
+  const cover_url = safeImageUrl(source?.result?.cover_url || source?.cover_url);
+  return {
+    status: summary.status,
+    message: privateFailureReason(statusContent.message || source?.message || ''),
+    session_url: safeImageUrl(source?.session_url || statusContent.session_url || row.session_url),
+    billing: billingSummary,
+    videos,
+    cover_url,
+    failure: safeVideoFailure(source?.failure || statusContent?.failure),
+  };
+}
+
+async function vocalSession(env, user, session, request) {
+  const input = await imageJson(request);
+  if (Object.keys(input || {}).some((k) => !['id', 'acknowledge'].includes(k))) throw fail('Permintaan tidak valid.', 400);
+  const row = await vocalRowForTask(env, user, session, input);
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_video_session', arguments: { task_id: row.task_id } },
+  }, 'task', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('task', 'response');
+  return sanitizeDanceSession(content);
+}
+
+async function vocalMessage(env, user, session, request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !['id', 'message', 'auto_mode'].includes(k))) {
+    throw fail('Permintaan pesan sesi tidak valid.', 400);
+  }
+  const msg = typeof input.message === 'string' ? input.message.trim() : '';
+  if (!msg || msg.length > 2000) throw fail('Isi pesan untuk agen video Freebeat (1–2000 karakter).', 400);
+  const row = await vocalRowForTask(env, user, session, { id: input.id });
+  const headers = await openMcp(session.accessToken);
+  const { result } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: {
+      name: 'send_video_agent_message',
+      arguments: {
+        task_id: row.task_id,
+        message: msg,
+        ...(typeof input.auto_mode === 'boolean' ? { auto_mode: input.auto_mode } : {}),
+      },
+    },
+  }, 'task', headers, 262144);
+  const content = modelContent(result);
+  return {
+    reply: privateFailureReason(content?.reply || content?.message || ''),
+    session: content ? sanitizeDanceSession(content) : null,
+  };
+}
+
 async function optionalStartJson(request) {
   const length = request.headers.get('content-length');
   if (length === '0') return {};
@@ -2414,6 +3052,34 @@ async function dispatchFreebeat(request, url, env, user) {
       }
       const result = await getVocalVideoSchemas(session.accessToken, { acknowledge });
       return response({ ok: true, ...result }, 200, acknowledge ? { 'referrer-policy': 'no-referrer' } : {});
+    }
+    if (['vocal-upload-audio', 'vocal-upload-video', 'vocal-quote', 'vocal-prepare', 'vocal-submit', 'vocal-tests', 'vocal-task', 'vocal-session', 'vocal-message'].includes(action)) {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      if (action === 'vocal-tests' && request.method === 'GET') return response({ ok: true, tests: await vocalTests(env, user, session) });
+      if (action === 'vocal-upload-audio' && request.method === 'POST') return response({ ok: true, ...(await danceUploadAudio(session.accessToken, await imageJson(request))) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'vocal-upload-video' && request.method === 'POST') return response({ ok: true, ...(await vocalUploadVideo(session.accessToken, await imageJson(request))) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'vocal-quote' && request.method === 'POST') {
+        const headers = await openMcp(session.accessToken);
+        const schemaMeta = await discoverVocalToolSchemaMeta(session.accessToken, headers);
+        const { tool, parameters } = validateVocalRequest(await imageJson(request), schemaMeta);
+        const rawQuote = await vocalQuote(session.accessToken, tool, parameters, true, headers);
+        const credits = quotedCredits(rawQuote);
+        return response({
+          ok: true,
+          tool,
+          parameters,
+          schema_meta: schemaMeta,
+          credits,
+          cost_mode: credits !== null ? 'max_credits' : 'accept_unknown_cost',
+          quote: safeQuote(rawQuote),
+        });
+      }
+      if (action === 'vocal-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareVocal(env, user, session, await imageJson(request))) });
+      if (action === 'vocal-submit' && request.method === 'POST') return response({ ok: true, ...(await submitVocal(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'vocal-task' && request.method === 'POST') return response({ ok: true, task: await pollVocal(env, user, session, request) });
+      if (action === 'vocal-session' && request.method === 'POST') return response({ ok: true, session: await vocalSession(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'vocal-message' && request.method === 'POST') return response({ ok: true, ...(await vocalMessage(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-prepare', 'video-submit', 'video-tests', 'video-task', 'video-private-failure'].includes(action)) {
       const session = await readSession(request, env, user.id);
@@ -2975,6 +3641,28 @@ export async function fetchFreebeatCatalogModels(env) {
     category: 'Video',
     tags: ['Video', 'Dance', 'Freebeat'],
     description: 'Model video tari berbasis musik Freebeat MCP.',
+    isFree: false,
+    online: true,
+    priceLabel: 'Kredit BLEA',
+  });
+  put({
+    id: 'generate_singing_video',
+    name: 'Freebeat Singing Video (AI Vocal & MV)',
+    provider: 'freebeat',
+    category: 'Video',
+    tags: ['Video', 'Singing', 'Freebeat'],
+    description: 'Model video bernyanyi AI (solo atau duet) dari foto karakter & audio via Freebeat MCP.',
+    isFree: false,
+    online: true,
+    priceLabel: 'Kredit BLEA',
+  });
+  put({
+    id: 'generate_lip_sync_video',
+    name: 'Freebeat Lip-Sync Video',
+    provider: 'freebeat',
+    category: 'Video',
+    tags: ['Video', 'Lip-Sync', 'Freebeat'],
+    description: 'Model sinkronisasi bibir video sumber dengan audio/lagu via Freebeat MCP.',
     isFree: false,
     online: true,
     priceLabel: 'Kredit BLEA',
@@ -3782,6 +4470,574 @@ export async function consumerDanceGenerate(env, user, payload) {
   throw fail(finalErrorMsg, lastFailoverError?.status || 502);
 }
 
+// ===================== Generasi Freebeat Singing & Lip-Sync Video (konsumen) =====================
+function consumerVocalCeiling(env) {
+  const raw = env?.FREEBEAT_VOCAL_MAX_PROVIDER_CREDITS ?? env?.FREEBEAT_DANCE_MAX_PROVIDER_CREDITS;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 100 && n <= 100000 ? n : 2000;
+}
+function consumerVocalMinBalance(env) {
+  const raw = env?.FREEBEAT_VOCAL_MIN_CREDITS;
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 100000) return n;
+  }
+  return 100;
+}
+
+export async function consumerFreebeatVideoConfigs(env) {
+  let ready = false;
+  try {
+    const session = await loadProviderSession(env);
+    ready = Boolean(session?.imageAccess);
+  } catch { ready = false; }
+  const readPrice = async (model) => {
+    try { return await consumerImagePrice(env, model, 'video'); } catch { return null; }
+  };
+  const [danceCredits, singingCredits, lipSyncCredits] = await Promise.all([
+    readPrice('generate_dance_video'),
+    readPrice('generate_singing_video'),
+    readPrice('generate_lip_sync_video'),
+  ]);
+  const liveModes = Array.isArray(cachedVocalSchemaMeta?.singingModes) && cachedVocalSchemaMeta.singingModes.length > 0
+    ? cachedVocalSchemaMeta.singingModes
+    : ['auto', 'duet'];
+  return {
+    provider_ready: ready,
+    generate_dance_video: { model: 'generate_dance_video', credits: danceCredits, provider_ready: ready },
+    generate_singing_video: {
+      model: 'generate_singing_video',
+      credits: singingCredits,
+      provider_ready: ready,
+      singingModes: liveModes,
+      maxImages: cachedVocalSchemaMeta?.singingMaxImages || 5,
+    },
+    generate_lip_sync_video: { model: 'generate_lip_sync_video', credits: lipSyncCredits, provider_ready: ready },
+  };
+}
+
+function isFreebeatHostedMediaUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === 'freebeat.ai' || host.endsWith('.freebeat.ai') || host === 'freebeatfit.com' || host.endsWith('.freebeatfit.com');
+  } catch { return false; }
+}
+
+function validateConsumerVocalPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw fail('Permintaan video vokal/lip-sync tidak valid.', 400);
+  }
+  const tool = String(payload.model || '').trim();
+  if (!VOCAL_TOOLS_ALLOWED.has(tool)) {
+    throw fail('Model video Freebeat tidak didukung. Pilih generate_singing_video atau generate_lip_sync_video.', 400);
+  }
+  const audioUrl = consumerImageUrl(typeof payload.audio_url === 'string' ? payload.audio_url : '');
+  if (!audioUrl) {
+    throw fail('Unggah file audio / lagu atau masukkan URL musik HTTPS publik yang valid.', 400);
+  }
+  const removeWatermark = payload.remove_watermark === true;
+
+  if (tool === 'generate_singing_video') {
+    const rawRefs = Array.isArray(payload.reference_images) && payload.reference_images.length > 0
+      ? payload.reference_images
+      : (Array.isArray(payload.image_urls) && payload.image_urls.length > 0
+        ? payload.image_urls
+        : (typeof payload.image_url === 'string' && payload.image_url.trim() ? [payload.image_url] : []));
+    if (rawRefs.length === 0) {
+      throw fail('Singing Video wajib menyertakan minimal 1 foto karakter/penyanyi.', 400);
+    }
+    if (rawRefs.length > 5) throw fail('Maksimal 5 foto penyanyi.', 400);
+    const imageUrls = rawRefs.map((raw) => {
+      const safe = consumerImageUrl(typeof raw === 'string' ? raw : '');
+      if (!safe) throw fail('Setiap foto penyanyi harus berupa URL HTTPS publik yang valid.', 400);
+      return safe;
+    });
+    const rawDuration = payload.duration_seconds ?? payload.duration ?? 15;
+    const durationSeconds = Number(rawDuration);
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 600) {
+      throw fail('Durasi singing video harus antara 1 dan 600 detik.', 400);
+    }
+    const rawRatio = typeof payload.aspect_ratio === 'string' ? payload.aspect_ratio.trim() : '';
+    const aspectRatio = SINGING_RATIOS.has(rawRatio) ? rawRatio : '9:16';
+    const rawMode = payload.singing_mode ?? payload.mode ?? 'auto';
+    if (typeof rawMode !== 'string' || (rawMode.trim() && !/^[A-Za-z0-9_-]{1,64}$/.test(rawMode.trim()))) {
+      throw fail('Mode bernyanyi tidak valid.', 400);
+    }
+    const prompt = typeof (payload.scene_prompt ?? payload.prompt) === 'string'
+      ? String(payload.scene_prompt ?? payload.prompt).trim()
+      : '';
+    if (prompt.length > 2000) throw fail('Prompt maksimal 2000 karakter.', 400);
+
+    let audioStartSeconds;
+    if (payload.audio_start_seconds !== undefined && payload.audio_start_seconds !== null && payload.audio_start_seconds !== '') {
+      const startSec = Number(payload.audio_start_seconds);
+      if (!Number.isFinite(startSec) || startSec < 0 || startSec > 600) {
+        throw fail('audio_start_seconds tidak valid (0–600 detik).', 400);
+      }
+      audioStartSeconds = startSec;
+    }
+
+    return {
+      tool,
+      audioUrl,
+      imageUrls,
+      durationSeconds,
+      aspectRatio,
+      requestedMode: rawMode.trim(),
+      prompt,
+      audioStartSeconds,
+      removeWatermark,
+    };
+  }
+
+  // generate_lip_sync_video
+  const videoUrl = consumerImageUrl(typeof payload.video_url === 'string' ? payload.video_url : '');
+  if (!videoUrl) {
+    throw fail('Lip-Sync Video wajib menyertakan file video atau URL video HTTPS publik yang valid.', 400);
+  }
+  const videoDurationMsExplicit = payload.video_duration_ms !== undefined
+    && payload.video_duration_ms !== null
+    && payload.video_duration_ms !== '';
+  const rawVideoDurMs = videoDurationMsExplicit
+    ? Number(payload.video_duration_ms)
+    : Math.round(Number(payload.duration || 5) * 1000);
+  if (!Number.isSafeInteger(rawVideoDurMs) || rawVideoDurMs <= 0 || rawVideoDurMs > 600000) {
+    throw fail('Durasi video lip-sync (video_duration_ms) harus antara 1 ms dan 600000 ms.', 400);
+  }
+  let audioDurationMs;
+  if (payload.audio_duration_ms !== undefined && payload.audio_duration_ms !== null && payload.audio_duration_ms !== '') {
+    const audMs = Number(payload.audio_duration_ms);
+    if (!Number.isSafeInteger(audMs) || audMs <= 0 || audMs > 600000) {
+      throw fail('audio_duration_ms tidak valid (1–600000 ms).', 400);
+    }
+    audioDurationMs = audMs;
+  }
+  const prompt = typeof (payload.name ?? payload.prompt) === 'string'
+    ? String(payload.name ?? payload.prompt).trim().slice(0, 200)
+    : '';
+  return {
+    tool,
+    videoUrl,
+    audioUrl,
+    videoDurationMs: rawVideoDurMs,
+    videoDurationMsExplicit,
+    audioDurationMs,
+    prompt,
+    removeWatermark,
+  };
+}
+
+export async function consumerVocalGenerate(env, user, payload) {
+  const input = validateConsumerVocalPayload(payload);
+  await assertAccountActive(env, user.id);
+
+  const label = input.tool === 'generate_singing_video' ? 'singing video' : 'lip-sync video';
+  const price = await consumerImagePrice(env, input.tool, 'video');
+  if (price === null) {
+    const err = fail(`Harga kredit untuk model video "${input.tool}" (freebeat) belum diatur admin. Atur dulu di Admin → API Key → Katalog Model.`, 409);
+    err.code = 'video_price_missing';
+    throw err;
+  }
+
+  const pool = await loadFreebeatAccountPool(env);
+  if (!pool.length) {
+    throw fail(`Provider Freebeat (${label}) belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.`, 503);
+  }
+
+  const retryDelayMs = poolRetryDelayMs(env);
+  let spentState = null;
+  let sawBalanceExhausted = false;
+  let lastFailoverError = null;
+
+  const refundVocalSpend = async (reason, errorMessage, statusCode = 502) => {
+    if (!spentState) return errorMessage;
+    const refunded = await dbRpc(env, 'refund_credits', {
+      p_user_id: user.id,
+      p_amount: price,
+      p_description: reason,
+      p_generation_id: spentState.genId,
+    }).catch(() => false);
+    const fullMsg = statusCode === 503 && sawBalanceExhausted
+      ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE
+      : `${errorMessage}${refunded && !errorMessage.includes('Kredit BLEA dikembalikan') ? ' Kredit BLEA dikembalikan.' : ''}`;
+    const failedPatch = {
+      status: 'failed',
+      progress: 0,
+      error_message: fullMsg,
+      ...(refunded ? { credits_refunded: price } : {}),
+    };
+    await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
+    return fullMsg;
+  };
+
+  for (let cycle = 1; cycle <= FREEBEAT_POOL_MAX_CYCLES; cycle += 1) {
+    if (cycle > 1) await sleepCycleDelay(retryDelayMs);
+    for (const rawAccount of pool) {
+      const account = await ensureUsablePoolAccount(env, rawAccount);
+      if (!account) {
+        await recordPoolAccountOutcome(env, rawAccount, { success: false, error: 'Token OAuth kedaluwarsa atau belum memiliki izin generasi' });
+        lastFailoverError = fail('Token OAuth Freebeat kedaluwarsa.', 401);
+        continue;
+      }
+
+      let opened;
+      let balanceCheck = { credits: null, payload: null };
+      let musicId = null;
+      let effectiveVideoUrl = input.videoUrl || null;
+      let effectiveVideoDurationMs = input.videoDurationMs;
+      let resolvedMode = input.requestedMode || null;
+      let schemaMeta = cachedVocalSchemaMeta;
+
+      try {
+        opened = await openMcpSessionForAccount(env, account);
+        if (account.id) {
+          balanceCheck = await readMcpAccountBalance(opened.session.accessToken, opened.headers);
+          if (balanceCheck.credits !== null && balanceCheck.credits <= 0) {
+            sawBalanceExhausted = true;
+            await recordPoolAccountOutcome(env, account, {
+              success: false,
+              error: 'Saldo Freebeat habis (0 kredit)',
+              balanceCredits: balanceCheck.credits,
+              balancePayload: balanceCheck.payload,
+            });
+            lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            continue;
+          }
+        }
+
+        if (input.tool === 'generate_singing_video') {
+          if (!resolvedMode || resolvedMode.toLowerCase() !== 'duet' || !schemaMeta?.singingModes?.length) {
+            schemaMeta = await discoverVocalToolSchemaMeta(opened.session.accessToken, opened.headers);
+          }
+          resolvedMode = resolveSingingMode(input.requestedMode, schemaMeta, input.imageUrls.length);
+          if (typeof schemaMeta?.singingMinDuration === 'number' && input.durationSeconds < schemaMeta.singingMinDuration) {
+            throw fail(`duration_seconds minimal ${schemaMeta.singingMinDuration} detik sesuai skema Freebeat.`, 400);
+          }
+          if (typeof schemaMeta?.singingMaxDuration === 'number' && input.durationSeconds > schemaMeta.singingMaxDuration) {
+            throw fail(`duration_seconds maksimal ${schemaMeta.singingMaxDuration} detik sesuai skema Freebeat.`, 400);
+          }
+        } else {
+          if (!isFreebeatHostedMediaUrl(effectiveVideoUrl)) {
+            const uploadedVideo = await vocalUploadVideo(opened.session.accessToken, { video_url: effectiveVideoUrl }, opened.headers, true);
+            effectiveVideoUrl = uploadedVideo.video_url || effectiveVideoUrl;
+            if (!input.videoDurationMsExplicit && Number.isSafeInteger(uploadedVideo.duration_ms) && uploadedVideo.duration_ms > 0) {
+              effectiveVideoDurationMs = uploadedVideo.duration_ms;
+            }
+          }
+        }
+
+        const { result: upRes } = await rpc(opened.session.accessToken, {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'upload_audio', arguments: { url: input.audioUrl } },
+        }, 'upload', opened.headers, 262144, true);
+
+        if (upRes?.isError || upRes?.error) {
+          if (isFreebeatBalanceExhausted(upRes)) {
+            sawBalanceExhausted = true;
+            await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat upload audio' });
+            lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            continue;
+          }
+          throw fail('Audio / tautan lagu tidak dapat diproses oleh Freebeat.', 502);
+        }
+        const upContent = modelContent(upRes);
+        const rawId = upContent?.music_id ?? upContent?.musicId ?? upContent?.id;
+        if (rawId !== undefined && rawId !== null && /^\d{1,15}$/.test(String(rawId).trim())) {
+          musicId = Number(String(rawId).trim());
+        }
+      } catch (err) {
+        if (err?.status === 400 && !spentState) throw err;
+        if (err?.status !== 400 && isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis' : (err?.message || 'Gagal menghubungi akun Freebeat'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        if (spentState) {
+          const fullMsg = await refundVocalSpend(`Refund: persiapan ${label} ditolak`, err?.message || `Gagal memproses media ${label}.`, err?.status || 502);
+          throw fail(fullMsg, err?.status || 502);
+        }
+        throw err;
+      }
+
+      const toolParams = input.tool === 'generate_singing_video'
+        ? {
+            mode: resolvedMode,
+            image_urls: input.imageUrls,
+            duration_seconds: input.durationSeconds,
+            aspect_ratio: input.aspectRatio,
+            ...(musicId !== null ? { music_id: musicId } : { audio_url: input.audioUrl }),
+            ...(input.audioStartSeconds !== undefined ? { audio_start_seconds: input.audioStartSeconds } : {}),
+            ...(input.prompt ? { scene_prompt: input.prompt } : {}),
+            ...(input.removeWatermark ? { remove_watermark: true } : {}),
+          }
+        : {
+            video_url: effectiveVideoUrl,
+            video_duration_ms: effectiveVideoDurationMs,
+            ...(musicId !== null ? { music_id: musicId } : { audio_url: input.audioUrl }),
+            ...(input.audioDurationMs !== undefined ? { audio_duration_ms: input.audioDurationMs } : {}),
+            ...(input.prompt ? { name: input.prompt } : {}),
+            ...(input.removeWatermark ? { remove_watermark: true } : {}),
+          };
+
+      let acceptUnknownCost = true;
+      let maxCredits = null;
+      let providerQuote = null;
+      let quoteBalanceExhausted = false;
+      try {
+        const quoteContent = await rawToolQuote(opened.session.accessToken, input.tool, toolParams, opened.headers, true);
+        if (isFreebeatBalanceExhausted(quoteContent)) {
+          quoteBalanceExhausted = true;
+        } else {
+          providerQuote = quotedCredits(quoteContent);
+          if (providerQuote !== null) {
+            const ceiling = consumerVocalCeiling(env);
+            if (providerQuote > ceiling) {
+              const err = fail(`Biaya provider (${providerQuote} kredit Freebeat) melebihi plafon layanan (${ceiling}); generasi tidak dikirim.`, 409);
+              if (spentState) await refundVocalSpend(`Refund: biaya provider ${label} melebihi plafon`, err.message, 409);
+              throw err;
+            }
+            acceptUnknownCost = false;
+            maxCredits = providerQuote + videoHeadroom(providerQuote);
+          }
+        }
+      } catch (err) {
+        if (err?.status === 409) throw err;
+        if (isAccountFailoverError(err)) {
+          quoteBalanceExhausted = isFreebeatBalanceExhausted(err);
+          if (!quoteBalanceExhausted) {
+            await recordPoolAccountOutcome(env, account, { success: false, error: err?.message || 'Gagal menghubungi akun Freebeat' });
+            lastFailoverError = err;
+            continue;
+          }
+        }
+      }
+
+      if (quoteBalanceExhausted) {
+        sawBalanceExhausted = true;
+        await recordPoolAccountOutcome(env, account, {
+          success: false,
+          error: 'Saldo Freebeat habis (quote)',
+          ...(balanceCheck.credits !== null ? { balanceCredits: balanceCheck.credits, balancePayload: balanceCheck.payload } : {}),
+        });
+        lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+        continue;
+      }
+
+      const requiredCredits = providerQuote !== null ? providerQuote : consumerVocalMinBalance(env);
+      if (balanceCheck.credits !== null && balanceCheck.credits < requiredCredits) {
+        sawBalanceExhausted = true;
+        const lowErr = providerQuote !== null
+          ? `Saldo Freebeat (${balanceCheck.credits} kredit) kurang dari biaya quote (${providerQuote} kredit)`
+          : `Saldo Freebeat (${balanceCheck.credits} kredit) belum mencukupi minimal ${label} (${requiredCredits} kredit)`;
+        await recordPoolAccountOutcome(env, account, {
+          success: false,
+          error: lowErr,
+          balanceCredits: balanceCheck.credits,
+          balancePayload: balanceCheck.payload,
+        });
+        lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+        continue;
+      }
+
+      if (!spentState) {
+        const genId = crypto.randomUUID();
+        const spent = await dbRpc(env, 'spend_credits', {
+          p_user_id: user.id,
+          p_amount: price,
+          p_description: `Generasi video freebeat model ${input.tool}`,
+          p_generation_id: genId,
+        });
+        if (!spent) {
+          const err = fail(`Kredit BLEA tidak cukup untuk generasi ini (butuh ${price} kredit).`, 402);
+          err.code = 'insufficient_credits';
+          err.credits_required = price;
+          throw err;
+        }
+
+        const rawDurationSec = input.tool === 'generate_singing_video'
+          ? input.durationSeconds
+          : (effectiveVideoDurationMs / 1000);
+        const clampedDbDuration = Math.max(1, Math.min(120, Math.round(rawDurationSec)));
+
+        const metadata = {
+          mode: input.tool === 'generate_singing_video' ? 'singing_video' : 'lip_sync_video',
+          vocal_tool: input.tool,
+          dispatch_parameters: toolParams,
+          ...(musicId !== null ? { music_id: String(musicId) } : {}),
+          accept_unknown_cost: acceptUnknownCost,
+          ...(maxCredits !== null ? { max_credits: maxCredits } : {}),
+          ...(providerQuote !== null ? { provider_quote: providerQuote } : {}),
+          ...(account.id ? { freebeat_account_id: account.id } : {}),
+          ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+        };
+
+        const insertBody = {
+          id: genId,
+          user_id: user.id,
+          provider: 'freebeat',
+          model: input.tool,
+          prompt: input.prompt || '',
+          aspect_ratio: input.tool === 'generate_singing_video' ? input.aspectRatio : '16:9',
+          resolution: '720p',
+          duration: clampedDbDuration,
+          generate_audio: true,
+          image_url: input.tool === 'generate_singing_video' ? (input.imageUrls[0] || null) : null,
+          video_url: input.tool === 'generate_lip_sync_video' ? effectiveVideoUrl : null,
+          audio_url: input.audioUrl,
+          external_job_id: null,
+          polling_url: null,
+          credits_charged: price,
+          credits_refunded: 0,
+          status: 'queued',
+          progress: 5,
+          metadata,
+        };
+
+        let inserted = null;
+        try {
+          inserted = await dbJson(env, '/video_generations', { method: 'POST', prefer: 'return=representation', body: insertBody });
+        } catch { inserted = null; }
+        if (!Array.isArray(inserted) || inserted.length !== 1) {
+          try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: `Refund: riwayat ${label} tidak tersimpan`, p_generation_id: genId }); } catch { /* manual review */ }
+          throw fail(`Riwayat generasi ${label} tidak dapat disimpan; kredit BLEA dikembalikan.`, 503);
+        }
+        spentState = { genId, row: inserted[0], metadata };
+      }
+
+      const dispatchArgs = {
+        ...toolParams,
+        ...(acceptUnknownCost ? { accept_unknown_cost: true } : { max_credits: maxCredits }),
+      };
+
+      const activeMeta = {
+        ...spentState.metadata,
+        dispatch_parameters: toolParams,
+        ...(musicId !== null ? { music_id: String(musicId) } : {}),
+        accept_unknown_cost: acceptUnknownCost,
+        ...(maxCredits !== null ? { max_credits: maxCredits } : {}),
+        ...(providerQuote !== null ? { provider_quote: providerQuote } : {}),
+        ...(account.id ? { freebeat_account_id: account.id } : {}),
+        ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+      };
+
+      let content = null;
+      let rejectedReason = null;
+      try {
+        const { result } = await rpc(opened.session.accessToken, {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: input.tool, arguments: dispatchArgs },
+        }, 'generate', opened.headers, 262144, true);
+
+        if (result?.isError || result?.error) {
+          if (isFreebeatBalanceExhausted(result)) {
+            sawBalanceExhausted = true;
+            await recordPoolAccountOutcome(env, account, { success: false, error: `Saldo Freebeat habis saat generate ${label}` });
+            lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            continue;
+          }
+          rejectedReason = 'rejected';
+          throw new Error('rejected');
+        }
+        content = modelContent(result);
+        if (content && isFreebeatBalanceExhausted(content) && !content.task_id) {
+          sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, { success: false, error: `Saldo Freebeat habis saat generate ${label}` });
+          lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+          continue;
+        }
+        if (!content || typeof content !== 'object') throw new Error('invalid');
+      } catch (err) {
+        if (!rejectedReason && isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? `Saldo Freebeat habis saat generate ${label}` : (err?.message || `Gagal generate ${label}`),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        await recordPoolAccountOutcome(env, account, { success: false, error: `Freebeat menolak permintaan ${label}` });
+        const fullMsg = await refundVocalSpend(
+          `Refund: Freebeat ${input.tool} gagal dikirim`,
+          `Permintaan ${label} gagal dikirim ke Freebeat.`,
+          502,
+        );
+        throw fail(fullMsg, 502);
+      }
+
+      if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
+        const prepMeta = { ...activeMeta, preparing_music_id: String(content.music_id), retry_after_seconds: Number(content.retry_after_seconds) || 10 };
+        const prepRows = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, {
+          method: 'PATCH',
+          prefer: 'return=representation',
+          body: { status: 'queued', progress: 5, metadata: prepMeta },
+        }).catch(() => null);
+        await recordPoolAccountOutcome(env, account, { success: true });
+        return { credits: price, row: prepRows?.[0] || { ...spentState.row, status: 'queued', progress: 5, metadata: prepMeta } };
+      }
+
+      const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
+      if (!taskId) {
+        await recordPoolAccountOutcome(env, account, { success: false, error: `ID tugas ${label} tidak valid` });
+        const fullMsg = await refundVocalSpend(
+          `Refund: ID tugas ${label} tidak diterima dari Freebeat`,
+          'Freebeat tidak mengembalikan ID tugas yang valid.',
+          502,
+        );
+        throw fail(fullMsg, 502);
+      }
+
+      const sessionUrl = safeImageUrl(content.session_url);
+      const updatedRows = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, {
+        method: 'PATCH',
+        prefer: 'return=representation',
+        body: {
+          external_job_id: taskId,
+          polling_url: sessionUrl,
+          status: 'in_progress',
+          progress: 10,
+          metadata: activeMeta,
+        },
+      }).catch(() => null);
+
+      await recordPoolAccountOutcome(env, account, { success: true });
+      return {
+        credits: price,
+        row: updatedRows?.[0] || {
+          ...spentState.row,
+          external_job_id: taskId,
+          polling_url: sessionUrl,
+          status: 'in_progress',
+          progress: 10,
+          metadata: activeMeta,
+        },
+      };
+    }
+  }
+
+  const finalErrorMsg = await refundVocalSpend(
+    `Refund: semua akun Freebeat gagal untuk ${label}`,
+    sawBalanceExhausted
+      ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE
+      : (lastFailoverError?.message || `Semua akun Freebeat tidak tersedia atau gagal memproses ${label}.`),
+    sawBalanceExhausted ? 503 : (lastFailoverError?.status || 502),
+  );
+  if (sawBalanceExhausted) {
+    const err = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+    err.code = 'gateway_balance_exhausted';
+    throw err;
+  }
+  throw fail(finalErrorMsg, lastFailoverError?.status || 502);
+}
+
 export async function consumerDanceStatus(env, row) {
   const preferredAccountId = row?.metadata?.freebeat_account_id || null;
   const usable = await loadPreferredAccountSession(env, preferredAccountId);
@@ -3798,41 +5054,65 @@ export async function consumerDanceStatus(env, row) {
   const session = opened.session;
   const headers = opened.headers;
   const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? { ...row.metadata } : {};
+  const videoKindLabel = row?.model === 'generate_singing_video'
+    ? 'singing video'
+    : row?.model === 'generate_lip_sync_video'
+      ? 'lip-sync video'
+      : 'dance video';
 
   if (meta.preparing_music_id && !row.external_job_id) {
-    const args = {
-      music_id: normalizeDanceMusicId(meta.preparing_music_id),
-      auto_mode: true,
-      aspect_ratio: DANCE_RATIOS.has(row.aspect_ratio) ? row.aspect_ratio : '9:16',
-      ...(row.prompt ? { prompt: row.prompt } : {}),
-      ...(Array.isArray(meta.image_urls) && meta.image_urls.length ? { image_urls: meta.image_urls } : {}),
-      ...(meta.start_ms !== undefined ? { start_ms: meta.start_ms, end_ms: meta.end_ms } : {}),
-      ...(meta.accept_unknown_cost !== false ? { accept_unknown_cost: true } : { max_credits: meta.max_credits }),
-    };
+    const vocalTool = VOCAL_TOOLS_ALLOWED.has(meta.vocal_tool)
+      ? meta.vocal_tool
+      : (VOCAL_TOOLS_ALLOWED.has(row?.model) ? row.model : null);
+    const prepTool = vocalTool || 'generate_dance_video';
+    let args;
+    if (vocalTool) {
+      const baseParams = meta.dispatch_parameters && typeof meta.dispatch_parameters === 'object' && !Array.isArray(meta.dispatch_parameters)
+        ? { ...meta.dispatch_parameters }
+        : {};
+      const musicIdInt = /^\d{1,15}$/.test(String(meta.preparing_music_id).trim())
+        ? Number(String(meta.preparing_music_id).trim())
+        : null;
+      args = {
+        ...baseParams,
+        ...(musicIdInt !== null ? { music_id: musicIdInt } : {}),
+        ...(meta.accept_unknown_cost !== false ? { accept_unknown_cost: true } : { max_credits: meta.max_credits }),
+      };
+    } else {
+      args = {
+        music_id: normalizeDanceMusicId(meta.preparing_music_id),
+        auto_mode: true,
+        aspect_ratio: DANCE_RATIOS.has(row.aspect_ratio) ? row.aspect_ratio : '9:16',
+        ...(row.prompt ? { prompt: row.prompt } : {}),
+        ...(Array.isArray(meta.image_urls) && meta.image_urls.length ? { image_urls: meta.image_urls } : {}),
+        ...(meta.start_ms !== undefined ? { start_ms: meta.start_ms, end_ms: meta.end_ms } : {}),
+        ...(meta.accept_unknown_cost !== false ? { accept_unknown_cost: true } : { max_credits: meta.max_credits }),
+      };
+    }
     try {
       const { result } = await rpc(session.accessToken, {
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/call',
-        params: { name: 'generate_dance_video', arguments: args },
+        params: { name: prepTool, arguments: args },
       }, 'generate', headers, 262144, true);
       if (result?.isError || isFreebeatBalanceExhausted(result)) {
         const exhausted = isFreebeatBalanceExhausted(result);
         if (exhausted && usable?.id) {
-          await recordPoolAccountOutcome(env, usable, { success: false, error: 'Saldo Freebeat habis saat persiapan dance video' });
+          await recordPoolAccountOutcome(env, usable, { success: false, error: `Saldo Freebeat habis saat persiapan ${videoKindLabel}` });
         }
         return {
           nextStatus: 'failed',
           nextProgress: 0,
           upstreamUrl: null,
-          errMsg: exhausted ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE : 'Persiapan audio dance video ditolak oleh Freebeat.',
+          errMsg: exhausted ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE : `Persiapan audio ${videoKindLabel} ditolak oleh Freebeat.`,
           ...(exhausted ? { metadata: { ...meta, agent_status: 'insufficient_credits', stopped_reason: 'balance_exhausted' } } : {}),
         };
       }
       const prepContent = modelContent(result);
       if (prepContent && isFreebeatBalanceExhausted(prepContent) && !prepContent?.task_id) {
         if (usable?.id) {
-          await recordPoolAccountOutcome(env, usable, { success: false, error: 'Saldo Freebeat habis saat persiapan dance video' });
+          await recordPoolAccountOutcome(env, usable, { success: false, error: `Saldo Freebeat habis saat persiapan ${videoKindLabel}` });
         }
         return {
           nextStatus: 'failed',
@@ -3847,7 +5127,7 @@ export async function consumerDanceStatus(env, row) {
       }
       const taskId = typeof prepContent?.task_id === 'string' && TASK_ID.test(prepContent.task_id) ? prepContent.task_id : null;
       if (!taskId) {
-        return { nextStatus: 'failed', nextProgress: 0, upstreamUrl: null, errMsg: 'ID tugas dance video tidak tersedia setelah persiapan audio.' };
+        return { nextStatus: 'failed', nextProgress: 0, upstreamUrl: null, errMsg: `ID tugas ${videoKindLabel} tidak tersedia setelah persiapan audio.` };
       }
       const nextMeta = { ...meta };
       delete nextMeta.preparing_music_id;
@@ -3928,15 +5208,15 @@ export async function consumerDanceStatus(env, row) {
     } catch { /* fallback to statusContent */ }
     const exhausted = isFreebeatBalanceExhausted(statusContent) || isFreebeatBalanceExhausted(resultContent);
     if (exhausted && usable?.id) {
-      await recordPoolAccountOutcome(env, usable, { success: false, error: 'Saldo Freebeat habis saat memproses dance video' });
+      await recordPoolAccountOutcome(env, usable, { success: false, error: `Saldo Freebeat habis saat memproses ${videoKindLabel}` });
     }
     const failureInfo = safeVideoFailure(resultContent?.failure || statusContent?.failure);
     const reasonCode = Array.isArray(imageFailureReasons(resultContent)) && imageFailureReasons(resultContent)[0];
     const errMsg = exhausted
-      ? 'Saldo akun Freebeat tidak mencukupi saat memproses dance video; proses gagal dan kredit BLEA dikembalikan.'
+      ? `Saldo akun Freebeat tidak mencukupi saat memproses ${videoKindLabel}; proses gagal dan kredit BLEA dikembalikan.`
       : (reasonCode
-        ? `Freebeat gagal memproses dance video (${reasonCode}).`
-        : (failureInfo?.stage && !failureInfo.stage_hidden ? `Freebeat gagal pada tahap ${failureInfo.stage}.` : 'Freebeat melaporkan dance video gagal dibuat.'));
+        ? `Freebeat gagal memproses ${videoKindLabel} (${reasonCode}).`
+        : (failureInfo?.stage && !failureInfo.stage_hidden ? `Freebeat gagal pada tahap ${failureInfo.stage}.` : `Freebeat melaporkan ${videoKindLabel} gagal dibuat.`));
     return {
       nextStatus: summary.status === 'cancelled' ? 'cancelled' : summary.status === 'expired' ? 'expired' : 'failed',
       nextProgress: 0,
@@ -4006,7 +5286,7 @@ export async function consumerDanceStatus(env, row) {
       if (usable?.id) {
         await recordPoolAccountOutcome(env, usable, {
           success: false,
-          error: 'Saldo Freebeat tidak mencukupi saat agen dance berjalan (action_required)',
+          error: `Saldo Freebeat tidak mencukupi saat agen ${videoKindLabel} berjalan (action_required)`,
           ...(balanceCheck.credits !== null ? { balanceCredits: balanceCheck.credits, balancePayload: balanceCheck.payload } : {}),
         });
       }
@@ -4014,7 +5294,7 @@ export async function consumerDanceStatus(env, row) {
         nextStatus: 'failed',
         nextProgress: 0,
         upstreamUrl: null,
-        errMsg: 'Saldo akun Freebeat tidak mencukupi saat memproses dance video; proses dihentikan otomatis dan kredit BLEA dikembalikan.',
+        errMsg: `Saldo akun Freebeat tidak mencukupi saat memproses ${videoKindLabel}; proses dihentikan otomatis dan kredit BLEA dikembalikan.`,
         metadata: {
           ...meta,
           agent_status: 'insufficient_credits',
@@ -4056,7 +5336,7 @@ export async function consumerDanceStatus(env, row) {
             name: 'send_video_agent_message',
             arguments: {
               task_id: row.external_job_id,
-              message: 'Continue automatically and finish the dance video. If credits are insufficient or cost exceeds remaining balance, stop immediately and report insufficient credits.',
+              message: `Continue automatically and finish the ${videoKindLabel}. If credits are insufficient or cost exceeds remaining balance, stop immediately and report insufficient credits.`,
               auto_mode: true,
             },
           },

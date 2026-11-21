@@ -6,6 +6,7 @@ import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { FreebeatDanceDiagnostic } from './FreebeatDanceDiagnostic';
+import { FreebeatSingingLipSyncDiagnostic } from './FreebeatSingingLipSyncDiagnostic';
 import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
 import { FreebeatVocalSchemaDiagnostic } from './FreebeatVocalSchemaDiagnostic';
 import { useAuth } from './AuthProvider';
@@ -387,6 +388,7 @@ export function FreebeatPage() {
         <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} videoModels={videoModels} videoBusy={videoBusy} />
       </section>
       <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
+      <FreebeatSingingLipSyncDiagnostic key={`vocal-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
       <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
     </div>
   </DropXLayout>;
