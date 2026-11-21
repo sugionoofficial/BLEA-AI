@@ -31,22 +31,30 @@ const UUID_XMP = 'be7acfcb97a942e89c71999491e3afac';
 const UUID_C2PA = 'd8fec3d61b0e483c92975828877ec481';
 
 const EXIF_TAGS = new Map([
+  [0x010d, 'DocumentName'],
   [0x010e, 'ImageDescription'],
   [0x010f, 'Make'],
   [0x0110, 'Model'],
   [0x0131, 'Software'],
   [0x0132, 'DateTime'],
   [0x013b, 'Artist'],
+  [0x013c, 'HostComputer'],
   [0x8298, 'Copyright'],
   [0x8769, 'ExifIFDPointer'],
   [0x8825, 'GPSInfoIFDPointer'],
   [0x9003, 'DateTimeOriginal'],
   [0x9004, 'DateTimeDigitized'],
   [0x9286, 'UserComment'],
+  [0x9c9b, 'XPTitle'],
+  [0x9c9c, 'XPComment'],
+  [0x9c9d, 'XPAuthor'],
+  [0x9c9e, 'XPKeywords'],
+  [0x9c9f, 'XPSubject'],
   [0xa420, 'ImageUniqueID'],
   [0xa430, 'CameraOwnerName'],
   [0xa431, 'BodySerialNumber'],
   [0xa434, 'LensModel'],
+  [0xa435, 'LensSerialNumber'],
 ]);
 
 const AI_SIGNATURES = [
@@ -887,10 +895,39 @@ function scanMp4Ilst(bytes, box, entries, location) {
   }
 }
 
+const STANDARD_MP4_HANDLERS = new Set([
+  'videohandler',
+  'soundhandler',
+  'core media video',
+  'core media audio',
+  'subtitlehandler',
+  'hintmediahandler',
+]);
+
+function isCustomMp4HandlerName(name) {
+  const clean = sanitizeText(name, 120).toLowerCase();
+  if (!clean) return false;
+  if (STANDARD_MP4_HANDLERS.has(clean)) return false;
+  if (/^iso\s*media\s*(?:file|video|audio)/i.test(clean)) return false;
+  return true;
+}
+
 function scanMp4Container(bytes, start, end, entries, trail = '') {
   const boxes = parseMp4Boxes(bytes, start, end);
   for (const box of boxes) {
     const path = trail ? `${trail}/${box.type}` : box.type;
+    if (box.type === 'hdlr' && box.payloadEnd - box.payloadStart > 24 && trail.includes('mdia')) {
+      const handlerName = utf8Decoder.decode(bytes.subarray(box.payloadStart + 24, box.payloadEnd)).replace(/\0+$/g, '');
+      if (isCustomMp4HandlerName(handlerName)) {
+        addEntry(entries, {
+          group: 'MP4 Handler Tag',
+          key: 'hdlr.name',
+          value: handlerName,
+          location: path,
+        });
+      }
+      continue;
+    }
     if (box.type === 'uuid' && box.payloadEnd - box.payloadStart >= 16) {
       const uuidHex = toHex(bytes.subarray(box.payloadStart, box.payloadStart + 16));
       const rest = bytes.subarray(box.payloadStart + 16, box.payloadEnd);
@@ -980,7 +1017,7 @@ function shouldDropMp4Box(bytes, box) {
   return false;
 }
 
-function rebuildMp4BoxTree(bytes, start, end, removedCounter) {
+function rebuildMp4BoxTree(bytes, start, end, removedCounter, trail = '') {
   const boxes = parseMp4Boxes(bytes, start, end);
   const kept = [];
   for (const box of boxes) {
@@ -988,8 +1025,28 @@ function rebuildMp4BoxTree(bytes, start, end, removedCounter) {
       removedCounter.count += 1;
       continue;
     }
+    if (box.type === 'hdlr' && box.payloadEnd - box.payloadStart > 24 && trail.includes('mdia')) {
+      const handlerType = ascii(bytes, box.payloadStart + 8, box.payloadStart + 12);
+      const handlerName = utf8Decoder.decode(bytes.subarray(box.payloadStart + 24, box.payloadEnd)).replace(/\0+$/g, '');
+      if (isCustomMp4HandlerName(handlerName)) {
+        removedCounter.count += 1;
+        const replacementName = handlerType === 'soun' ? 'SoundHandler\0' : 'VideoHandler\0';
+        const prefix = bytes.slice(box.payloadStart, box.payloadStart + 24);
+        const nameBytes = utf8Encoder.encode(replacementName);
+        const totalSize = 8 + prefix.length + nameBytes.length;
+        const boxBytes = concatBytes([writeU32BE(totalSize), utf8Encoder.encode('hdlr'), prefix, nameBytes]);
+        kept.push({
+          type: box.type,
+          oldStart: box.start,
+          oldEnd: box.end,
+          bytes: boxBytes,
+        });
+        continue;
+      }
+    }
     if (MP4_CONTAINER_BOXES.has(box.type)) {
-      const inner = rebuildMp4BoxTree(bytes, box.payloadStart, box.payloadEnd, removedCounter);
+      const nextTrail = trail ? `${trail}/${box.type}` : box.type;
+      const inner = rebuildMp4BoxTree(bytes, box.payloadStart, box.payloadEnd, removedCounter, nextTrail);
       const totalSize = 8 + inner.bytes.length;
       const boxBytes = concatBytes([writeU32BE(totalSize), utf8Encoder.encode(box.type), inner.bytes]);
       kept.push({
@@ -1313,20 +1370,134 @@ export function compactScanSummary(scan) {
   return {
     format: scan.format || '',
     formatLabel: scan.formatLabel || '',
+    mediaKind: scan.mediaKind || '',
+    mimeType: scan.mimeType || '',
     aiDetected: Boolean(scan.aiDetected),
-    detectedTools: Array.isArray(scan.detectedTools) ? scan.detectedTools.slice(0, 12) : [],
-    aiSignals: Array.isArray(scan.aiSignals) ? scan.aiSignals.slice(0, 12) : [],
+    detectedTools: Array.isArray(scan.detectedTools) ? scan.detectedTools.slice(0, 16) : [],
+    aiSignals: Array.isArray(scan.aiSignals) ? scan.aiSignals.slice(0, 16) : [],
     totalEntries: Number(scan.totalEntries || 0),
     aiEntriesCount: Number(scan.aiEntriesCount || 0),
+    ...(scan.aiEngine ? { aiEngine: scan.aiEngine } : {}),
+    ...(scan.confidence ? { confidence: String(scan.confidence).slice(0, 32) } : {}),
+    ...(scan.visualAssessment ? { visualAssessment: String(scan.visualAssessment).slice(0, 600) } : {}),
+    ...(scan.aiSummary ? { aiSummary: String(scan.aiSummary).slice(0, 600) } : {}),
+    ...(Number.isFinite(scan.framesAnalyzed) ? { framesAnalyzed: Number(scan.framesAnalyzed) } : {}),
     entries: Array.isArray(scan.entries)
-      ? scan.entries.slice(0, 40).map((entry) => ({
+      ? scan.entries.slice(0, 50).map((entry) => ({
         group: String(entry.group || '').slice(0, 60),
         key: String(entry.key || '').slice(0, 120),
         value: String(entry.value || '').slice(0, 300),
         location: String(entry.location || '').slice(0, 80),
         isAi: Boolean(entry.isAi),
+        ...(entry.modelName ? { modelName: String(entry.modelName).slice(0, 100) } : {}),
+        ...(entry.reason ? { reason: String(entry.reason).slice(0, 240) } : {}),
+        ...(typeof entry.willRemove === 'boolean' ? { willRemove: entry.willRemove } : {}),
       }))
       : [],
+  };
+}
+
+export function mergeAiScanFindings(binaryScan = {}, aiParsed = {}, aiMeta = {}) {
+  const baseEntries = Array.isArray(binaryScan?.entries) ? binaryScan.entries : [];
+  const aiTags = Array.isArray(aiParsed?.metadata_tags_to_remove) ? aiParsed.metadata_tags_to_remove : [];
+  const aiModels = Array.isArray(aiParsed?.detected_models)
+    ? aiParsed.detected_models.map((m) => sanitizeText(m, 100)).filter(Boolean)
+    : [];
+
+  const mergedEntries = baseEntries.map((entry) => {
+    const keyLower = String(entry.key || '').toLowerCase();
+    const valLower = String(entry.value || '').toLowerCase();
+    const matchedTag = aiTags.find((tag) => {
+      const tKey = String(tag?.tag || '').trim().toLowerCase();
+      const tVal = String(tag?.value || '').trim().toLowerCase();
+      return (tKey && (keyLower === tKey || keyLower.includes(tKey) || tKey.includes(keyLower)))
+        || (tVal && tVal.length >= 3 && valLower.includes(tVal));
+    });
+    const matchedModel = matchedTag?.model_name
+      ? sanitizeText(matchedTag.model_name, 100)
+      : aiModels.find((m) => valLower.includes(m.toLowerCase()) || keyLower.includes(m.toLowerCase()));
+    const isAi = Boolean(entry.isAi || matchedTag || matchedModel);
+    return {
+      ...entry,
+      isAi,
+      willRemove: true,
+      ...(matchedModel ? { modelName: matchedModel } : {}),
+      ...(matchedTag?.reason ? { reason: sanitizeText(matchedTag.reason, 240) } : {}),
+    };
+  });
+
+  // Also append any newly spotted metadata/model-tag indicators reported by Cloudflare AI
+  // that did not match an existing entry key/value directly.
+  for (const tag of aiTags) {
+    const tagName = sanitizeText(tag?.tag || 'Tag AI', 120);
+    const tagValue = sanitizeText(tag?.value || tag?.model_name || '', 300);
+    const modelName = sanitizeText(tag?.model_name || '', 100);
+    const category = sanitizeText(tag?.category || 'Analisis Cloudflare AI', 60);
+    const reason = sanitizeText(tag?.reason || '', 240);
+    const alreadyExists = mergedEntries.some((entry) => {
+      const ek = String(entry.key || '').toLowerCase();
+      const ev = String(entry.value || '').toLowerCase();
+      return (tagName && ek === tagName.toLowerCase())
+        || (tagValue && ev.includes(tagValue.toLowerCase()));
+    });
+    if (!alreadyExists && (tagValue || modelName)) {
+      const isVisualOnly = /visual|watermark|gambar|frame|video/i.test(`${category} ${tagName}`) && baseEntries.length === 0;
+      mergedEntries.push({
+        group: category,
+        key: tagName,
+        value: tagValue || modelName,
+        location: isVisualOnly ? 'Deteksi Visual Cloudflare AI (bukan tag biner file)' : 'Metadata Tag (Terdeteksi Cloudflare AI)',
+        isAi: true,
+        willRemove: !isVisualOnly,
+        ...(modelName ? { modelName } : {}),
+        ...(reason ? { reason } : {}),
+      });
+    }
+  }
+
+  const toolSet = new Set([
+    ...(Array.isArray(binaryScan?.detectedTools) ? binaryScan.detectedTools : []),
+    ...aiModels,
+  ]);
+  const reasonSet = new Set(Array.isArray(binaryScan?.aiSignals) ? binaryScan.aiSignals : []);
+  if (aiParsed?.summary) reasonSet.add(sanitizeText(aiParsed.summary, 300));
+
+  const removableEntriesCount = baseEntries.length;
+  const aiEntriesCount = mergedEntries.filter((e) => e.isAi).length;
+  const aiDetected = Boolean(
+    binaryScan?.aiDetected
+    || aiParsed?.ai_detected === true
+    || toolSet.size > 0
+    || aiEntriesCount > 0,
+  );
+
+  return {
+    ok: true,
+    supported: true,
+    format: binaryScan?.format || '',
+    formatLabel: binaryScan?.formatLabel || '',
+    mediaKind: binaryScan?.mediaKind || 'image',
+    mimeType: binaryScan?.mimeType || '',
+    ext: binaryScan?.ext || '',
+    fileSize: Number(binaryScan?.fileSize || 0),
+    aiDetected,
+    detectedTools: Array.from(toolSet),
+    aiSignals: Array.from(reasonSet),
+    entries: mergedEntries,
+    totalEntries: mergedEntries.length,
+    removableEntriesCount,
+    aiEntriesCount,
+    removable: removableEntriesCount > 0,
+    visualOnlyWarning: aiDetected && removableEntriesCount === 0,
+    aiEngine: aiMeta?.model ? {
+      provider: 'cloudflare',
+      model: aiMeta.model,
+      mode: aiMeta.mode || 'binding',
+    } : null,
+    confidence: sanitizeText(aiParsed?.confidence || (aiDetected ? 'tinggi' : 'rendah'), 32),
+    visualAssessment: sanitizeText(aiParsed?.visual_assessment || '', 600),
+    aiSummary: sanitizeText(aiParsed?.summary || '', 600),
+    framesAnalyzed: Number(aiMeta?.framesAnalyzed || 0),
   };
 }
 

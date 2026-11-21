@@ -101,10 +101,11 @@ function buildAiMp4() {
   const mvhd = mp4Box('mvhd', new Uint8Array(12));
 
   // Build stbl/stco pointing to mdat payload after moov!
+  const customHdlr = mp4Box('hdlr', concat(new Uint8Array(8), enc.encode('vide'), new Uint8Array(12), enc.encode('OpenAI Sora Handler\0')));
   const stcoPlaceholder = mp4Box('stco', concat(new Uint8Array(4), u32be(1), u32be(0)));
   const stbl = mp4Box('stbl', stcoPlaceholder);
   const minf = mp4Box('minf', stbl);
-  const mdia = mp4Box('mdia', minf);
+  const mdia = mp4Box('mdia', concat(customHdlr, minf));
   const trak = mp4Box('trak', mdia);
   const moov = mp4Box('moov', concat(mvhd, udta, trak));
   const c2paUuid = mp4Box('uuid', concat(new Uint8Array([0xd8, 0xfe, 0xc3, 0xd6, 0x1b, 0x0e, 0x48, 0x3c, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7e, 0xc4, 0x81]), enc.encode('c2pa-manifest')));
@@ -199,9 +200,11 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   assert.equal(mp4Scan.aiDetected, true);
   assert.ok(mp4Scan.detectedTools.includes('OpenAI (Sora / DALL-E / ChatGPT)'));
   assert.ok(mp4Scan.detectedTools.includes('C2PA / Content Credentials'));
+  assert.ok(mp4Scan.entries.some((e) => e.key === 'hdlr.name' && e.value.includes('OpenAI Sora Handler')));
   const mp4Clean = await stripMediaMetadata(mp4, { fileName: 'sora.mp4', mimeType: 'video/mp4' });
   assert.equal(mp4Clean.after.aiDetected, false);
   assert.equal(mp4Clean.after.totalEntries, 0);
+  assert.equal(new TextDecoder().decode(mp4Clean.cleanedBytes).includes('OpenAI Sora Handler'), false);
   // Verify stco now points directly to 'VIDEO-DATA-PAYLOAD'
   const stcoIdx = Buffer.from(mp4Clean.cleanedBytes).indexOf('stco');
   const dv = new DataView(mp4Clean.cleanedBytes.buffer, mp4Clean.cleanedBytes.byteOffset);
@@ -220,6 +223,108 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   assert.equal(webmClean.after.totalEntries, 0);
   assert.equal(webmClean.cleanedBytes.length, webm.length);
   assert.equal(Buffer.from(webmClean.cleanedBytes).indexOf('WEBM'), Buffer.from(webm).indexOf('WEBM'));
+});
+
+test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + fallback model & mengembalikan 503 bila belum aktif', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(typeof input === 'string' ? input : input.url);
+    if (url.href === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: USER_ID, email: 'creator@example.com', app_metadata: { role: 'user' } });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ id: USER_ID, email: 'creator@example.com', status: 'active' }]);
+    }
+    if (url.pathname === '/rest/v1/provider_api_keys') {
+      return Response.json([]);
+    }
+    return realFetch(input, init);
+  };
+
+  try {
+    // 1. No env.AI binding and no REST key -> 503 cloudflare_ai_unavailable
+    const noAiEnv = createEnv();
+    const unavailRes = await worker.fetch(apiReq('/api/metadata/scan', {
+      body: { filename: 'x.png', mime_type: 'image/png', media_kind: 'image', file_size: 120, binary_scan: { entries: [] }, frames: [] },
+    }), noAiEnv);
+    assert.equal(unavailRes.status, 503);
+    const unavailData = await unavailRes.json();
+    assert.equal(unavailData.code, 'cloudflare_ai_unavailable');
+
+    // 2. Primary env.AI Llama 4 Scout reads both visual frames & metadata tags
+    const calledModels = [];
+    const seenPayloads = [];
+    const envWithAi = {
+      ...createEnv(),
+      AI: {
+        run: async (model, input) => {
+          calledModels.push(model);
+          seenPayloads.push(input);
+          if (model === '@cf/meta/llama-4-scout-17b-16e-instruct') {
+            throw new Error('primary model busy');
+          }
+          return {
+            response: JSON.stringify({
+              ai_detected: true,
+              confidence: 'tinggi',
+              visual_assessment: 'Visual memperlihatkan gaya render sintetis khas generator AI.',
+              detected_models: ['Stable Diffusion XL', 'ComfyUI'],
+              metadata_tags_to_remove: [
+                {
+                  tag: 'parameters',
+                  value: 'Steps: 28, Sampler: Euler a',
+                  category: 'PNG Text Chunk',
+                  model_name: 'Stable Diffusion XL',
+                  reason: 'Menyimpan prompt & parameter model AI.',
+                },
+              ],
+              summary: 'Terdeteksi model AI Stable Diffusion XL dan workflow ComfyUI.',
+            }),
+          };
+        },
+      },
+    };
+
+    const frameDataUrl = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/';
+    const scanRes = await worker.fetch(apiReq('/api/metadata/scan', {
+      body: {
+        filename: 'sdxl-portrait.png',
+        mime_type: 'image/png',
+        media_kind: 'image',
+        file_size: 4096,
+        frames: [frameDataUrl],
+        binary_scan: {
+          format: 'png',
+          formatLabel: 'PNG Image',
+          mediaKind: 'image',
+          mimeType: 'image/png',
+          aiDetected: true,
+          detectedTools: ['ComfyUI'],
+          aiSignals: ['Workflow JSON ComfyUI'],
+          totalEntries: 1,
+          aiEntriesCount: 1,
+          entries: [{ group: 'PNG Text Chunk', key: 'parameters', value: 'Steps: 28, Sampler: Euler a', location: 'PNG Chunk #2 (tEXt)', isAi: true }],
+        },
+      },
+    }), envWithAi);
+
+    assert.equal(scanRes.status, 200);
+    const scanBody = await scanRes.json();
+    assert.ok(calledModels.includes('@cf/meta/llama-4-scout-17b-16e-instruct'));
+    assert.equal(scanBody.scan.aiEngine.model, '@cf/google/gemma-3-12b-it');
+    assert.equal(scanBody.scan.framesAnalyzed, 1);
+    assert.ok(scanBody.scan.detectedTools.includes('Stable Diffusion XL'));
+    assert.ok(scanBody.scan.detectedTools.includes('ComfyUI'));
+    assert.equal(scanBody.scan.entries[0].willRemove, true);
+    assert.equal(scanBody.scan.entries[0].modelName, 'Stable Diffusion XL');
+    assert.match(scanBody.scan.visualAssessment, /gaya render sintetis/);
+    // Ensure multimodal image_url frame reached env.AI.run
+    const userMsg = seenPayloads[0].messages.find((m) => m.role === 'user');
+    assert.ok(Array.isArray(userMsg.content));
+    assert.equal(userMsg.content.find((p) => p.type === 'image_url').image_url.url, frameDataUrl);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 function createEnv() {
@@ -509,10 +614,42 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
     updated_at: '2026-11-20T08:00:05Z',
   };
 
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init = {}) => {
     const sUrl = String(url);
     if (sUrl === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'user' });
     if (sUrl.includes('/rest/v1/credit_wallets')) return Response.json({ balance: walletBalance });
+    if (sUrl === '/api/metadata/scan') {
+      const payload = JSON.parse(init.body || '{}');
+      return Response.json({
+        ok: true,
+        scan: {
+          ok: true,
+          supported: true,
+          format: 'png',
+          formatLabel: 'PNG Image',
+          mediaKind: payload.media_kind || 'image',
+          mimeType: 'image/png',
+          fileSize: payload.file_size || 260,
+          aiDetected: true,
+          detectedTools: ['ComfyUI', 'Stable Diffusion (A1111 / Forge / InvokeAI)', 'C2PA / Content Credentials'],
+          aiSignals: ['Workflow node graph ComfyUI di metadata PNG'],
+          totalEntries: 3,
+          removableEntriesCount: 3,
+          aiEntriesCount: 3,
+          removable: true,
+          aiEngine: { provider: 'cloudflare', model: '@cf/meta/llama-4-scout-17b-16e-instruct', mode: 'binding' },
+          confidence: 'tinggi',
+          visualAssessment: 'Gambar menampilkan ciri visual generasi model difusi.',
+          aiSummary: 'Ditemukan nama model AI dan 3 tag metadata yang akan dihapus.',
+          framesAnalyzed: 1,
+          entries: [
+            { group: 'PNG Text Chunk', key: 'parameters', value: 'Astronaut portrait', location: 'PNG Chunk #2', isAi: true, willRemove: true, modelName: 'Stable Diffusion' },
+            { group: 'PNG Text Chunk', key: 'workflow', value: '{"3":{"class_type":"KSampler"}}', location: 'PNG Chunk #3', isAi: true, willRemove: true, modelName: 'ComfyUI' },
+            { group: 'C2PA', key: 'caBX', value: 'OpenAI DALL-E', location: 'PNG Chunk #4', isAi: true, willRemove: true, modelName: 'OpenAI DALL-E' },
+          ],
+        },
+      });
+    }
     if (sUrl === '/api/metadata/start') {
       walletBalance -= 100;
       return Response.json({ ok: true, cost: 100, job: { ...completedJob, status: 'processing', progress: 25 } });
@@ -577,10 +714,13 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
     const primaryBtn = () => document.querySelector('[data-testid="metadata-primary-action"]');
     assert.match(primaryBtn().textContent, /Scan Metadata/);
 
-    // Click Scan -> displays AI detected results & SAME button becomes Remove Metadata (100 Kredit)
+    // Click Scan -> calls /api/metadata/scan, displays Cloudflare AI model, detected models, "Akan Dihapus" tags & SAME button becomes Remove Metadata (100 Kredit)
     await React.act(async () => { primaryBtn().click(); });
-    assert.match(document.body.textContent, /Terdeteksi Metadata Buatan AI/);
+    assert.match(document.body.textContent, /Dipindai dengan Cloudflare AI/);
+    assert.match(document.body.textContent, /@cf\/meta\/llama-4-scout-17b-16e-instruct/);
+    assert.match(document.body.textContent, /Terdeteksi Nama Model \/ Jejak Buatan AI/);
     assert.match(document.body.textContent, /ComfyUI/);
+    assert.match(document.body.textContent, /Akan Dihapus/);
     assert.match(primaryBtn().textContent, /Remove Metadata \(100 Kredit\)/);
 
     // Click Remove -> executes cleaning & SAME button becomes Download Hasil Bersih

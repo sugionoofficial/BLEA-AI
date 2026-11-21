@@ -3,10 +3,12 @@ import { Link } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Coins,
   Download,
   Eraser,
+  Eye,
   FileSearch2,
   Film,
   History,
@@ -20,6 +22,7 @@ import {
 import {
   buildDownloadFilename,
   processMetadataClean,
+  scanMetadataWithCloudflareAI,
   startMetadataClean,
   withDownloadParam,
 } from '../api/generation';
@@ -41,6 +44,113 @@ const ACCEPTED_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm';
 
 const DIRECT_UPLOAD_LIMIT = 12 * 1024 * 1024; // 12 MB via FormData; >12 MB via Storage
+
+function drawToJpegDataUrl(source, width, height, maxDim = 960) {
+  if (typeof document === 'undefined' || !width || !height) return '';
+  const scale = Math.min(1, maxDim / Math.max(width, height));
+  const targetW = Math.max(1, Math.round(width * scale));
+  const targetH = Math.max(1, Math.round(height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext?.('2d');
+  if (!ctx) return '';
+  ctx.drawImage(source, 0, 0, targetW, targetH);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.84);
+  return /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(dataUrl) ? dataUrl : '';
+}
+
+async function extractVisualFrames(file, mediaKind) {
+  if (typeof window === 'undefined' || typeof document === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return [];
+  }
+  const probeCanvas = document.createElement('canvas');
+  if (!probeCanvas?.getContext?.('2d')) {
+    return [];
+  }
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    if (mediaKind === 'image') {
+      const ImgCtor = typeof window?.Image === 'function' ? window.Image : null;
+      if (!ImgCtor) return [];
+      return await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve([]), 3500);
+        const img = new ImgCtor();
+        img.onload = () => {
+          clearTimeout(timer);
+          try {
+            const url = drawToJpegDataUrl(img, img.naturalWidth || img.width, img.naturalHeight || img.height, 960);
+            resolve(url ? [url] : []);
+          } catch {
+            resolve([]);
+          }
+        };
+        img.onerror = () => {
+          clearTimeout(timer);
+          resolve([]);
+        };
+        img.src = objectUrl;
+      });
+    }
+
+    return await new Promise((resolve) => {
+      const video = document.createElement('video');
+      if (!video || typeof video.addEventListener !== 'function') {
+        resolve([]);
+        return;
+      }
+      let settled = false;
+      const finish = (frames) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(overallTimer);
+        resolve(frames);
+      };
+      const overallTimer = setTimeout(() => finish([]), 4500);
+
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.onerror = () => finish([]);
+      video.onloadeddata = async () => {
+        try {
+          const w = video.videoWidth || 640;
+          const h = video.videoHeight || 360;
+          const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+          const points = dur >= 1.2 ? [dur * 0.12, dur * 0.5, dur * 0.85] : [0];
+          const frames = [];
+          for (const sec of points) {
+            if (dur > 0 && typeof video.currentTime === 'number') {
+              await new Promise((resSeek) => {
+                const seekTimer = setTimeout(resSeek, 900);
+                const onSeeked = () => {
+                  clearTimeout(seekTimer);
+                  video.removeEventListener('seeked', onSeeked);
+                  resSeek();
+                };
+                video.addEventListener('seeked', onSeeked);
+                try {
+                  video.currentTime = Math.min(Math.max(0, sec), Math.max(0, dur - 0.05));
+                } catch {
+                  clearTimeout(seekTimer);
+                  resSeek();
+                }
+              });
+            }
+            const frameUrl = drawToJpegDataUrl(video, w, h, 720);
+            if (frameUrl && !frames.includes(frameUrl)) frames.push(frameUrl);
+          }
+          finish(frames);
+        } catch {
+          finish([]);
+        }
+      };
+      video.src = objectUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
 
 export function MetadataCheckPage() {
   const { user } = useAuth();
@@ -112,14 +222,12 @@ export function MetadataCheckPage() {
     setError('');
     setNotice('');
     setPhase('scanning');
-    setProgress(35);
-    setProgressLabel('Membaca struktur biner & header media…');
+    setProgress(25);
+    setProgressLabel('Membaca struktur biner & tag metadata file…');
 
     try {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
-      setProgress(75);
-      setProgressLabel('Memeriksa EXIF, XMP, C2PA, dan tanda tangan AI…');
       const report = await scanMediaMetadata(bytes, {
         fileName: file.name,
         mimeType: file.type,
@@ -133,8 +241,37 @@ export function MetadataCheckPage() {
         return;
       }
 
-      setMediaKind(report.mediaKind);
-      setScanResult(report);
+      setProgress(55);
+      setProgressLabel(
+        report.mediaKind === 'video'
+          ? 'Mengekstrak frame video & mengirim ke model AI Cloudflare…'
+          : 'Mengirim gambar & daftar tag metadata ke model AI Cloudflare…',
+      );
+
+      const frames = await extractVisualFrames(file, report.mediaKind);
+      setProgress(75);
+      setProgressLabel('Cloudflare AI sedang membaca visual & memeriksa nama model AI di metadata…');
+
+      const aiRes = await scanMetadataWithCloudflareAI({
+        filename: file.name,
+        mimeType: report.mimeType || file.type || '',
+        mediaKind: report.mediaKind,
+        fileSize: file.size,
+        binaryScan: compactScanSummary(report),
+        frames,
+      });
+
+      if (!aiRes.ok || !aiRes.data?.scan) {
+        setPhase('ready');
+        setProgress(0);
+        setProgressLabel('');
+        setError(aiRes.data?.error || 'Gagal memindai media dengan model AI Cloudflare.');
+        return;
+      }
+
+      const finalScan = aiRes.data.scan;
+      setMediaKind(finalScan.mediaKind || report.mediaKind);
+      setScanResult(finalScan);
       setPhase('scanned');
       setProgress(100);
       setProgressLabel('');
@@ -318,26 +455,26 @@ export function MetadataCheckPage() {
   return (
     <DropXLayout
       title="Cek Metadata AI"
-      description="Pindai gambar atau video untuk mendeteksi jejak metadata buatan AI (C2PA, EXIF, XMP, ComfyUI, Sora, Wan) dan bersihkan secara lossless."
+      description="Pindai gambar atau video menggunakan model AI Cloudflare untuk membaca visual media & seluruh tag metadata nama model AI, lalu bersihkan secara lossless."
     >
       <div className="meta-page">
         <section className="meta-hero">
           <div className="meta-hero-main">
             <div className="meta-hero-badges">
               <span className="meta-chip is-brand">
-                <FileSearch2 size={13} aria-hidden="true" />
-                AI Metadata Inspector &amp; Cleaner
+                <Bot size={13} aria-hidden="true" />
+                Cloudflare AI Multimodal Inspector
               </span>
               <span className="meta-chip is-cost">
                 <Coins size={13} aria-hidden="true" />
-                Scan Gratis · Remove {METADATA_SERVICE_COST} Kredit
+                Scan AI Gratis · Remove {METADATA_SERVICE_COST} Kredit
               </span>
             </div>
             <p className="meta-hero-desc">
               Unggah gambar (<strong>PNG, JPG, WebP, GIF</strong>) atau video (<strong>MP4, MOV, WebM</strong>) maksimal{' '}
-              <strong>{Math.round(METADATA_MAX_FILE_BYTES / (1024 * 1024))} MB</strong>. Pembersihan menghapus metadata EXIF, XMP, IPTC, C2PA,
-              dan tag AI tanpa re-encoding kualitas visual, tercatat otomatis di <Link to="/live">Proses Live</Link> dan{' '}
-              <Link to="/history">History</Link>.
+              <strong>{Math.round(METADATA_MAX_FILE_BYTES / (1024 * 1024))} MB</strong>. Model vision Cloudflare AI memeriksa visual gambar/frame video
+              serta seluruh tag metadata (EXIF, XMP, C2PA, nama model AI), menampilkan daftar tag yang akan dihapus, lalu membersihkan secara lossless
+              dan tercatat di <Link to="/live">Proses Live</Link> serta <Link to="/history">History</Link>.
             </p>
           </div>
           <div className="meta-hero-side">
@@ -610,15 +747,49 @@ export function MetadataCheckPage() {
                   </div>
                 )}
 
+                {scanResult.aiEngine?.model && (
+                  <div className="meta-cf-engine-box">
+                    <div className="meta-cf-engine-top">
+                      <span className="meta-cf-engine-badge">
+                        <Bot size={13} aria-hidden="true" />
+                        Dipindai dengan Cloudflare AI
+                      </span>
+                      <code className="meta-cf-model-id">{scanResult.aiEngine.model}</code>
+                      {scanResult.framesAnalyzed > 0 && (
+                        <span className="meta-cf-frames">
+                          <Eye size={12} aria-hidden="true" />
+                          {scanResult.framesAnalyzed} frame visual dibaca
+                        </span>
+                      )}
+                    </div>
+                    {scanResult.visualAssessment && (
+                      <p className="meta-cf-visual">
+                        <strong>Analisis Visual AI:</strong> {scanResult.visualAssessment}
+                      </p>
+                    )}
+                    {scanResult.aiSummary && scanResult.aiSummary !== scanResult.visualAssessment && (
+                      <p className="meta-cf-visual">{scanResult.aiSummary}</p>
+                    )}
+                  </div>
+                )}
+
                 {scanResult.aiDetected ? (
                   <div className="meta-ai-box">
                     <div className="meta-ai-box-head">
                       <ShieldAlert size={18} aria-hidden="true" />
                       <div>
-                        <strong>Terdeteksi Metadata Buatan AI</strong>
+                        <strong>Terdeteksi Nama Model / Jejak Buatan AI</strong>
                         <p>
-                          Ditemukan {scanResult.aiEntriesCount} indikator AI dari total {scanResult.totalEntries} entri metadata.
-                          Klik tombol <strong>Remove Metadata ({METADATA_SERVICE_COST} Kredit)</strong> untuk membersihkan lalu unduh hasilnya.
+                          {scanResult.visualOnlyWarning ? (
+                            <>
+                              Analisis visual Cloudflare AI mengindikasikan konten ini berpotensi buatan AI, namun <strong>tidak ditemukan tag metadata biner</strong> di dalam file untuk dihapus.
+                            </>
+                          ) : (
+                            <>
+                              Ditemukan {scanResult.aiEntriesCount} indikator AI dari total {scanResult.totalEntries} metadata.
+                              Semua tag di bawah ini akan dihapus saat Anda menekan <strong>Remove Metadata ({METADATA_SERVICE_COST} Kredit)</strong>.
+                            </>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -641,10 +812,9 @@ export function MetadataCheckPage() {
                   <div className="meta-warn-box">
                     <AlertTriangle size={17} aria-hidden="true" />
                     <div>
-                      <strong>Tidak ditemukan tanda khusus buatan AI</strong>
+                      <strong>Tidak ditemukan nama model AI pada gambar/video ini</strong>
                       <p>
-                        Namun file ini memiliki {scanResult.totalEntries} metadata standar (EXIF / XMP / Tag Container). Anda tetap dapat
-                        menghapus semua metadata tersebut ({METADATA_SERVICE_COST} kredit).
+                        Namun file ini memiliki {scanResult.totalEntries} metadata standar (EXIF / XMP / Tag Container) yang tercantum di bawah dan siap dihapus ({METADATA_SERVICE_COST} kredit).
                       </p>
                     </div>
                   </div>
@@ -653,7 +823,7 @@ export function MetadataCheckPage() {
                     <ShieldCheck size={18} aria-hidden="true" />
                     <div>
                       <strong>File sudah bersih</strong>
-                      <p>Tidak ada metadata AI, C2PA, EXIF, XMP, atau tag tersembunyi yang terdeteksi pada media ini.</p>
+                      <p>Cloudflare AI dan pemindai container tidak menemukan metadata AI, nama model, C2PA, EXIF, maupun tag tersembunyi.</p>
                     </div>
                   </div>
                 )}
@@ -661,7 +831,11 @@ export function MetadataCheckPage() {
                 {scanResult.entries.length > 0 && (
                   <div className="meta-entries-wrap">
                     <div className="meta-entries-head">
-                      <h3>Detail Metadata Terdeteksi ({scanResult.entries.length})</h3>
+                      <h3>
+                        {phase === 'cleaned'
+                          ? `Metadata yang Telah Dihapus (${scanResult.entries.length})`
+                          : `Tag & Metadata yang Akan Dihapus (${scanResult.entries.length})`}
+                      </h3>
                       {phase === 'cleaned' && <span className="meta-stripped-note">Semua item berikut telah dihapus</span>}
                     </div>
                     <div className="meta-entries-list">
@@ -670,9 +844,20 @@ export function MetadataCheckPage() {
                           <div className="meta-entry-top">
                             <span className="meta-entry-group">{entry.group}</span>
                             <code className="meta-entry-key">{entry.key}</code>
+                            {entry.modelName && (
+                              <span className="meta-entry-model-tag">{entry.modelName}</span>
+                            )}
                             {entry.isAi && <span className="meta-entry-ai-tag">AI Indicator</span>}
+                            <span className={`meta-entry-action-tag ${phase === 'cleaned' ? 'is-done' : entry.willRemove === false ? 'is-visual' : ''}`}>
+                              {phase === 'cleaned'
+                                ? 'Sudah Dihapus'
+                                : entry.willRemove === false
+                                  ? 'Analisis Visual'
+                                  : 'Akan Dihapus'}
+                            </span>
                           </div>
                           <p className="meta-entry-val">{entry.value}</p>
+                          {entry.reason && <p className="meta-entry-reason">{entry.reason}</p>}
                           <span className="meta-entry-loc">{entry.location}</span>
                         </div>
                       ))}

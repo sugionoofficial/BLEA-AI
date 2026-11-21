@@ -67,6 +67,7 @@ import {
   handleMetadataContent,
   handleMetadataHistory,
   handleMetadataProcess,
+  handleMetadataScan,
   handleMetadataStart,
   handleMetadataStatus,
   sanitizeMetadataJobRow,
@@ -4334,6 +4335,11 @@ async function handleApi(request, url, env) {
     // ---- /metadata/*: scan & lossless AI metadata removal ----
     if (path.startsWith('metadata/content/') && (method === 'GET' || method === 'HEAD')) {
       return handleMetadataContent({ request, url, env, path, getUser, jsonResponse, servicePostgrest });
+    }
+    if (path === 'metadata/scan' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      return handleMetadataScan({ request, env, user, jsonResponse, servicePostgrest });
     }
     if (path === 'metadata/start' && method === 'POST') {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
