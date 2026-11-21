@@ -9,6 +9,11 @@ export const FREEBEAT_VIDEO_TEST = Object.freeze({
   aspect_ratio: '16:9', // kontrak web Freebeat selalu mengirim aspectRatio
 });
 
+export const FREEBEAT_VIDEO_MAX_IMAGES = 3;
+export const FREEBEAT_VIDEO_INPUT_MODES = Object.freeze(['keyframe', 'omni_reference']);
+export const FREEBEAT_VIDEO_RESOLUTIONS = Object.freeze(['480p', '720p', '1080p', '768p', '2k', '4k']);
+export const FREEBEAT_VIDEO_ASPECT_RATIOS = Object.freeze(['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '3:2', '2:3', 'auto']);
+
 // Safety margin added on top of the quoted credits when dispatching, so a
 // provider price that rounds above the quote is still within the approved
 // ceiling instead of being silently rejected with 0 accepted credits.

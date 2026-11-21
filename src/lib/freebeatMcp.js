@@ -1,6 +1,6 @@
 // Admin-only Freebeat MCP diagnostics and explicitly approved generation tests.
 import { boundedJson } from './boundedJson.js';
-import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC, videoHeadroom } from './freebeatVideoTestSettings.js';
+import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC, FREEBEAT_VIDEO_MAX_IMAGES, videoHeadroom } from './freebeatVideoTestSettings.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
 const IMAGE_SCOPE = 'freebeat:generate';
@@ -796,7 +796,14 @@ async function quoteImage(accessToken, input) {
 
 // Diagnostics only: reveal a small vocabulary of model options, never raw
 // provider messages, prompts, URLs or credentials. Unknown values stay hidden.
-const VIDEO_HELP_WORDS = new Set(['video', 'image', 'text', 'transition', 'reference', '720p', '1080p', '480p', '360p', '4k', '2k', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'standard', 'pro', 'fast', 'default', 'auto']);
+const VIDEO_HELP_WORDS = new Set([
+  'video', 'image', 'text', 'transition', 'reference',
+  'keyframe', 'omni_reference', 'omni-reference',
+  'image-to-video', 'text-to-video', 'first/last-frame transition', 'reference-to-video',
+  '720p', '1080p', '480p', '360p', '540p', '768p', '1440p', '2160p', '4k', '2k',
+  '16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '3:2', '2:3',
+  'standard', 'pro', 'fast', 'default', 'auto',
+]);
 function safeVideoHelp(value, depth = 0, field = '') {
   if (depth > 5) return null;
   if (typeof value === 'string' && VIDEO_HELP_WORDS.has(value.toLowerCase())) return value;
@@ -806,9 +813,10 @@ function safeVideoHelp(value, depth = 0, field = '') {
 }
 async function videoDiagnostic(accessToken, action, input, raw = false, settings = FREEBEAT_VIDEO_TEST) {
   const headers = await openMcp(accessToken);
+  const images = Array.isArray(input?.images) ? input.images : (input?.image_url ? [input.image_url] : []);
   const params = action === 'video-help'
     ? { name: 'get_model_help', arguments: { type: 'video', model_id: settings.model_id } }
-    : { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { ...settings, prompt: input.prompt, images: [input.image_url] } } };
+    : { name: 'quote_generation', arguments: { tool: 'generate_video', parameters: { ...settings, prompt: input.prompt, ...(images.length ? { images } : {}) } } };
   const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params }, action === 'video-help' ? 'help' : 'quote', headers, 262144);
   const content = modelContent(result);
   if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure(action === 'video-help' ? 'help' : 'quote', 'response');
@@ -824,90 +832,222 @@ function optionalDuration(value) {
 }
 function optionalResolution(value) {
   if (value === undefined || value === '') return undefined;
-  if (typeof value !== 'string' || !HELP_RESOLUTION.test(value.trim())) throw fail('Resolusi tidak valid (contoh: 480p, 768p, 1080p).', 400);
-  return value.trim().toLowerCase();
+  if (typeof value !== 'string') throw fail('Resolusi tidak valid (contoh: 480p, 720p, 1080p).', 400);
+  const clean = value.trim().toLowerCase();
+  if (/^(480|720|1080)$/.test(clean)) return `${clean}p`;
+  if (!HELP_RESOLUTION.test(clean)) throw fail('Resolusi tidak valid (contoh: 480p, 720p, 1080p).', 400);
+  return clean;
+}
+const HELP_ASPECT_RATIO = /^(auto|16:9|9:16|1:1|4:3|3:4|21:9|3:2|2:3)$/i;
+function optionalAspectRatio(value) {
+  if (value === undefined || value === '') return undefined;
+  if (typeof value !== 'string') throw fail('Rasio aspek tidak valid (contoh: 16:9, 9:16, 1:1).', 400);
+  const clean = value.trim().toLowerCase();
+  if (!HELP_ASPECT_RATIO.test(clean)) throw fail('Rasio aspek tidak valid (contoh: 16:9, 9:16, 1:1, 4:3, 3:4, 21:9, auto).', 400);
+  return clean;
+}
+const VIDEO_MODEL_REQUEST_KEYS = new Set(['model_id', 'prompt', 'image_url', 'images', 'input_mode', 'generation_type', 'duration', 'resolution', 'aspect_ratio']);
+function parseVideoModelRequest(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !VIDEO_MODEL_REQUEST_KEYS.has(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) {
+    throw fail('Pilih ID model video yang valid.', 400);
+  }
+  const duration = optionalDuration(input.duration);
+  const resolution = optionalResolution(input.resolution);
+  const aspect_ratio = optionalAspectRatio(input.aspect_ratio);
+  const videoInput = validateMultiVideoInput({
+    prompt: input.prompt,
+    ...(input.image_url !== undefined ? { image_url: input.image_url } : {}),
+    ...(input.images !== undefined ? { images: input.images } : {}),
+    ...(input.input_mode !== undefined ? { input_mode: input.input_mode } : {}),
+    ...(input.generation_type !== undefined ? { generation_type: input.generation_type } : {}),
+  });
+  return { model_id: input.model_id, duration, resolution, aspect_ratio, ...videoInput };
 }
 async function parseVideoPrepare(request) {
-  const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['model_id', 'prompt', 'image_url', 'duration', 'resolution'].includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Pilih ID model video yang valid.', 400);
-  return { model_id: input.model_id, duration: optionalDuration(input.duration), resolution: optionalResolution(input.resolution), ...validateVideoInput({ prompt: input.prompt, image_url: input.image_url }) };
+  return parseVideoModelRequest(await imageJson(request));
 }
 function videoSettings(modelId) { return { ...FREEBEAT_VIDEO_TEST, model_id: modelId }; }
 
 // --- Capability normalization -------------------------------------------------
 // Freebeat rejects generate_video items whose settings the model does not
 // support, without a usable reason (0 accepted credits). get_model_help exposes
-// the supported durations/resolutions/generation types; align the fixed test
-// settings to them BEFORE quoting so the quote, the approval and the dispatch
-// all carry values the model accepts. Unknown help => keep current settings.
-const HELP_RESOLUTION = /^(360p|480p|720p|768p|1080p|2k|4k)$/i;
+// the supported durations/resolutions/generation types; align the test settings
+// to them BEFORE quoting so the quote, the approval and the dispatch all carry
+// values the model accepts. Unknown help => keep current settings.
+const HELP_RESOLUTION = /^(360p|480p|540p|720p|768p|1080p|1440p|2160p|2k|4k)$/i;
 const HELP_PAIR = /^(\d{3,4}p|2k|4k)\|(\d{1,3})$/i; // price-map keys like "480p|5"
-function collectHelpOptions(help) {
+const GEN_NAME_MAP = {
+  'image-to-video': 'image',
+  image: 'image',
+  'text-to-video': 'text',
+  text: 'text',
+  'first/last-frame transition': 'transition',
+  'first/last frame transition': 'transition',
+  'first-last-frame': 'transition',
+  transition: 'transition',
+  'reference-to-video': 'reference',
+  'omni-reference': 'reference',
+  'omni_reference': 'reference',
+  'omni reference': 'reference',
+  reference: 'reference',
+};
+const GEN_CODE_MAP = { 0: 'image', 1: 'text', 2: 'transition', 3: 'reference' };
+function mapHelpGenerationMode(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.generation_name === 'string') {
+    const byName = GEN_NAME_MAP[value.generation_name.trim().toLowerCase()];
+    if (byName) return byName;
+  }
+  if (typeof value.generation_type === 'string') {
+    const byStr = GEN_NAME_MAP[value.generation_type.trim().toLowerCase()];
+    if (byStr) return byStr;
+  }
+  if (typeof value.type === 'string') {
+    const byType = GEN_NAME_MAP[value.type.trim().toLowerCase()];
+    if (byType) return byType;
+  }
+  if (typeof value.generation_type === 'number' && Object.hasOwn(GEN_CODE_MAP, value.generation_type)) {
+    return GEN_CODE_MAP[value.generation_type];
+  }
+  return null;
+}
+function collectHelpOptions(help, wantedGenerationType = null) {
   const durations = new Set();
   const resolutions = new Set();
   const generations = new Set();
-  function notePair(name) {
+  const aspectRatios = new Set();
+  const modeDurations = new Set();
+  const modeResolutions = new Set();
+  const modeAspectRatios = new Set();
+  let minDuration = null;
+  let maxDuration = null;
+  let modeMinDuration = null;
+  let modeMaxDuration = null;
+
+  function notePair(name, inTargetMode) {
     const pair = HELP_PAIR.exec(name);
-    if (pair) { resolutions.add(pair[1].toLowerCase()); durations.add(Number(pair[2])); }
+    if (pair) {
+      const res = pair[1].toLowerCase();
+      const dur = Number(pair[2]);
+      resolutions.add(res);
+      durations.add(dur);
+      if (inTargetMode) { modeResolutions.add(res); modeDurations.add(dur); }
+    }
   }
-  function walk(value, key = '', depth = 0) {
+  function walk(value, key = '', depth = 0, inTargetMode = false) {
     if (depth > 8 || value === null || typeof value === 'boolean') return;
     if (typeof value === 'number') {
-      if (Number.isInteger(value) && value > 0 && value <= 600 && /duration|second|secs|length/i.test(key)) durations.add(value);
+      if (Number.isInteger(value) && value > 0 && value <= 600) {
+        if (/min_?duration/i.test(key)) {
+          minDuration = minDuration === null ? value : Math.min(minDuration, value);
+          if (inTargetMode) modeMinDuration = modeMinDuration === null ? value : Math.min(modeMinDuration, value);
+        } else if (/max_?duration/i.test(key)) {
+          maxDuration = maxDuration === null ? value : Math.max(maxDuration, value);
+          if (inTargetMode) modeMaxDuration = modeMaxDuration === null ? value : Math.max(modeMaxDuration, value);
+        } else if (/duration|second|secs|length/i.test(key)) {
+          durations.add(value);
+          if (inTargetMode) modeDurations.add(value);
+        }
+      }
+      if (/generation_?types?/i.test(key) && Object.hasOwn(GEN_CODE_MAP, value)) {
+        generations.add(GEN_CODE_MAP[value]);
+      }
       return;
     }
     if (typeof value === 'string') {
       const v = value.trim().toLowerCase();
-      if (HELP_RESOLUTION.test(v)) resolutions.add(v);
-      notePair(v);
+      if (HELP_RESOLUTION.test(v)) {
+        resolutions.add(v);
+        if (inTargetMode) modeResolutions.add(v);
+      }
+      if (HELP_ASPECT_RATIO.test(v) && /aspect|ratio/i.test(key)) {
+        aspectRatios.add(v);
+        if (inTargetMode) modeAspectRatios.add(v);
+      }
+      if (/generation_?types?/i.test(key) && GEN_NAME_MAP[v]) {
+        generations.add(GEN_NAME_MAP[v]);
+      }
+      notePair(v, inTargetMode);
       return;
     }
-    if (Array.isArray(value)) { value.slice(0, 200).forEach((item) => walk(item, key, depth + 1)); return; }
+    if (Array.isArray(value)) {
+      value.slice(0, 200).forEach((item) => walk(item, key, depth + 1, inTargetMode));
+      return;
+    }
     if (typeof value === 'object') {
-      // Help entries name their modes like "image-to-video"; map them to the
-      // generate_video generation_type enum (text|image|transition|reference).
-      if (typeof value.generation_type === 'number' && typeof value.generation_name === 'string') {
-        const mapped = { 'image-to-video': 'image', 'text-to-video': 'text', 'first/last-frame transition': 'transition', 'reference-to-video': 'reference' }[value.generation_name.toLowerCase()];
-        if (mapped) generations.add(mapped);
-      }
+      const mappedMode = mapHelpGenerationMode(value);
+      if (mappedMode) generations.add(mappedMode);
+      const nextInTargetMode = mappedMode ? (Boolean(wantedGenerationType) && mappedMode === wantedGenerationType) : inTargetMode;
       for (const [name, child] of Object.entries(value).slice(0, 200)) {
-        notePair(name);
+        notePair(name, nextInTargetMode);
         const low = name.toLowerCase();
         // Price maps key their entries by resolution ("768p": 13) or by
         // resolution|duration pairs ("480p|5": 27); capture both shapes.
-        if (HELP_RESOLUTION.test(low)) resolutions.add(low);
-        walk(child, `${key}${key ? '.' : ''}${low}`, depth + 1);
+        if (HELP_RESOLUTION.test(low)) {
+          resolutions.add(low);
+          if (nextInTargetMode) modeResolutions.add(low);
+        }
+        walk(child, `${key}${key ? '.' : ''}${low}`, depth + 1, nextInTargetMode);
       }
     }
   }
   walk(help);
+  const pickedDurations = modeDurations.size ? modeDurations : durations;
+  const pickedResolutions = modeResolutions.size ? modeResolutions : resolutions;
+  const pickedAspectRatios = modeAspectRatios.size ? modeAspectRatios : aspectRatios;
+  const pickedMinDur = modeMinDuration ?? minDuration;
+  const pickedMaxDur = modeMaxDuration ?? maxDuration;
   return {
-    durations: [...durations].sort((a, b) => a - b),
-    resolutions: [...resolutions],
+    durations: [...pickedDurations].sort((a, b) => a - b),
+    resolutions: [...pickedResolutions],
     generations: [...generations],
+    aspectRatios: [...pickedAspectRatios],
+    minDuration: pickedMinDur,
+    maxDuration: pickedMaxDur,
   };
 }
-function normalizeVideoSettings(help, settings, hasImage) {
-  const options = collectHelpOptions(help);
+function normalizeVideoSettings(help, settings, wantedTarget) {
+  const wanted = typeof wantedTarget === 'string' ? wantedTarget : (wantedTarget ? 'image' : 'text');
+  const options = collectHelpOptions(help, wanted);
   const adjusted = [];
   const next = { ...settings };
   if (options.generations.length) {
-    const wanted = hasImage ? 'image' : 'text';
     if (!options.generations.includes(wanted)) {
-      throw fail(`Model ${settings.model_id} tidak mendukung generasi dari ${wanted === 'image' ? 'gambar' : 'teks'} (mendukung: ${options.generations.join(', ')}). Pilih model lain.`, 409);
+      throw fail(`Model ${settings.model_id} tidak mendukung mode '${wanted}' (mendukung: ${options.generations.join(', ')}). Ubah tipe input/jumlah gambar atau pilih model lain.`, 409);
     }
     if (next.generation_type !== wanted) { next.generation_type = wanted; adjusted.push('generation_type'); }
   }
-  if (options.durations.length && !options.durations.includes(next.duration)) {
-    next.duration = options.durations.reduce((best, d) => (Math.abs(d - settings.duration) < Math.abs(best - settings.duration) ? d : best), options.durations[0]);
-    adjusted.push('duration');
+  if (options.durations.length) {
+    if (!options.durations.includes(next.duration)) {
+      next.duration = options.durations.reduce((best, d) => (Math.abs(d - settings.duration) < Math.abs(best - settings.duration) ? d : best), options.durations[0]);
+      adjusted.push('duration');
+    }
+  } else if (Number.isInteger(options.minDuration) && Number.isInteger(options.maxDuration) && options.minDuration <= options.maxDuration) {
+    if (next.duration < options.minDuration) { next.duration = options.minDuration; adjusted.push('duration'); }
+    else if (next.duration > options.maxDuration) { next.duration = options.maxDuration; adjusted.push('duration'); }
   }
   if (options.resolutions.length && !options.resolutions.includes(String(next.resolution).toLowerCase())) {
-    const preference = ['480p', '768p', '720p', '1080p', '2k', '4k'];
+    const preference = ['480p', '768p', '720p', '1080p', '540p', '1440p', '2160p', '2k', '4k'];
     next.resolution = preference.find((item) => options.resolutions.includes(item)) ?? options.resolutions[0];
     adjusted.push('resolution');
   }
-  return { settings: next, adjusted, options };
+  if (options.aspectRatios.length && !options.aspectRatios.includes(String(next.aspect_ratio).toLowerCase())) {
+    const preference = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '3:2', '2:3', 'auto'];
+    next.aspect_ratio = preference.find((item) => options.aspectRatios.includes(item)) ?? options.aspectRatios[0];
+    adjusted.push('aspect_ratio');
+  }
+  return {
+    settings: next,
+    adjusted,
+    options: {
+      durations: options.durations,
+      resolutions: options.resolutions,
+      generations: options.generations,
+      ...(options.aspectRatios.length ? { aspectRatios: options.aspectRatios } : {}),
+      ...(Number.isInteger(options.minDuration) ? { minDuration: options.minDuration } : {}),
+      ...(Number.isInteger(options.maxDuration) ? { maxDuration: options.maxDuration } : {}),
+    },
+  };
 }
 // Member-only models reject non-member accounts at dispatch time with no
 // usable reason (0 accepted credits). Fail early with an actionable message.
@@ -962,15 +1102,111 @@ function validVideoSettings(settings) {
     && ['image', 'text', 'transition', 'reference'].includes(settings.generation_type)
     && Number.isSafeInteger(settings.duration) && settings.duration > 0 && settings.duration <= 600
     && typeof settings.resolution === 'string' && HELP_RESOLUTION.test(settings.resolution)
-    && typeof settings.aspect_ratio === 'string' && /^\d{1,2}:\d{1,2}$/.test(settings.aspect_ratio);
+    && typeof settings.aspect_ratio === 'string' && HELP_ASPECT_RATIO.test(settings.aspect_ratio);
 }
-function validateVideoInput(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000 || typeof input.image_url !== 'string' || input.image_url.trim().length > 2048) throw fail('Masukkan prompt 1–2000 karakter dan satu URL gambar HTTPS.', 400);
-  const imageUrl = input.image_url.trim();
+function validateHttpsImageUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim() || rawUrl.trim().length > 2048) throw fail('URL gambar HTTPS tidak valid.', 400);
+  const imageUrl = rawUrl.trim();
   let url;
   try { url = new URL(imageUrl); } catch { throw fail('URL gambar HTTPS tidak valid.', 400); }
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || !url.hostname.includes('.') || url.hostname.endsWith('.local') || /^[\d.]+$/.test(url.hostname) || url.hostname.startsWith('[')) throw fail('Gunakan URL gambar HTTPS dengan nama domain publik tanpa kredensial atau fragment.', 400);
-  return { prompt: input.prompt.trim(), image_url: imageUrl };
+  return imageUrl;
+}
+function validateVideoInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url'].includes(key)) || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000 || typeof input.image_url !== 'string' || input.image_url.trim().length > 2048) throw fail('Masukkan prompt 1–2000 karakter dan satu URL gambar HTTPS.', 400);
+  return { prompt: input.prompt.trim(), image_url: validateHttpsImageUrl(input.image_url) };
+}
+function normalizeInputMode(rawMode) {
+  if (rawMode === undefined || rawMode === null || rawMode === '') return null;
+  if (typeof rawMode !== 'string') throw fail('Tipe input video tidak valid (gunakan keyframe atau omni_reference).', 400);
+  const clean = rawMode.trim().toLowerCase();
+  if (clean === 'keyframe') return 'keyframe';
+  if (clean === 'omni_reference' || clean === 'omni reference' || clean === 'omni-reference') return 'omni_reference';
+  throw fail('Tipe input video harus keyframe atau omni_reference.', 400);
+}
+function validateMultiVideoInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['prompt', 'image_url', 'images', 'input_mode', 'generation_type'].includes(key))) {
+    throw fail('Parameter input video tidak valid.', 400);
+  }
+  if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) {
+    throw fail('Masukkan prompt sepanjang 1–2000 karakter.', 400);
+  }
+  const inputMode = normalizeInputMode(input.input_mode);
+  let explicitGenType = null;
+  if (input.generation_type !== undefined && input.generation_type !== null && input.generation_type !== '') {
+    if (typeof input.generation_type !== 'string' || !['text', 'image', 'transition', 'reference'].includes(input.generation_type.trim().toLowerCase())) {
+      throw fail('Tipe generasi harus text, image, transition, atau reference.', 400);
+    }
+    explicitGenType = input.generation_type.trim().toLowerCase();
+  }
+
+  let images = [];
+  if (input.images !== undefined) {
+    if (!Array.isArray(input.images)) throw fail('Daftar gambar harus berupa array URL HTTPS.', 400);
+    if (input.images.length > FREEBEAT_VIDEO_MAX_IMAGES) {
+      throw fail(`Maksimal ${FREEBEAT_VIDEO_MAX_IMAGES} gambar untuk uji video Freebeat.`, 400);
+    }
+    images = input.images.map((item) => validateHttpsImageUrl(item));
+    if (input.image_url !== undefined && input.image_url !== '') {
+      const legacyUrl = validateHttpsImageUrl(input.image_url);
+      if (images.length !== 1 || images[0] !== legacyUrl) {
+        throw fail('Parameter image_url dan images tidak konsisten.', 400);
+      }
+    }
+  } else if (input.image_url !== undefined) {
+    if (typeof input.image_url !== 'string') throw fail('URL gambar HTTPS tidak valid.', 400);
+    const trimmed = input.image_url.trim();
+    if (trimmed) {
+      images = [validateHttpsImageUrl(trimmed)];
+    } else if (inputMode !== 'keyframe' && explicitGenType !== 'text') {
+      throw fail('URL gambar HTTPS tidak valid.', 400);
+    }
+  } else if (inputMode !== 'keyframe' && explicitGenType !== 'text') {
+    throw fail('Masukkan minimal 1 URL gambar HTTPS atau pilih tipe input keyframe.', 400);
+  }
+
+  let generationType;
+  let resolvedInputMode;
+  if (inputMode === 'omni_reference') {
+    if (images.length < 1 || images.length > FREEBEAT_VIDEO_MAX_IMAGES) {
+      throw fail(`Mode Omni Reference membutuhkan 1–${FREEBEAT_VIDEO_MAX_IMAGES} gambar referensi HTTPS.`, 400);
+    }
+    if (explicitGenType && explicitGenType !== 'reference') {
+      throw fail('Mode Omni Reference harus menggunakan generation_type reference.', 400);
+    }
+    generationType = 'reference';
+    resolvedInputMode = 'omni_reference';
+  } else if (inputMode === 'keyframe') {
+    if (images.length > 2) {
+      throw fail('Mode Keyframe mendukung maksimal 2 gambar (First & Last Frame). Hapus 1 gambar atau ganti tipe input ke Omni Reference.', 400);
+    }
+    const autoType = images.length === 0 ? 'text' : images.length === 1 ? 'image' : 'transition';
+    if (explicitGenType && explicitGenType !== autoType) {
+      throw fail(`Tipe generasi ${explicitGenType} tidak sesuai dengan ${images.length} gambar pada mode Keyframe.`, 400);
+    }
+    generationType = autoType;
+    resolvedInputMode = 'keyframe';
+  } else if (explicitGenType) {
+    if (explicitGenType === 'text' && images.length !== 0) throw fail('Mode text tidak memakai gambar.', 400);
+    if (explicitGenType === 'image' && images.length !== 1) throw fail('Mode image membutuhkan tepat 1 gambar.', 400);
+    if (explicitGenType === 'transition' && images.length !== 2) throw fail('Mode transition membutuhkan tepat 2 gambar (First & Last Frame).', 400);
+    if (explicitGenType === 'reference' && (images.length < 1 || images.length > FREEBEAT_VIDEO_MAX_IMAGES)) {
+      throw fail(`Mode reference membutuhkan 1–${FREEBEAT_VIDEO_MAX_IMAGES} gambar.`, 400);
+    }
+    generationType = explicitGenType;
+    resolvedInputMode = explicitGenType === 'reference' ? 'omni_reference' : 'keyframe';
+  } else {
+    generationType = images.length === 0 ? 'text' : images.length === 1 ? 'image' : images.length === 2 ? 'transition' : 'reference';
+    resolvedInputMode = generationType === 'reference' ? 'omni_reference' : 'keyframe';
+  }
+
+  return {
+    prompt: input.prompt.trim(),
+    images,
+    image_url: images[0] || '',
+    input_mode: resolvedInputMode,
+    generation_type: generationType,
+  };
 }
 async function parseImageQuote(request) {
   if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
@@ -1144,27 +1380,34 @@ async function prepareVideo(env, user, session, input) {
     return (typeof id === 'number' && id === input.model_id) || (typeof id === 'string' && /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) === input.model_id);
   });
   if (!found) throw fail('Model tidak ditemukan dalam daftar video Freebeat saat ini. Muat ulang daftar model.', 400);
-  const exact = { prompt: input.prompt, image_url: input.image_url };
-  const base = { ...videoSettings(input.model_id), ...(Number.isSafeInteger(input.duration) ? { duration: input.duration } : {}), ...(input.resolution ? { resolution: input.resolution } : {}) };
+  const exact = { prompt: input.prompt, images: input.images, image_url: input.images[0] || '', input_mode: input.input_mode };
+  const base = {
+    ...videoSettings(input.model_id),
+    generation_type: input.generation_type,
+    ...(Number.isSafeInteger(input.duration) ? { duration: input.duration } : {}),
+    ...(input.resolution ? { resolution: input.resolution } : {}),
+    ...(input.aspect_ratio ? { aspect_ratio: input.aspect_ratio } : {}),
+  };
   const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, base);
   assertModelUsable(help, input.model_id, env);
-  const normalized = normalizeVideoSettings(help, base, Boolean(exact.image_url));
+  const normalized = normalizeVideoSettings(help, base, input.generation_type);
   const settings = normalized.settings;
   const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, settings));
   if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
   const expires = Date.now() + APPROVAL_LIFETIME;
-  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, ...exact, credits, expires }, env, 'video-approval');
-  if (approval.length > 12000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
+  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, prompt: exact.prompt, images: exact.images, credits, expires }, env, 'video-approval');
+  if (approval.length > 14000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
   return { approval, settings, ...exact, credits, max_credits: credits + videoHeadroom(credits), adjusted: normalized.adjusted, supported: normalized.options, expiresAt: expires };
 }
 async function submitVideo(env, user, session, request) {
   await requireImageSession(session);
   const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['approval', 'confirm', 'private_diagnostics'].includes(key)) || input.confirm !== true || (input.private_diagnostics !== undefined && typeof input.private_diagnostics !== 'boolean') || typeof input.approval !== 'string' || input.approval.length > 12000) throw fail('Persetujuan uji tidak valid.', 400);
-  const ticket = await unseal(input.approval, env, 'video-approval', 12000);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['approval', 'confirm', 'private_diagnostics'].includes(key)) || input.confirm !== true || (input.private_diagnostics !== undefined && typeof input.private_diagnostics !== 'boolean') || typeof input.approval !== 'string' || input.approval.length > 14000) throw fail('Persetujuan uji tidak valid.', 400);
+  const ticket = await unseal(input.approval, env, 'video-approval', 14000);
   if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !validVideoSettings(ticket.settings) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME || typeof ticket.credits !== 'number' || !Number.isFinite(ticket.credits) || ticket.credits < 0 || ticket.credits > 1000000) throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
-  const exact = validateVideoInput({ prompt: ticket.prompt, image_url: ticket.image_url });
-  if (exact.prompt !== ticket.prompt || exact.image_url !== ticket.image_url) throw fail('Persetujuan tidak valid.', 400);
+  const rawImages = Array.isArray(ticket.images) ? ticket.images : (typeof ticket.image_url === 'string' && ticket.image_url ? [ticket.image_url] : []);
+  const exact = validateMultiVideoInput({ prompt: ticket.prompt, images: rawImages, generation_type: ticket.settings.generation_type });
+  if (exact.prompt !== ticket.prompt || exact.images.length !== rawImages.length || exact.images.some((url, idx) => url !== rawImages[idx])) throw fail('Persetujuan tidak valid.', 400);
   const current = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, ticket.settings));
   if (current === null || current !== ticket.credits) throw fail('Quote berubah atau tidak tersedia. Tidak ada video dikirim; buat quote baru.', 409);
   if (ticket.expires <= Date.now()) throw fail('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
@@ -1183,7 +1426,7 @@ async function submitVideo(env, user, session, request) {
     // Dispatch mirrors the official generate_video schema (model_id, prompt,
     // generation_type enum string, images, duration, resolution, aspect_ratio,
     // max_credits) AND the proven web client shape (aspect ratio always sent).
-    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { model_id: ticket.settings.model_id, generation_type: ticket.settings.generation_type, prompt: exact.prompt, images: [exact.image_url], duration: ticket.settings.duration, resolution: ticket.settings.resolution, aspect_ratio: ticket.settings.aspect_ratio, max_credits: cap } } }, 'generate', headers, 262144, input.private_diagnostics === true);
+    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_video', arguments: { model_id: ticket.settings.model_id, generation_type: ticket.settings.generation_type, prompt: exact.prompt, ...(exact.images.length ? { images: exact.images } : {}), duration: ticket.settings.duration, resolution: ticket.settings.resolution, aspect_ratio: ticket.settings.aspect_ratio, max_credits: cap } } }, 'generate', headers, 262144, input.private_diagnostics === true);
     if (input.private_diagnostics === true) initialDiagnostics = { received: true, messages: initialVideoMessages(result) };
     if (result.isError) throw new Error('unrecognized');
     const content = modelContent(result);
@@ -1887,15 +2130,31 @@ async function dispatchFreebeat(request, url, env, user) {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       const input = await imageJson(request);
-      const allowed = action === 'video-model-help' ? ['model_id'] : ['model_id', 'prompt', 'image_url', 'duration', 'resolution'];
-      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Masukkan ID model video yang valid.', 400);
-      const settings = { ...FREEBEAT_VIDEO_TEST, model_id: input.model_id, ...(input.duration !== undefined ? { duration: optionalDuration(input.duration) } : {}), ...(input.resolution !== undefined ? { resolution: optionalResolution(input.resolution) } : {}) };
-      if (action === 'video-model-help') return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
-      const videoInput = validateVideoInput({ prompt: input.prompt, image_url: input.image_url });
+      if (action === 'video-model-help') {
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'model_id') || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Masukkan ID model video yang valid.', 400);
+        const settings = videoSettings(input.model_id);
+        return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
+      }
+      const parsed = parseVideoModelRequest(input);
+      const settings = {
+        ...FREEBEAT_VIDEO_TEST,
+        model_id: parsed.model_id,
+        generation_type: parsed.generation_type,
+        ...(parsed.duration !== undefined ? { duration: parsed.duration } : {}),
+        ...(parsed.resolution ? { resolution: parsed.resolution } : {}),
+        ...(parsed.aspect_ratio ? { aspect_ratio: parsed.aspect_ratio } : {}),
+      };
       const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
-      assertModelUsable(help, input.model_id, env);
-      const normalized = normalizeVideoSettings(help, settings, Boolean(videoInput.image_url));
-      return response({ ok: true, settings: normalized.settings, adjusted: normalized.adjusted, member_only: help?.model?.member_only === true, quote: await videoDiagnostic(session.accessToken, 'video-quote', videoInput, false, normalized.settings) });
+      assertModelUsable(help, parsed.model_id, env);
+      const normalized = normalizeVideoSettings(help, settings, parsed.generation_type);
+      return response({
+        ok: true,
+        settings: normalized.settings,
+        adjusted: normalized.adjusted,
+        supported: normalized.options,
+        member_only: help?.model?.member_only === true,
+        quote: await videoDiagnostic(session.accessToken, 'video-quote', parsed, false, normalized.settings),
+      });
     }
     if (['video-help', 'video-quote', 'video-gemini-help', 'video-gemini-quote'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);

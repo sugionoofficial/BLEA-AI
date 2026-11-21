@@ -411,3 +411,200 @@ test('unconfirmed upload and unsafe response never reveal provider details and a
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
   } finally { globalThis.fetch = original; console.warn = warn; }
 });
+
+test('Wan 3.0 supports keyframe (0-2 images -> text/image/transition) and omni_reference (1-3 images -> reference) with 480p/720p/1080p and up to 30s', async () => {
+  const original = globalThis.fetch;
+  const rows = new Map();
+  const mcpCalls = [];
+  let helpBody = {
+    model_id: 182,
+    modes: [
+      { generation_type: 'text', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+      { generation_type: 'image', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+      { generation_type: 'transition', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+      { generation_type: 'reference', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+    ],
+  };
+  let nextQuoteCredits = 80;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    if (url.href === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'admin', app_metadata: { role: 'admin' } });
+    }
+    if (url.href === 'https://freebeat.ai/oauth/register') return Response.json({ client_id: 'client' });
+    if (url.href === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: 'TOKEN', expires_in: 600, scope: 'freebeat:read freebeat:generate' });
+    if (url.pathname === '/rest/v1/freebeat_admin_video_tests') {
+      if (init.method === 'POST') {
+        const row = JSON.parse(init.body);
+        row.created_at = new Date().toISOString();
+        rows.set(row.id, row);
+        return Response.json([row]);
+      }
+      if (init.method === 'PATCH') {
+        const id = url.searchParams.get('id').slice(3);
+        const row = rows.get(id);
+        Object.assign(row, JSON.parse(init.body));
+        return Response.json([row]);
+      }
+      return Response.json([...rows.values()]);
+    }
+    assert.equal(url.href, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    mcpCalls.push(body);
+    if (body.method === 'initialize') return Response.json({ id: body.id, result: { protocolVersion: '2025-03-26' } });
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    const tool = body.params?.name;
+    if (tool === 'list_models') return Response.json({ id: body.id, result: { structuredContent: { models: [{ model_id: 182, name: 'Wan 3.0' }] } } });
+    if (tool === 'get_model_help') {
+      return Response.json({ id: body.id, result: { structuredContent: helpBody } });
+    }
+    if (tool === 'quote_generation') {
+      return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: nextQuoteCredits } } });
+    }
+    if (tool === 'generate_video') {
+      return Response.json({ id: body.id, result: { structuredContent: { batch_id: `batch-${mcpCalls.length}` } } });
+    }
+    throw new Error(`Unexpected tool ${tool}`);
+  };
+  try {
+    const cookie = await connect();
+
+    // 1. Keyframe 0 images -> generation_type: 'text' (images omitted in MCP args), 1080 -> 1080p, duration 30
+    const quoteText = await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: { model_id: 182, prompt: 'Wide desert sunrise', input_mode: 'keyframe', images: [], duration: 30, resolution: '1080', aspect_ratio: '16:9' },
+    });
+    assert.equal(quoteText.status, 200);
+    const textBody = await quoteText.json();
+    assert.deepEqual(textBody.settings, { model_id: 182, generation_type: 'text', duration: 30, resolution: '1080p', aspect_ratio: '16:9' });
+    assert.deepEqual(textBody.supported.generations, ['text', 'image', 'transition', 'reference']);
+    assert.deepEqual(textBody.supported.resolutions, ['480p', '720p', '1080p']);
+    assert.equal(textBody.supported.maxDuration, 30);
+    assert.deepEqual(mcpCalls.findLast((c) => c.params?.name === 'get_model_help').params.arguments, { type: 'video', model_id: 182 });
+    assert.deepEqual(mcpCalls.findLast((c) => c.params?.name === 'quote_generation').params.arguments, {
+      tool: 'generate_video',
+      parameters: { model_id: 182, generation_type: 'text', duration: 30, resolution: '1080p', aspect_ratio: '16:9', prompt: 'Wide desert sunrise' },
+    });
+
+    // 2. Keyframe 2 images -> generation_type: 'transition', resolution '720' -> '720p', duration 20
+    const quoteTransition = await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: {
+        model_id: 182,
+        prompt: 'Morph from sunrise to night',
+        input_mode: 'keyframe',
+        images: ['https://cdn.example/frame1.png', 'https://cdn.example/frame2.png'],
+        duration: 20,
+        resolution: '720',
+        aspect_ratio: '9:16',
+      },
+    });
+    assert.equal(quoteTransition.status, 200);
+    assert.deepEqual((await quoteTransition.json()).settings, { model_id: 182, generation_type: 'transition', duration: 20, resolution: '720p', aspect_ratio: '9:16' });
+    assert.deepEqual(mcpCalls.findLast((c) => c.params?.name === 'quote_generation').params.arguments.parameters.images, [
+      'https://cdn.example/frame1.png',
+      'https://cdn.example/frame2.png',
+    ]);
+
+    // 3. Keyframe 3 images rejected (max 2 for Keyframe)
+    const badKeyframe = await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: {
+        model_id: 182,
+        prompt: 'Too many keyframes',
+        input_mode: 'keyframe',
+        images: ['https://cdn.example/1.png', 'https://cdn.example/2.png', 'https://cdn.example/3.png'],
+        duration: 10,
+      },
+    });
+    assert.equal(badKeyframe.status, 400);
+
+    // 4. Omni Reference rejects 0 images and >3 images
+    assert.equal((await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: { model_id: 182, prompt: 'Missing refs', input_mode: 'omni_reference', images: [], duration: 10 },
+    })).status, 400);
+    assert.equal((await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: {
+        model_id: 182,
+        prompt: 'Four refs',
+        input_mode: 'omni_reference',
+        images: ['https://cdn.example/1.png', 'https://cdn.example/2.png', 'https://cdn.example/3.png', 'https://cdn.example/4.png'],
+        duration: 10,
+      },
+    })).status, 400);
+
+    // 5. Unsupported mode in get_model_help returns 409 cleanly
+    helpBody = {
+      model_id: 182,
+      modes: [{ generation_type: 'image', min_duration: 5, max_duration: 15, resolutions: ['480p', '720p'] }],
+    };
+    const unsupportedMode = await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: {
+        model_id: 182,
+        prompt: 'Ref mode when model only lists image',
+        input_mode: 'omni_reference',
+        images: ['https://cdn.example/1.png'],
+        duration: 10,
+      },
+    });
+    assert.equal(unsupportedMode.status, 409);
+
+    // Restore full Wan 3.0 help metadata
+    helpBody = {
+      model_id: 182,
+      modes: [
+        { generation_type: 'text', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+        { generation_type: 'image', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+        { generation_type: 'transition', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+        { generation_type: 'reference', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16', '1:1'] },
+      ],
+    };
+
+    // 6. Omni Reference with 3 images, 480 -> 480p, 30s -> generation_type: 'reference', full prepare + submit
+    nextQuoteCredits = 140;
+    const refs = ['https://cdn.example/char.png', 'https://cdn.example/outfit.png', 'https://cdn.example/room.png'];
+    const prepared = await api('video-prepare', {
+      cookie,
+      method: 'POST',
+      data: {
+        model_id: 182,
+        prompt: 'Character walks through neon alley',
+        input_mode: 'omni_reference',
+        images: refs,
+        duration: 30,
+        resolution: '480',
+        aspect_ratio: '16:9',
+      },
+    });
+    assert.equal(prepared.status, 200);
+    const ready = await prepared.json();
+    assert.deepEqual(ready.settings, { model_id: 182, generation_type: 'reference', duration: 30, resolution: '480p', aspect_ratio: '16:9' });
+    assert.deepEqual(ready.images, refs);
+    assert.equal(ready.input_mode, 'omni_reference');
+
+    const submitted = await submit(cookie, ready.approval);
+    assert.equal(submitted.status, 200);
+    assert.deepEqual(mcpCalls.findLast((c) => c.params?.name === 'generate_video').params.arguments, {
+      model_id: 182,
+      generation_type: 'reference',
+      duration: 30,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+      prompt: 'Character walks through neon alley',
+      images: refs,
+      max_credits: 140 + videoHeadroom(140),
+    });
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
