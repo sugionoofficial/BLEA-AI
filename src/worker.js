@@ -39,6 +39,8 @@ import { ALIBABA_FREE_QUOTA_MODELS } from './lib/alibabaFreeQuota.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
 import { handleOrderReview, handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
+  LIVE_RECENT_COMPLETED_MS,
+  compareRaceItems,
   diagnosePendingGeneration,
   formatLiveQueueItem,
   patchImageGeneration as patchImageGenerationRow,
@@ -3971,20 +3973,46 @@ async function handleApi(request, url, env) {
       const shouldPoll = body?.poll === true || url.searchParams.get('poll') === '1' || url.searchParams.get('poll') === 'true';
       const isAdmin = user?.app_metadata?.role === 'admin';
 
-      const fetchActiveRows = async () => {
-        const [vidRes, imgRes] = await Promise.all([
+      const mergeUniqueById = (activeRows, completedRows, cutoffMs) => {
+        const seen = new Set();
+        const out = [];
+        for (const row of activeRows) {
+          if (!row?.id || seen.has(row.id)) continue;
+          seen.add(row.id);
+          out.push(row);
+        }
+        for (const row of completedRows) {
+          if (!row?.id || seen.has(row.id)) continue;
+          if (row.status !== 'completed') continue;
+          const doneMs = Date.parse(row.updated_at || '') || 0;
+          if (doneMs < cutoffMs) continue;
+          seen.add(row.id);
+          out.push(row);
+        }
+        return out;
+      };
+
+      const fetchLiveRows = async () => {
+        const now = Date.now();
+        const recentCutoffMs = now - LIVE_RECENT_COMPLETED_MS;
+        const recentCutoffIso = new Date(recentCutoffMs).toISOString();
+        const [vidActiveRes, imgActiveRes, vidDoneRes, imgDoneRes] = await Promise.all([
           servicePostgrest(env, '/video_generations?select=*&status=in.(queued,in_progress)&order=created_at.desc,id.desc&limit=100'),
           servicePostgrest(env, '/image_generations?select=*&status=in.(queued,processing,unknown)&order=created_at.desc,id.desc&limit=100'),
+          servicePostgrest(env, `/video_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`),
+          servicePostgrest(env, `/image_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`),
         ]);
-        const videos = vidRes?.ok ? await vidRes.json().catch(() => []) : [];
-        const images = imgRes?.ok ? await imgRes.json().catch(() => []) : [];
+        const activeVideos = vidActiveRes?.ok ? await vidActiveRes.json().catch(() => []) : [];
+        const activeImages = imgActiveRes?.ok ? await imgActiveRes.json().catch(() => []) : [];
+        const doneVideos = vidDoneRes?.ok ? await vidDoneRes.json().catch(() => []) : [];
+        const doneImages = imgDoneRes?.ok ? await imgDoneRes.json().catch(() => []) : [];
         return {
-          videos: Array.isArray(videos) ? videos : [],
-          images: Array.isArray(images) ? images : [],
+          videos: mergeUniqueById(Array.isArray(activeVideos) ? activeVideos : [], Array.isArray(doneVideos) ? doneVideos : [], recentCutoffMs),
+          images: mergeUniqueById(Array.isArray(activeImages) ? activeImages : [], Array.isArray(doneImages) ? doneImages : [], recentCutoffMs),
         };
       };
 
-      let { videos, images } = await fetchActiveRows();
+      let { videos, images } = await fetchLiveRows();
       if (shouldPoll) {
         const now = Date.now();
         const staleCandidates = [
@@ -3995,9 +4023,9 @@ async function handleApi(request, url, env) {
             .filter((row) => ['queued', 'processing'].includes(row.status) && row.external_job_id)
             .map((row) => ({ kind: 'image', row, ts: Date.parse(row.updated_at || row.created_at || '') || 0 })),
         ]
-          .filter((entry) => now - entry.ts >= 8000)
+          .filter((entry) => now - entry.ts >= 2500)
           .sort((a, b) => a.ts - b.ts)
-          .slice(0, 4);
+          .slice(0, 6);
 
         if (staleCandidates.length > 0) {
           await Promise.allSettled(staleCandidates.map((entry) => {
@@ -4005,7 +4033,7 @@ async function handleApi(request, url, env) {
             if (entry.row.provider === 'freebeat') return pollFreebeatImageRow(env, entry.row);
             return alibabaImageStatus(env, { id: entry.row.user_id }, entry.row);
           }));
-          ({ videos, images } = await fetchActiveRows());
+          ({ videos, images } = await fetchLiveRows());
         }
       }
 
@@ -4036,18 +4064,22 @@ async function handleApi(request, url, env) {
       const items = [
         ...videos.map((row) => formatLiveQueueItem(row, 'video', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
         ...images.map((row) => formatLiveQueueItem(row, 'image', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
-      ].sort((a, b) => (Date.parse(b.created_at || '') || 0) - (Date.parse(a.created_at || '') || 0));
+      ].sort((a, b) => compareRaceItems(a, b, nowMs));
+
+      const activeItems = items.filter((item) => item.status !== 'completed');
+      const completedItems = items.filter((item) => item.status === 'completed');
 
       return jsonResponse({
         ok: true,
         is_admin: isAdmin,
         server_time: new Date(nowMs).toISOString(),
         counts: {
-          total: items.length,
-          video: videos.length,
-          image: images.length,
+          total: activeItems.length,
+          video: activeItems.filter((item) => item.kind === 'video').length,
+          image: activeItems.filter((item) => item.kind === 'image').length,
+          completed: completedItems.length,
           own: items.filter((item) => item.is_own).length,
-          stalled: items.filter((item) => item.stalled).length,
+          stalled: activeItems.filter((item) => item.stalled).length,
         },
         items,
       });

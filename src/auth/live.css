@@ -1,14 +1,14 @@
 /* ==========================================================================
-   BLEA AI — Live Processes Queue Page (Compact Premium Telemetry Cards)
+   BLEA AI — Live Processes Race Leaderboard (Compact MotoGP Timing Tower)
    ========================================================================== */
 
 .dropx-shell .live-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   width: 100%;
-  max-width: 1100px;
-  padding: 6px 0 40px;
+  max-width: 920px;
+  padding: 6px 0 44px;
   min-width: 0;
 }
 
@@ -21,14 +21,14 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 14px 18px;
-  padding: 18px 20px;
+  padding: 16px 18px;
   border-radius: 16px;
-  border: 1px solid rgb(99 102 241 / 0.22);
+  border: 1px solid rgb(99 102 241 / 0.24);
   background:
     radial-gradient(circle at top right, rgb(99 102 241 / 0.14), transparent 52%),
     radial-gradient(circle at bottom left, rgb(16 185 129 / 0.08), transparent 45%),
     var(--card);
-  box-shadow: 0 10px 30px -16px rgb(15 23 42 / 0.25), var(--shadow-card);
+  box-shadow: 0 10px 28px -18px rgb(15 23 42 / 0.25), var(--shadow-card);
 }
 
 .dropx-shell .live-hero-info {
@@ -84,7 +84,7 @@
 .dropx-shell .live-hero-desc {
   margin: 0;
   max-width: 68ch;
-  font-size: 13px;
+  font-size: 12.8px;
   line-height: 1.55;
   color: var(--muted-foreground);
 }
@@ -100,15 +100,15 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 15px;
+  padding: 9px 14px;
   border-radius: 11px;
   border: 1px solid rgb(99 102 241 / 0.35);
   background: linear-gradient(135deg, rgb(99 102 241 / 0.14), rgb(56 189 248 / 0.08));
   color: var(--foreground);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
 .dropx-shell .live-refresh-btn:hover:not(:disabled) {
@@ -138,16 +138,16 @@
 .dropx-shell .live-stats-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .dropx-shell .live-stat-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 13px 15px;
-  border-radius: 14px;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 13px;
   border: 1px solid var(--border);
   background: var(--card);
   box-shadow: var(--shadow-card);
@@ -162,7 +162,7 @@
 }
 
 .dropx-shell .live-stat-label {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--muted-foreground);
   white-space: nowrap;
@@ -171,7 +171,7 @@
 }
 
 .dropx-shell .live-stat-value {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   line-height: 1.2;
   color: var(--foreground);
@@ -181,8 +181,8 @@
 .dropx-shell .live-stat-icon {
   display: inline-grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-radius: 10px;
   flex-shrink: 0;
   background: rgb(99 102 241 / 0.1);
@@ -224,16 +224,16 @@
 .dropx-shell .live-filter-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
 .dropx-shell .live-filter-tab {
-  padding: 7px 13px;
+  padding: 6px 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--muted-foreground);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
@@ -251,7 +251,7 @@
 }
 
 .dropx-shell .live-sync-note {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--muted-foreground);
 }
 
@@ -261,8 +261,8 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 12px 16px;
-  border-radius: 13px;
+  padding: 11px 15px;
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--card);
   font-size: 13px;
@@ -281,12 +281,30 @@
   color: var(--success);
 }
 
-/* ---------- Compact Multi-Column Card Grid ---------- */
+/* ---------- Race Leaderboard Tower ---------- */
+.dropx-shell .live-board {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dropx-shell .live-board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
 .dropx-shell .live-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 332px), 1fr));
-  gap: 16px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .dropx-shell .live-card {
@@ -294,49 +312,222 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 13px;
-  padding: 16px;
-  border-radius: 16px;
+  gap: 10px;
+  padding: 13px 15px;
+  border-radius: 15px;
   border: 1px solid var(--border);
   background: var(--card);
-  box-shadow: 0 8px 24px -18px rgb(15 23 42 / 0.28), var(--shadow-card);
+  box-shadow: 0 8px 22px -18px rgb(15 23 42 / 0.28), var(--shadow-card);
   min-width: 0;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.3s ease;
 }
 
 .dropx-shell .live-card::before {
   content: '';
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--primary), #38bdf8);
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(180deg, var(--primary), #38bdf8);
   opacity: 0.85;
 }
 
-.dropx-shell .live-card.is-own::before {
-  background: linear-gradient(90deg, var(--success), #38bdf8);
+.dropx-shell .live-card.is-leader {
+  border-color: rgb(245 158 11 / 0.45);
+  background:
+    radial-gradient(circle at top left, rgb(245 158 11 / 0.09), transparent 45%),
+    var(--card);
+}
+
+.dropx-shell .live-card.is-leader::before {
+  background: linear-gradient(180deg, #f59e0b, #fbbf24);
+}
+
+.dropx-shell .live-card.is-completed {
+  border-color: rgb(16 185 129 / 0.58);
+  background:
+    radial-gradient(circle at top left, rgb(16 185 129 / 0.14), transparent 55%),
+    var(--card);
+  box-shadow: 0 12px 30px -18px rgb(16 185 129 / 0.48), var(--shadow-card);
+}
+
+.dropx-shell .live-card.is-completed::before {
+  background: linear-gradient(180deg, #10b981, #34d399);
 }
 
 .dropx-shell .live-card.is-stalled {
-  border-color: rgb(245 158 11 / 0.42);
+  border-color: rgb(245 158 11 / 0.36);
 }
 
 .dropx-shell .live-card.is-stalled::before {
-  background: linear-gradient(90deg, var(--warning), #fb7185);
+  background: linear-gradient(180deg, var(--warning), #fb7185);
 }
 
-.dropx-shell .live-card:hover {
-  transform: translateY(-2px);
-  border-color: rgb(99 102 241 / 0.38);
-  box-shadow: 0 14px 28px -18px rgb(99 102 241 / 0.35), var(--shadow-card);
+.dropx-shell .live-race-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
 }
 
-.dropx-shell .live-card-top {
+/* ---------- Rank Podium & Position Delta ---------- */
+.dropx-shell .live-rank-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.dropx-shell .live-rank-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.dropx-shell .live-rank-badge.rank-1 {
+  border-color: rgb(245 158 11 / 0.55);
+  background: linear-gradient(135deg, rgb(251 191 36 / 0.24), rgb(245 158 11 / 0.12));
+  color: #d97706;
+  box-shadow: 0 6px 16px -8px rgb(245 158 11 / 0.65);
+}
+
+html.dark .dropx-shell .live-rank-badge.rank-1,
+.dark .dropx-shell .live-rank-badge.rank-1 {
+  color: #fbbf24;
+}
+
+.dropx-shell .live-rank-badge.rank-2 {
+  border-color: rgb(148 163 184 / 0.5);
+  background: linear-gradient(135deg, rgb(203 213 225 / 0.22), rgb(148 163 184 / 0.1));
+}
+
+.dropx-shell .live-rank-badge.rank-3 {
+  border-color: rgb(217 119 6 / 0.4);
+  background: linear-gradient(135deg, rgb(251 146 60 / 0.2), rgb(217 119 6 / 0.08));
+}
+
+.dropx-shell .live-card.is-completed .live-rank-badge {
+  border-color: rgb(16 185 129 / 0.55);
+  background: linear-gradient(135deg, rgb(16 185 129 / 0.25), rgb(52 211 153 / 0.14));
+  color: var(--success);
+  box-shadow: 0 6px 16px -8px rgb(16 185 129 / 0.65);
+}
+
+.dropx-shell .live-delta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dropx-shell .live-delta-pill.is-up {
+  background: rgb(16 185 129 / 0.16);
+  color: var(--success);
+}
+
+.dropx-shell .live-delta-pill.is-down {
+  background: rgb(244 63 94 / 0.14);
+  color: #f43f5e;
+}
+
+.dropx-shell .live-delta-pill.is-new {
+  background: rgb(56 189 248 / 0.16);
+  color: #0284c7;
+}
+
+html.dark .dropx-shell .live-delta-pill.is-new,
+.dark .dropx-shell .live-delta-pill.is-new {
+  color: #38bdf8;
+}
+
+/* ---------- Center Race Lane ---------- */
+.dropx-shell .live-race-center {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.dropx-shell .live-row-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
-  padding-top: 2px;
+  min-width: 0;
+}
+
+.dropx-shell .live-owner-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px 4px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgb(148 163 184 / 0.08);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dropx-shell .live-owner-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--purple) 100%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.dropx-shell .live-card.is-own .live-owner-avatar {
+  background: linear-gradient(135deg, var(--success) 0%, #0ea5e9 100%);
+}
+
+.dropx-shell .live-owner-text {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 7px;
+  min-width: 0;
+}
+
+.dropx-shell .live-owner-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+
+.dropx-shell .live-owner-email {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dropx-shell .live-card-badges {
@@ -351,20 +542,38 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--muted);
   color: var(--foreground);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .dropx-shell .live-pill.is-status {
-  border-color: rgb(99 102 241 / 0.38);
+  border-color: rgb(99 102 241 / 0.36);
   background: rgb(99 102 241 / 0.13);
   color: var(--primary);
+}
+
+.dropx-shell .live-pill.is-leader {
+  border-color: rgb(245 158 11 / 0.45);
+  background: rgb(245 158 11 / 0.14);
+  color: #d97706;
+}
+
+html.dark .dropx-shell .live-pill.is-leader,
+.dark .dropx-shell .live-pill.is-leader {
+  color: #fbbf24;
+}
+
+.dropx-shell .live-pill.is-completed {
+  border-color: rgb(16 185 129 / 0.5);
+  background: rgb(16 185 129 / 0.16);
+  color: var(--success);
+  font-weight: 700;
 }
 
 .dropx-shell .live-pill.is-own {
@@ -379,117 +588,41 @@
   color: var(--warning);
 }
 
-.dropx-shell .live-runtime-box {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid rgb(99 102 241 / 0.34);
-  background: linear-gradient(135deg, rgb(99 102 241 / 0.15), rgb(56 189 248 / 0.1));
-  color: var(--foreground);
-  font-size: 12px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-/* ---------- Account Identity Strip ---------- */
-.dropx-shell .live-owner-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 11px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: rgb(148 163 184 / 0.08);
-  min-width: 0;
-}
-
-.dropx-shell .live-owner-avatar {
-  display: inline-grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
-  flex-shrink: 0;
-  background: linear-gradient(135deg, var(--primary) 0%, var(--purple) 100%);
-  color: #fff;
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-.dropx-shell .live-card.is-own .live-owner-avatar {
-  background: linear-gradient(135deg, var(--success) 0%, #0ea5e9 100%);
-}
-
-.dropx-shell .live-owner-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
-
-.dropx-shell .live-owner-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.dropx-shell .live-owner-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dropx-shell .live-owner-email {
-  font-size: 11.5px;
-  color: var(--muted-foreground);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ---------- Card Main Body ---------- */
 .dropx-shell .live-card-main {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 5px;
+  min-width: 0;
+}
+
+.dropx-shell .live-title-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   min-width: 0;
 }
 
 .dropx-shell .live-card-title {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .dropx-shell .live-card-prompt {
   margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--muted-foreground);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   overflow: hidden;
-  min-height: 37px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 200px;
 }
 
+/* ---------- Race Track Progress Bar ---------- */
 .dropx-shell .live-progress-row {
   display: flex;
   align-items: center;
@@ -499,7 +632,7 @@
 .dropx-shell .live-progress-track {
   position: relative;
   flex: 1;
-  height: 7px;
+  height: 8px;
   border-radius: 999px;
   background: var(--muted);
   overflow: hidden;
@@ -510,15 +643,23 @@
   height: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, var(--primary), #38bdf8);
-  transition: width 0.35s ease;
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dropx-shell .live-card.is-leader .live-progress-fill {
+  background: linear-gradient(90deg, #f59e0b, #38bdf8);
+}
+
+.dropx-shell .live-card.is-completed .live-progress-fill {
+  background: linear-gradient(90deg, #10b981, #34d399);
 }
 
 .dropx-shell .live-progress-fill::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.38), transparent);
-  animation: live-shimmer 1.8s infinite;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.4), transparent);
+  animation: live-shimmer 1.6s infinite;
 }
 
 @keyframes live-shimmer {
@@ -536,95 +677,111 @@
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* ---------- 5-Second Finish Celebration Banner ---------- */
+.dropx-shell .live-finish-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgb(16 185 129 / 0.38);
+  background: rgb(16 185 129 / 0.1);
+}
+
+.dropx-shell .live-finish-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--success);
+}
+
+.dropx-shell .live-finish-track {
+  height: 4px;
+  width: 100%;
+  border-radius: 999px;
+  background: rgb(16 185 129 / 0.18);
+  overflow: hidden;
+}
+
+.dropx-shell .live-finish-countdown {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--success);
+  transition: width 0.2s linear;
 }
 
 .dropx-shell .live-diagnostic {
   display: flex;
   align-items: flex-start;
   gap: 7px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 7px 10px;
+  border-radius: 9px;
   border: 1px solid rgb(245 158 11 / 0.36);
   background: rgb(245 158 11 / 0.1);
   color: var(--foreground);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.45;
 }
 
-/* ---------- Compact Telemetry Grid ---------- */
-.dropx-shell .live-telemetry-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 10px;
-  padding: 10px 11px;
-  border-radius: 11px;
-  background: var(--muted);
-  font-size: 11.5px;
-}
-
-.dropx-shell .live-telemetry-cell {
+/* ---------- Right Telemetry & Actions Column ---------- */
+.dropx-shell .live-race-right {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  min-width: 0;
+  align-items: flex-end;
+  gap: 7px;
+  flex-shrink: 0;
 }
 
-.dropx-shell .live-telemetry-label {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted-foreground);
-}
-
-.dropx-shell .live-telemetry-value {
-  font-weight: 600;
+.dropx-shell .live-runtime-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgb(99 102 241 / 0.34);
+  background: linear-gradient(135deg, rgb(99 102 241 / 0.14), rgb(56 189 248 / 0.08));
   color: var(--foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-/* ---------- Card Footer & Admin Cancel ---------- */
-.dropx-shell .live-card-footer {
+.dropx-shell .live-telemetry-grid {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-}
-
-.dropx-shell .live-job-id {
-  max-width: 100%;
+  justify-content: flex-end;
+  gap: 4px 10px;
   font-size: 11px;
   color: var(--muted-foreground);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .dropx-shell .live-admin-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-left: auto;
+  gap: 7px;
 }
 
 .dropx-shell .live-cancel-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 12px;
-  border-radius: 9px;
+  padding: 5px 10px;
+  border-radius: 8px;
   border: 1px solid rgb(239 68 68 / 0.45);
-  background: rgb(239 68 68 / 0.12);
+  background: rgb(239 68 68 / 0.11);
   color: var(--destructive);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   cursor: pointer;
   transition: background-color 0.15s ease;
@@ -634,17 +791,12 @@
   background: rgb(239 68 68 / 0.22);
 }
 
-.dropx-shell .live-cancel-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
 .dropx-shell .live-confirm-panel {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 11px;
-  border-radius: 12px;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 11px;
   border: 1px solid rgb(239 68 68 / 0.38);
   background: rgb(239 68 68 / 0.08);
   font-size: 12px;
@@ -653,19 +805,12 @@
 
 .dropx-shell .live-confirm-row {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.dropx-shell .live-confirm-btns {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
 .dropx-shell .live-reason-input {
-  width: 100%;
+  flex: 1 1 200px;
   min-width: 0;
   padding: 7px 10px;
   border-radius: 8px;
@@ -674,6 +819,12 @@
   color: var(--foreground);
   font-size: 12px;
   font-family: inherit;
+}
+
+.dropx-shell .live-confirm-btns {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .dropx-shell .live-confirm-submit {
@@ -705,7 +856,7 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 48px 20px;
+  padding: 44px 20px;
   text-align: center;
   border-radius: 16px;
   border: 1px dashed var(--border);
@@ -742,6 +893,7 @@
 
 .dropx-shell .live-link-btn {
   color: var(--primary);
+  font-size: 11.5px;
   font-weight: 600;
   text-decoration: none;
 }
@@ -754,13 +906,39 @@
   .dropx-shell .live-stats-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .dropx-shell .live-race-row {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 10px 12px;
+  }
+
+  .dropx-shell .live-race-right {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+  }
+
+  .dropx-shell .live-telemetry-grid {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 600px) {
   .dropx-shell .live-card {
+    padding: 12px;
+  }
+
+  .dropx-shell .live-hero-bar {
     padding: 14px;
   }
-  .dropx-shell .live-hero-bar {
-    padding: 15px;
+
+  .dropx-shell .live-rank-badge {
+    width: 44px;
+    height: 40px;
+    font-size: 14px;
   }
 }

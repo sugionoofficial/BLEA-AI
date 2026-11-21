@@ -1,3 +1,6 @@
+export const LIVE_RECENT_COMPLETED_MS = 12_000;
+export const LIVE_FINISH_HOLD_MS = 5_000;
+
 export function maskEmailAfter4(email) {
   const raw = String(email || '').trim();
   if (!raw) return '';
@@ -29,6 +32,9 @@ export function resolveOwnerName(profile, email, { isOwn = false, viewerName = '
 }
 
 export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
+  if (['completed', 'failed', 'cancelled', 'expired'].includes(row?.status)) {
+    return null;
+  }
   const createdMs = Date.parse(row?.created_at || '') || nowMs;
   const updatedMs = Date.parse(row?.updated_at || row?.created_at || '') || createdMs;
   const ageMs = Math.max(0, nowMs - createdMs);
@@ -61,19 +67,144 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
   return null;
 }
 
+export function computeLiveProgress(item, nowMs = Date.now()) {
+  if (!item) return 0;
+  if (item.status === 'completed') return 100;
+  if (['cancelled', 'failed', 'expired'].includes(item.status)) return 0;
+  if (item.kind === 'video') {
+    const raw = Math.max(0, Math.min(99, Number(item.progress || 0)));
+    if (raw > 0) return raw;
+    return item.status === 'in_progress' ? 8 : 2;
+  }
+  if (item.status === 'unknown' || !item.has_external_job) return 3;
+  if (item.status === 'queued') return 5;
+  const createdMs = Date.parse(item.created_at || '') || nowMs;
+  const elapsedMs = Math.max(0, nowMs - createdMs);
+  const estimated = 15 + Math.round(77 * (1 - Math.exp(-elapsedMs / 18_000)));
+  return Math.max(15, Math.min(92, estimated));
+}
+
+export function getRaceTier(item) {
+  if (!item) return 0;
+  if (item.status === 'completed') return 3;
+  if (!item.stalled && ['in_progress', 'processing'].includes(item.status)) return 2;
+  if (!item.stalled && item.status === 'queued') return 1;
+  return 0;
+}
+
+export function compareRaceItems(a, b, nowMs = Date.now()) {
+  const tierDiff = getRaceTier(b) - getRaceTier(a);
+  if (tierDiff !== 0) return tierDiff;
+
+  if (a.status === 'completed' && b.status === 'completed') {
+    const aDone = Date.parse(a.completed_at || a.updated_at || '') || 0;
+    const bDone = Date.parse(b.completed_at || b.updated_at || '') || 0;
+    if (bDone !== aDone) return bDone - aDone;
+  }
+
+  const progDiff = computeLiveProgress(b, nowMs) - computeLiveProgress(a, nowMs);
+  if (progDiff !== 0) return progDiff;
+
+  const bUpdated = Date.parse(b.updated_at || b.created_at || '') || 0;
+  const aUpdated = Date.parse(a.updated_at || a.created_at || '') || 0;
+  if (bUpdated !== aUpdated) return bUpdated - aUpdated;
+
+  const aCreated = Date.parse(a.created_at || '') || 0;
+  const bCreated = Date.parse(b.created_at || '') || 0;
+  return aCreated - bCreated;
+}
+
+export function reconcileRaceEntries({
+  holdMap = new Map(),
+  dismissedSet = new Set(),
+  incomingItems = [],
+  nowMs = Date.now(),
+  holdMs = LIVE_FINISH_HOLD_MS,
+} = {}) {
+  const nextHoldMap = new Map(holdMap);
+  const nextDismissed = new Set(dismissedSet);
+
+  for (const [key, entry] of nextHoldMap.entries()) {
+    if (nowMs >= entry.expiresAt) {
+      nextHoldMap.delete(key);
+      nextDismissed.add(key);
+    }
+  }
+
+  const activeItems = [];
+  const activeKeys = new Set();
+
+  for (const item of incomingItems || []) {
+    const key = `${item.kind}:${item.id}`;
+    if (item.status === 'completed') {
+      if (nextDismissed.has(key)) continue;
+      const existing = nextHoldMap.get(key);
+      if (existing) {
+        if (nowMs >= existing.expiresAt) {
+          nextHoldMap.delete(key);
+          nextDismissed.add(key);
+          continue;
+        }
+        nextHoldMap.set(key, { ...existing, item });
+      } else {
+        nextHoldMap.set(key, {
+          item,
+          firstSeenAt: nowMs,
+          expiresAt: nowMs + holdMs,
+        });
+      }
+      continue;
+    }
+
+    if (['queued', 'in_progress', 'processing', 'unknown'].includes(item.status)) {
+      if (!activeKeys.has(key)) {
+        activeKeys.add(key);
+        activeItems.push(item);
+      }
+    }
+  }
+
+  const heldCompletedItems = [];
+  for (const [key, entry] of nextHoldMap.entries()) {
+    if (nowMs >= entry.expiresAt) {
+      nextHoldMap.delete(key);
+      nextDismissed.add(key);
+      continue;
+    }
+    if (!activeKeys.has(key)) {
+      heldCompletedItems.push({
+        ...entry.item,
+        finish_first_seen_at: entry.firstSeenAt,
+        finish_expires_at: entry.expiresAt,
+        finish_remaining_ms: Math.max(0, entry.expiresAt - nowMs),
+      });
+    }
+  }
+
+  const combined = [...heldCompletedItems, ...activeItems].sort((a, b) => compareRaceItems(a, b, nowMs));
+  return {
+    items: combined,
+    holdMap: nextHoldMap,
+    dismissedSet: nextDismissed,
+    activeCount: activeItems.length,
+    completedHoldCount: heldCompletedItems.length,
+  };
+}
+
 export function formatLiveQueueItem(
   row,
   kind,
   { isAdmin = false, viewerId = '', viewerName = '', emailMap = null, profileMap = null, nowMs = Date.now() } = {},
 ) {
+  const isCompleted = row?.status === 'completed';
   const isOwn = Boolean(viewerId && row?.user_id === viewerId);
   const diagnostic = diagnosePendingGeneration(kind, row, nowMs);
-  const canPoll = kind === 'image'
+  const canPoll = !isCompleted && (kind === 'image'
     ? Boolean(row?.external_job_id && ['queued', 'processing'].includes(row?.status))
     : Boolean(
         ['queued', 'in_progress'].includes(row?.status)
         && (row?.external_job_id || row?.polling_url || (row?.provider === 'freebeat' && row?.metadata?.preparing_music_id)),
-      );
+      ));
   const profile = profileMap?.get(row.user_id) || null;
   const rawEmail = profile?.email ?? emailMap?.get(row.user_id) ?? null;
   const ownerName = resolveOwnerName(profile, rawEmail, { isOwn, viewerName });
@@ -85,10 +216,11 @@ export function formatLiveQueueItem(
     provider: row.provider,
     model: row.model,
     status: row.status,
-    progress: kind === 'video' ? Number(row.progress || 0) : null,
+    progress: isCompleted ? 100 : (kind === 'video' ? Number(row.progress || 0) : null),
     credits_charged: Number(row.credits_charged || 0),
     created_at: row.created_at,
     updated_at: row.updated_at || row.created_at,
+    ...(isCompleted ? { completed_at: row.updated_at || new Date(nowMs).toISOString() } : {}),
     is_own: isOwn,
     owner_name: ownerName,
     owner_email_masked: ownerEmailMasked,
@@ -110,7 +242,7 @@ export function formatLiveQueueItem(
     item.user_email = rawEmail;
     item.external_job_id = row.external_job_id || null;
     item.agent_status = row?.metadata?.agent_status || null;
-    item.can_cancel = true;
+    item.can_cancel = !isCompleted;
   }
   return item;
 }
