@@ -222,8 +222,8 @@ test('/api/video/status melakukan refund sekali secara atomik saat job berubah m
   }
 });
 
-test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manual + penegakan saldo UI', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://app.example/credits' });
+test('CreditsPage tidak lagi menampilkan Admin · Harga generasi; AdminPage Katalog Model menangani semua provider, kredit per model, massal & ON/OFF per kategori; GeneratePage enforce saldo', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://app.example/admin?tab=api-keys&sub=catalog' });
   const prevWindow = globalThis.window;
   const prevDocument = globalThis.document;
   const prevLocalStorage = globalThis.localStorage;
@@ -246,6 +246,7 @@ test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manu
   });
 
   const savedPayloads = [];
+  const savedModelToggles = [];
   let pricesList = [
     { id: 'price-fb-1', provider: 'freebeat', model: '122', modality: 'image', credits: 15, active: true },
   ];
@@ -261,6 +262,7 @@ test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manu
   const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
   const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
   const { CreditsPage } = await vite.ssrLoadModule('/src/auth/CreditsPage.jsx');
+  const { AdminPage } = await vite.ssrLoadModule('/src/auth/AdminPage.jsx');
   const { GeneratePage } = await vite.ssrLoadModule('/src/auth/GeneratePage.jsx');
   const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
 
@@ -273,6 +275,45 @@ test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manu
     const url = typeof input === 'string' ? input : input.url;
     const method = (init?.method || 'GET').toUpperCase();
     if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'user' });
+    if (url === '/api/admin-models') {
+      return Response.json({
+        models: [
+          { id: 'wan2.2-i2v-plus', active: true, provider: 'alibaba' },
+          { id: 'sora-2', active: true, provider: 'openai' },
+        ],
+        providers: [
+          { provider: 'alibaba', label: 'Alibaba Model Studio', sources: ['api_key'] },
+          { provider: 'cloudflare', label: 'Cloudflare Workers AI', sources: ['api_key'] },
+          { provider: 'openai', label: 'OpenAI', sources: ['api_key'] },
+          { provider: 'kling', label: 'Kling', sources: ['key_pool'] },
+          { provider: 'freebeat', label: 'Freebeat (OAuth)', sources: ['oauth'] },
+        ],
+      });
+    }
+    if (url === '/api/catalog') {
+      const reqBody = JSON.parse(init.body || '{}');
+      if (reqBody.provider === 'openai') {
+        return Response.json({
+          models: [
+            { id: 'sora-2', name: 'OpenAI Sora 2', provider: 'openai', category: 'Video', tags: ['Video'], isFree: false, online: true, priceLabel: 'Berbayar' },
+            { id: 'sora-2-pro', name: 'OpenAI Sora 2 Pro', provider: 'openai', category: 'Video', tags: ['Video'], isFree: false, online: true, priceLabel: 'Berbayar' },
+            { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', category: 'Text', tags: ['Text'], isFree: false, online: true, priceLabel: 'API' },
+          ],
+        });
+      }
+      return Response.json({
+        models: [
+          { id: 'wan3.0-video', name: 'Wan 3.0 Video', provider: 'alibaba', category: 'Video', tags: ['Video'], isFree: false, online: true, priceLabel: 'Free Quota' },
+          { id: 'wan2.7-image', name: 'Wan 2.7 Image', provider: 'alibaba', category: 'Image', tags: ['Image'], isFree: true, online: true, priceLabel: 'Free Quota' },
+          { id: 'qwen-plus', name: 'Qwen Plus', provider: 'alibaba', category: 'Text', tags: ['Text'], isFree: true, online: true, priceLabel: 'Free Quota' },
+        ],
+      });
+    }
+    if (url === '/api/save-models') {
+      const reqBody = JSON.parse(init.body || '{}');
+      savedModelToggles.push(reqBody);
+      return Response.json({ ok: true, activeCount: Array.isArray(reqBody.models) ? reqBody.models.length : 0 });
+    }
     if (url === '/api/video/models') {
       return Response.json({
         ok: true,
@@ -297,33 +338,45 @@ test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manu
       });
     }
     if (url === '/api/video/history') return Response.json({ ok: true, generations: [], hasMore: false });
+    if (url.includes('/rest/v1/profiles')) return Response.json([]);
+    if (url.includes('/rest/v1/video_generations')) return Response.json([]);
+    if (url.includes('/rest/v1/ai_conversations')) return Response.json([]);
+    if (url.includes('/rest/v1/waitlist_signups')) return Response.json([]);
+    if (url.includes('/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'alibaba', label: 'Alibaba Model Studio', api_key: 'sk-ali', base_url: 'https://dashscope.aliyuncs.com' },
+        { provider: 'cloudflare', label: 'Cloudflare Workers AI', api_key: 'binding:AI', base_url: '' },
+      ]);
+    }
     if (url.includes('/rest/v1/credit_packages')) return Response.json([]);
     if (url.includes('/rest/v1/credit_model_prices')) {
       if (method === 'POST') {
         const body = JSON.parse(init.body || '{}');
         savedPayloads.push(body);
         const rows = Array.isArray(body) ? body : [body];
-        pricesList = [...pricesList, ...rows.map((r, i) => ({ id: `price-new-${i}`, ...r }))];
-        return Response.json(pricesList);
+        const inserted = rows.map((r, i) => ({ id: `price-new-${savedPayloads.length}-${i}`, ...r }));
+        pricesList = [...pricesList, ...inserted];
+        return Response.json(inserted);
+      }
+      if (method === 'DELETE') {
+        return Response.json([]);
       }
       return Response.json(pricesList);
     }
     if (url.includes('/rest/v1/credit_payment_settings')) return Response.json(null);
-    if (url.includes('/rest/v1/credit_wallets')) return Response.json({ balance: 50 });
-    if (url.includes('/rest/v1/credit_orders')) return Response.json([]);
-    if (url.includes('/rest/v1/profiles')) return Response.json([]);
-    if (url.includes('/rest/v1/credit_payment_methods')) return Response.json([]);
-    if (url.includes('/rest/v1/provider_models')) {
-      return Response.json([
-        { provider: 'alibaba', model: 'wan2.2-i2v-plus' },
-        { provider: 'openai', model: 'sora-2' },
-      ]);
+    if (url.includes('/rest/v1/credit_wallets')) {
+      const accept = String(init?.headers?.accept || init?.headers?.Accept || '');
+      return Response.json(accept.includes('vnd.pgrst.object') ? { balance: 50 } : [{ user_id: 'user-1', balance: 50 }]);
     }
+    if (url.includes('/rest/v1/credit_orders')) return Response.json([]);
+    if (url.includes('/rest/v1/credit_payment_methods')) return Response.json([]);
+    if (url.includes('/api/admin/users')) return Response.json({ admin_ids: [] });
+    if (url.includes('/api/admin/freebeat')) return Response.json({ accounts: [] });
     throw new Error(`Unexpected fetch: ${method} ${url}`);
   };
 
   try {
-    // 1. CreditsPage admin test
+    // 1. CreditsPage admin test: no Admin · Harga generasi section remains
     const root1 = createRoot(document.getElementById('root'));
     await React.act(async () => root1.render(
       React.createElement(MemoryRouter, { initialEntries: ['/credits'] },
@@ -331,49 +384,94 @@ test('CreditsPage & GeneratePage: pilih semua provider + tarif kredit video manu
     ));
     await React.act(async () => new Promise((r) => setTimeout(r, 40)));
 
-    const providerSelect = document.querySelector('select[aria-label="Provider"]');
-    assert.ok(providerSelect, 'Provider harus berupa <select> agar semua provider dapat dipilih');
-    const providerValues = Array.from(providerSelect.options).map((o) => o.value);
-    assert.ok(providerValues.includes('alibaba'));
-    assert.ok(providerValues.includes('freebeat'));
-    assert.ok(providerValues.includes('openai'));
-    assert.ok(providerValues.includes('kling'));
-    assert.ok(providerValues.includes('__custom__'));
-
-    assert.match(document.body.textContent, /2 model video aktif belum punya tarif kredit/);
-    const soraChip = Array.from(document.querySelectorAll('.credits-chip-btn')).find((b) => b.textContent.includes('openai / sora-2'));
-    assert.ok(soraChip);
-    await React.act(async () => {
-      soraChip.click();
-    });
-
-    assert.equal(document.querySelector('select[aria-label="Provider"]').value, 'openai');
-    assert.equal(document.querySelector('select[aria-label="ID model"]').value, 'sora-2');
-
-    const creditInput = Array.from(document.querySelectorAll('form input[type="number"]')).find((el) => el.placeholder === 'mis. 50');
-    assert.ok(creditInput);
-    const nativeSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
-    await React.act(async () => {
-      nativeSetter.call(creditInput, '85');
-      creditInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    });
-
-    await React.act(async () => {
-      creditInput.closest('form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await React.act(async () => new Promise((r) => setTimeout(r, 30)));
-
-    assert.equal(savedPayloads.length, 1);
-    assert.deepEqual(savedPayloads[0], {
-      provider: 'openai',
-      model: 'sora-2',
-      modality: 'video',
-      credits: 85,
-      active: true,
-    });
+    assert.doesNotMatch(document.body.textContent, /Admin · Harga generasi/);
+    assert.match(document.body.textContent, /Paket kredit/);
+    assert.match(document.body.textContent, /Admin · Kelola paket/);
     await React.act(async () => root1.unmount());
 
-    // 2. GeneratePage credit display & balance enforcement test
+    // 2. AdminPage Katalog Model test: all registered providers, no Model Manual, search, per-model credit edit, bulk credit, bulk category ON/OFF
+    const rootAdmin = createRoot(document.getElementById('root'));
+    await React.act(async () => rootAdmin.render(
+      React.createElement(MemoryRouter, { initialEntries: ['/admin?tab=api-keys&sub=catalog'] },
+        React.createElement(AuthProvider, { initialSession: adminSession }, React.createElement(AdminPage))),
+    ));
+    await React.act(async () => new Promise((r) => setTimeout(r, 60)));
+
+    assert.doesNotMatch(document.body.textContent, /Model Manual/);
+    const catalogSelect = document.querySelector('select[aria-label="Pilih katalog provider"]');
+    assert.ok(catalogSelect, 'Dropdown provider Katalog Model harus ada');
+    const catalogProviderValues = Array.from(catalogSelect.options).map((o) => o.value);
+    assert.ok(catalogProviderValues.includes('alibaba'));
+    assert.ok(catalogProviderValues.includes('cloudflare'));
+    assert.ok(catalogProviderValues.includes('openai'), 'Provider selain Alibaba & Cloudflare harus ikut tampil');
+    assert.ok(catalogProviderValues.includes('kling'), 'Provider dari key pool harus ikut tampil');
+    assert.ok(catalogProviderValues.includes('freebeat'), 'Provider Freebeat OAuth harus ikut tampil');
+
+    const nativeSelectSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set;
+    const nativeInputSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+
+    // Switch catalog provider to openai
+    await React.act(async () => {
+      nativeSelectSetter.call(catalogSelect, 'openai');
+      catalogSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    });
+    await React.act(async () => new Promise((r) => setTimeout(r, 40)));
+
+    assert.match(document.body.textContent, /sora-2-pro/);
+    assert.match(document.body.textContent, /gpt-4o-mini/);
+
+    // Edit credit directly on sora-2
+    const editBtn = document.querySelector('button[aria-label="Edit kredit sora-2"]');
+    assert.ok(editBtn);
+    await React.act(async () => { editBtn.click(); });
+
+    const inlineCreditInput = document.querySelector('input[aria-label="Biaya kredit sora-2"]');
+    assert.ok(inlineCreditInput);
+    await React.act(async () => {
+      nativeInputSetter.call(inlineCreditInput, '85');
+      inlineCreditInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    const saveCreditBtn = Array.from(document.querySelectorAll('.admin-model-credit-actions button')).find((b) => b.textContent.includes('Simpan kredit'));
+    assert.ok(saveCreditBtn);
+    await React.act(async () => { saveCreditBtn.click(); });
+    await React.act(async () => new Promise((r) => setTimeout(r, 30)));
+
+    assert.ok(savedPayloads.some((p) => !Array.isArray(p) && p.provider === 'openai' && p.model === 'sora-2' && p.modality === 'video' && p.credits === 85));
+
+    // Filter Video category and run bulk ON for category Video
+    const videoChip = Array.from(document.querySelectorAll('.admin-model-chip')).find((b) => b.textContent.startsWith('Video'));
+    assert.ok(videoChip);
+    await React.act(async () => { videoChip.click(); });
+
+    const bulkOnBtn = Array.from(document.querySelectorAll('.admin-model-bulk-group button')).find((b) => b.textContent.includes('Aktifkan Massal'));
+    assert.ok(bulkOnBtn);
+    await React.act(async () => { bulkOnBtn.click(); });
+    await React.act(async () => new Promise((r) => setTimeout(r, 30)));
+    assert.ok(savedModelToggles.some((payload) => payload.provider === 'openai' && payload.models.includes('sora-2') && payload.models.includes('sora-2-pro')));
+
+    // Search for sora-2-pro and apply bulk credit to remaining unpriced filtered models
+    const searchInput = document.querySelector('input[aria-label="Cari model di katalog"]');
+    assert.ok(searchInput);
+    await React.act(async () => {
+      nativeInputSetter.call(searchInput, 'sora-2-pro');
+      searchInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    assert.equal(document.querySelectorAll('.admin-model-row-wrap').length, 1);
+
+    const bulkCreditInput = document.querySelector('input[aria-label="Jumlah kredit massal"]');
+    await React.act(async () => {
+      nativeInputSetter.call(bulkCreditInput, '140');
+      bulkCreditInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    const bulkFillBtn = Array.from(document.querySelectorAll('.admin-model-bulk-group button')).find((b) => b.textContent.includes('Isi kredit kosong'));
+    assert.ok(bulkFillBtn);
+    await React.act(async () => { bulkFillBtn.click(); });
+    await React.act(async () => new Promise((r) => setTimeout(r, 30)));
+    assert.ok(savedPayloads.some((p) => Array.isArray(p) && p.some((r) => r.provider === 'openai' && r.model === 'sora-2-pro' && r.modality === 'video' && r.credits === 140)));
+
+    await React.act(async () => rootAdmin.unmount());
+
+    // 3. GeneratePage credit display & balance enforcement test
     activeSession = {
       access_token: 'user-jwt',
       user: { id: 'user-1', email: 'creator@example.com', app_metadata: { role: 'user' }, user_metadata: {} },

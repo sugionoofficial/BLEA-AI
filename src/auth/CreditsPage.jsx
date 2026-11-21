@@ -1,52 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Coins, History, Pencil, Trash2 } from 'lucide-react';
 import { PaymentLogo } from './paymentLogos';
 import { reviewCreditOrder, setPurchasesEnabled } from '../api/purchases';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { ALIBABA_FREE_QUOTA_MODELS } from '../lib/alibabaFreeQuota';
-import {
-  ALIBABA_VIDEO_MODEL_SPECS,
-  BUILTIN_VIDEO_MODELS,
-  PROVIDER_PRESETS,
-  isAlibabaVideoModelSupported,
-  isVideoModelId,
-} from '../lib/videoCatalog';
 import { useAuth } from './AuthProvider';
 import { Pager, PerPageSelect, usePagedList } from '../components/Pagination';
 import './credits.css';
 
-const ALIBABA_IMAGE_SUGGESTIONS = ALIBABA_FREE_QUOTA_MODELS.filter((m) => m.blea === 'image');
-const VIDEO_PROVIDER_MODEL_SUGGESTIONS = {
-  freebeat: [{ id: 'generate_dance_video', name: 'Freebeat Music-to-Dance Video (720p)' }],
-  openai: [{ id: 'sora-2', name: 'OpenAI Sora 2' }, { id: 'sora-2-pro', name: 'OpenAI Sora 2 Pro' }],
-  google: [
-    { id: 'veo3.1', name: 'Google Veo 3.1' },
-    { id: 'veo3.1-fast', name: 'Google Veo 3.1 Fast' },
-    { id: 'gemini-omni-1.2-flash:free', name: 'Google Gemini Omni 1.2 Flash' },
-    { id: 'gemini-omni-1.1-flash:free', name: 'Google Gemini Omni 1.1 Flash' },
-  ],
-  xai: [{ id: 'grok-video-3', name: 'xAI Grok Video 3' }, { id: 'grok-imagine-video', name: 'xAI Grok Imagine Video' }],
-  doubao: [{ id: 'doubao-seedance-1-5-pro-251215', name: 'ByteDance Seedance 1.5 Pro' }],
-  kling: [{ id: 'kling-v2.6', name: 'Kling v2.6' }, { id: 'kling-v3', name: 'Kling v3' }],
-  hailuo: [{ id: 'minimax-hailuo-2.3', name: 'MiniMax Hailuo 2.3' }],
-};
 const labels = { awaiting_payment: 'Menunggu transfer', pending_review: 'Menunggu verifikasi', approved: 'Disetujui', rejected: 'Ditolak', cancelled: 'Dibatalkan' };
 const rupiah = (value) => `Rp${Number(value).toLocaleString('id-ID')}`;
 const number = (value) => Number(value).toLocaleString('id-ID');
 const date = (value) => new Date(value).toLocaleString('id-ID');
 const blankPackage = { name: '', credits: '', price_idr: '', active: true };
-const blankPrice = { provider: 'alibaba', model: '', modality: 'video', credits: '', active: true };
 const blankMethod = { kind: 'bank', provider: '', label: '', account_name: '', account_number: '', network: '', note: '', sort_order: 0, active: true };
 const kindLabel = { bank: 'Transfer bank', ewallet: 'E-wallet', crypto: 'Cripto (USD)' };
 const PROVIDER_SUGGESTIONS = ['BCA', 'DANA', 'SeaBank', 'Gopay', 'OVO', 'ShopeePay', 'LinkAja', 'USDT', 'USDC'];
-const NON_VIDEO_CHAT_RE = /(gpt-oss|deepseek|embed|whisper|rerank|coder|instruct|llama|gemma|qwen|glm|mistral|granite)/i;
 
 export function CreditsPage() {
   const { user } = useAuth();
   const isAdmin = user?.app_metadata?.role === 'admin';
-  const [data, setData] = useState({ packages: [], prices: [], orders: [], reviews: [], profiles: [], wallet: null, settings: null });
+  const [data, setData] = useState({ packages: [], orders: [], reviews: [], profiles: [], wallet: null, settings: null });
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -56,14 +31,6 @@ export function CreditsPage() {
   const [instructions, setInstructions] = useState('');
   const [packageForm, setPackageForm] = useState(blankPackage);
   const [editingId, setEditingId] = useState(null);
-  const [priceForm, setPriceForm] = useState(blankPrice);
-  const [editingPriceId, setEditingPriceId] = useState(null);
-  const [manualProvider, setManualProvider] = useState(false);
-  const [manualModel, setManualModel] = useState(false);
-  const [priceFilter, setPriceFilter] = useState('all');
-  const [activeProviderModels, setActiveProviderModels] = useState([]);
-  const [bulkAlibabaCredits, setBulkAlibabaCredits] = useState('15');
-  const [bulkVideoCredits, setBulkVideoCredits] = useState('50');
   const [methods, setMethods] = useState([]);
   const [methodForm, setMethodForm] = useState(blankMethod);
   const [editingMethodId, setEditingMethodId] = useState(null);
@@ -76,7 +43,6 @@ export function CreditsPage() {
     try {
       const results = await Promise.all([
         supabase.from('credit_packages').select('*').order('created_at', { ascending: true }),
-        supabase.from('credit_model_prices').select('*').order('provider').order('model'),
         supabase.from('credit_payment_settings').select('*').eq('singleton', true).maybeSingle(),
         supabase.from('credit_wallets').select('balance').eq('user_id', user.id).maybeSingle(),
         supabase.from('credit_orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000),
@@ -84,16 +50,10 @@ export function CreditsPage() {
       ]);
       const methodResult = await supabase.from('credit_payment_methods').select('*').order('sort_order', { ascending: true }).order('provider', { ascending: true });
       setMethods(methodResult.error ? [] : methodResult.data || []);
-      if (isAdmin) {
-        const activeRes = await supabase.from('provider_models').select('provider,model').eq('active', true).limit(500);
-        setActiveProviderModels(!activeRes?.error && Array.isArray(activeRes?.data) ? activeRes.data : []);
-      } else {
-        setActiveProviderModels([]);
-      }
       const failed = results.find((result) => result.error);
       if (failed) throw failed.error;
-      const [packages, prices, settings, wallet, orders, reviews, profiles] = results;
-      setData({ packages: packages.data || [], prices: prices.data || [], settings: settings.data, wallet: wallet.data, orders: orders.data || [], reviews: reviews?.data || [], profiles: profiles?.data || [] });
+      const [packages, settings, wallet, orders, reviews, profiles] = results;
+      setData({ packages: packages.data || [], settings: settings.data, wallet: wallet.data, orders: orders.data || [], reviews: reviews?.data || [], profiles: profiles?.data || [] });
       setInstructions(settings.data?.instructions || '');
       setLoaded(true);
     } catch (err) {
@@ -134,186 +94,6 @@ export function CreditsPage() {
       if (!result.error) { setPackageForm(blankPackage); setEditingId(null); }
       return result;
     }, 'Paket disimpan.');
-  }
-
-  async function savePrice(event) {
-    event.preventDefault();
-    const values = { provider: priceForm.provider.trim().toLowerCase(), model: priceForm.model.trim(), modality: priceForm.modality, credits: Number(priceForm.credits), active: priceForm.active };
-    if (!values.provider || !values.model || !Number.isInteger(values.credits) || values.credits < 1 || values.credits > 1000000000) {
-      setError('Masukkan provider, model, dan biaya kredit yang valid.'); return;
-    }
-    await run(async () => {
-      const result = editingPriceId
-        ? await supabase.from('credit_model_prices').update(values).eq('id', editingPriceId)
-        : await supabase.from('credit_model_prices').upsert(values, { onConflict: 'provider,model,modality' });
-      if (!result.error) {
-        setPriceForm({ ...blankPrice, provider: values.provider, modality: values.modality });
-        setEditingPriceId(null);
-        setManualModel(false);
-      }
-      return result;
-    }, 'Harga model disimpan.');
-  }
-
-  async function removePrice(item) {
-    if (busy) return;
-    if (!window.confirm(`Hapus tarif kredit untuk ${item.provider} / ${item.model} (${item.modality})?`)) return;
-    await run(() => supabase.from('credit_model_prices').delete().eq('id', item.id), 'Tarif model dihapus.');
-  }
-
-  const providerOptions = useMemo(() => {
-    const map = new Map([
-      ['alibaba', 'Alibaba Model Studio (alibaba)'],
-      ['freebeat', 'Freebeat (freebeat)'],
-    ]);
-    for (const preset of Object.values(PROVIDER_PRESETS)) {
-      if (preset.id === 'unorouter' || preset.id === 'custom' || preset.id === 'cloudflare') continue;
-      if (!map.has(preset.id)) map.set(preset.id, `${preset.label} (${preset.id})`);
-    }
-    for (const row of activeProviderModels) {
-      const p = String(row?.provider || '').trim().toLowerCase();
-      if (!p || p === 'unorouter' || p === 'cloudflare' || map.has(p)) continue;
-      map.set(p, p);
-    }
-    for (const row of data.prices) {
-      const p = String(row?.provider || '').trim().toLowerCase();
-      if (!p || map.has(p)) continue;
-      map.set(p, p);
-    }
-    return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
-  }, [activeProviderModels, data.prices]);
-
-  const modelSuggestionsFor = useCallback((providerRaw, modality) => {
-    const prov = String(providerRaw || '').trim().toLowerCase();
-    const out = new Map();
-    const push = (id, name = id) => {
-      const clean = String(id || '').trim();
-      if (clean && !out.has(clean)) out.set(clean, { id: clean, name: String(name || clean) });
-    };
-    if (modality === 'video') {
-      if (prov === 'alibaba') {
-        for (const [id, spec] of Object.entries(ALIBABA_VIDEO_MODEL_SPECS)) push(id, spec.name || id);
-      } else {
-        for (const item of VIDEO_PROVIDER_MODEL_SUGGESTIONS[prov] || []) push(item.id, item.name);
-        for (const item of BUILTIN_VIDEO_MODELS) {
-          if (item.provider === prov) push(item.id, item.name);
-        }
-      }
-      for (const row of activeProviderModels) {
-        if (String(row?.provider || '').trim().toLowerCase() !== prov) continue;
-        if (prov === 'alibaba' && !isAlibabaVideoModelSupported(row.model)) continue;
-        if (prov !== 'alibaba' && NON_VIDEO_CHAT_RE.test(row.model) && !isVideoModelId(row.model)) continue;
-        push(row.model, row.model);
-      }
-    } else if (prov === 'freebeat') {
-      for (const id of ['122', '80', '202']) push(id, `Freebeat model ${id}`);
-    } else if (prov === 'alibaba') {
-      for (const m of ALIBABA_IMAGE_SUGGESTIONS) push(m.id, m.name);
-    } else {
-      for (const row of activeProviderModels) {
-        if (String(row?.provider || '').trim().toLowerCase() === prov) push(row.model, row.model);
-      }
-    }
-    for (const p of data.prices) {
-      if (String(p?.provider || '').trim().toLowerCase() === prov && p?.modality === modality) {
-        push(p.model, p.model);
-      }
-    }
-    return Array.from(out.values());
-  }, [activeProviderModels, data.prices]);
-
-  const currentModelSuggestions = useMemo(
-    () => modelSuggestionsFor(priceForm.provider, priceForm.modality),
-    [modelSuggestionsFor, priceForm.provider, priceForm.modality],
-  );
-
-  const activeAlibabaModels = useMemo(
-    () => activeProviderModels.filter((r) => r.provider === 'alibaba').map((r) => r.model),
-    [activeProviderModels],
-  );
-  const activeAlibabaImageIds = ALIBABA_IMAGE_SUGGESTIONS
-    .filter((m) => activeAlibabaModels.includes(m.id))
-    .map((m) => m.id);
-  const pricedActiveAlibabaIds = new Set(
-    data.prices
-      .filter((p) => p.provider === 'alibaba' && p.modality === 'image' && p.active && Number(p.credits) > 0)
-      .map((p) => p.model),
-  );
-  const missingAlibabaImageIds = activeAlibabaImageIds.filter((id) => !pricedActiveAlibabaIds.has(id));
-
-  const activeVideoModels = useMemo(() => {
-    const out = [];
-    const seen = new Set();
-    for (const row of activeProviderModels) {
-      const prov = String(row?.provider || '').trim().toLowerCase();
-      const model = String(row?.model || '').trim();
-      if (!prov || !model || prov === 'unorouter' || prov === 'freebeat') continue;
-      if (prov === 'cloudflare' && !isVideoModelId(model)) continue;
-      if (prov === 'alibaba' && !isAlibabaVideoModelSupported(model)) continue;
-      if (NON_VIDEO_CHAT_RE.test(model) && !isVideoModelId(model)) continue;
-      const key = `${prov}:${model}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ provider: prov, model });
-    }
-    return out;
-  }, [activeProviderModels]);
-
-  const pricedVideoKeys = new Set(
-    data.prices
-      .filter((p) => p.modality === 'video' && p.active && Number(p.credits) > 0)
-      .map((p) => `${String(p.provider || '').trim().toLowerCase()}:${String(p.model || '').trim()}`),
-  );
-  const missingVideoModels = activeVideoModels.filter((m) => !pricedVideoKeys.has(`${m.provider}:${m.model}`));
-
-  async function applyBulkAlibabaPrices() {
-    const credits = Number(bulkAlibabaCredits);
-    if (!Number.isInteger(credits) || credits < 1 || credits > 1000000000) {
-      setError('Masukkan biaya kredit bilangan bulat minimal 1.'); return;
-    }
-    if (!missingAlibabaImageIds.length) return;
-    await run(
-      () => supabase.from('credit_model_prices').upsert(
-        missingAlibabaImageIds.map((model) => ({ provider: 'alibaba', model, modality: 'image', credits, active: true })),
-        { onConflict: 'provider,model,modality' },
-      ),
-      `Harga ${credits} kredit diterapkan untuk ${missingAlibabaImageIds.length} model gambar Alibaba aktif.`,
-    );
-  }
-
-  async function applyBulkVideoPrices() {
-    const credits = Number(bulkVideoCredits);
-    if (!Number.isInteger(credits) || credits < 1 || credits > 1000000000) {
-      setError('Masukkan biaya kredit bilangan bulat minimal 1.'); return;
-    }
-    if (!missingVideoModels.length) return;
-    await run(
-      () => supabase.from('credit_model_prices').upsert(
-        missingVideoModels.map((m) => ({ provider: m.provider, model: m.model, modality: 'video', credits, active: true })),
-        { onConflict: 'provider,model,modality' },
-      ),
-      `Harga ${credits} kredit diterapkan untuk ${missingVideoModels.length} model video aktif.`,
-    );
-  }
-
-  function startEditPrice(item) {
-    const prov = String(item.provider || '').trim().toLowerCase();
-    const isKnownProvider = providerOptions.some((opt) => opt.id === prov);
-    const suggestions = modelSuggestionsFor(prov, item.modality);
-    setEditingPriceId(item.id);
-    setManualProvider(!isKnownProvider);
-    setManualModel(!suggestions.some((s) => s.id === item.model));
-    setPriceForm({ provider: prov, model: item.model, modality: item.modality, credits: item.credits, active: item.active });
-    setError('');
-  }
-
-  function prefillVideoModelPrice(m) {
-    setEditingPriceId(null);
-    setManualProvider(!providerOptions.some((opt) => opt.id === m.provider));
-    const suggestions = modelSuggestionsFor(m.provider, 'video');
-    setManualModel(!suggestions.some((s) => s.id === m.model));
-    setPriceForm({ provider: m.provider, model: m.model, modality: 'video', credits: '', active: true });
-    setError('');
   }
 
   function methodValues() {
@@ -483,171 +263,6 @@ export function CreditsPage() {
 
           <section className="credits-card"><h2>Admin · Instruksi transfer</h2><p>Masukkan bank, nomor rekening, nama penerima, dan instruksi konfirmasi. Jangan masukkan data rahasia.</p><form className="credits-form" onSubmit={(event) => { event.preventDefault(); run(() => data.settings ? supabase.from('credit_payment_settings').update({ instructions: instructions.trim(), updated_at: new Date().toISOString() }).eq('singleton', true) : supabase.from('credit_payment_settings').insert({ singleton: true, instructions: instructions.trim() }), 'Instruksi transfer disimpan.'); }}><label>Instruksi pembayaran<textarea maxLength={2000} required value={instructions} onChange={(event) => setInstructions(event.target.value)} /></label><button disabled={busy}>Simpan instruksi</button></form></section>
           <section className="credits-card"><h2>Admin · Kelola paket</h2><form className="credits-form" onSubmit={savePackage}><label>Nama paket<input required maxLength={80} value={packageForm.name} onChange={(e) => setPackageForm({ ...packageForm, name: e.target.value })} /></label><label>Jumlah kredit<input required type="number" min="1" max="1000000000" step="1" value={packageForm.credits} onChange={(e) => setPackageForm({ ...packageForm, credits: e.target.value })} /></label><label>Harga (rupiah)<input required type="number" min="1" max="2000000000" step="1" value={packageForm.price_idr} onChange={(e) => setPackageForm({ ...packageForm, price_idr: e.target.value })} /></label><label className="credits-check"><input type="checkbox" checked={packageForm.active} onChange={(e) => setPackageForm({ ...packageForm, active: e.target.checked })} /> Paket aktif</label><div className="credits-actions"><button disabled={busy}>{editingId ? 'Simpan perubahan' : 'Tambah paket'}</button>{editingId && <button type="button" className="credits-secondary" onClick={() => { setEditingId(null); setPackageForm(blankPackage); }}>Batal edit</button>}</div></form><div>{data.packages.map((item) => <div className="credits-row credits-ledger" key={item.id}><span>{item.name} · {number(item.credits)} kredit · {rupiah(item.price_idr)} · {item.active ? 'Aktif' : 'Nonaktif'}</span><button className="credits-secondary" type="button" onClick={() => { setEditingId(item.id); setPackageForm({ name: item.name, credits: item.credits, price_idr: item.price_idr, active: item.active }); }}>Edit</button></div>)}</div></section>
-          <section className="credits-card"><h2>Admin · Harga generasi</h2><p>Harga kredit tetap per model untuk halaman Generate Gambar maupun Generate Video. Semua model aktif wajib memiliki tarif aktif di sini agar dapat digunakan dan memotong kredit pengguna.</p>
-            {missingVideoModels.length > 0 && <div className="credits-notice">
-              <p><strong>{missingVideoModels.length} model video aktif belum punya tarif kredit</strong> sehingga belum dapat dipakai di Generate Video. Klik salah satu model di bawah untuk mengisi tarif manualnya, atau isi tarif default sekaligus:</p>
-              <div className="credits-chip-list">
-                {missingVideoModels.slice(0, 12).map((m) => (
-                  <button
-                    key={`${m.provider}:${m.model}`}
-                    type="button"
-                    className="credits-secondary credits-chip-btn"
-                    onClick={() => prefillVideoModelPrice(m)}
-                  >
-                    {m.provider} / {m.model}
-                  </button>
-                ))}
-                {missingVideoModels.length > 12 && <span className="credits-hint">+{missingVideoModels.length - 12} lainnya di dropdown model</span>}
-              </div>
-              <div className="credits-inline" style={{ marginTop: 10 }}>
-                <label>Tarif video default (opsional) <input type="number" min="1" max="1000000000" step="1" value={bulkVideoCredits} onChange={(e) => setBulkVideoCredits(e.target.value)} /></label>
-                <button type="button" disabled={busy} onClick={applyBulkVideoPrices}>Isi harga {missingVideoModels.length} model video aktif</button>
-              </div>
-            </div>}
-            {missingAlibabaImageIds.length > 0 && <div className="credits-notice">
-              <p><strong>{missingAlibabaImageIds.length} model gambar Alibaba aktif belum punya harga kredit</strong> sehingga belum tampil di Generate Gambar ({missingAlibabaImageIds.slice(0, 4).join(', ')}{missingAlibabaImageIds.length > 4 ? ', …' : ''}).</p>
-              <div className="credits-inline">
-                <label>Kredit default <input type="number" min="1" max="1000000000" step="1" value={bulkAlibabaCredits} onChange={(e) => setBulkAlibabaCredits(e.target.value)} /></label>
-                <button type="button" disabled={busy} onClick={applyBulkAlibabaPrices}>Isi harga {missingAlibabaImageIds.length} model Alibaba aktif</button>
-              </div>
-            </div>}
-            <form className="credits-form" onSubmit={savePrice}>
-              <label>Jenis
-                <select
-                  aria-label="Jenis"
-                  value={priceForm.modality}
-                  onChange={(e) => {
-                    const nextModality = e.target.value;
-                    const nextSuggestions = modelSuggestionsFor(priceForm.provider, nextModality);
-                    const keepModel = nextSuggestions.some((s) => s.id === priceForm.model);
-                    setManualModel(nextSuggestions.length === 0);
-                    setPriceForm({ ...priceForm, modality: nextModality, model: keepModel ? priceForm.model : '' });
-                  }}
-                >
-                  <option value="video">Video</option>
-                  <option value="image">Gambar</option>
-                  {priceForm.modality === 'image_edit' && <option value="image_edit">Edit gambar</option>}
-                  {priceForm.modality === 'image_edit_2k' && <option value="image_edit_2k">Edit gambar 2K</option>}
-                </select>
-              </label>
-              <label>Provider
-                {!manualProvider ? (
-                  <select
-                    aria-label="Provider"
-                    value={providerOptions.some((p) => p.id === priceForm.provider) ? priceForm.provider : '__custom__'}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val === '__custom__') {
-                        setManualProvider(true);
-                        setManualModel(true);
-                        setPriceForm({ ...priceForm, provider: '', model: '' });
-                        return;
-                      }
-                      const nextSuggestions = modelSuggestionsFor(val, priceForm.modality);
-                      setManualModel(nextSuggestions.length === 0);
-                      setPriceForm({ ...priceForm, provider: val, model: '' });
-                    }}
-                  >
-                    {providerOptions.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                    <option value="__custom__">Provider lain (isi manual)…</option>
-                  </select>
-                ) : (
-                  <span className="credits-input-stack">
-                    <input
-                      aria-label="Provider manual"
-                      required
-                      maxLength={80}
-                      placeholder="mis. runway, luma, pika"
-                      value={priceForm.provider}
-                      onChange={(e) => setPriceForm({ ...priceForm, provider: e.target.value })}
-                    />
-                    <button
-                      type="button"
-                      className="credits-link-btn"
-                      onClick={() => {
-                        const fallback = providerOptions[0]?.id || 'alibaba';
-                        setManualProvider(false);
-                        setManualModel(false);
-                        setPriceForm({ ...priceForm, provider: fallback, model: '' });
-                      }}
-                    >
-                      Pilih dari daftar provider
-                    </button>
-                  </span>
-                )}
-              </label>
-              <label>ID model
-                {!manualModel && currentModelSuggestions.length > 0 ? (
-                  <select
-                    aria-label="ID model"
-                    required
-                    value={currentModelSuggestions.some((s) => s.id === priceForm.model) ? priceForm.model : (priceForm.model ? '__custom__' : '')}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val === '__custom__') {
-                        setManualModel(true);
-                        setPriceForm({ ...priceForm, model: '' });
-                        return;
-                      }
-                      setPriceForm({ ...priceForm, model: val });
-                    }}
-                  >
-                    <option value="">— Pilih model —</option>
-                    {currentModelSuggestions.map((m) => (
-                      <option key={m.id} value={m.id}>{m.name && m.name !== m.id ? `${m.id} — ${m.name}` : m.id}</option>
-                    ))}
-                    <option value="__custom__">Isi ID model manual…</option>
-                  </select>
-                ) : (
-                  <span className="credits-input-stack">
-                    <input
-                      aria-label="ID model"
-                      required
-                      maxLength={160}
-                      placeholder={priceForm.modality === 'video' ? 'mis. wan2.2-i2v-plus atau sora-2' : 'mis. wan2.7-image'}
-                      value={priceForm.model}
-                      onChange={(e) => setPriceForm({ ...priceForm, model: e.target.value })}
-                    />
-                    {currentModelSuggestions.length > 0 && (
-                      <button
-                        type="button"
-                        className="credits-link-btn"
-                        onClick={() => { setManualModel(false); setPriceForm({ ...priceForm, model: '' }); }}
-                      >
-                        Pilih dari daftar model
-                      </button>
-                    )}
-                  </span>
-                )}
-              </label>
-              <label>Biaya kredit<input required type="number" min="1" max="1000000000" step="1" placeholder="mis. 50" value={priceForm.credits} onChange={(e) => setPriceForm({ ...priceForm, credits: e.target.value })} /></label>
-              <label className="credits-check"><input type="checkbox" checked={priceForm.active} onChange={(e) => setPriceForm({ ...priceForm, active: e.target.checked })} /> Aktif</label>
-              <div className="credits-actions">
-                <button disabled={busy}>{editingPriceId ? 'Simpan harga' : 'Tambah / perbarui harga'}</button>
-                {editingPriceId && <button type="button" className="credits-secondary" onClick={() => { setEditingPriceId(null); setManualProvider(false); setManualModel(false); setPriceForm(blankPrice); }}>Batal edit</button>}
-              </div>
-            </form>
-            <div className="credits-filter-row" role="group" aria-label="Filter daftar tarif">
-              {[
-                ['all', `Semua (${data.prices.length})`],
-                ['video', `Video (${data.prices.filter((p) => p.modality === 'video').length})`],
-                ['image', `Gambar (${data.prices.filter((p) => p.modality !== 'video').length})`],
-              ].map(([key, label]) => (
-                <button key={key} type="button" className={priceFilter === key ? '' : 'credits-secondary'} onClick={() => setPriceFilter(key)}>{label}</button>
-              ))}
-            </div>
-            {data.prices
-              .filter((item) => priceFilter === 'all' ? true : priceFilter === 'video' ? item.modality === 'video' : item.modality !== 'video')
-              .map((item) => (
-                <div className="credits-row credits-ledger" key={item.id}>
-                  <span>{item.provider} / {item.model} · {item.modality === 'video' ? 'Video' : item.modality === 'image' ? 'Gambar' : item.modality} · {number(item.credits)} kredit · {item.active ? 'Aktif' : 'Nonaktif'}</span>
-                  <span className="credits-method-row-actions">
-                    <button type="button" className="credits-secondary" onClick={() => startEditPrice(item)}><Pencil size={13} /> Edit</button>
-                    <button type="button" className="credits-secondary" disabled={busy} onClick={() => removePrice(item)}><Trash2 size={13} /> Hapus</button>
-                  </span>
-                </div>
-              ))}
-          </section>
           <section className="credits-card"><h2>Admin · Konfirmasi transfer</h2><p>Pastikan dana benar-benar diterima dan cocok dengan pesanan sebelum menyetujui. Konfirmasi pengguna bukan bukti pembayaran. Menyetujui atau menolak WAJIB password aksi admin.</p>
             <div className="credits-form">
               <label>Password aksi admin<input type="password" autoComplete="new-password" value={reviewPassword} onChange={(event) => setReviewPassword(event.target.value)} placeholder="Password yang Anda setel di Supabase" /></label>

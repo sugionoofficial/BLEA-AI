@@ -109,7 +109,7 @@ test('DropXDashboard and AdminPage render video generation metrics instead of Pr
   assert.ok(adminHtml.includes('admin-subnav'));
   assert.ok(adminHtml.includes('Provider &amp; API Key'));
   assert.ok(adminHtml.includes('Katalog Model'));
-  assert.ok(adminHtml.includes('Model Manual'));
+  assert.equal(adminHtml.includes('Model Manual'), false, 'Model Manual tab must be removed from AdminPage');
   assert.ok(adminHtml.includes('Tambah Provider'));
   assert.equal(adminHtml.includes('Semua proyek'), false);
   assert.equal(adminHtml.includes('Belum terhubung'), false, 'AdminPage must not inject a hardcoded fallback UnoRouter provider row');

@@ -2767,6 +2767,100 @@ export async function consumerImageConfig(env) {
   try { const session = await loadProviderSession(env); ready = Boolean(session?.imageAccess); } catch { ready = false; }
   return { model_id: modelId, credits, provider_ready: ready, ceiling: consumerProviderCeiling(env), min_margin: consumerMinMargin(env) };
 }
+export async function fetchFreebeatCatalogModels(env) {
+  const byKey = new Map();
+  const put = (item) => {
+    const key = `${item.category}:${item.id}`;
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, item);
+      return;
+    }
+    const mergedTags = [...new Set([...(prev.tags || []), ...(item.tags || [])])];
+    byKey.set(key, { ...prev, ...item, tags: mergedTags });
+  };
+  put({
+    id: '122',
+    name: 'Freebeat Image Model 122',
+    provider: 'freebeat',
+    category: 'Image',
+    tags: ['Image', 'Freebeat'],
+    description: 'Model gambar konsumen Freebeat (default 122).',
+    isFree: false,
+    online: true,
+    priceLabel: 'Kredit BLEA',
+  });
+  put({
+    id: '80',
+    name: 'Freebeat Image Model 80',
+    provider: 'freebeat',
+    category: 'Image',
+    tags: ['Image', 'Freebeat'],
+    description: 'Model gambar Freebeat (80).',
+    isFree: false,
+    online: true,
+    priceLabel: 'Kredit BLEA',
+  });
+  put({
+    id: '202',
+    name: 'Freebeat Image / Edit Model 202',
+    provider: 'freebeat',
+    category: 'Image',
+    tags: ['Image', 'Image Edit', 'Freebeat'],
+    description: 'Model gambar & edit gambar Freebeat (202).',
+    isFree: false,
+    online: true,
+    priceLabel: 'Kredit BLEA',
+  });
+  put({
+    id: 'generate_dance_video',
+    name: 'Freebeat Music-to-Dance Video (720p)',
+    provider: 'freebeat',
+    category: 'Video',
+    tags: ['Video', 'Dance', 'Freebeat'],
+    description: 'Model video tari berbasis musik Freebeat MCP.',
+    isFree: false,
+    online: true,
+    priceLabel: 'Kredit BLEA',
+  });
+  try {
+    const pool = await loadFreebeatAccountPool(env);
+    for (const rawEntry of pool.slice(0, 3)) {
+      const usable = await ensureUsablePoolAccount(env, rawEntry).catch(() => null);
+      const accessToken = usable?.session?.accessToken;
+      if (!accessToken) continue;
+      const headers = await openMcp(accessToken);
+      const [imgRes, editRes, vidRes] = await Promise.allSettled([
+        getModels(accessToken, 'image', headers),
+        getModels(accessToken, 'image_edit', headers),
+        getModels(accessToken, 'video', headers),
+      ]);
+      for (const [category, res, extraTag] of [
+        ['Image', imgRes, null],
+        ['Image', editRes, 'Image Edit'],
+        ['Video', vidRes, null],
+      ]) {
+        if (res.status !== 'fulfilled' || !Array.isArray(res.value?.models)) continue;
+        for (const m of res.value.models) {
+          const id = String(m.model_id);
+          put({
+            id,
+            name: m.name,
+            provider: 'freebeat',
+            category,
+            tags: [category, 'Freebeat MCP', ...(extraTag ? [extraTag] : []), ...(m.member_only ? ['Member Only'] : [])],
+            description: `${m.name}${m.member_only ? ' · khusus member' : ''}`,
+            isFree: false,
+            online: m.available !== false,
+            priceLabel: m.member_only ? 'Member Only' : 'Freebeat MCP',
+          });
+        }
+      }
+      break;
+    }
+  } catch { /* fallback to built-in Freebeat models if live MCP is unreachable */ }
+  return Array.from(byKey.values());
+}
 // Service_role menembus RLS, jadi status akun harus diperiksa di worker:
 // policy database saja tidak cukup untuk menahan user yang di-suspend/banned.
 async function assertAccountActive(env, userId) {
@@ -3189,7 +3283,7 @@ export async function consumerDanceGenerate(env, user, payload) {
 
   const price = await consumerImagePrice(env, 'generate_dance_video', 'video');
   if (price === null) {
-    const err = fail('Harga kredit untuk model video "generate_dance_video" (freebeat) belum diatur admin. Atur dulu di Kredit → Admin · Harga generasi.', 409);
+    const err = fail('Harga kredit untuk model video "generate_dance_video" (freebeat) belum diatur admin. Atur dulu di Admin → API Key → Katalog Model.', 409);
     err.code = 'video_price_missing';
     throw err;
   }

@@ -10,16 +10,21 @@ export async function fetchFreeModels() {
   return data.models || [];
 }
 
-// Admin panel — daftar model per provider dengan status aktif.
+// Admin panel — daftar model & provider terdaftar dengan status aktif.
 export async function fetchAdminModels({ apiKey } = {}) {
   const { data, status } = await edgeRequest('/admin-models', { apiKey });
-  return { models: Array.isArray(data?.models) ? data.models : [], error: data?.error || '', status };
+  return {
+    models: Array.isArray(data?.models) ? data.models : [],
+    providers: Array.isArray(data?.providers) ? data.providers : [],
+    error: data?.error || '',
+    status,
+  };
 }
 
 // Admin panel — catalog model per provider (di-fetch server-side via worker).
 export async function fetchCatalog({ provider = 'unorouter' } = {}) {
   const { data, status } = await edgeRequest('/catalog', { provider });
-  return { models: Array.isArray(data?.models) ? data.models : null, error: data?.error || '', status };
+  return { models: Array.isArray(data?.models) ? data.models : null, warning: data?.warning || '', error: data?.error || '', status };
 }
 
 // Admin panel — simpan pilihan model aktif untuk provider.

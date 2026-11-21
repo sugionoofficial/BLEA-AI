@@ -13,7 +13,7 @@
 //   'video' → memiliki adapter terverifikasi untuk Generate Video (aktifkan di Katalog Model)
 //   'chat'  → bisa diaktifkan untuk AI Studio
 //   'image' → memiliki adapter terverifikasi untuk Generate Image (aktifkan di
-//             Katalog Model + tetapkan harga di Admin → Kredit)
+//             Katalog Model + atur kreditnya langsung di Admin → API Key → Katalog Model)
 //   null    → katalog saja (bukan model generasi gambar/video umum atau ID tidak valid).
 
 export const ALIBABA_FREE_QUOTA_DOCS = 'https://help.aliyun.com/en/model-studio/model-pricing';

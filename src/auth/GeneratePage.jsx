@@ -664,7 +664,7 @@ export function GeneratePage() {
             <span>
               Tarif kredit untuk <strong>{formatModelDisplayName(selectedModel.name, selectedModel.provider, selectedModel.providerLabel)}</strong> belum diatur admin.
             </span>
-            {isAdmin && <Link className="generate-banner-link" to="/credits">Atur harga kredit</Link>}
+            {isAdmin && <Link className="generate-banner-link" to="/admin?tab=api-keys&sub=catalog">Atur harga kredit</Link>}
           </div>
         )}
 
