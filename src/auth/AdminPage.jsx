@@ -2,6 +2,7 @@ import { adminUserAction, adminUserRoles } from '../api/adminUsers';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AlibabaCloudPanel } from './AlibabaCloudPanel';
+import { FreebeatOAuthPanel } from './FreebeatOAuthPanel';
 import { ALIBABA_FREE_QUOTA_MODELS } from '../lib/alibabaFreeQuota';
 import {
   ArrowDownToLine,
@@ -121,6 +122,15 @@ const NAV_GROUPS = [
           { id: 'catalog', label: 'Katalog Free Quota' },
         ],
       },
+      {
+        id: 'freebeat-oauth',
+        label: 'Freebeat OAuth',
+        icon: ShieldCheck,
+        children: [
+          { id: 'accounts', label: 'Akun & Email OAuth' },
+          { id: 'failover', label: 'Alur Failover' },
+        ],
+      },
     ],
   },
 ];
@@ -162,9 +172,20 @@ function isWithinDays(value, days) {
   return Number.isFinite(ts) && (Date.now() - ts) <= days * 24 * 60 * 60 * 1000;
 }
 
-export function AdminPage() {
+const ADMIN_TABS = new Set(['overview', 'users', 'videos', 'conversations', 'waitlist', 'api-keys', 'alibaba', 'freebeat-oauth']);
+
+function resolveInitialAdminTab(initialTab) {
+  if (initialTab && ADMIN_TABS.has(initialTab)) return initialTab;
+  if (typeof window !== 'undefined') {
+    const fromQuery = new URLSearchParams(window.location.search).get('tab');
+    if (fromQuery && ADMIN_TABS.has(fromQuery)) return fromQuery;
+  }
+  return 'overview';
+}
+
+export function AdminPage({ initialTab = null } = {}) {
   const { user } = useAuth();
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab] = useState(() => resolveInitialAdminTab(initialTab));
   const [subTab, setSubTab] = useState({
     overview: 'all',
     users: 'all',
@@ -173,7 +194,9 @@ export function AdminPage() {
     waitlist: 'all',
     'api-keys': 'providers',
     alibaba: 'accounts',
+    'freebeat-oauth': 'accounts',
   });
+  const [freebeatOAuthCount, setFreebeatOAuthCount] = useState(undefined);
   const [apiTreeOpen, setApiTreeOpen] = useState(true);
 
   const [profiles, setProfiles] = useState([]);
@@ -255,11 +278,12 @@ export function AdminPage() {
   const activeSubTab = subTab[tab] || 'all';
   const apiSection = subTab['api-keys'] || 'providers';
   const alibabaSection = subTab.alibaba || 'accounts';
+  const freebeatOAuthSection = subTab['freebeat-oauth'] || 'accounts';
 
   function selectFeature(nextTab, nextChild = null) {
     setTab(nextTab);
     setSearch('');
-    if (nextTab === 'api-keys' || nextTab === 'alibaba') {
+    if (nextTab === 'api-keys' || nextTab === 'alibaba' || nextTab === 'freebeat-oauth') {
       setApiTreeOpen(true);
     }
     if (nextChild) {
@@ -775,10 +799,14 @@ export function AdminPage() {
     conversations: conversations.length,
     waitlist: waitlist.length,
     'api-keys': providerKeys.length,
+    'freebeat-oauth': freebeatOAuthCount,
   };
 
   const subCounts = {
     alibaba: {},
+    'freebeat-oauth': {
+      accounts: freebeatOAuthCount,
+    },
     'api-keys': {
       providers: providerKeys.length,
       catalog: unoModels.filter((m) => m.active).length,
@@ -834,7 +862,11 @@ export function AdminPage() {
                         ? 'Percakapan.'
                         : tab === 'api-keys'
                           ? (activeChildItem?.label || 'API Key.')
-                          : 'Daftar tunggu.'}
+                          : tab === 'alibaba'
+                            ? 'Alibaba Cloud.'
+                            : tab === 'freebeat-oauth'
+                              ? 'Pool Freebeat OAuth.'
+                              : 'Daftar tunggu.'}
               </h1>
               <p>
                 {tab === 'overview'
@@ -847,7 +879,11 @@ export function AdminPage() {
                         ? 'Lihat ringkasan percakapan tersimpan; isi pesan tetap privat bagi pemilik akun.'
                         : tab === 'api-keys'
                           ? 'Kelola provider API key, katalog model, dan model manual dalam sub-navigasi terpisah.'
-                          : 'Email yang meminta akses awal BLEA AI.'}
+                          : tab === 'alibaba'
+                            ? 'Kelola pool akun Alibaba Cloud Model Studio beserta prioritas rotasi & free quota.'
+                            : tab === 'freebeat-oauth'
+                              ? 'Kelola beberapa akun Gmail/Freebeat OAuth beserta label email, urutan rotasi round-robin 3x putaran, dan saldo kredit.'
+                              : 'Email yang meminta akses awal BLEA AI.'}
               </p>
             </div>
             <div className="admin-heading-meta">
@@ -870,7 +906,7 @@ export function AdminPage() {
                   <span className="admin-subnav-label">{group.label}</span>
                   {group.items.map(({ id, label, icon: Icon, children }) => {
                     const isActive = tab === id;
-                    const isApiNode = id === 'api-keys' || id === 'alibaba';
+                    const isApiNode = id === 'api-keys' || id === 'alibaba' || id === 'freebeat-oauth';
                     const showChildren = isApiNode ? (isActive || apiTreeOpen) : isActive;
                     return (
                       <div className="admin-subnav-node" key={id}>
@@ -1428,6 +1464,8 @@ export function AdminPage() {
 
               {tab === 'alibaba' && <AlibabaCloudPanel subTab={alibabaSection} />}
 
+              {tab === 'freebeat-oauth' && <FreebeatOAuthPanel subTab={freebeatOAuthSection} onCountChange={setFreebeatOAuthCount} />}
+
               {tab === 'api-keys' && apiSection === 'add-provider' && (
                 <section className="admin-api-card">
                   <div className="admin-api-heading">
@@ -1483,7 +1521,7 @@ export function AdminPage() {
                 </section>
               )}
 
-              {tab !== 'overview' && tab !== 'api-keys' && tab !== 'alibaba' && (
+              {tab !== 'overview' && tab !== 'api-keys' && tab !== 'alibaba' && tab !== 'freebeat-oauth' && (
                 <section className="admin-table-card">
                   <div className="admin-table-toolbar">
                     <label className="admin-search">

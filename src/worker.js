@@ -3489,7 +3489,10 @@ async function handleApi(request, url, env) {
         }
         throw ALIBABA_IMAGE_ERROR('Provider gambar tidak dikenal.', 400);
       } catch (err) {
-        return jsonResponse({ error: err?.message || 'Generasi gambar gagal' }, err?.status || 500);
+        return jsonResponse({
+          error: err?.message || 'Generasi gambar gagal',
+          ...(err?.code ? { code: err.code } : {}),
+        }, err?.status || 500);
       }
     }
 

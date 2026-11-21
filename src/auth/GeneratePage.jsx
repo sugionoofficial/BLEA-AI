@@ -546,6 +546,7 @@ export function GeneratePage() {
           type: 'error',
           text: res.data?.error || 'Gagal memulai generasi video. Periksa konfigurasi API key dan model di Admin Panel.',
         });
+        refreshBalance();
         return;
       }
 

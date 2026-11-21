@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link2, RefreshCw, Unplug } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Link2, RefreshCw, ShieldCheck, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
 import { FreebeatTaskResult } from './FreebeatTaskResult';
@@ -268,6 +269,7 @@ export function FreebeatPage() {
           <button type="button" disabled={busy || loading} onClick={() => run('start')}><Link2 size={15} /> {connected ? 'Hubungkan ulang' : 'Hubungkan Freebeat'}</button>
           <button type="button" className="is-secondary" disabled={busy || loading || !connected} onClick={() => run('balance')}><RefreshCw size={15} /> Periksa saldo</button>
           {connected && <button type="button" className="is-secondary" disabled={busy} onClick={() => run('disconnect')}><Unplug size={15} /> Putuskan</button>}
+          <Link className="freebeat-pool-link" to="/admin?tab=freebeat-oauth"><ShieldCheck size={15} /> Kelola Pool Multi-Akun &amp; Email OAuth →</Link>
         </div>
         {balance !== null && <div className="freebeat-result"><h3>Respons saldo dari Freebeat</h3><pre>{typeof balance === 'string' ? balance : JSON.stringify(balance, null, 2)}</pre></div>}
       </section>

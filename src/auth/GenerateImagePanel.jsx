@@ -202,6 +202,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     );
     if (!res.ok) {
       setError(res.data?.error || 'Generasi gambar gagal. Kredit tidak dipotong bila kegagalan terjadi sebelum pengiriman.');
+      refreshBalance();
       setBusy(false);
       setSubmitStartedAt(null);
       return;
