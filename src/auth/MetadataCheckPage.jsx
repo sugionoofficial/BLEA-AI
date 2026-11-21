@@ -536,6 +536,7 @@ export function MetadataCheckPage() {
 
   const PrimaryIcon = primaryButtonConfig.icon;
   const cleanedPreviewSrc = localCleanUrl || cleanResult?.job?.result_url || previewUrl;
+  const showAiStamp = Boolean(scanResult?.aiDetected) && phase !== 'cleaned';
 
   return (
     <DropXLayout
@@ -678,11 +679,18 @@ export function MetadataCheckPage() {
               </div>
             ) : (
               <div className="meta-preview-wrap">
-                <div className="meta-preview-box">
+                <div className={`meta-preview-box ${showAiStamp ? 'has-ai-stamp' : ''}`}>
                   {mediaKind === 'video' ? (
                     <video src={cleanedPreviewSrc} controls preload="metadata" />
                   ) : (
                     <img src={cleanedPreviewSrc} alt={file.name} />
+                  )}
+                  {showAiStamp && (
+                    <div className="meta-ai-stamp-overlay" data-testid="ai-detection-stamp" aria-label="AI DETECTION">
+                      <div className="meta-ai-stamp">
+                        <span>AI DETECTION</span>
+                      </div>
+                    </div>
                   )}
                 </div>
                 <div className="meta-file-meta">
