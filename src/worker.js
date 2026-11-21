@@ -63,6 +63,14 @@ import {
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
+import {
+  handleMetadataContent,
+  handleMetadataHistory,
+  handleMetadataProcess,
+  handleMetadataStart,
+  handleMetadataStatus,
+  sanitizeMetadataJobRow,
+} from './lib/metadataJobs.js';
 
 const SUPABASE_URL_ENV = (env) => (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
 
@@ -4132,23 +4140,28 @@ async function handleApi(request, url, env) {
         const now = Date.now();
         const recentCutoffMs = now - LIVE_RECENT_COMPLETED_MS;
         const recentCutoffIso = new Date(recentCutoffMs).toISOString();
-        const [vidActiveRes, imgActiveRes, vidDoneRes, imgDoneRes] = await Promise.all([
+        const [vidActiveRes, imgActiveRes, vidDoneRes, imgDoneRes, metaActiveRes, metaDoneRes] = await Promise.all([
           servicePostgrest(env, '/video_generations?select=*&status=in.(queued,in_progress)&order=created_at.desc,id.desc&limit=100'),
           servicePostgrest(env, '/image_generations?select=*&status=in.(queued,processing,unknown)&order=created_at.desc,id.desc&limit=100'),
           servicePostgrest(env, `/video_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`),
           servicePostgrest(env, `/image_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`),
+          servicePostgrest(env, '/metadata_jobs?select=*&status=in.(queued,processing)&order=created_at.desc,id.desc&limit=100').catch(() => null),
+          servicePostgrest(env, `/metadata_jobs?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`).catch(() => null),
         ]);
         const activeVideos = vidActiveRes?.ok ? await vidActiveRes.json().catch(() => []) : [];
         const activeImages = imgActiveRes?.ok ? await imgActiveRes.json().catch(() => []) : [];
         const doneVideos = vidDoneRes?.ok ? await vidDoneRes.json().catch(() => []) : [];
         const doneImages = imgDoneRes?.ok ? await imgDoneRes.json().catch(() => []) : [];
+        const activeMeta = metaActiveRes?.ok ? await metaActiveRes.json().catch(() => []) : [];
+        const doneMeta = metaDoneRes?.ok ? await metaDoneRes.json().catch(() => []) : [];
         return {
           videos: mergeUniqueById(Array.isArray(activeVideos) ? activeVideos : [], Array.isArray(doneVideos) ? doneVideos : [], recentCutoffMs),
           images: mergeUniqueById(Array.isArray(activeImages) ? activeImages : [], Array.isArray(doneImages) ? doneImages : [], recentCutoffMs),
+          metadataJobs: mergeUniqueById(Array.isArray(activeMeta) ? activeMeta : [], Array.isArray(doneMeta) ? doneMeta : [], recentCutoffMs),
         };
       };
 
-      let { videos, images } = await fetchLiveRows();
+      let { videos, images, metadataJobs } = await fetchLiveRows();
       if (shouldPoll) {
         const now = Date.now();
         const staleCandidates = [
@@ -4169,13 +4182,13 @@ async function handleApi(request, url, env) {
             if (entry.row.provider === 'freebeat') return pollFreebeatImageRow(env, entry.row);
             return alibabaImageStatus(env, { id: entry.row.user_id }, entry.row);
           }));
-          ({ videos, images } = await fetchLiveRows());
+          ({ videos, images, metadataJobs } = await fetchLiveRows());
         }
       }
 
       const profileMap = new Map();
       const userIds = Array.from(new Set(
-        [...videos, ...images]
+        [...videos, ...images, ...metadataJobs]
           .map((row) => String(row?.user_id || '').trim())
           .filter((id) => LIVE_UUID_RE.test(id)),
       ));
@@ -4200,6 +4213,7 @@ async function handleApi(request, url, env) {
       const items = [
         ...videos.map((row) => formatLiveQueueItem(row, 'video', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
         ...images.map((row) => formatLiveQueueItem(row, 'image', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
+        ...metadataJobs.map((row) => formatLiveQueueItem(row, 'metadata', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
       ].sort((a, b) => compareRaceItems(a, b, nowMs));
 
       const activeItems = items.filter((item) => item.status !== 'completed');
@@ -4213,6 +4227,7 @@ async function handleApi(request, url, env) {
           total: activeItems.length,
           video: activeItems.filter((item) => item.kind === 'video').length,
           image: activeItems.filter((item) => item.kind === 'image').length,
+          metadata: activeItems.filter((item) => item.kind === 'metadata').length,
           completed: completedItems.length,
           own: items.filter((item) => item.is_own).length,
           stalled: activeItems.filter((item) => item.stalled).length,
@@ -4239,10 +4254,14 @@ async function handleApi(request, url, env) {
       const kind = String(body?.kind || '').trim().toLowerCase();
       const reason = String(body?.reason || '').trim().slice(0, 200);
       if (!LIVE_UUID_RE.test(id)) return jsonResponse({ error: 'ID generasi tidak valid.' }, 400);
-      if (kind !== 'video' && kind !== 'image') return jsonResponse({ error: 'Jenis generasi harus video atau image.' }, 400);
+      if (kind !== 'video' && kind !== 'image' && kind !== 'metadata') return jsonResponse({ error: 'Jenis generasi harus video, image, atau metadata.' }, 400);
 
-      const table = kind === 'video' ? 'video_generations' : 'image_generations';
-      const activeStatuses = kind === 'video' ? 'queued,in_progress' : 'queued,processing,unknown';
+      const table = kind === 'video' ? 'video_generations' : kind === 'metadata' ? 'metadata_jobs' : 'image_generations';
+      const activeStatuses = kind === 'video'
+        ? 'queued,in_progress'
+        : kind === 'metadata'
+          ? 'queued,processing'
+          : 'queued,processing,unknown';
       const rowRes = await servicePostgrest(env, `/${table}?select=*&id=eq.${encodeURIComponent(id)}&limit=1`);
       const rows = rowRes?.ok ? await rowRes.json().catch(() => []) : [];
       const row = rows?.[0];
@@ -4261,7 +4280,7 @@ async function handleApi(request, url, env) {
         status: 'cancelled',
         error_message: cancelNote.slice(0, 300),
         updated_at: nowIso,
-        ...(kind === 'video' ? { progress: 0 } : {}),
+        ...(kind === 'video' || kind === 'metadata' ? { progress: 0 } : {}),
         ...(shouldRefund ? { credits_refunded: charged } : {}),
       };
       const patchRes = await servicePostgrest(env, patchQuery, {
@@ -4280,10 +4299,14 @@ async function handleApi(request, url, env) {
 
       let refundedAmount = 0;
       if (shouldRefund) {
-        const desc = `Refund: proses ${kind} ${row.provider} (${row.model}) dibatalkan oleh admin`;
+        const desc = kind === 'metadata'
+          ? `Refund: pembersihan metadata (${row.filename || 'media'}) dibatalkan oleh admin`
+          : `Refund: proses ${kind} ${row.provider} (${row.model}) dibatalkan oleh admin`;
         const refunded = kind === 'video'
           ? await refundVideoCredits(env, row.user_id, charged, row.id, desc)
-          : await refundImageCredits(env, row.user_id, charged, row.id, desc);
+          : kind === 'metadata'
+            ? await creditRpc(env, 'refund_credits', { p_user_id: row.user_id, p_amount: charged, p_description: desc, p_generation_id: row.id })
+            : await refundImageCredits(env, row.user_id, charged, row.id, desc);
         if (refunded) {
           refundedAmount = charged;
         } else {
@@ -4300,8 +4323,37 @@ async function handleApi(request, url, env) {
         id: row.id,
         kind,
         refunded: refundedAmount,
-        generation: kind === 'video' ? await sanitizeGenerationRow(patched[0], env) : sanitizeImageRow(patched[0]),
+        generation: kind === 'video'
+          ? await sanitizeGenerationRow(patched[0], env)
+          : kind === 'metadata'
+            ? await sanitizeMetadataJobRow(patched[0], env)
+            : sanitizeImageRow(patched[0]),
       });
+    }
+
+    // ---- /metadata/*: scan & lossless AI metadata removal ----
+    if (path.startsWith('metadata/content/') && (method === 'GET' || method === 'HEAD')) {
+      return handleMetadataContent({ request, url, env, path, getUser, jsonResponse, servicePostgrest });
+    }
+    if (path === 'metadata/start' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      return handleMetadataStart({ request, env, user, jsonResponse, servicePostgrest, creditRpc });
+    }
+    if (path === 'metadata/process' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      return handleMetadataProcess({ request, env, user, jsonResponse, servicePostgrest, creditRpc });
+    }
+    if (path === 'metadata/history' && (method === 'POST' || method === 'GET')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      return handleMetadataHistory({ request, env, user, jsonResponse, servicePostgrest });
+    }
+    if (path === 'metadata/status' && (method === 'POST' || method === 'GET')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      return handleMetadataStatus({ request, env, user, jsonResponse, servicePostgrest });
     }
 
     // ---- /search: web search untuk mode agen (internet access) ----

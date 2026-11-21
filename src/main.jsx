@@ -15,6 +15,7 @@ const CreditsPage = lazy(() => import('./auth/CreditsPage').then((module) => ({ 
 const HistoryPage = lazy(() => import('./auth/HistoryPage').then((module) => ({ default: module.HistoryPage })));
 const CreditHistoryPage = lazy(() => import('./auth/CreditHistoryPage').then((module) => ({ default: module.CreditHistoryPage })));
 const GeneratePage = lazy(() => import('./auth/GeneratePage').then((module) => ({ default: module.GeneratePage })));
+const MetadataCheckPage = lazy(() => import('./auth/MetadataCheckPage').then((module) => ({ default: module.MetadataCheckPage })));
 const LiveQueuePage = lazy(() => import('./auth/LiveQueuePage').then((module) => ({ default: module.LiveQueuePage })));
 const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => ({ default: module.FreebeatPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
@@ -26,6 +27,7 @@ import './auth/studio-fallback.css';
 import './auth/auth.css';
 import './auth/settings.css';
 import './auth/generate.css';
+import './auth/metadata.css';
 import './auth/live.css';
 import './auth/admin.css';
 import './auth/drawer.css';
@@ -49,6 +51,7 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
             <Route path="/generate" element={<GeneratePage />} />
+            <Route path="/metadata" element={<MetadataCheckPage />} />
             <Route path="/live" element={<LiveQueuePage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/credits" element={<CreditsPage />} />

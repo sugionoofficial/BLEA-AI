@@ -1,0 +1,781 @@
+/* ==========================================================================
+   BLEA AI — Cek & Bersihkan Metadata AI (scoped under .dropx-shell)
+   ========================================================================== */
+
+.dropx-shell .meta-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 1120px;
+  padding: 6px 0 42px;
+  min-width: 0;
+}
+
+.dropx-shell .meta-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  border: 1px solid rgb(99 102 241 / 0.25);
+  background:
+    radial-gradient(circle at top right, rgb(99 102 241 / 0.14), transparent 52%),
+    radial-gradient(circle at bottom left, rgb(16 185 129 / 0.08), transparent 45%),
+    var(--card);
+  box-shadow: var(--shadow-card);
+}
+
+.dropx-shell .meta-hero-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 360px;
+  min-width: 0;
+}
+
+.dropx-shell .meta-hero-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.dropx-shell .meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-chip.is-brand {
+  background: rgb(99 102 241 / 0.14);
+  border: 1px solid rgb(99 102 241 / 0.34);
+  color: var(--primary);
+}
+
+.dropx-shell .meta-chip.is-cost {
+  background: rgb(245 158 11 / 0.14);
+  border: 1px solid rgb(245 158 11 / 0.36);
+  color: var(--warning);
+}
+
+.dropx-shell .meta-hero-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-hero-desc a {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dropx-shell .meta-hero-side {
+  display: flex;
+  align-items: center;
+}
+
+.dropx-shell .meta-balance-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 15px;
+  border-radius: 12px;
+  background: var(--background);
+  border: 1px solid var(--border);
+  min-width: 170px;
+}
+
+.dropx-shell .meta-balance-label {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-balance-val {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-topup-link {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+/* ---------- 4-Step Workflow Indicator ---------- */
+.dropx-shell .meta-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dropx-shell .meta-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-step span {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 11.5px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.dropx-shell .meta-step.is-active {
+  border-color: var(--primary);
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-step.is-active span {
+  background: var(--primary);
+  color: #fff;
+}
+
+.dropx-shell .meta-step.is-done {
+  border-color: rgb(16 185 129 / 0.42);
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-step.is-done span {
+  background: var(--success);
+  color: #fff;
+}
+
+/* ---------- Alerts ---------- */
+.dropx-shell .meta-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 15px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dropx-shell .meta-alert.is-error {
+  border: 1px solid rgb(239 68 68 / 0.42);
+  background: rgb(239 68 68 / 0.1);
+  color: var(--destructive);
+}
+
+.dropx-shell .meta-alert.is-success {
+  border: 1px solid rgb(16 185 129 / 0.4);
+  background: rgb(16 185 129 / 0.1);
+  color: var(--success);
+}
+
+.dropx-shell .meta-alert a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* ---------- Main 2-Column Workspace ---------- */
+.dropx-shell .meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.15fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.dropx-shell .meta-card {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.dropx-shell .meta-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dropx-shell .meta-card-head h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dropx-shell .meta-reset-btn:hover {
+  border-color: var(--primary);
+}
+
+.dropx-shell .meta-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dropx-shell .meta-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+  min-height: 230px;
+  padding: 26px 18px;
+  border-radius: 14px;
+  border: 1.5px dashed var(--border);
+  background: var(--background);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.dropx-shell .meta-dropzone:hover,
+.dropx-shell .meta-dropzone.is-drag {
+  border-color: var(--primary);
+  background: rgb(99 102 241 / 0.06);
+}
+
+.dropx-shell .meta-drop-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: rgb(99 102 241 / 0.12);
+  color: var(--primary);
+}
+
+.dropx-shell .meta-dropzone strong {
+  font-size: 14px;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-dropzone span {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-dropzone small {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dropx-shell .meta-preview-box {
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #0b1120;
+  aspect-ratio: 16 / 10;
+  display: grid;
+  place-items: center;
+}
+
+.dropx-shell .meta-preview-box img,
+.dropx-shell .meta-preview-box video {
+  width: 100%;
+  height: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  display: block;
+}
+
+.dropx-shell .meta-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--background);
+  border: 1px solid var(--border);
+}
+
+.dropx-shell .meta-file-name {
+  font-size: 13px;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropx-shell .meta-file-meta span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+/* ---------- Progress Box ---------- */
+.dropx-shell .meta-progress-box {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 13px;
+  border-radius: 12px;
+  border: 1px solid rgb(99 102 241 / 0.32);
+  background: rgb(99 102 241 / 0.08);
+}
+
+.dropx-shell .meta-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+  overflow: hidden;
+}
+
+.dropx-shell .meta-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--primary), #38bdf8);
+  transition: width 0.28s ease;
+}
+
+.dropx-shell .meta-live-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-live-hint a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* ---------- Unified Primary Action Button (Scan -> Remove -> Download) ---------- */
+.dropx-shell .meta-action-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dropx-shell .meta-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: var(--primary-600);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.dropx-shell .meta-primary-btn:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.dropx-shell .meta-primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dropx-shell .meta-primary-btn.is-remove {
+  background: linear-gradient(135deg, #dc2626, #ea580c);
+}
+
+.dropx-shell .meta-primary-btn.is-download {
+  background: linear-gradient(135deg, #059669, #10b981);
+}
+
+.dropx-shell .meta-primary-btn .is-spin {
+  animation: live-spin 0.9s linear infinite;
+}
+
+.dropx-shell .meta-cost-warning {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--destructive);
+}
+
+.dropx-shell .meta-cost-warning a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.dropx-shell .meta-quick-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dropx-shell .meta-quick-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.dropx-shell .meta-quick-links a:hover {
+  border-color: var(--primary);
+}
+
+/* ---------- Verdict & Scan Report ---------- */
+.dropx-shell .meta-verdict-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-verdict-pill.is-ai {
+  background: rgb(239 68 68 / 0.14);
+  border: 1px solid rgb(239 68 68 / 0.38);
+  color: var(--destructive);
+}
+
+.dropx-shell .meta-verdict-pill.is-warn {
+  background: rgb(245 158 11 / 0.14);
+  border: 1px solid rgb(245 158 11 / 0.36);
+  color: var(--warning);
+}
+
+.dropx-shell .meta-verdict-pill.is-clean {
+  background: rgb(16 185 129 / 0.14);
+  border: 1px solid rgb(16 185 129 / 0.38);
+  color: var(--success);
+}
+
+.dropx-shell .meta-empty-report {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--background);
+  border: 1px dashed var(--border);
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-empty-report h3 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-empty-report p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dropx-shell .meta-detect-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12.2px;
+  line-height: 1.65;
+}
+
+.dropx-shell .meta-report-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dropx-shell .meta-cleaned-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dropx-shell .meta-cleaned-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: var(--background);
+  border: 1px solid var(--border);
+}
+
+.dropx-shell .meta-cleaned-stat span {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-cleaned-stat strong {
+  font-size: 13px;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-cleaned-stat strong.is-clean-txt {
+  color: var(--success);
+}
+
+.dropx-shell .meta-ai-box,
+.dropx-shell .meta-warn-box,
+.dropx-shell .meta-clean-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px;
+  border-radius: 12px;
+}
+
+.dropx-shell .meta-ai-box {
+  border: 1px solid rgb(239 68 68 / 0.35);
+  background: rgb(239 68 68 / 0.08);
+}
+
+.dropx-shell .meta-warn-box,
+.dropx-shell .meta-clean-box {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.dropx-shell .meta-warn-box {
+  border: 1px solid rgb(245 158 11 / 0.38);
+  background: rgb(245 158 11 / 0.09);
+}
+
+.dropx-shell .meta-clean-box {
+  border: 1px solid rgb(16 185 129 / 0.38);
+  background: rgb(16 185 129 / 0.09);
+}
+
+.dropx-shell .meta-ai-box-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.dropx-shell .meta-ai-box-head strong,
+.dropx-shell .meta-warn-box strong,
+.dropx-shell .meta-clean-box strong {
+  display: block;
+  font-size: 13.5px;
+  color: var(--foreground);
+  margin-bottom: 3px;
+}
+
+.dropx-shell .meta-ai-box-head p,
+.dropx-shell .meta-warn-box p,
+.dropx-shell .meta-clean-box p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dropx-shell .meta-tool-chip {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid rgb(239 68 68 / 0.34);
+  color: var(--foreground);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-reasons {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-entries-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dropx-shell .meta-entries-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dropx-shell .meta-entries-head h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-stripped-note {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--success);
+}
+
+.dropx-shell .meta-entries-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 410px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.dropx-shell .meta-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--background);
+}
+
+.dropx-shell .meta-entry.is-ai {
+  border-color: rgb(239 68 68 / 0.36);
+}
+
+.dropx-shell .meta-entry.is-removed {
+  opacity: 0.72;
+}
+
+.dropx-shell .meta-entry-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dropx-shell .meta-entry-group {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-entry-key {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.dropx-shell .meta-entry-ai-tag {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgb(239 68 68 / 0.14);
+  color: var(--destructive);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-entry-val {
+  margin: 0;
+  font-size: 12.2px;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.dropx-shell .meta-entry-loc {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  opacity: 0.85;
+}
+
+@media (max-width: 860px) {
+  .dropx-shell .meta-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dropx-shell .meta-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dropx-shell .meta-cleaned-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

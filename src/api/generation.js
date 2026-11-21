@@ -1,4 +1,4 @@
-import { edgeRequest } from './client';
+import { edgeFormRequest, edgeRequest } from './client';
 
 // Generate Video — daftar model video & status provider.
 export async function fetchVideoModels() {
@@ -59,9 +59,45 @@ export async function cancelAdminGeneration({ id, kind, reason = '' }) {
   return edgeRequest('/admin/generations/cancel', { id, kind, reason });
 }
 
+// Cek & Bersihkan Metadata AI — mulai job pembersihan (potong 100 kredit & tampilkan di Live Proses).
+export async function startMetadataClean(payload) {
+  return edgeRequest('/metadata/start', payload);
+}
+
+// Cek & Bersihkan Metadata AI — proses penghapusan metadata & simpan hasil bersih (via FormData atau JSON storage_path).
+export async function processMetadataClean({ id, file, storagePath, filename, mimeType } = {}) {
+  if (file && typeof file.arrayBuffer === 'function') {
+    const form = new FormData();
+    if (id) form.append('id', id);
+    if (filename) form.append('filename', filename);
+    if (mimeType) form.append('mime_type', mimeType);
+    const uploadBlob = (typeof Blob !== 'undefined' && file instanceof Blob)
+      ? file
+      : new Blob([await file.arrayBuffer()], { type: mimeType || file.type || 'application/octet-stream' });
+    form.append('file', uploadBlob, filename || 'media');
+    return edgeFormRequest('/metadata/process', form);
+  }
+  return edgeRequest('/metadata/process', {
+    ...(id ? { id } : {}),
+    ...(storagePath ? { storage_path: storagePath } : {}),
+    ...(filename ? { filename } : {}),
+    ...(mimeType ? { mime_type: mimeType } : {}),
+  });
+}
+
+// Cek & Bersihkan Metadata AI — riwayat job milik pengguna.
+export async function fetchMetadataHistory({ offset = 0 } = {}) {
+  return edgeRequest('/metadata/history', { offset });
+}
+
+// Cek & Bersihkan Metadata AI — detail/status satu job.
+export async function fetchMetadataStatus(id) {
+  return edgeRequest('/metadata/status', { id });
+}
+
 export function withDownloadParam(url) {
   if (typeof url !== 'string' || !url) return '';
-  if (/^\/api\/(?:video|image)\/content\//.test(url)) {
+  if (/^\/api\/(?:video|image|metadata)\/content\//.test(url)) {
     return /[?&]download=1(?:&|$)/.test(url) ? url : `${url}${url.includes('?') ? '&' : '?'}download=1`;
   }
   return url;
@@ -79,8 +115,20 @@ export function inferImageExtension(url) {
   return 'png';
 }
 
-export function buildDownloadFilename({ kind = 'image', id = '', index = 0, total = 1, url = '' } = {}) {
+export function buildDownloadFilename({ kind = 'image', id = '', index = 0, total = 1, url = '', filename = '', mimeType = '' } = {}) {
   const shortId = String(id || 'hasil').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'hasil';
+  if (kind === 'metadata') {
+    const cleanBase = String(filename || '')
+      .replace(/^.*[\\/]/, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    if (cleanBase) return cleanBase.startsWith('clean-') ? cleanBase : `clean-${cleanBase}`;
+    const ext = mimeType === 'video/webm' ? 'webm'
+      : mimeType === 'video/quicktime' ? 'mov'
+        : mimeType?.startsWith('video/') ? 'mp4'
+          : inferImageExtension(url);
+    return `clean-blea-${shortId}.${ext}`;
+  }
   if (kind === 'video') return `blea-video-${shortId}.mp4`;
   const suffix = total > 1 ? `-${index + 1}` : '';
   return `blea-image-${shortId}${suffix}.${inferImageExtension(url)}`;

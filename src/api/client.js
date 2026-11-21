@@ -59,3 +59,41 @@ export async function edgeRequest(path, body) {
     };
   }
 }
+
+export async function edgeFormRequest(path, formData) {
+  const token = await getAccessToken();
+  if (!token) {
+    return { ok: false, status: 401, data: { error: 'authentication required' } };
+  }
+  try {
+    const res = await fetch(`${EDGE_BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        apikey: PUBLISHABLE_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return {
+        ok: false,
+        status: res.status,
+        workerUnavailable: true,
+        data: { error: 'API worker belum aktif pada pratinjau lokal ini.' },
+      };
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403 && ACCOUNT_BLOCKED_CODES.includes(data?.code) && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(ACCOUNT_BLOCKED_EVENT, { detail: data }));
+    }
+    return { ok: res.ok, status: res.status, data };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      workerUnavailable: true,
+      data: { error: String(error?.message || error) },
+    };
+  }
+}

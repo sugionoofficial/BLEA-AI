@@ -7,6 +7,7 @@ import {
   ArrowUp,
   CheckCircle2,
   Clock,
+  FileSearch2,
   Film,
   Flag,
   Image as ImageIcon,
@@ -52,7 +53,7 @@ export function LiveQueuePage() {
   const isAdmin = user?.app_metadata?.role === 'admin';
   const { refresh: refreshBalance } = useCredits(user?.id);
   const [rawItems, setRawItems] = useState([]);
-  const [counts, setCounts] = useState({ total: 0, video: 0, image: 0, completed: 0, own: 0, stalled: 0 });
+  const [counts, setCounts] = useState({ total: 0, video: 0, image: 0, metadata: 0, completed: 0, own: 0, stalled: 0 });
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
@@ -111,6 +112,7 @@ export function LiveQueuePage() {
         total: activeOnly.length,
         video: activeOnly.filter((item) => item.kind === 'video').length,
         image: activeOnly.filter((item) => item.kind === 'image').length,
+        metadata: activeOnly.filter((item) => item.kind === 'metadata').length,
         completed: nextItems.filter((item) => item.status === 'completed').length,
         own: nextItems.filter((item) => item.is_own).length,
         stalled: activeOnly.filter((item) => item.stalled).length,
@@ -208,6 +210,7 @@ export function LiveQueuePage() {
       if (filter === 'own') return item.is_own;
       if (filter === 'video') return item.kind === 'video';
       if (filter === 'image') return item.kind === 'image';
+      if (filter === 'metadata') return item.kind === 'metadata';
       if (filter === 'stalled') return item.stalled;
       return true;
     });
@@ -366,6 +369,9 @@ export function LiveQueuePage() {
             <button type="button" className={`live-filter-tab ${filter === 'image' ? 'is-active' : ''}`} onClick={() => setFilter('image')}>
               Gambar ({counts.image})
             </button>
+            <button type="button" className={`live-filter-tab ${filter === 'metadata' ? 'is-active' : ''}`} onClick={() => setFilter('metadata')}>
+              Metadata ({counts.metadata || 0})
+            </button>
             {counts.stalled > 0 && (
               <button type="button" className={`live-filter-tab ${filter === 'stalled' ? 'is-active' : ''}`} onClick={() => setFilter('stalled')}>
                 Terindikasi Macet ({counts.stalled})
@@ -471,8 +477,10 @@ export function LiveQueuePage() {
                             <span className="live-pill">
                               {item.kind === 'video'
                                 ? <Film size={11} aria-hidden="true" />
-                                : <ImageIcon size={11} aria-hidden="true" />}
-                              {item.kind === 'video' ? 'Video' : 'Gambar'}
+                                : item.kind === 'metadata'
+                                  ? <FileSearch2 size={11} aria-hidden="true" />
+                                  : <ImageIcon size={11} aria-hidden="true" />}
+                              {item.kind === 'video' ? 'Video' : item.kind === 'metadata' ? 'Metadata' : 'Gambar'}
                             </span>
                             <span className="live-pill">{providerLabel}</span>
                             {isCompleted ? (
