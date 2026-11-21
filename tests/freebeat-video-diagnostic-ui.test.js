@@ -41,7 +41,7 @@ test('admin explicitly uploads a public image, uses its link for quote and delet
     const prompt = document.querySelector('input[type=text]');
     await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(prompt, 'Kucing berjalan'); prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
     await React.act(async () => button('Periksa quote').click());
-    assert.deepEqual(calls[0], ['video-model-quote', 'POST', { model_id: 182, prompt: 'Kucing berjalan', image_url: url, duration: 5 }]);
+    assert.deepEqual(calls[0], ['video-model-quote', 'POST', { model_id: 182, prompt: 'Kucing berjalan', input_mode: 'keyframe', images: [url], duration: 5, aspect_ratio: '16:9' }]);
     await React.act(async () => button('Hapus gambar dari Supabase').click());
     assert.deepEqual(storageCalls[1], ['remove', storageCalls[0][1]]);
     assert.equal(document.querySelector('input[type=url]').value, '');
@@ -63,7 +63,7 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
   const calls = [];
   const request = async (...args) => {
     calls.push(args);
-    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-prepare') return { approval: 'encrypted-ticket', settings: { model_id: args[2].model_id, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, prompt: args[2].prompt, images: args[2].images, image_url: args[2].images?.[0] || '', credits: 135, expiresAt: Date.now() + 60000 };
     if (args[0] === 'video-tests') return { tests: [] };
     if (args[0] === 'video-submit') return { status: 'submitted' };
     throw new Error('unexpected action');
@@ -78,7 +78,7 @@ test('video generation requires fresh quote and explicit one-time consent', asyn
     assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
     await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
     assert.deepEqual(calls.map((c) => c[0]), ['video-prepare', 'video-tests']);
-    assert.deepEqual(calls[0][2], { model_id: 186, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png', duration: 5 });
+    assert.deepEqual(calls[0][2], { model_id: 186, prompt: 'Kucing berjalan', input_mode: 'keyframe', images: ['https://images.example/cat.png'], duration: 5, aspect_ratio: '16:9' });
     assert.match(document.body.textContent, /Model 186 · ID 186/);
     assert.match(document.body.textContent, /135 kredit Freebeat/);
     assert.equal(button('Setujui dan kirim satu video').disabled, true);
@@ -168,7 +168,10 @@ test('one dropdown uses the live model list for help and quote and invalidates o
     await render({});
     assert.equal(document.querySelectorAll('#freebeat-video-model option').length, 5);
     assert.match(document.body.textContent, /ID lain atau duplikat tidak ditampilkan/);
-    assert.equal(document.querySelectorAll('input[type=text]').length, 2);
+    assert.equal(document.querySelectorAll('input[type=text]').length, 1);
+    assert.ok(document.querySelector('#freebeat-video-input-mode'));
+    assert.ok(document.querySelector('#freebeat-video-resolution'));
+    assert.ok(document.querySelector('#freebeat-video-aspect-ratio'));
     assert.equal(document.querySelectorAll('input[type=url]').length, 1);
     assert.equal(button('Periksa quote').disabled, true);
     await selectModel(React, dom, '192');
@@ -177,7 +180,7 @@ test('one dropdown uses the live model list for help and quote and invalidates o
     assert.equal(JSON.parse(document.querySelector('[aria-label="Informasi model video yang disaring"]').value).model_id, 192);
     await change('input[type=text]', 'Kucing berjalan'); await change('input[type=url]', 'https://images.example/cat.png');
     await React.act(async () => button('Periksa quote').click());
-    assert.deepEqual(calls[1], ['video-model-quote', 'POST', { model_id: 192, prompt: 'Kucing berjalan', image_url: 'https://images.example/cat.png', duration: 5 }]);
+    assert.deepEqual(calls[1], ['video-model-quote', 'POST', { model_id: 192, prompt: 'Kucing berjalan', input_mode: 'keyframe', images: ['https://images.example/cat.png'], duration: 5, aspect_ratio: '16:9' }]);
     const text = document.querySelector('[aria-label="Quote video yang disaring"]').value;
     assert.equal(JSON.parse(text).model_id, 192); assert.doesNotMatch(text, /Kucing|images.example/);
     assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
@@ -358,7 +361,7 @@ test('initial response diagnostics are optional and do not bypass separate spend
   const calls = [];
   const request = async (...args) => {
     calls.push(args);
-    if (args[0] === 'video-prepare') return { approval: 'encrypted', settings: { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, prompt: args[2].prompt, image_url: args[2].image_url, credits: 135, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-prepare') return { approval: 'encrypted', settings: { model_id: 186, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '9:16' }, prompt: args[2].prompt, images: args[2].images, image_url: args[2].images?.[0] || '', credits: 135, expiresAt: Date.now() + 60000 };
     if (args[0] === 'video-tests') return { tests: [] };
     if (args[0] === 'video-submit') return { status: 'unknown', initial_diagnostics: { received: true, messages: ['Private provider detail'] } };
     throw new Error('unexpected action');
@@ -468,3 +471,162 @@ test('upload preflight blocks missing cost cap; network loss after submission is
     delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('Wan 3.0 keyframe and omni_reference modes support 0-3 uploaded images, 480p/720p/1080p, 30s preset, and mode validation', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [], storageCalls = [];
+  const storage = { from: () => ({
+    upload: async (path) => { storageCalls.push(['upload', path]); return { error: null }; },
+    getPublicUrl: (path) => ({ data: { publicUrl: `https://storage.example/${path}` } }),
+    remove: async (paths) => { storageCalls.push(['remove', ...paths]); return { data: paths.map((name) => ({ name })), error: null }; },
+  }) };
+  const request = async (...args) => {
+    calls.push(args);
+    if (args[0] === 'video-model-quote') {
+      return {
+        settings: {
+          model_id: args[2].model_id,
+          generation_type: args[2].input_mode === 'omni_reference' ? 'reference' : (args[2].images?.length === 2 ? 'transition' : args[2].images?.length === 1 ? 'image' : 'text'),
+          duration: args[2].duration,
+          resolution: args[2].resolution || '720p',
+          aspect_ratio: args[2].aspect_ratio || '16:9',
+        },
+        quote: { status: 'quoted', credits: 120 },
+      };
+    }
+    if (args[0] === 'video-prepare') {
+      return {
+        approval: 'encrypted-wan3-ticket',
+        settings: {
+          model_id: args[2].model_id,
+          generation_type: args[2].input_mode === 'omni_reference' ? 'reference' : 'transition',
+          duration: args[2].duration,
+          resolution: args[2].resolution,
+          aspect_ratio: args[2].aspect_ratio,
+        },
+        prompt: args[2].prompt,
+        images: args[2].images,
+        credits: 120,
+        expiresAt: Date.now() + 60000,
+      };
+    }
+    if (args[0] === 'video-tests') return { tests: [] };
+    if (args[0] === 'video-submit') return { status: 'submitted' };
+    throw new Error(`unexpected ${args[0]}`);
+  };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  async function setSelect(selector, value) {
+    const el = document.querySelector(selector);
+    await React.act(async () => {
+      el.value = value;
+      el.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    });
+  }
+  async function setInput(selector, value) {
+    const el = document.querySelector(selector);
+    await React.act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(el, value);
+      el.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+  }
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog, storage, userId: '0937495e-9c1e-4a8f-b0cd-d8c527dd3db5' })));
+    await selectModel(React, dom, '182');
+    assert.match(document.querySelector('[data-testid="mcp-generation-preview"]').textContent, /teks ke video \(text\).*0\/2 gambar/);
+    await setInput('input[type=text]', 'Adegan sinematik 30 detik');
+    await setSelect('#freebeat-video-resolution', '1080p');
+    await setSelect('#freebeat-video-aspect-ratio', '9:16');
+    await React.act(async () => button('30s').click());
+
+    // Text-to-video quote with 0 images under Keyframe mode
+    assert.equal(button('Periksa quote').disabled, false);
+    await React.act(async () => button('Periksa quote').click());
+    assert.deepEqual(calls[0], ['video-model-quote', 'POST', {
+      model_id: 182,
+      prompt: 'Adegan sinematik 30 detik',
+      input_mode: 'keyframe',
+      images: [],
+      duration: 30,
+      resolution: '1080p',
+      aspect_ratio: '9:16',
+    }]);
+
+    // Upload 3 images in one batch to Supabase Storage
+    const files = [
+      new dom.window.File(['a'], 'ref1.png', { type: 'image/png' }),
+      new dom.window.File(['b'], 'ref2.png', { type: 'image/png' }),
+      new dom.window.File(['c'], 'ref3.png', { type: 'image/png' }),
+    ];
+    const fileInput = document.querySelector('input[type=file]');
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: files });
+    await React.act(async () => fileInput.dispatchEvent(new dom.window.Event('change', { bubbles: true })));
+    await React.act(async () => document.querySelector('input[type=checkbox]').click());
+    await React.act(async () => button('Upload gambar ke Supabase').click());
+    assert.equal(storageCalls.filter(([kind]) => kind === 'upload').length, 3);
+    const urls = [...document.querySelectorAll('input[type=url]')].map((el) => el.value);
+    assert.equal(urls.length, 3);
+    assert.ok(urls.every((u) => u.startsWith('https://storage.example/')));
+
+    // Attempting 4th file is blocked cleanly (file input disabled + capacity notice + upload guard)
+    assert.equal(fileInput.disabled, true);
+    assert.match(document.body.textContent, /Slot gambar sudah penuh/);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [new dom.window.File(['d'], 'extra.png', { type: 'image/png' })] });
+    await React.act(async () => fileInput.dispatchEvent(new dom.window.Event('change', { bubbles: true })));
+    assert.equal(button('Upload gambar ke Supabase').disabled, true);
+
+    // 3 images in Keyframe mode blocks quote with clear guidance
+    assert.equal(button('Periksa quote').disabled, true);
+    assert.match(document.body.textContent, /Mode Keyframe maksimal 2 gambar/);
+
+    // Switching to Omni Reference enables quote & prepare with all 3 images -> reference
+    await setSelect('#freebeat-video-input-mode', 'omni_reference');
+    assert.match(document.querySelector('[data-testid="mcp-generation-preview"]').textContent, /omni reference \(reference\).*3\/3 gambar/);
+    assert.equal(button('Periksa quote').disabled, false);
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
+    const prepareCall = calls.find(([action]) => action === 'video-prepare');
+    assert.deepEqual(prepareCall[2], {
+      model_id: 182,
+      prompt: 'Adegan sinematik 30 detik',
+      input_mode: 'omni_reference',
+      images: urls,
+      duration: 30,
+      resolution: '1080p',
+      aspect_ratio: '9:16',
+    });
+    assert.match(document.body.textContent, /omni reference \(reference\)/);
+    assert.match(document.body.textContent, /3 URL gambar/);
+
+    // Submit 1 video with all 3 reference images
+    const consentCheckbox = [...document.querySelectorAll('label')].find((l) => l.textContent.includes('Saya menyetujui satu kali generasi video')).querySelector('input');
+    await React.act(async () => consentCheckbox.click());
+    await React.act(async () => button('Setujui dan kirim satu video').click());
+    assert.deepEqual(calls.find(([action]) => action === 'video-submit'), ['video-submit', 'POST', { approval: 'encrypted-wan3-ticket', confirm: true }]);
+
+    // Remove 1 uploaded image (#3) and switch back to Keyframe -> transition (2/2 images)
+    await React.act(async () => button('Hapus upload #3').click());
+    assert.equal(document.querySelectorAll('input[type=url]').length, 2);
+    await setSelect('#freebeat-video-input-mode', 'keyframe');
+    assert.match(document.querySelector('[data-testid="mcp-generation-preview"]').textContent, /First \+ Last Frame · transition.*2\/2 gambar/);
+
+    // Remove #2 -> First Frame (image, 1/2 images)
+    await React.act(async () => button('Hapus upload #2').click());
+    assert.match(document.querySelector('[data-testid="mcp-generation-preview"]').textContent, /First Frame · image.*1\/2 gambar/);
+
+    // Remove remaining uploaded image (#1) via Supabase delete button
+    await React.act(async () => button('Hapus gambar dari Supabase').click());
+    assert.equal(document.querySelectorAll('input[type=url]').length, 1);
+    assert.equal(document.querySelector('input[type=url]').value, '');
+    assert.equal(storageCalls.filter(([kind]) => kind === 'remove').length, 3);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+

@@ -1,6 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
+import { FREEBEAT_VIDEO_ASPECT_RATIOS, FREEBEAT_VIDEO_MAX_IMAGES } from '../lib/freebeatVideoTestSettings';
+
+const DURATION_PRESETS = [5, 10, 15, 20, 30];
+const RESOLUTION_OPTIONS = [
+  { value: '', label: 'Otomatis (sesuai model, bawaan 480p)' },
+  { value: '480p', label: '480 (480p)' },
+  { value: '720p', label: '720 (720p)' },
+  { value: '1080p', label: '1080 (1080p)' },
+  { value: '768p', label: '768p' },
+  { value: '2k', label: '2K' },
+  { value: '4k', label: '4K' },
+];
+
+function generationTypeLabel(type) {
+  if (type === 'image') return 'keyframe (First Frame · image)';
+  if (type === 'transition') return 'keyframe (First + Last Frame · transition)';
+  if (type === 'reference') return 'omni reference (reference)';
+  if (type === 'text') return 'teks ke video (text)';
+  return type || 'video';
+}
 
 export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, request, userId, storage, videoModels, videoBusy }) {
   const [busy, setBusy] = useState(false);
@@ -11,9 +31,12 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [quote, setQuote] = useState(null);
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [imageUrl, setImageUrl] = useState('');
+  const [inputMode, setInputMode] = useState('keyframe');
+  const [imageSlots, setImageSlots] = useState([{ url: '', uploadedPath: null }]);
   const [duration, setDuration] = useState('5');
   const [resolutionInput, setResolutionInput] = useState('');
+  const [aspectRatio, setAspectRatio] = useState('16:9');
+  const [uploadTargetIndex, setUploadTargetIndex] = useState(0);
   const [approval, setApproval] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
   const [initialConsent, setInitialConsent] = useState(false);
@@ -29,67 +52,187 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
   const [freebeatUploadConsent, setFreebeatUploadConsent] = useState(false);
   const [freebeatUploadCheck, setFreebeatUploadCheck] = useState(null);
   const [freebeatUploadResult, setFreebeatUploadResult] = useState(null);
+
+  const activeImages = imageSlots.map((slot) => slot.url.trim()).filter(Boolean);
+  const safeTargetIndex = uploadTargetIndex < activeImages.length ? uploadTargetIndex : 0;
+  const uploadDiagnosticUrl = activeImages[safeTargetIndex] || '';
+
   useEffect(() => {
     uploadCheckVersion.current += 1;
     setUploadCheckConsent(false); setFreebeatUploadConsent(false); setFreebeatUploadCheck(null); setFreebeatUploadResult(null);
     return () => { uploadCheckVersion.current += 1; };
-  }, [connected, imageUrl]);
+  }, [connected, uploadDiagnosticUrl]);
+
   useEffect(() => {
-    if (!connected) { setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({}); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setModel(''); setApproval(null); setConfirmed(false); setInitialConsent(false); setInitialDiagnostics(null); }
+    if (!connected) {
+      setPrivateFailure({}); setPrivacyConsent({}); setTaskResults({});
+      setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false);
+      setQuote(null); setModel(''); setApproval(null); setConfirmed(false);
+      setInitialConsent(false); setInitialDiagnostics(null);
+    }
     return () => { visibilityVersion.current += 1; };
   }, [connected]);
-  useEffect(() => { catalogVersion.current += 1; setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setQuote(null); setApproval(null); setConfirmed(false); setInitialConsent(false); }, [videoModels, videoBusy]);
+
+  useEffect(() => {
+    catalogVersion.current += 1;
+    setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false);
+    setQuote(null); setApproval(null); setConfirmed(false); setInitialConsent(false);
+  }, [videoModels, videoBusy]);
+
   const [testNotice, setTestNotice] = useState('');
   function clearApproval() { setApproval(null); setConfirmed(false); setInitialConsent(false); }
   function updatePrompt(value) { setPrompt(value); setQuote(null); clearApproval(); }
+  function updateInputMode(value) { setInputMode(value); setQuote(null); clearApproval(); }
   function updateDuration(value) { setDuration(value); setQuote(null); clearApproval(); }
   function updateResolution(value) { setResolutionInput(value); setQuote(null); clearApproval(); }
+  function updateAspectRatio(value) { setAspectRatio(value); setQuote(null); clearApproval(); }
+
+  function parsedDurationValue() {
+    const raw = duration.trim();
+    if (!raw) return null;
+    if (!/^\d+$/.test(raw)) return NaN;
+    return Number.parseInt(raw, 10);
+  }
   function durationPayload() {
-    const parsed = Number.parseInt(duration, 10);
+    const parsed = parsedDurationValue();
     return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 600 ? { duration: parsed } : {};
   }
   function resolutionPayload() {
     const value = resolutionInput.trim().toLowerCase();
     return value ? { resolution: value } : {};
   }
-  function updateImageUrl(value) { setImageUrl(value); setQuote(null); clearApproval(); }
-  const [file, setFile] = useState(null);
+  function updateImageSlotUrl(index, value) {
+    setImageSlots((old) => old.map((slot, idx) => (idx === index ? { ...slot, url: value } : slot)));
+    setQuote(null);
+    clearApproval();
+  }
+  function addImageSlot() {
+    const maxSlots = inputMode === 'omni_reference' ? FREEBEAT_VIDEO_MAX_IMAGES : 2;
+    setImageSlots((old) => (old.length < maxSlots ? [...old, { url: '', uploadedPath: null }] : old));
+  }
+
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [publicConfirmed, setPublicConfirmed] = useState(false);
-  const [uploaded, setUploaded] = useState(null);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [uploadNotice, setUploadNotice] = useState('');
   const fileInput = useRef(null);
 
+  const uploadedEntries = imageSlots
+    .map((slot, index) => (slot.uploadedPath ? { index, path: slot.uploadedPath, url: slot.url } : null))
+    .filter(Boolean);
+  const remainingImageCapacity = Math.max(0, FREEBEAT_VIDEO_MAX_IMAGES - activeImages.length);
+
   async function uploadImage() {
-    if (busy || uploadBusy || !file || !publicConfirmed || uploaded || !userId || !storage) return;
+    if (busy || uploadBusy || !selectedFiles.length || !publicConfirmed || !userId || !storage) return;
+    if (selectedFiles.length > remainingImageCapacity) {
+      setUploadError(`Maksimal ${FREEBEAT_VIDEO_MAX_IMAGES} gambar. Tersisa ${remainingImageCapacity} slot gambar.`);
+      return;
+    }
     setUploadBusy(true); setUploadError(''); setUploadNotice('');
     try {
-      const item = await uploadFreebeatImage(storage, userId, file);
-      setUploaded(item);
-      if (item.url) { setImageUrl(item.url); setQuote(null); clearApproval(); setUploadNotice('Gambar tersimpan dan URL publik terisi di bawah.'); }
-      else setUploadError('Gambar tersimpan, tetapi URL tidak tersedia. Anda dapat menghapusnya di bawah.');
-    } catch (err) { setUploadError(err.message || 'Upload tidak berhasil; periksa Supabase Storage.'); }
-    finally { setUploadBusy(false); }
-  }
-  async function removeImage() {
-    if (!uploaded || busy || uploadBusy) return;
-    setUploadBusy(true); setUploadError(''); setUploadNotice('');
-    try {
-      await deleteFreebeatImage(storage, uploaded.path);
-      if (imageUrl === uploaded.url) { setImageUrl(''); setQuote(null); clearApproval(); }
-      setUploaded(null); setFile(null); setPublicConfirmed(false);
+      const uploadedItems = [];
+      let firstError = null;
+      for (const file of selectedFiles) {
+        try {
+          const item = await uploadFreebeatImage(storage, userId, file);
+          uploadedItems.push(item);
+        } catch (err) {
+          firstError = err;
+          break;
+        }
+      }
+      if (uploadedItems.length > 0) {
+        const missingUrl = uploadedItems.find((item) => !item.url);
+        setImageSlots((old) => {
+          const next = old.map((slot) => ({ ...slot }));
+          for (const item of uploadedItems) {
+            if (!item.url) continue;
+            const emptyIdx = next.findIndex((slot) => !slot.url.trim());
+            if (emptyIdx !== -1) {
+              next[emptyIdx] = { url: item.url, uploadedPath: item.path };
+            } else if (next.length < FREEBEAT_VIDEO_MAX_IMAGES) {
+              next.push({ url: item.url, uploadedPath: item.path });
+            }
+          }
+          return next;
+        });
+        setQuote(null);
+        clearApproval();
+        if (!firstError && !missingUrl) {
+          setUploadNotice(
+            uploadedItems.length === 1
+              ? 'Gambar tersimpan dan URL publik terisi di bawah.'
+              : `${uploadedItems.length} gambar tersimpan dan URL publik terisi di bawah.`
+          );
+        } else if (missingUrl && !firstError) {
+          setUploadError('Sebagian gambar tersimpan, tetapi URL tidak tersedia. Anda dapat menghapusnya di bawah.');
+        }
+      }
+      setSelectedFiles([]);
       if (fileInput.current) fileInput.current.value = '';
+      if (firstError) {
+        setUploadError(firstError.message || 'Upload tidak berhasil; periksa Supabase Storage.');
+      }
+    } finally { setUploadBusy(false); }
+  }
+
+  async function removeSlotOrImage(slotIndex, removeSlotBox = false) {
+    const target = imageSlots[slotIndex];
+    if (!target || busy || uploadBusy) return;
+    setUploadError(''); setUploadNotice('');
+    if (target.uploadedPath) {
+      setUploadBusy(true);
+      try {
+        await deleteFreebeatImage(storage, target.uploadedPath);
+        const remainingUploaded = uploadedEntries.filter((entry) => entry.index !== slotIndex).length;
+        if (remainingUploaded === 0) setPublicConfirmed(false);
+        setUploadNotice('Gambar dihapus dari Supabase. Salinan atau cache pihak lain mungkin masih ada.');
+      } catch (err) {
+        setUploadError(err.message || 'Penghapusan gagal; periksa Supabase Storage.');
+        setUploadBusy(false);
+        return;
+      }
+      setUploadBusy(false);
+    }
+    setImageSlots((old) => {
+      if (removeSlotBox && old.length > 1) return old.filter((_, idx) => idx !== slotIndex);
+      return old.map((slot, idx) => (idx === slotIndex ? { url: '', uploadedPath: null } : slot));
+    });
+    setQuote(null);
+    clearApproval();
+    if (fileInput.current) fileInput.current.value = '';
+  }
+
+  async function removeAllUploadedImages() {
+    if (!uploadedEntries.length || busy || uploadBusy) return;
+    setUploadBusy(true); setUploadError(''); setUploadNotice('');
+    try {
+      for (const entry of uploadedEntries) {
+        await deleteFreebeatImage(storage, entry.path);
+      }
+      const deletedPaths = new Set(uploadedEntries.map((entry) => entry.path));
+      setImageSlots((old) => {
+        const cleaned = old.map((slot) => (slot.uploadedPath && deletedPaths.has(slot.uploadedPath) ? { url: '', uploadedPath: null } : slot));
+        const nonEmpty = cleaned.filter((slot) => slot.url.trim());
+        return nonEmpty.length ? nonEmpty : [{ url: '', uploadedPath: null }];
+      });
+      setSelectedFiles([]);
+      setPublicConfirmed(false);
+      if (fileInput.current) fileInput.current.value = '';
+      setQuote(null);
+      clearApproval();
       setUploadNotice('Gambar dihapus dari Supabase. Salinan atau cache pihak lain mungkin masih ada.');
     } catch (err) { setUploadError(err.message || 'Penghapusan gagal; periksa Supabase Storage.'); }
     finally { setUploadBusy(false); }
   }
+
   async function inspectFreebeatUpload(submit) {
-    if (loading || !connected || !imageAccess || busy || uploadBusy || !imageUrl.trim() || (submit ? (!freebeatUploadCheck?.eligible || !freebeatUploadConsent) : !uploadCheckConsent)) return;
+    if (loading || !connected || !imageAccess || busy || uploadBusy || !uploadDiagnosticUrl || (submit ? (!freebeatUploadCheck?.eligible || !freebeatUploadConsent) : !uploadCheckConsent)) return;
     const version = uploadCheckVersion.current;
     setBusy(true); setError(''); setFreebeatUploadResult(null); setFreebeatUploadConsent(false);
     try {
-      const result = await request(submit ? 'video-upload-image' : 'video-upload-check', 'POST', { image_url: imageUrl.trim(), acknowledge: true });
+      const result = await request(submit ? 'video-upload-image' : 'video-upload-check', 'POST', { image_url: uploadDiagnosticUrl, acknowledge: true });
       if (version !== uploadCheckVersion.current) return;
       setFreebeatUploadCheck({ eligible: result.eligible === true, reason: result.reason });
       if (submit && result.eligible === true) { setFreebeatUploadResult(result.outcome || 'unknown'); setUploadCheckConsent(false); setFreebeatUploadCheck(null); }
@@ -102,8 +245,9 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     } finally { setBusy(false); }
   }
 
-  async function copyUrl() {
-    try { await navigator.clipboard.writeText(imageUrl); setUploadNotice('URL disalin.'); }
+  async function copyUrl(urlToCopy) {
+    if (!urlToCopy) return;
+    try { await navigator.clipboard.writeText(urlToCopy); setUploadNotice('URL disalin.'); }
     catch { setUploadNotice('Tidak dapat menyalin otomatis. Pilih dan salin URL secara manual.'); }
   }
 
@@ -116,20 +260,53 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     const number = Number(id);
     if (!Number.isSafeInteger(number) || number < 0 || typeof item.name !== 'string' || seen.has(number)) continue;
     seen.add(number);
-    modelOptions.push({ id: number, name: item.member_only === true ? `${item.name} · khusus member` : item.name, member_only: item.member_only === true });
+    modelOptions.push({ id: number, name: item.member_only === true ? `${item.name} · khusus member` : item.name, rawName: item.name, member_only: item.member_only === true });
   }
-  const selected = model !== '' && modelOptions.some((item) => String(item.id) === model);
+  const selectedModelItem = modelOptions.find((item) => String(item.id) === model) || null;
+  const selected = Boolean(selectedModelItem);
+  const isWan3Selected = Boolean(selectedModelItem && (/wan\s*3/i.test(selectedModelItem.rawName) || selectedModelItem.id === 182 || selectedModelItem.id === 184));
+
+  const parsedDur = parsedDurationValue();
+  const durationInvalid = parsedDur !== null && (!Number.isSafeInteger(parsedDur) || parsedDur < 1 || parsedDur > 600);
+  const imageModeBlocker = inputMode === 'omni_reference'
+    ? (activeImages.length < 1
+      ? 'Mode Omni Reference membutuhkan minimal 1 gambar (maksimal 3).'
+      : activeImages.length > FREEBEAT_VIDEO_MAX_IMAGES
+        ? `Maksimal ${FREEBEAT_VIDEO_MAX_IMAGES} gambar untuk mode Omni Reference.`
+        : '')
+    : (activeImages.length > 2
+      ? 'Mode Keyframe maksimal 2 gambar (First & Last Frame). Hapus 1 gambar atau ganti tipe input ke Omni Reference.'
+      : '');
+
+  const expectedMcpType = inputMode === 'omni_reference'
+    ? 'reference'
+    : (activeImages.length === 0 ? 'text' : activeImages.length === 1 ? 'image' : 'transition');
+
+  function buildVideoPayload() {
+    const payload = {
+      model_id: Number(model),
+      prompt,
+      input_mode: inputMode,
+      images: activeImages,
+      ...durationPayload(),
+      ...resolutionPayload(),
+      aspect_ratio: aspectRatio,
+    };
+    return payload;
+  }
+
   async function inspect(action) {
-    if (loading || !connected || videoBusy || busy || uploadBusy || !selected || (action === 'video-model-quote' && (!prompt.trim() || !imageUrl.trim()))) return;
+    if (loading || !connected || videoBusy || busy || uploadBusy || !selected) return;
+    if (action === 'video-model-quote' && (!prompt.trim() || durationInvalid || Boolean(imageModeBlocker))) return;
     const version = catalogVersion.current, connectionVersion = visibilityVersion.current;
     setBusy(true); setError(''); clearApproval();
     if (action === 'video-model-help') setHelp(null); else setQuote(null);
     try {
-      const input = action === 'video-model-help' ? { model_id: Number(model) } : { model_id: Number(model), prompt, image_url: imageUrl, ...durationPayload(), ...resolutionPayload() };
+      const input = action === 'video-model-help' ? { model_id: Number(model) } : buildVideoPayload();
       const result = await request(action, 'POST', input);
       if (version !== catalogVersion.current || connectionVersion !== visibilityVersion.current) return;
       if (action === 'video-model-help') setHelp({ model_id: result.model_id, help: result.help });
-      else setQuote({ ...result.settings, quote: result.quote });
+      else setQuote({ ...result.settings, ...(result.adjusted?.length ? { adjusted: result.adjusted } : {}), ...(result.supported ? { supported: result.supported } : {}), quote: result.quote });
     } catch (err) { setError(err.message || 'Pemeriksaan video gagal.'); }
     finally { setBusy(false); }
   }
@@ -148,16 +325,39 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     setTests(result.tests);
   }
   async function prepare() {
-    if (busy || uploadBusy || videoBusy || loading || !connected || !imageAccess || !selected || !prompt.trim() || !imageUrl.trim()) return;
+    if (busy || uploadBusy || videoBusy || loading || !connected || !imageAccess || !selected || !prompt.trim() || durationInvalid || Boolean(imageModeBlocker)) return;
     const version = catalogVersion.current, connectionVersion = visibilityVersion.current;
     setBusy(true); setError(''); setTestNotice(''); setInitialDiagnostics(null); clearApproval();
     try {
-      const result = await request('video-prepare', 'POST', { model_id: Number(model), prompt, image_url: imageUrl, ...durationPayload(), ...resolutionPayload() });
+      const result = await request('video-prepare', 'POST', buildVideoPayload());
       // Settings are now normalized per model by the Worker (resolution,
-      // duration, generation type follow get_model_help), so validate internal
-      // consistency and the exact input echo instead of fixed global defaults.
+      // duration, generation type, aspect ratio follow get_model_help), so
+      // validate internal consistency and exact prompt + images echo.
       const s = result.settings;
-      if (!s || s.model_id !== Number(model) || typeof s.generation_type !== 'string' || !s.generation_type || !Number.isSafeInteger(s.duration) || s.duration <= 0 || s.duration > 600 || typeof s.resolution !== 'string' || !s.resolution || typeof s.aspect_ratio !== 'string' || !/^\d{1,2}:\d{1,2}$/.test(s.aspect_ratio) || result.prompt !== prompt.trim() || result.image_url !== imageUrl.trim() || typeof result.credits !== 'number' || !Number.isFinite(result.credits) || result.credits < 0 || typeof result.approval !== 'string') throw new Error('Persetujuan tidak cocok dengan input yang dipilih. Tidak ada video dikirim; buat quote baru.');
+      const returnedImages = Array.isArray(result.images)
+        ? result.images
+        : (typeof result.image_url === 'string' && result.image_url ? [result.image_url] : []);
+      const imagesMatch = returnedImages.length === activeImages.length
+        && returnedImages.every((url, index) => url === activeImages[index]);
+      if (
+        !s
+        || s.model_id !== Number(model)
+        || typeof s.generation_type !== 'string'
+        || !s.generation_type
+        || !Number.isSafeInteger(s.duration)
+        || s.duration <= 0
+        || s.duration > 600
+        || typeof s.resolution !== 'string'
+        || !s.resolution
+        || typeof s.aspect_ratio !== 'string'
+        || !/^(?:auto|\d{1,2}:\d{1,2})$/i.test(s.aspect_ratio)
+        || result.prompt !== prompt.trim()
+        || !imagesMatch
+        || typeof result.credits !== 'number'
+        || !Number.isFinite(result.credits)
+        || result.credits < 0
+        || typeof result.approval !== 'string'
+      ) throw new Error('Persetujuan tidak cocok dengan input yang dipilih. Tidak ada video dikirim; buat quote baru.');
       await refreshTests();
       if (version === catalogVersion.current && connectionVersion === visibilityVersion.current) setApproval(result);
     }
@@ -210,45 +410,154 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     setPrivateFailure((old) => { const next = { ...old }; delete next[id]; return next; });
     setPrivacyConsent((old) => ({ ...old, [id]: false }));
   }
+
   const blockers = [
     ...(loading ? ['Menunggu pemeriksaan koneksi Freebeat.'] : !connected ? ['Hubungkan Freebeat terlebih dahulu.'] : []),
     ...(videoBusy ? ['Menunggu daftar model video.'] : []),
     ...(busy || uploadBusy ? ['Tunggu pemeriksaan atau upload yang sedang berjalan.'] : []),
     ...(!selected ? ['Pilih model dari daftar Freebeat.'] : []),
     ...(!prompt.trim() ? ['Isi prompt video.'] : []),
-    ...(!imageUrl.trim() ? ['Isi URL HTTPS gambar atau upload gambar.'] : []),
+    ...(durationInvalid ? ['Isi durasi antara 1 dan 600 detik.'] : []),
+    ...(imageModeBlocker ? [imageModeBlocker] : []),
   ];
+
+  const maxSlotsForMode = inputMode === 'omni_reference' ? FREEBEAT_VIDEO_MAX_IMAGES : 2;
+  const approvalImages = approval
+    ? (Array.isArray(approval.images) ? approval.images : (approval.image_url ? [approval.image_url] : []))
+    : [];
+
   return <div className="freebeat-result">
     <h3>Pemeriksaan video · baca saja</h3>
-    <p>Pilih model dari daftar Freebeat. Quote menggunakan gambar ke video; durasi dan resolusi dimulai dari nilai bawaan lalu disesuaikan otomatis dengan kemampuan model menurut bantuan model. Pemeriksaan tidak membuat video atau memakai kredit.</p>
+    <p>Pilih model dari daftar Freebeat (termasuk Wan 3.0). Mendukung mode Keyframe (0–2 gambar: text, First Frame, atau First + Last Frame) dan Omni Reference (1–3 gambar referensi), resolusi 480p / 720p / 1080p, serta durasi s/d 30 detik. Pemeriksaan tidak membuat video atau memakai kredit.</p>
     <label className="freebeat-field">Model video
       <select id="freebeat-video-model" value={selected ? model : ''} disabled={loading || !connected || videoBusy || busy || uploadBusy || !modelOptions.length} onChange={(event) => { setModel(event.target.value); setHelp(null); setPrivateHelp(null); setPrivateHelpConsent(false); setInitialDiagnostics(null); setQuote(null); setError(''); clearApproval(); }}>
         <option value="">{videoBusy ? 'Memuat model…' : 'Pilih model video'}</option>
         {modelOptions.map((item) => <option key={item.id} value={String(item.id)}>{item.name} · ID {item.id}</option>)}
       </select>
     </label>
+    {isWan3Selected && <p className="freebeat-note" role="status">Profil Wan 3.0 aktif: gunakan <strong>Keyframe</strong> (0–2 gambar: text / First Frame / First+Last Frame) atau <strong>Omni Reference</strong> (1–3 gambar referensi), resolusi 480p / 720p / 1080p, dan durasi hingga 30 detik.</p>}
     {connected && !videoBusy && !modelOptions.length && <p>Belum ada model ber-ID angka yang dapat dipilih. Muat ulang daftar model di atas.</p>}
     {videoModels?.truncated && <p>Daftar Freebeat dibatasi sampai 100 model; mungkin belum lengkap.</p>}
     {videoModels?.models?.length > modelOptions.length && <p>Hanya model dengan ID angka yang dapat diperiksa; ID lain atau duplikat tidak ditampilkan.</p>}
-    <details className="freebeat-upload"><summary>Upload gambar ke Supabase (opsional)</summary>
+
+    <details className="freebeat-upload"><summary>Upload gambar ke Supabase (opsional, maks {FREEBEAT_VIDEO_MAX_IMAGES} gambar)</summary>
     <p>Gambar disimpan di bucket publik: gambar dan URL dapat ditemukan atau dibuka tanpa login. Jangan unggah gambar pribadi atau rahasia. Gambar tetap tersimpan sampai dihapus; link tidak kedaluwarsa otomatis. Penghapusan tidak menjamin salinan atau cache pihak lain ikut terhapus.</p>
-    <p>JPG, PNG, atau WebP, maksimal 10 MB. Setelah upload, URL terisi otomatis. Tombol hapus hanya tersedia selama halaman ini terbuka; setelah dimuat ulang, hapus melalui dashboard Supabase Storage pada folder akun Anda.</p>
-    <label className="freebeat-field">Pilih gambar<input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" disabled={busy || uploadBusy || Boolean(uploaded)} onChange={(event) => { setFile(event.target.files?.[0] || null); setUploadError(''); setUploadNotice(''); }} /></label>
-    <label className="freebeat-confirm"><input type="checkbox" checked={publicConfirmed} disabled={busy || uploadBusy || Boolean(uploaded)} onChange={(event) => setPublicConfirmed(event.target.checked)} /> Saya memahami gambar akan disimpan secara publik di Supabase.</label>
+    <p>JPG, PNG, atau WebP, maksimal 10 MB per gambar (maksimal {FREEBEAT_VIDEO_MAX_IMAGES} gambar untuk satu uji video). Setelah upload, URL terisi otomatis ke slot gambar. Tombol hapus tersedia selama halaman terbuka; setelah dimuat ulang, hapus melalui dashboard Supabase Storage pada folder akun Anda.</p>
+    <label className="freebeat-field">Pilih gambar (1–{FREEBEAT_VIDEO_MAX_IMAGES} file)<input ref={fileInput} type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={busy || uploadBusy || remainingImageCapacity === 0} onChange={(event) => {
+      const picked = Array.from(event.target.files || []);
+      if (remainingImageCapacity === 0) {
+        setSelectedFiles([]);
+        if (fileInput.current) fileInput.current.value = '';
+        setUploadError(`Slot gambar sudah penuh (maksimal ${FREEBEAT_VIDEO_MAX_IMAGES} gambar).`);
+        setUploadNotice('');
+        return;
+      }
+      if (picked.length > remainingImageCapacity) {
+        setSelectedFiles(picked.slice(0, remainingImageCapacity));
+        setUploadError(`Maksimal ${FREEBEAT_VIDEO_MAX_IMAGES} gambar (${remainingImageCapacity} slot tersisa); hanya ${remainingImageCapacity} file pertama yang dipilih.`);
+        setUploadNotice('');
+        return;
+      }
+      setSelectedFiles(picked);
+      setUploadError('');
+      setUploadNotice('');
+    }} /></label>
+    {remainingImageCapacity === 0 && <p className="freebeat-note" role="status">Slot gambar sudah penuh ({FREEBEAT_VIDEO_MAX_IMAGES}/{FREEBEAT_VIDEO_MAX_IMAGES}). Hapus salah satu gambar untuk mengunggah lagi.</p>}
+    {selectedFiles.length > 0 && <p className="freebeat-note">{selectedFiles.length} file dipilih: {selectedFiles.map((item) => item.name).join(', ')}</p>}
+    <label className="freebeat-confirm"><input type="checkbox" checked={publicConfirmed} disabled={busy || uploadBusy || (remainingImageCapacity === 0 && uploadedEntries.length === 0)} onChange={(event) => setPublicConfirmed(event.target.checked)} /> Saya memahami gambar akan disimpan secara publik di Supabase.</label>
     <div className="freebeat-actions">
-      <button type="button" className="is-secondary" disabled={busy || uploadBusy || !file || !publicConfirmed || !userId || Boolean(uploaded)} onClick={uploadImage}>{uploadBusy ? 'Memproses…' : 'Upload gambar ke Supabase'}</button>
-      {uploaded && <button type="button" className="is-secondary" disabled={busy || uploadBusy} onClick={removeImage}>Hapus gambar dari Supabase</button>}
+      <button type="button" className="is-secondary" disabled={busy || uploadBusy || !selectedFiles.length || !publicConfirmed || !userId || remainingImageCapacity === 0} onClick={uploadImage}>{uploadBusy ? 'Memproses…' : 'Upload gambar ke Supabase'}</button>
+      {uploadedEntries.length === 1 && <button type="button" className="is-secondary" disabled={busy || uploadBusy} onClick={() => removeSlotOrImage(uploadedEntries[0].index)}>Hapus gambar dari Supabase</button>}
+      {uploadedEntries.length > 1 && uploadedEntries.map((entry, idx) => (
+        <button key={entry.path} type="button" className="is-secondary" disabled={busy || uploadBusy} onClick={() => removeSlotOrImage(entry.index)}>Hapus gambar #{idx + 1} dari Supabase</button>
+      ))}
+      {uploadedEntries.length > 1 && <button type="button" className="is-secondary" disabled={busy || uploadBusy} onClick={removeAllUploadedImages}>Hapus semua gambar dari Supabase</button>}
     </div>
     {uploadError && <div className="freebeat-alert is-error" role="alert">{uploadError}</div>}
     {uploadNotice && <p role="status">{uploadNotice}</p>}
     </details>
-    <p>Untuk memeriksa quote, gunakan URL hasil upload atau masukkan URL HTTPS lain yang dapat diakses Freebeat. Menekan tombol quote mengirim prompt dan URL tersebut ke Freebeat; jangan gunakan gambar pribadi atau URL bertanda tangan yang tidak ingin Anda bagikan.</p>
+
+    <p>Untuk memeriksa quote, gunakan URL hasil upload atau masukkan URL HTTPS lain yang dapat diakses Freebeat (maksimal {FREEBEAT_VIDEO_MAX_IMAGES} gambar). Menekan tombol quote mengirim prompt dan URL tersebut ke Freebeat; jangan gunakan gambar pribadi atau URL bertanda tangan yang tidak ingin Anda bagikan.</p>
+
     <label className="freebeat-field">Prompt video<input type="text" value={prompt} maxLength={2000} disabled={busy || uploadBusy} onChange={(event) => updatePrompt(event.target.value)} /></label>
-    <label className="freebeat-field">Durasi detik (opsional; bawaan 5, disesuaikan otomatis bila model menolak)<input type="number" min={1} max={600} step={1} value={duration} disabled={busy || uploadBusy} onChange={(event) => updateDuration(event.target.value)} /></label>
-    <label className="freebeat-field">Resolusi (opsional; kosongkan untuk otomatis, contoh 768p)<input type="text" value={resolutionInput} maxLength={10} disabled={busy || uploadBusy} autoComplete="off" onChange={(event) => updateResolution(event.target.value)} /></label>
-    <label className="freebeat-field">URL HTTPS gambar<input type="url" value={imageUrl} maxLength={2048} disabled={busy || uploadBusy} autoComplete="off" onChange={(event) => updateImageUrl(event.target.value)} /></label>
+
+    <div className="freebeat-inline">
+      <label className="freebeat-field">Tipe input (Wan 3.0 / Studio)
+        <select id="freebeat-video-input-mode" value={inputMode} disabled={busy || uploadBusy} onChange={(event) => updateInputMode(event.target.value)}>
+          <option value="keyframe">Keyframe (0 = text · 1 = First Frame · 2 = First+Last Frame)</option>
+          <option value="omni_reference">Omni Reference (1–3 gambar referensi)</option>
+        </select>
+      </label>
+      <label className="freebeat-field">Resolusi
+        <select id="freebeat-video-resolution" value={resolutionInput} disabled={busy || uploadBusy} onChange={(event) => updateResolution(event.target.value)}>
+          {RESOLUTION_OPTIONS.map((opt) => <option key={opt.value || 'auto'} value={opt.value}>{opt.label}</option>)}
+        </select>
+      </label>
+      <label className="freebeat-field">Rasio aspek
+        <select id="freebeat-video-aspect-ratio" value={aspectRatio} disabled={busy || uploadBusy} onChange={(event) => updateAspectRatio(event.target.value)}>
+          {FREEBEAT_VIDEO_ASPECT_RATIOS.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}
+        </select>
+      </label>
+    </div>
+
+    <div className="freebeat-field">
+      <label htmlFor="freebeat-video-duration">Durasi detik (s/d 30 detik untuk Wan 3.0; bawaan 5)</label>
+      <div className="freebeat-inline">
+        <input id="freebeat-video-duration" type="number" min={1} max={600} step={1} value={duration} disabled={busy || uploadBusy} onChange={(event) => updateDuration(event.target.value)} />
+        <div className="freebeat-actions" aria-label="Preset durasi cepat">
+          {DURATION_PRESETS.map((secs) => (
+            <button key={secs} type="button" className={String(secs) === duration.trim() ? 'is-active-preset' : 'is-secondary'} disabled={busy || uploadBusy} onClick={() => updateDuration(String(secs))}>{secs}s</button>
+          ))}
+        </div>
+      </div>
+    </div>
+
+    <p className="freebeat-note" data-testid="mcp-generation-preview">
+      Pemetaan ke MCP <code>generate_video</code>: <strong>{generationTypeLabel(expectedMcpType)}</strong> · {activeImages.length}/{inputMode === 'omni_reference' ? FREEBEAT_VIDEO_MAX_IMAGES : 2} gambar.
+    </p>
+
+    <div className="freebeat-list">
+      {imageSlots.map((slot, index) => {
+        const slotLabel = inputMode === 'omni_reference'
+          ? `URL HTTPS gambar referensi #${index + 1}`
+          : (index === 0 ? 'URL HTTPS gambar #1 (First Frame)' : index === 1 ? 'URL HTTPS gambar #2 (Last Frame)' : `URL HTTPS gambar #${index + 1}`);
+        return (
+          <div key={index} className="freebeat-test-row">
+            <label className="freebeat-field">{slotLabel}
+              <input
+                type="url"
+                value={slot.url}
+                maxLength={2048}
+                disabled={busy || uploadBusy}
+                autoComplete="off"
+                placeholder="https://..."
+                aria-label={slotLabel}
+                onChange={(event) => updateImageSlotUrl(index, event.target.value)}
+              />
+            </label>
+            <div className="freebeat-actions">
+              <button type="button" className="is-secondary" disabled={!slot.url.trim() || busy || uploadBusy} onClick={() => copyUrl(slot.url.trim())}>
+                {imageSlots.length === 1 ? 'Salin URL gambar' : `Salin URL #${index + 1}`}
+              </button>
+              {(imageSlots.length > 1 || slot.url.trim() || slot.uploadedPath) && (
+                <button type="button" className="is-secondary" disabled={busy || uploadBusy} onClick={() => removeSlotOrImage(index, imageSlots.length > 1)}>
+                  {slot.uploadedPath ? `Hapus upload #${index + 1}` : imageSlots.length > 1 ? `Hapus slot #${index + 1}` : 'Kosongkan URL'}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {imageSlots.length < maxSlotsForMode && (
+        <div className="freebeat-actions">
+          <button type="button" className="is-secondary" disabled={busy || uploadBusy} onClick={addImageSlot}>
+            + Tambah gambar ({imageSlots.length}/{maxSlotsForMode})
+          </button>
+        </div>
+      )}
+    </div>
+
     <div className="freebeat-actions">
-      <button type="button" className="is-secondary" disabled={!imageUrl || busy || uploadBusy} onClick={copyUrl}>Salin URL gambar</button>
       <button type="button" className="is-secondary" disabled={loading || !connected || videoBusy || busy || uploadBusy || !selected} onClick={() => inspect('video-model-help')}>Periksa informasi model</button>
       <button type="button" className="is-secondary" aria-describedby="video-quote-help" disabled={blockers.length > 0} onClick={() => inspect('video-model-quote')}>Periksa quote</button>
     </div>
@@ -275,14 +584,17 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       {!imageAccess && <p>Hubungkan Freebeat dan setujui izin generasi terlebih dahulu di atas.</p>}
       {!selected && <p>Pilih model video di atas untuk menyiapkan quote persetujuan.</p>}
       <div className="freebeat-actions">
-        <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || videoBusy || busy || uploadBusy || !selected || !prompt.trim() || !imageUrl.trim()} onClick={prepare}>Siapkan quote untuk persetujuan video</button>
+        <button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || videoBusy || busy || uploadBusy || !selected || !prompt.trim() || durationInvalid || Boolean(imageModeBlocker)} onClick={prepare}>Siapkan quote untuk persetujuan video</button>
         <button type="button" className="is-secondary" disabled={loading || !connected || busy || uploadBusy} onClick={inspectTests}>Periksa catatan uji video</button>
       </div>
       {approval && <div className="freebeat-result">
         <h3>Periksa dan setujui satu video</h3>
-        <p>Model {modelOptions.find((item) => item.id === approval.settings.model_id)?.name || 'video'} · ID {approval.settings.model_id} · {approval.settings.generation_type === 'image' ? 'gambar ke video' : 'teks ke video'} · {approval.settings.duration} detik · {approval.settings.resolution} · {approval.settings.aspect_ratio} · quote <strong>{approval.credits} kredit</strong> · batas maksimum <strong>{approval.max_credits ?? approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
+        <p>Model {modelOptions.find((item) => item.id === approval.settings.model_id)?.name || 'video'} · ID {approval.settings.model_id} · {generationTypeLabel(approval.settings.generation_type)} · {approval.settings.duration} detik · {approval.settings.resolution} · {approval.settings.aspect_ratio} · quote <strong>{approval.credits} kredit</strong> · batas maksimum <strong>{approval.max_credits ?? approval.credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}; jika quote berubah, pengiriman ditolak.</p>
         {Array.isArray(approval.adjusted) && approval.adjusted.length > 0 && <p className="freebeat-alert" role="status">Setting uji disesuaikan otomatis dengan kemampuan model menurut bantuan model: {approval.adjusted.join(', ')}.</p>}
-        <p>Prompt dan URL gambar yang akan dikirim:</p><pre>{approval.prompt}</pre><pre>{approval.image_url}</pre>
+        <p>Prompt dan {approvalImages.length} URL gambar yang akan dikirim:</p><pre>{approval.prompt}</pre>
+        {approvalImages.length > 0
+          ? approvalImages.map((url, idx) => <pre key={`${idx}:${url}`}>{url}</pre>)
+          : <p>Tanpa gambar (mode teks ke video).</p>}
         <label className="freebeat-confirm"><input type="checkbox" checked={confirmed} disabled={busy || !connected || !imageAccess} onChange={(event) => setConfirmed(event.target.checked)} /> Saya menyetujui satu kali generasi video ini dengan batas maksimum {approval.max_credits ?? approval.credits} kredit Freebeat. Biaya aktual dan refund belum dipastikan.</label>
         <label className="freebeat-confirm"><input type="checkbox" checked={initialConsent} disabled={busy || !connected || !imageAccess} onChange={(event) => setInitialConsent(event.target.checked)} /> Opsional: tampilkan pesan respons awal secara privat setelah pengiriman ini. Pesan mungkin mengandung data sensitif; penyamaran tidak dijamin lengkap. Jangan bagikan pesan mentah, URL atau kredensial.</label>
         <div className="freebeat-actions"><button type="button" disabled={!confirmed || busy || uploadBusy || videoBusy || !connected || !imageAccess || !selected || approval.settings?.model_id !== Number(model)} onClick={submit}>Setujui dan kirim satu video</button></div>
@@ -323,10 +635,17 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       </div>)}</div>}
     </div>
     <details className="freebeat-upload"><summary>Periksa pengambilan gambar oleh Freebeat</summary>
-      <p>Pemeriksaan mengirim URL gambar di atas ke Freebeat untuk memeriksa skema dan quote, tanpa upload atau generasi. Gunakan hanya gambar yang boleh dibagikan; jangan gunakan URL bertanda tangan atau rahasia.</p>
+      <p>Pemeriksaan mengirim URL gambar terpilih ke Freebeat untuk memeriksa skema dan quote, tanpa upload atau generasi. Gunakan hanya gambar yang boleh dibagikan; jangan gunakan URL bertanda tangan atau rahasia.</p>
       <p>Upload berikutnya hanya tersedia jika Freebeat mengembalikan quote tepat 0 dan skema menyediakan batas kredit; server memeriksa ulang sebelum mengirim batas 0. Quote dan batas bukan jaminan biaya aktual. Jika biaya atau batas tidak tersedia, upload diblokir.</p>
+      {activeImages.length > 1 && (
+        <label className="freebeat-field">Pilih gambar untuk diperiksa
+          <select value={String(safeTargetIndex)} disabled={busy || uploadBusy} onChange={(event) => setUploadTargetIndex(Number(event.target.value))}>
+            {activeImages.map((url, idx) => <option key={`${idx}:${url}`} value={String(idx)}>Gambar #{idx + 1}: {url.slice(0, 64)}{url.length > 64 ? '…' : ''}</option>)}
+          </select>
+        </label>
+      )}
       <label className="freebeat-confirm"><input type="checkbox" checked={uploadCheckConsent} disabled={busy || uploadBusy || !connected} onChange={(event) => setUploadCheckConsent(event.target.checked)} /> Saya mengizinkan pengiriman URL ini ke Freebeat untuk pemeriksaan skema dan quote.</label>
-      <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || busy || uploadBusy || !imageUrl.trim() || !uploadCheckConsent} onClick={() => inspectFreebeatUpload(false)}>Periksa biaya dan batas upload Freebeat</button></div>
+      <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={loading || !connected || !imageAccess || busy || uploadBusy || !uploadDiagnosticUrl || !uploadCheckConsent} onClick={() => inspectFreebeatUpload(false)}>Periksa biaya dan batas upload Freebeat</button></div>
       {freebeatUploadCheck && (freebeatUploadCheck.eligible ? <>
         <p>Freebeat mengutip 0 kredit dan menyediakan parameter batas. Upload akan meminta batas 0; biaya aktual tidak dijamin. Gambar dapat disalin dan disimpan di Freebeat, dengan retensi dan akses yang diatur Freebeat. Ini tidak membuat video.</p>
         <label className="freebeat-confirm"><input type="checkbox" checked={freebeatUploadConsent} disabled={busy || !connected} onChange={(event) => setFreebeatUploadConsent(event.target.checked)} /> Saya menyetujui satu upload gambar ini ke Freebeat dengan batas 0 kredit.</label>
