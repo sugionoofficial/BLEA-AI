@@ -39,6 +39,12 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
   const updatedMs = Date.parse(row?.updated_at || row?.created_at || '') || createdMs;
   const ageMs = Math.max(0, nowMs - createdMs);
   const staleMs = Math.max(0, nowMs - updatedMs);
+  if (kind === 'metadata') {
+    if (staleMs > 3 * 60_000 && ageMs > 3 * 60_000) {
+      return 'Proses pembersihan metadata berhenti (>3 menit tanpa pembaruan). Admin dapat membatalkan & refund kredit.';
+    }
+    return null;
+  }
   if (kind === 'image') {
     if (row?.status === 'unknown') {
       return 'Status pengiriman tidak pasti (timeout/respons provider kosong). Admin dapat membatalkan & refund jika tidak selesai.';
@@ -75,6 +81,11 @@ export function computeLiveProgress(item, nowMs = Date.now()) {
   if (!item) return 0;
   if (item.status === 'completed') return 100;
   if (['cancelled', 'failed', 'expired'].includes(item.status)) return 0;
+  if (item.kind === 'metadata') {
+    const raw = Math.max(0, Math.min(99, Number(item.progress || 0)));
+    if (raw > 0) return raw;
+    return item.status === 'processing' ? 15 : 5;
+  }
   if (item.kind === 'video') {
     const raw = Math.max(0, Math.min(99, Number(item.progress || 0)));
     if (raw > 0) return raw;
@@ -203,24 +214,41 @@ export function formatLiveQueueItem(
   const isCompleted = row?.status === 'completed';
   const isOwn = Boolean(viewerId && row?.user_id === viewerId);
   const diagnostic = diagnosePendingGeneration(kind, row, nowMs);
-  const canPoll = !isCompleted && (kind === 'image'
-    ? Boolean(row?.external_job_id && ['queued', 'processing'].includes(row?.status))
-    : Boolean(
-        ['queued', 'in_progress'].includes(row?.status)
-        && (row?.external_job_id || row?.polling_url || (row?.provider === 'freebeat' && row?.metadata?.preparing_music_id)),
-      ));
+  const canPoll = !isCompleted && (kind === 'metadata'
+    ? false
+    : kind === 'image'
+      ? Boolean(row?.external_job_id && ['queued', 'processing'].includes(row?.status))
+      : Boolean(
+          ['queued', 'in_progress'].includes(row?.status)
+          && (row?.external_job_id || row?.polling_url || (row?.provider === 'freebeat' && row?.metadata?.preparing_music_id)),
+        ));
   const profile = profileMap?.get(row.user_id) || null;
   const rawEmail = profile?.email ?? emailMap?.get(row.user_id) ?? null;
   const ownerName = resolveOwnerName(profile, rawEmail, { isOwn, viewerName });
   const ownerEmailMasked = rawEmail ? maskEmailAfter4(rawEmail) : null;
 
+  const isMetadata = kind === 'metadata';
+  const metadataTools = isMetadata && Array.isArray(row?.detected_tools)
+    ? row.detected_tools.filter(Boolean).join(', ')
+    : '';
+  const metadataPrompt = isMetadata
+    ? [
+        row?.filename || 'File media',
+        metadataTools ? `AI: ${metadataTools}` : null,
+        Number(row?.removed_count || 0) > 0 ? `${row.removed_count} metadata dibersihkan` : null,
+      ].filter(Boolean).join(' · ')
+    : String(row.prompt || '');
+
   const item = {
     id: row.id,
     kind,
-    provider: row.provider,
-    model: row.model,
+    provider: isMetadata ? 'blea-metadata' : row.provider,
+    model: isMetadata
+      ? (row.media_kind === 'video' ? 'Bersihkan Metadata Video' : 'Bersihkan Metadata Gambar')
+      : row.model,
+    ...(isMetadata ? { media_kind: row.media_kind } : {}),
     status: row.status,
-    progress: isCompleted ? 100 : (kind === 'video' ? Number(row.progress || 0) : null),
+    progress: isCompleted ? 100 : (kind === 'video' || isMetadata ? Number(row.progress || 0) : null),
     credits_charged: Number(row.credits_charged || 0),
     created_at: row.created_at,
     updated_at: row.updated_at || row.created_at,
@@ -228,13 +256,13 @@ export function formatLiveQueueItem(
     is_own: isOwn,
     owner_name: ownerName,
     owner_email_masked: ownerEmailMasked,
-    has_external_job: Boolean(row?.external_job_id),
+    has_external_job: isMetadata ? true : Boolean(row?.external_job_id),
     can_poll: canPoll,
     stalled: Boolean(diagnostic),
     diagnostic,
   };
   if (isOwn || isAdmin) {
-    item.prompt = String(row.prompt || '').slice(0, 400);
+    item.prompt = String(metadataPrompt || '').slice(0, 400);
     item.aspect_ratio = row.aspect_ratio || null;
     item.resolution = row.resolution || null;
     item.duration = row.duration ?? null;

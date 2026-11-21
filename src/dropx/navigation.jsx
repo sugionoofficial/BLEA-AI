@@ -2,6 +2,7 @@ import {
   Activity,
   Clapperboard,
   Coins,
+  FileSearch2,
   LayoutDashboard,
   History,
   Mail,
@@ -35,6 +36,13 @@ export const navigation = [
         icon: Clapperboard,
         description: 'Generate gambar dan video AI',
         keywords: ['generate', 'gambar', 'image', 'video', 'animasi', 'klip', 'render', 'veo', 'sora'],
+      },
+      {
+        title: 'Cek Metadata',
+        href: '/metadata',
+        icon: FileSearch2,
+        description: 'Pindai & bersihkan metadata buatan AI dari gambar/video',
+        keywords: ['metadata', 'ai', 'exif', 'xmp', 'c2pa', 'clean', 'hapus', 'scan', 'gambar', 'video'],
       },
       {
         title: 'Proses Live',

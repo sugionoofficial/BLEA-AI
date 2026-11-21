@@ -9,6 +9,7 @@ const CANONICAL_PROVIDER_BADGES = {
   hailuo: 'Hailuo',
   pekpik: 'PEKPIK',
   cloudflare: 'Cloudflare',
+  'blea-metadata': 'Metadata Cleaner',
 };
 
 export function formatCredits(value) {
