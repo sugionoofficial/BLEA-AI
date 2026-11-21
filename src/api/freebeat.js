@@ -12,3 +12,32 @@ export async function freebeatRequest(action, method = 'GET', body) {
   if (!res.ok) throw new Error(payload.error || 'Freebeat tidak dapat dihubungi.');
   return payload;
 }
+
+export function startFreebeatOAuth({ email = '', label = '', accountId = '', returnTo = '' } = {}) {
+  const payload = {};
+  if (email && String(email).trim()) payload.email = String(email).trim();
+  if (label && String(label).trim()) payload.label = String(label).trim();
+  if (accountId && String(accountId).trim()) payload.accountId = String(accountId).trim();
+  if (returnTo && String(returnTo).trim()) payload.returnTo = String(returnTo).trim();
+  return freebeatRequest('start', 'POST', payload);
+}
+
+export function fetchFreebeatAccounts() {
+  return freebeatRequest('accounts', 'GET');
+}
+
+export function updateFreebeatAccount(payload) {
+  return freebeatRequest('accounts', 'PATCH', payload);
+}
+
+export function deleteFreebeatAccount(id) {
+  return freebeatRequest('accounts', 'DELETE', { id });
+}
+
+export function reorderFreebeatAccounts(orderedIds) {
+  return freebeatRequest('accounts/reorder', 'POST', { orderedIds });
+}
+
+export function checkFreebeatAccountsBalance(id = null) {
+  return freebeatRequest('accounts/balance', 'POST', id ? { id } : {});
+}

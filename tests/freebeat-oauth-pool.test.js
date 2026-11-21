@@ -1,0 +1,651 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { PGlite } from '@electric-sql/pglite';
+import { createServer } from 'vite';
+import worker from '../src/worker.js';
+
+const BASE = 'https://blea-ai.blea-ai.workers.dev';
+const UUID_1 = '11111111-1111-4111-8111-111111111111';
+const UUID_2 = '22222222-2222-4222-8222-222222222222';
+const ADMIN_UUID = '99999999-9999-4999-8999-999999999999';
+
+function createEnv(extra = {}) {
+  return {
+    SUPABASE_URL: 'https://supabase.example',
+    SUPABASE_ANON_KEY: 'anon-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-secret-for-tests',
+    PROVIDER_CREDENTIAL_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    FREEBEAT_RETRY_DELAY_MS: '0',
+    ASSETS: { fetch: async () => new Response('not found', { status: 404 }) },
+    ...extra,
+  };
+}
+
+function apiRequest(path, { method = 'POST', body, token = 'user-jwt', cookie } = {}) {
+  return new Request(`${BASE}${path}`, {
+    method,
+    headers: {
+      origin: BASE,
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(cookie ? { cookie } : {}),
+      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
+
+function createPoolHarness({
+  imagePrice = 15,
+  dancePrice = 3000,
+  spendOk = true,
+  onMcpCall,
+  onOAuthExchange,
+} = {}) {
+  const env = createEnv();
+  const realFetch = globalThis.fetch;
+  const poolRows = [];
+  const legacySessions = new Map();
+  const imageRows = [];
+  const videoRows = [];
+  const spends = [];
+  const refunds = [];
+  const mcpSequence = [];
+  let seqId = 1;
+
+  globalThis.fetch = async (input, init = {}) => {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    const url = new URL(urlStr);
+    const method = (init.method || 'GET').toUpperCase();
+    const jsonBody = () => { try { return JSON.parse(init.body || '{}'); } catch { return {}; } };
+
+    if (url.href === 'https://supabase.example/auth/v1/user') {
+      const bearer = (init.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+      return Response.json({
+        id: bearer === 'admin-jwt' ? ADMIN_UUID : 'user-1',
+        email: bearer === 'admin-jwt' ? 'admin@example.com' : 'creator@example.com',
+        app_metadata: { role: bearer === 'admin-jwt' ? 'admin' : 'user' },
+      });
+    }
+    if (url.pathname === '/rest/v1/profiles') {
+      return Response.json([{ id: 'user-1', status: 'active' }]);
+    }
+    if (url.pathname === '/rest/v1/provider_api_keys') {
+      return Response.json([]);
+    }
+    if (url.pathname === '/rest/v1/provider_models') {
+      return Response.json([]);
+    }
+    if (url.pathname === '/rest/v1/credit_model_prices') {
+      const prov = url.searchParams.get('provider')?.replace(/^eq\./, '');
+      const model = url.searchParams.get('model')?.replace(/^eq\./, '');
+      const modality = url.searchParams.get('modality')?.replace(/^eq\./, '');
+      const all = [
+        { provider: 'freebeat', model: '122', modality: 'image', credits: imagePrice, active: true },
+        { provider: 'freebeat', model: 'generate_dance_video', modality: 'video', credits: dancePrice, active: true },
+      ];
+      return Response.json(all.filter((p) => {
+        if (prov && p.provider !== prov) return false;
+        if (model && p.model !== model) return false;
+        if (modality && p.modality !== modality) return false;
+        return true;
+      }));
+    }
+
+    if (url.pathname === '/rest/v1/freebeat_oauth_accounts') {
+      if (method === 'GET') {
+        const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        const emailIlike = url.searchParams.get('account_email')?.replace(/^ilike\./, '');
+        const enabledEq = url.searchParams.get('enabled')?.replace(/^eq\./, '');
+        let rows = poolRows.slice();
+        if (idEq) rows = rows.filter((r) => r.id === idEq);
+        if (emailIlike) rows = rows.filter((r) => String(r.account_email || '').toLowerCase() === emailIlike.toLowerCase());
+        if (enabledEq === 'true') rows = rows.filter((r) => r.enabled !== false);
+        const order = url.searchParams.get('order') || '';
+        if (order.includes('priority.desc')) rows.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+        else rows.sort((a, b) => (a.priority || 0) - (b.priority || 0));
+        const limit = Number(url.searchParams.get('limit') || 50);
+        return Response.json(rows.slice(0, limit));
+      }
+      if (method === 'POST') {
+        const b = jsonBody();
+        const created = {
+          id: b.id || (seqId === 1 ? UUID_1 : seqId === 2 ? UUID_2 : `33333333-3333-4333-8333-${String(seqId).padStart(12, '0')}`),
+          account_email: b.account_email ?? '',
+          account_label: b.account_label ?? '',
+          connected_by: b.connected_by ?? ADMIN_UUID,
+          sealed_session: b.sealed_session,
+          image_access: b.image_access === true,
+          enabled: b.enabled !== false,
+          priority: b.priority ?? 10,
+          last_balance_credits: b.last_balance_credits ?? null,
+          last_balance: b.last_balance ?? null,
+          last_balance_checked_at: b.last_balance_checked_at ?? null,
+          consecutive_failures: b.consecutive_failures ?? 0,
+          last_error: b.last_error ?? null,
+          last_used_at: null,
+          last_success_at: null,
+          issued_at: b.issued_at || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        };
+        seqId += 1;
+        poolRows.push(created);
+        return Response.json([created]);
+      }
+      if (method === 'PATCH') {
+        const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        const b = jsonBody();
+        const updated = [];
+        for (const r of poolRows) {
+          if (idEq && r.id !== idEq) continue;
+          Object.assign(r, b);
+          updated.push(r);
+        }
+        return Response.json(updated);
+      }
+      if (method === 'DELETE') {
+        const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        const idx = poolRows.findIndex((r) => r.id === idEq);
+        if (idx >= 0) poolRows.splice(idx, 1);
+        return Response.json([]);
+      }
+    }
+
+    if (url.pathname === '/rest/v1/freebeat_provider_sessions') {
+      if (method === 'POST') {
+        const b = jsonBody();
+        legacySessions.set(b.user_id, b);
+        return Response.json([b]);
+      }
+      if (method === 'DELETE') {
+        const uid = url.searchParams.get('user_id')?.replace(/^eq\./, '');
+        if (uid) legacySessions.delete(uid);
+        return Response.json([]);
+      }
+      return Response.json([...legacySessions.values()]);
+    }
+
+    if (url.pathname === '/rest/v1/rpc/spend_credits') {
+      spends.push(jsonBody());
+      return Response.json(spendOk);
+    }
+    if (url.pathname === '/rest/v1/rpc/refund_credits') {
+      refunds.push(jsonBody());
+      return Response.json(true);
+    }
+    if (url.pathname === '/rest/v1/image_generations') {
+      if (method === 'POST') {
+        const b = { created_at: new Date().toISOString(), ...jsonBody() };
+        imageRows.push(b);
+        return Response.json([b]);
+      }
+      if (method === 'PATCH') {
+        const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        const b = jsonBody();
+        const row = imageRows.find((r) => r.id === idEq);
+        if (row) Object.assign(row, b);
+        return Response.json(row ? [row] : []);
+      }
+    }
+    if (url.pathname === '/rest/v1/video_generations') {
+      if (method === 'POST') {
+        const b = { created_at: new Date().toISOString(), ...jsonBody() };
+        videoRows.push(b);
+        return Response.json([b]);
+      }
+      if (method === 'PATCH') {
+        const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        const b = jsonBody();
+        const row = videoRows.find((r) => r.id === idEq);
+        if (row) Object.assign(row, b);
+        return Response.json(row ? [row] : []);
+      }
+    }
+
+    if (url.href === 'https://freebeat.ai/oauth/register') {
+      return Response.json({ client_id: `client-${seqId}` });
+    }
+    if (url.href === 'https://freebeat.ai/oauth/token') {
+      const form = new URLSearchParams(init.body || '');
+      const custom = onOAuthExchange ? onOAuthExchange(form) : null;
+      if (custom) return custom;
+      return Response.json({
+        access_token: `tok-${seqId}`,
+        refresh_token: `ref-${seqId}`,
+        token_type: 'Bearer',
+        expires_in: 3600,
+        scope: 'freebeat:read freebeat:generate',
+      });
+    }
+    if (url.href === 'https://freebeat.ai/oauth/revoke') {
+      return Response.json({ ok: true });
+    }
+
+    if (url.href === 'https://freebeat.ai/api/mcp') {
+      const token = (init.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+      const rpc = jsonBody();
+      if (rpc.method === 'initialize') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'mcp-session-id': `sess-${token}` },
+        });
+      }
+      if (rpc.method === 'notifications/initialized') {
+        return new Response('', { status: 202 });
+      }
+      const tool = rpc.params?.name;
+      mcpSequence.push({ token, tool, args: rpc.params?.arguments });
+      if (onMcpCall) {
+        return onMcpCall({ token, tool, args: rpc.params?.arguments || {}, id: rpc.id });
+      }
+      return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { structuredContent: {} } });
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${url.href}`);
+  };
+
+  return {
+    env,
+    poolRows,
+    legacySessions,
+    imageRows,
+    videoRows,
+    spends,
+    refunds,
+    mcpSequence,
+    cleanup() { globalThis.fetch = realFetch; },
+  };
+}
+
+function mcpSuccess(id, structuredContent) {
+  return Response.json({ jsonrpc: '2.0', id, result: { structuredContent } });
+}
+
+function mcpBalanceExhausted(id, message = 'Insufficient credits on Freebeat account') {
+  return Response.json({
+    jsonrpc: '2.0',
+    id,
+    result: { isError: true, structuredContent: { error: 'insufficient_credits', message } },
+  });
+}
+
+async function connectAccountViaOAuth(h, { email, label, returnTo = '/admin?tab=freebeat-oauth' }) {
+  const startRes = await worker.fetch(apiRequest('/api/freebeat/start', {
+    token: 'admin-jwt',
+    body: { email, label, returnTo },
+  }), h.env);
+  assert.equal(startRes.status, 200);
+  const startData = await startRes.json();
+  const authUrl = new URL(startData.url);
+  const state = authUrl.searchParams.get('state');
+  const setCookie = startRes.headers.get('set-cookie') || '';
+  const pendingCookie = setCookie.split(';')[0];
+
+  const cbRes = await worker.fetch(new Request(`${BASE}/api/freebeat/callback?code=code-for-${encodeURIComponent(email)}&state=${encodeURIComponent(state)}`, {
+    headers: { cookie: pendingCookie },
+  }), h.env);
+  assert.equal(cbRes.status, 303);
+  return { cbRes, location: cbRes.headers.get('location') };
+}
+
+test('migration 20261129000000_freebeat_oauth_accounts creates server-only table and backfills active provider session', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon; END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated; END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role; END IF;
+      END $$;
+      CREATE SCHEMA IF NOT EXISTS auth;
+      CREATE TABLE auth.users (id uuid PRIMARY KEY);
+      CREATE FUNCTION public.set_projects_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+      CREATE TABLE public.profiles (id uuid PRIMARY KEY, email text, full_name text);
+      CREATE TABLE public.freebeat_provider_sessions (
+        user_id uuid PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+        sealed_session text NOT NULL,
+        image_access boolean NOT NULL DEFAULT false,
+        issued_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      INSERT INTO auth.users (id) VALUES ('${ADMIN_UUID}');
+      INSERT INTO public.profiles (id, email, full_name) VALUES ('${ADMIN_UUID}', 'utama@gmail.com', 'Admin BLEA');
+      INSERT INTO public.freebeat_provider_sessions (user_id, sealed_session, image_access) VALUES ('${ADMIN_UUID}', 'sealed-blob-1', true);
+    `);
+
+    const sql = await fs.readFile(new URL('../supabase/migrations/20261129000000_freebeat_oauth_accounts.sql', import.meta.url), 'utf8');
+    await db.exec(sql);
+
+    const rows = (await db.query('SELECT * FROM public.freebeat_oauth_accounts')).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].account_email, 'utama@gmail.com');
+    assert.equal(rows[0].account_label, 'Admin BLEA');
+    assert.equal(rows[0].image_access, true);
+    assert.equal(rows[0].enabled, true);
+    assert.equal(rows[0].priority, 10);
+
+    const privCheck = await db.query(`
+      SELECT has_table_privilege('anon', 'public.freebeat_oauth_accounts', 'SELECT') AS anon_sel,
+             has_table_privilege('authenticated', 'public.freebeat_oauth_accounts', 'SELECT') AS auth_sel
+    `);
+    assert.equal(privCheck.rows[0].anon_sel, false);
+    assert.equal(privCheck.rows[0].auth_sel, false);
+  } finally {
+    await db.close();
+  }
+});
+
+test('multi-account Freebeat OAuth flow, CRUD, email labeling, priority reorder, balance check, and admin gating', async () => {
+  const h = createPoolHarness({
+    onMcpCall: ({ token, tool, id }) => {
+      if (tool === 'get_credit_balance') {
+        const credits = token === 'tok-1' ? 0 : 180;
+        return mcpSuccess(id, { available_credits: credits, email: token === 'tok-1' ? 'akun1@gmail.com' : 'akun2@gmail.com' });
+      }
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    // Non-admin ditolak
+    const nonAdmin = await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'user-jwt' }), h.env);
+    assert.equal(nonAdmin.status, 403);
+
+    // Hubungkan 2 akun berbeda dengan email & label masing-masing
+    const conn1 = await connectAccountViaOAuth(h, { email: 'akun1@gmail.com', label: 'Akun Satu', returnTo: '/admin?tab=freebeat-oauth' });
+    assert.equal(conn1.location, `${BASE}/admin?tab=freebeat-oauth&freebeat=connected`);
+    const conn2 = await connectAccountViaOAuth(h, { email: 'akun2@gmail.com', label: 'Akun Dua', returnTo: '/admin?tab=freebeat-oauth' });
+    assert.equal(conn2.location, `${BASE}/admin?tab=freebeat-oauth&freebeat=connected`);
+
+    const listRes = await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'admin-jwt' }), h.env);
+    assert.equal(listRes.status, 200);
+    const listData = await listRes.json();
+    assert.equal(listData.maxCycles, 3);
+    assert.equal(listData.accounts.length, 2);
+    assert.equal(listData.accounts[0].account_email, 'akun1@gmail.com');
+    assert.equal(listData.accounts[1].account_email, 'akun2@gmail.com');
+    // Pastikan rahasia token tidak pernah bocor ke client admin
+    const serialized = JSON.stringify(listData);
+    assert.equal(serialized.includes('sealed_session'), false);
+    assert.equal(serialized.includes('tok-1'), false);
+    assert.equal(serialized.includes('ref-1'), false);
+
+    // Cek semua saldo
+    const balRes = await worker.fetch(apiRequest('/api/freebeat/accounts/balance', { method: 'POST', token: 'admin-jwt', body: {} }), h.env);
+    assert.equal(balRes.status, 200);
+    const balData = await balRes.json();
+    assert.equal(balData.accounts[0].last_balance_credits, 0);
+    assert.equal(balData.accounts[0].last_error, 'Saldo Freebeat habis (0 kredit)');
+    assert.equal(balData.accounts[1].last_balance_credits, 180);
+
+    // Reorder membalik urutan prioritas (Akun Dua naik ke #1)
+    const reorderRes = await worker.fetch(apiRequest('/api/freebeat/accounts/reorder', {
+      method: 'POST',
+      token: 'admin-jwt',
+      body: { orderedIds: [listData.accounts[1].id, listData.accounts[0].id] },
+    }), h.env);
+    assert.equal(reorderRes.status, 200);
+    const reordered = await reorderRes.json();
+    assert.equal(reordered.accounts[0].account_email, 'akun2@gmail.com');
+    assert.equal(reordered.accounts[1].account_email, 'akun1@gmail.com');
+
+    // Update email & toggle nonaktif
+    const patchRes = await worker.fetch(apiRequest('/api/freebeat/accounts', {
+      method: 'PATCH',
+      token: 'admin-jwt',
+      body: { id: listData.accounts[0].id, account_email: 'akun1-baru@gmail.com', enabled: false },
+    }), h.env);
+    assert.equal(patchRes.status, 200);
+    const patched = await patchRes.json();
+    assert.equal(patched.account.account_email, 'akun1-baru@gmail.com');
+    assert.equal(patched.account.enabled, false);
+
+    // Validasi tolak email invalid
+    const badPatch = await worker.fetch(apiRequest('/api/freebeat/accounts', {
+      method: 'PATCH',
+      token: 'admin-jwt',
+      body: { id: listData.accounts[0].id, account_email: 'bukan-email' },
+    }), h.env);
+    assert.equal(badPatch.status, 400);
+
+    // Delete akun
+    const delRes = await worker.fetch(apiRequest('/api/freebeat/accounts', {
+      method: 'DELETE',
+      token: 'admin-jwt',
+      body: { id: listData.accounts[0].id },
+    }), h.env);
+    assert.equal(delRes.status, 200);
+    const afterDel = await worker.fetch(apiRequest('/api/freebeat/accounts', { method: 'GET', token: 'admin-jwt' }), h.env);
+    assert.equal((await afterDel.json()).accounts.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('image generation rotates from exhausted Account #1 to Account #2 cleanly with single BLEA credit spend', async () => {
+  let h;
+  h = createPoolHarness({
+    onMcpCall: ({ token, tool, id }) => {
+      if (tool === 'list_models') return mcpSuccess(id, { models: [{ model_id: 122, name: 'Nano Banana 2 Lite', available: true, member_only: false }] });
+      if (tool === 'quote_generation') {
+        if (token === 'tok-1') return mcpBalanceExhausted(id);
+        return mcpSuccess(id, { status: 'quoted', credits: 10 });
+      }
+      if (tool === 'generate_image') return mcpSuccess(id, { batch_id: 'img-batch-2' });
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'akun1@gmail.com', label: 'Akun #1' });
+    await connectAccountViaOAuth(h, { email: 'akun2@gmail.com', label: 'Akun #2' });
+
+    const res = await worker.fetch(apiRequest('/api/image/generate', {
+      token: 'user-jwt',
+      body: { provider: 'freebeat', model: '122', prompt: 'Matahari terbit di Jakarta' },
+    }), h.env);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.status, 'submitted');
+    assert.equal(h.spends.length, 1);
+    assert.equal(h.refunds.length, 0);
+    assert.equal(h.imageRows[0].metadata.freebeat_account_email, 'akun2@gmail.com');
+    assert.equal(h.poolRows[0].consecutive_failures, 1);
+    assert.equal(h.poolRows[1].consecutive_failures, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('image generation retries up to 3 full round-robin cycles before succeeding or returning 503 SALDO GATEWAY HABIS with refund', async () => {
+  // Skenario A: Sukses pada putaran ke-2 di akun ke-2 (#1 -> #2 -> #1 -> #2 sukses)
+  let h = createPoolHarness({
+    onMcpCall: ({ token, tool, id }) => {
+      if (tool === 'list_models') return mcpSuccess(id, { models: [{ model_id: 122, name: 'Nano Banana 2 Lite', available: true, member_only: false }] });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'quoted', credits: 10 });
+      if (tool === 'generate_image') {
+        const genCalls = h.mcpSequence.filter((c) => c.tool === 'generate_image').length;
+        if (genCalls < 4) return mcpBalanceExhausted(id);
+        return mcpSuccess(id, { batch_id: 'img-cycle-2-ok' });
+      }
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'akun1@gmail.com', label: 'Akun #1' });
+    await connectAccountViaOAuth(h, { email: 'akun2@gmail.com', label: 'Akun #2' });
+
+    const okRes = await worker.fetch(apiRequest('/api/image/generate', {
+      token: 'user-jwt',
+      body: { provider: 'freebeat', model: '122', prompt: 'Kucing cyberpunk' },
+    }), h.env);
+    assert.equal(okRes.status, 200);
+    assert.deepEqual(h.mcpSequence.filter((c) => c.tool === 'generate_image').map((c) => c.token), ['tok-1', 'tok-2', 'tok-1', 'tok-2']);
+    assert.equal(h.spends.length, 1);
+    assert.equal(h.refunds.length, 0);
+  } finally {
+    h.cleanup();
+  }
+
+  // Skenario B: Semua akun kehabisan saldo selama 3 putaran penuh -> HTTP 503 + refund otomatis
+  h = createPoolHarness({
+    onMcpCall: ({ tool, id }) => {
+      if (tool === 'list_models') return mcpSuccess(id, { models: [{ model_id: 122, name: 'Nano Banana 2 Lite', available: true, member_only: false }] });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'quoted', credits: 10 });
+      if (tool === 'generate_image') return mcpBalanceExhausted(id);
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'akun1@gmail.com', label: 'Akun #1' });
+    await connectAccountViaOAuth(h, { email: 'akun2@gmail.com', label: 'Akun #2' });
+
+    const failRes = await worker.fetch(apiRequest('/api/image/generate', {
+      token: 'user-jwt',
+      body: { provider: 'freebeat', model: '122', prompt: 'Pemandangan gunung' },
+    }), h.env);
+    assert.equal(failRes.status, 503);
+    const errBody = await failRes.json();
+    assert.equal(errBody.error, 'SALDO GATEWAY HABIS, SILAHKAN HUBUNGI ADMIN.');
+    assert.equal(errBody.code, 'gateway_balance_exhausted');
+    // Tepat 3 putaran penuh: #1 -> #2 -> #1 -> #2 -> #1 -> #2
+    assert.deepEqual(
+      h.mcpSequence.filter((c) => c.tool === 'generate_image').map((c) => c.token),
+      ['tok-1', 'tok-2', 'tok-1', 'tok-2', 'tok-1', 'tok-2'],
+    );
+    assert.equal(h.spends.length, 1);
+    assert.equal(h.refunds.length, 1);
+    assert.equal(h.imageRows[0].status, 'failed');
+    assert.equal(h.imageRows[0].credits_refunded, 15);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('dance video generation rotates across accounts with per-account upload_audio and refunds with 503 after 3 full exhausted cycles', async () => {
+  let h = createPoolHarness({
+    onMcpCall: ({ token, tool, id }) => {
+      if (tool === 'upload_audio') return mcpSuccess(id, { music_id: `music-${token}`, audio_info: { duration: 15, title: 'Beat' } });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'unknown' });
+      if (tool === 'generate_dance_video') {
+        if (token === 'tok-1') return mcpBalanceExhausted(id);
+        return mcpSuccess(id, { task_id: 'dance-task-acc2', session_url: 'https://freebeat.ai/session/2' });
+      }
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'akun1@gmail.com', label: 'Dance #1' });
+    await connectAccountViaOAuth(h, { email: 'akun2@gmail.com', label: 'Dance #2' });
+
+    const okRes = await worker.fetch(apiRequest('/api/video/generate', {
+      token: 'user-jwt',
+      body: {
+        provider: 'freebeat',
+        model: 'generate_dance_video',
+        audio_url: 'https://cdn.example/beat.mp3',
+        prompt: 'Energic stage dance',
+        aspect_ratio: '9:16',
+      },
+    }), h.env);
+    assert.equal(okRes.status, 200);
+    const okData = await okRes.json();
+    assert.equal(okData.generation.external_job_id, 'dance-task-acc2');
+    assert.equal(okData.generation.metadata.music_id, 'music-tok-2');
+    assert.equal(h.spends.length, 1);
+    assert.equal(h.refunds.length, 0);
+  } finally {
+    h.cleanup();
+  }
+
+  // 3-cycle exhaustion on dance video -> HTTP 503 SALDO GATEWAY HABIS + refund
+  h = createPoolHarness({
+    onMcpCall: ({ token, tool, id }) => {
+      if (tool === 'upload_audio') return mcpSuccess(id, { music_id: `music-${token}`, audio_info: { duration: 15 } });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'unknown' });
+      if (tool === 'generate_dance_video') return mcpBalanceExhausted(id);
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'akun1@gmail.com', label: 'Dance #1' });
+    await connectAccountViaOAuth(h, { email: 'akun2@gmail.com', label: 'Dance #2' });
+
+    const failRes = await worker.fetch(apiRequest('/api/video/generate', {
+      token: 'user-jwt',
+      body: {
+        provider: 'freebeat',
+        model: 'generate_dance_video',
+        audio_url: 'https://cdn.example/beat.mp3',
+        aspect_ratio: '9:16',
+      },
+    }), h.env);
+    assert.equal(failRes.status, 503);
+    const errData = await failRes.json();
+    assert.equal(errData.error, 'SALDO GATEWAY HABIS, SILAHKAN HUBUNGI ADMIN.');
+    assert.equal(errData.code, 'gateway_balance_exhausted');
+    assert.deepEqual(
+      h.mcpSequence.filter((c) => c.tool === 'generate_dance_video').map((c) => c.token),
+      ['tok-1', 'tok-2', 'tok-1', 'tok-2', 'tok-1', 'tok-2'],
+    );
+    assert.equal(h.spends.length, 1);
+    assert.equal(h.refunds.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FreebeatOAuthPanel renders pool add form, failover policy, AdminPage nav group, and /admin/freebeat-oauth route', async () => {
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    logLevel: 'silent',
+    resolve: {
+      alias: [
+        {
+          find: /^react-router-dom$/,
+          replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname,
+        },
+      ],
+    },
+  });
+  try {
+    const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+    const { FreebeatOAuthPanel } = await vite.ssrLoadModule('/src/auth/FreebeatOAuthPanel.jsx');
+    const adminSource = await fs.readFile(new URL('../src/auth/AdminPage.jsx', import.meta.url), 'utf8');
+    const mainSource = await fs.readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+    const freebeatApiSource = await fs.readFile(new URL('../src/api/freebeat.js', import.meta.url), 'utf8');
+    const freebeatPageSource = await fs.readFile(new URL('../src/auth/FreebeatPage.jsx', import.meta.url), 'utf8');
+
+    assert.equal(adminSource.includes("id: 'freebeat-oauth'"), true);
+    assert.equal(adminSource.includes('<FreebeatOAuthPanel'), true);
+    assert.equal(mainSource.includes('/admin/freebeat-oauth'), true);
+    assert.equal(freebeatApiSource.includes('accounts/reorder'), true);
+    assert.equal(freebeatApiSource.includes('accounts/balance'), true);
+    assert.equal(freebeatPageSource.includes('/admin?tab=freebeat-oauth'), true);
+
+    const accountsHtml = renderToStaticMarkup(
+      React.createElement(MemoryRouter, null, React.createElement(FreebeatOAuthPanel, { subTab: 'accounts' })),
+    );
+    assert.equal(accountsHtml.includes('Pool Akun Freebeat OAuth'), true);
+    assert.equal(accountsHtml.includes('Hubungkan Akun Freebeat (OAuth)'), true);
+    assert.equal(accountsHtml.includes('3x Putaran'), true);
+    assert.equal(accountsHtml.includes('Email akun Freebeat'), true);
+
+    const failoverHtml = renderToStaticMarkup(
+      React.createElement(MemoryRouter, null, React.createElement(FreebeatOAuthPanel, { subTab: 'failover' })),
+    );
+    assert.equal(failoverHtml.includes('SALDO GATEWAY HABIS, SILAHKAN HUBUNGI ADMIN.'), true);
+    assert.equal(failoverHtml.includes('Round-Robin 3x Putaran'), true);
+  } finally {
+    await vite.close();
+  }
+});

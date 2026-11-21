@@ -10,7 +10,98 @@ const TOKEN = 'https://freebeat.ai/oauth/token';
 const REVOKE = 'https://freebeat.ai/oauth/revoke';
 const PENDING = '__Host-blea_freebeat_pending';
 const SESSION = '__Host-blea_freebeat_session';
+export const FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE = 'SALDO GATEWAY HABIS, SILAHKAN HUBUNGI ADMIN.';
+export const FREEBEAT_POOL_MAX_CYCLES = 3;
+const FREEBEAT_ALLOWED_RETURNS = new Set(['/admin/freebeat', '/admin?tab=freebeat-oauth', '/admin/freebeat-oauth']);
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const encoder = new TextEncoder();
+
+function extractEmailFromJwt(token) {
+  try {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 3 || !parts[1]) return '';
+    const json = new TextDecoder().decode(unb64(parts[1]));
+    const claims = JSON.parse(json);
+    return extractEmailFromObject(claims);
+  } catch { return ''; }
+}
+function extractEmailFromObject(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  for (const cand of [obj.email, obj.user_email, obj.account_email, obj.user?.email, obj.account?.email, obj.data?.email]) {
+    if (typeof cand === 'string') {
+      const clean = cand.trim().slice(0, 320);
+      if (EMAIL_PATTERN.test(clean)) return clean;
+    }
+  }
+  return '';
+}
+function extractNumericBalance(payload, depth = 0) {
+  if (depth > 3 || payload === null || payload === undefined) return null;
+  if (typeof payload === 'number' && Number.isFinite(payload)) return payload;
+  if (Array.isArray(payload)) {
+    for (const item of payload.slice(0, 10)) {
+      if (item?.type === 'text' && typeof item.text === 'string') {
+        try {
+          const parsed = JSON.parse(item.text);
+          const n = extractNumericBalance(parsed, depth + 1);
+          if (n !== null) return n;
+        } catch { /* ignore */ }
+      }
+      const n = extractNumericBalance(item, depth + 1);
+      if (n !== null) return n;
+    }
+    return null;
+  }
+  if (typeof payload !== 'object') return null;
+  for (const key of ['available_credits', 'remaining_credits', 'credits', 'credit_balance', 'balance', 'total_credits']) {
+    const raw = payload[key];
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return raw;
+    if (typeof raw === 'string' && /^\d+(?:\.\d+)?$/.test(raw.trim())) return Number(raw.trim());
+  }
+  for (const nestedKey of ['structuredContent', 'content', 'data', 'account', 'balance']) {
+    if (payload[nestedKey] && typeof payload[nestedKey] === 'object') {
+      const n = extractNumericBalance(payload[nestedKey], depth + 1);
+      if (n !== null) return n;
+    }
+  }
+  return null;
+}
+const BALANCE_EXHAUSTED_REGEX = /insufficient[_\s-]?credit|not[\s_-]?enough[\s_-]?credit|no[\s_-]?credits?[\s_-]?(?:left|remaining|available)?|out[\s_-]?of[\s_-]?credits?|credit[s]?[\s_-]*(?:exhausted|depleted|empty|habis|kurang)|balance[\s_-]*(?:is\s*)?(?:0|zero|empty|insufficient|too\s*low)|quota[\s_-]*(?:exceeded|exhausted)|saldo[\s_-]*(?:habis|kosong|kurang|tidak\s*cukup)|please\s*(?:top\s*up|recharge|purchase\s*credits)/i;
+export function isFreebeatBalanceExhausted(payload) {
+  if (!payload) return false;
+  if (typeof payload === 'string') return BALANCE_EXHAUSTED_REGEX.test(payload);
+  if (typeof payload !== 'object') return false;
+  if (payload.balanceExhausted === true || payload.httpStatus === 402) return true;
+  if (String(payload.status || '').trim().toLowerCase() === 'insufficient_credits') return true;
+  const check = (value, depth = 0) => {
+    if (depth > 4 || value === null || value === undefined) return false;
+    if (typeof value === 'string') return BALANCE_EXHAUSTED_REGEX.test(value);
+    if (Array.isArray(value)) return value.slice(0, 15).some((item) => check(item, depth + 1));
+    if (typeof value === 'object') {
+      for (const k of ['reason', 'error_code', 'code', 'error_message', 'message', 'status_message', 'status', 'text', 'error', 'failure', 'content', 'structuredContent', 'details']) {
+        if (k in value && check(value[k], depth + 1)) return true;
+      }
+    }
+    return false;
+  };
+  return check(payload);
+}
+function isAccountFailoverError(err) {
+  if (!err) return false;
+  if (err.balanceExhausted === true || err.httpStatus === 402) return true;
+  if (err.httpStatus === 401 || err.httpStatus === 403 || err.status === 401) return true;
+  if (err.freebeatKind === 'http' && err.status === 401) return true;
+  return isFreebeatBalanceExhausted(err);
+}
+function normalizeStartOptions(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const email = typeof raw.email === 'string' ? raw.email.trim().slice(0, 320) : '';
+  const label = typeof raw.label === 'string' ? raw.label.trim().slice(0, 100) : '';
+  const accountId = typeof raw.accountId === 'string' && TEST_ID.test(raw.accountId.trim()) ? raw.accountId.trim() : null;
+  const rawReturn = typeof raw.returnTo === 'string' ? raw.returnTo.trim() : '';
+  const returnTo = FREEBEAT_ALLOWED_RETURNS.has(rawReturn) ? rawReturn : '/admin/freebeat';
+  return { email, label, accountId, returnTo };
+}
 
 function b64(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function unb64(value) { const s = value.replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(s + '='.repeat((4 - s.length % 4) % 4)), (c) => c.charCodeAt(0)); }
@@ -116,9 +207,10 @@ async function jsonFetch(url, options, stage) {
   return data;
 }
 
-export async function startFreebeat(env, userId) {
+export async function startFreebeat(env, userId, options = {}) {
   await key(env);
   const redirect = redirectUri(env);
+  const opts = normalizeStartOptions(options);
   const requestedScope = `${READ_SCOPE} ${IMAGE_SCOPE}`;
   // Freebeat accepted this combination in a live registration test. Requesting
   // the refresh grant does not mean we retain or use any returned refresh token.
@@ -126,7 +218,19 @@ export async function startFreebeat(env, userId) {
   if (typeof registration.client_id !== 'string' || !registration.client_id || registration.client_id.length > 500) throw fail('Registrasi klien Freebeat tidak mengembalikan client ID yang valid.');
   const state = random(), verifier = random();
   const challenge = b64(await crypto.subtle.digest('SHA-256', encoder.encode(verifier)));
-  const sealed = await seal({ uid: userId, clientId: registration.client_id, state, verifier, redirect, requestedScope, created: Date.now() }, env, 'pending');
+  const sealed = await seal({
+    uid: userId,
+    clientId: registration.client_id,
+    state,
+    verifier,
+    redirect,
+    requestedScope,
+    ...(opts.email ? { accountEmail: opts.email } : {}),
+    ...(opts.label ? { accountLabel: opts.label } : {}),
+    ...(opts.accountId ? { accountId: opts.accountId } : {}),
+    ...(opts.returnTo ? { returnTo: opts.returnTo } : {}),
+    created: Date.now(),
+  }, env, 'pending');
   if (sealed.length > 3800) throw fail('Data sesi Freebeat terlalu besar.', 503);
   const auth = new URL(AUTH);
   for (const [name, value] of Object.entries({ response_type: 'code', client_id: registration.client_id, redirect_uri: redirect, state, code_challenge: challenge, code_challenge_method: 'S256', scope: requestedScope, resource: ENDPOINT })) auth.searchParams.set(name, value);
@@ -135,14 +239,22 @@ export async function startFreebeat(env, userId) {
 
 export async function freebeatCallback(request, env) {
   const url = new URL(request.url);
-  let destination;
-  try { destination = new URL('/admin/freebeat', redirectUri(env)).toString(); }
+  let baseRedirect;
+  try { baseRedirect = redirectUri(env); }
   catch { return response({ error: 'Konfigurasi callback Freebeat tidak valid.' }, 503); }
   const headers = new Headers({ 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'set-cookie': cookie(PENDING, '', 0) });
-  const finish = (result) => { headers.set('location', `${destination}?freebeat=${result}`); return new Response(null, { status: 303, headers }); };
+  const buildDest = (result, returnPath = '/admin/freebeat') => {
+    const safePath = FREEBEAT_ALLOWED_RETURNS.has(returnPath) ? returnPath : '/admin/freebeat';
+    const dest = new URL(safePath, baseRedirect);
+    dest.searchParams.set('freebeat', result);
+    return dest.toString();
+  };
+  let callbackReturnTo = '/admin/freebeat';
+  const finish = (result) => { headers.set('location', buildDest(result, callbackReturnTo)); return new Response(null, { status: 303, headers }); };
   try {
     const pending = await unseal(cookieValue(request, PENDING), env, 'pending');
-    if (!pending || !pending.uid || !pending.verifier || !pending.clientId || pending.redirect !== redirectUri(env) || !Number.isFinite(pending.created) || Date.now() - pending.created > 600000 || pending.created > Date.now() + 30000 || !url.searchParams.get('state') || url.searchParams.get('state') !== pending.state) return finish('invalid');
+    if (pending?.returnTo && FREEBEAT_ALLOWED_RETURNS.has(pending.returnTo)) callbackReturnTo = pending.returnTo;
+    if (!pending || !pending.uid || !pending.verifier || !pending.clientId || pending.redirect !== baseRedirect || !Number.isFinite(pending.created) || Date.now() - pending.created > 600000 || pending.created > Date.now() + 30000 || !url.searchParams.get('state') || url.searchParams.get('state') !== pending.state) return finish('invalid');
     const requestedScope = pending.requestedScope || READ_SCOPE; // Pending sessions created before this change were read-only.
     if (![READ_SCOPE, `${READ_SCOPE} ${IMAGE_SCOPE}`].includes(requestedScope)) return finish('invalid');
     if (url.searchParams.get('error')) return finish('denied');
@@ -159,12 +271,35 @@ export async function freebeatCallback(request, env) {
     const imageAccess = requestedScope.includes(IMAGE_SCOPE) && granted.has(IMAGE_SCOPE);
     const lifetime = Math.min(86400, Number(tokens.expires_in) || 300);
     if (lifetime < 1) return finish('failed');
-    const encrypted = await seal({ uid: pending.uid, sid: crypto.randomUUID(), accessToken: tokens.access_token, refreshToken: typeof tokens.refresh_token === 'string' && tokens.refresh_token ? tokens.refresh_token : null, clientId: pending.clientId, imageAccess, issuedAt: Date.now(), expiresAt: Date.now() + lifetime * 1000 }, env, 'session');
+    const now = Date.now();
+    const discoveredEmail = String(pending.accountEmail || extractEmailFromJwt(tokens.access_token) || '').trim().slice(0, 320);
+    const targetAccountId = typeof pending.accountId === 'string' && TEST_ID.test(pending.accountId) ? pending.accountId : null;
+    const encrypted = await seal({
+      ...(targetAccountId ? { accountId: targetAccountId } : {}),
+      ...(discoveredEmail ? { accountEmail: discoveredEmail } : {}),
+      uid: pending.uid,
+      sid: crypto.randomUUID(),
+      accessToken: tokens.access_token,
+      refreshToken: typeof tokens.refresh_token === 'string' && tokens.refresh_token ? tokens.refresh_token : null,
+      clientId: pending.clientId,
+      imageAccess,
+      issuedAt: now,
+      expiresAt: now + lifetime * 1000,
+    }, env, 'session');
     if (encrypted.length > 3800) return finish('failed');
     headers.append('set-cookie', cookie(SESSION, encrypted, SESSION_COOKIE_AGE));
     // Salinan sisi server agar generate gambar konsumen dapat memakai provider
     // ini tanpa bergantung pada cookie browser admin.
     await persistProviderSession(env, pending.uid, encrypted, imageAccess);
+    await upsertPoolOAuthAccount(env, {
+      id: targetAccountId,
+      accountEmail: discoveredEmail,
+      accountLabel: pending.accountLabel || '',
+      connectedBy: pending.uid,
+      sealedSession: encrypted,
+      imageAccess,
+      issuedAt: new Date(now).toISOString(),
+    });
     return finish(requestedScope.includes(IMAGE_SCOPE) && !imageAccess ? 'connected-limited' : 'connected');
   } catch (error) {
     const kind = error?.freebeatKind;
@@ -196,10 +331,12 @@ const refreshFlights = new Map();
 // Freebeat merotasi refresh token. Bila dua request me-refresh dengan refresh
 // token yang sama (cookie admin dan jalur konsumen, atau dua poll paralel),
 // provider mencabut seluruh grant dan SEMUA panggilan berikutnya ditolak
-// [FB-MCP-INIT-HTTP]. Karena itu refresh dikunci per user, selalu memeriksa
-// salinan database lebih dulu, dan hanya menulis bila hasilnya lebih baru.
+// [FB-MCP-INIT-HTTP]. Karena itu refresh dikunci per akun pool (atau per user),
+// selalu memeriksa salinan database lebih dulu, dan hanya menulis bila lebih baru.
 async function renewAndPersist(session, env, source) {
-  const key = typeof session.uid === 'string' && session.uid ? session.uid : 'anon';
+  const key = session.accountId
+    ? `acct:${session.accountId}`
+    : (typeof session.uid === 'string' && session.uid ? `uid:${session.uid}` : 'anon');
   const inflight = refreshFlights.get(key);
   if (inflight) return inflight;
   const flight = (async () => {
@@ -208,7 +345,7 @@ async function renewAndPersist(session, env, source) {
       const sealedStored = await seal({ ...stored }, env, 'session');
       return { session: stored, sealed: sealedStored.length <= 3800 ? sealedStored : null };
     };
-    const storedBefore = await readDbSession(env, session.uid);
+    const storedBefore = await readDbSession(env, session.uid, session.accountId || null);
     if (storedBefore && Number.isFinite(storedBefore.expiresAt) && storedBefore.expiresAt > (session.expiresAt || 0) && storedBefore.expiresAt - Date.now() > REFRESH_WINDOW) {
       console.info('Freebeat refresh dilewati: salinan lain lebih baru', { source });
       return adoptStored(storedBefore);
@@ -216,14 +353,30 @@ async function renewAndPersist(session, env, source) {
     const renewed = await renewSession(session, env);
     if (!renewed) { console.warn('Freebeat refresh ditolak provider', { source }); return null; }
     const issuedAt = Number.isFinite(session.issuedAt) ? session.issuedAt : startedAt;
-    const storedAfter = await readDbSession(env, renewed.uid);
+    const storedAfter = await readDbSession(env, renewed.uid, renewed.accountId || null);
     if (storedAfter && Number.isFinite(storedAfter.expiresAt) && storedAfter.expiresAt >= renewed.expiresAt) {
       console.info('Freebeat refresh tidak disimpan: salinan lain lebih baru', { source });
       return adoptStored(storedAfter);
     }
-    const encrypted = await seal({ uid: renewed.uid, sid: renewed.sid || crypto.randomUUID(), accessToken: renewed.accessToken, refreshToken: renewed.refreshToken, clientId: renewed.clientId, imageAccess: renewed.imageAccess, issuedAt, expiresAt: renewed.expiresAt }, env, 'session');
+    const encrypted = await seal({
+      ...(renewed.accountId ? { accountId: renewed.accountId } : {}),
+      ...(renewed.accountEmail ? { accountEmail: renewed.accountEmail } : {}),
+      uid: renewed.uid,
+      sid: renewed.sid || crypto.randomUUID(),
+      accessToken: renewed.accessToken,
+      refreshToken: renewed.refreshToken,
+      clientId: renewed.clientId,
+      imageAccess: renewed.imageAccess,
+      issuedAt,
+      expiresAt: renewed.expiresAt,
+    }, env, 'session');
     if (encrypted.length > 3800) return null;
-    await persistProviderSession(env, renewed.uid, encrypted, renewed.imageAccess === true);
+    if (renewed.accountId) {
+      await updatePoolAccountSession(env, renewed.accountId, encrypted, renewed.imageAccess === true);
+    }
+    if (renewed.uid) {
+      await persistProviderSession(env, renewed.uid, encrypted, renewed.imageAccess === true);
+    }
     console.info('Freebeat token di-refresh', { source, umur_grant_detik: Math.round((startedAt - issuedAt) / 1000), berlaku_detik: Math.round((renewed.expiresAt - startedAt) / 1000) });
     return { session: renewed, sealed: encrypted };
   })();
@@ -237,7 +390,9 @@ async function openMcpSession(env, session) {
     return { headers: await openMcp(session.accessToken), session };
   } catch (error) {
     if (!error?.isMcpFailure) throw error;
-    const fresh = await loadProviderSession(env);
+    const fresh = session?.accountId
+      ? await readDbSession(env, session.uid, session.accountId)
+      : await loadProviderSession(env);
     if (!fresh?.accessToken || fresh.accessToken === session.accessToken) throw error;
     console.warn('Freebeat MCP init ditolak; memakai salinan sesi terbaru');
     return { headers: await openMcp(fresh.accessToken), session: fresh };
@@ -247,8 +402,18 @@ async function openMcpSession(env, session) {
 // konsumen me-refresh token lewat salinan itu, dan Freebeat merotasi refresh
 // token. Tanpa adopsi salinan terbaru, cookie admin memakai token yang sudah
 // dicabut dan seluruh panggilan MCP ditolak [FB-MCP-INIT-HTTP].
-async function readDbSession(env, userId) {
+async function readDbSession(env, userId, accountId = null) {
   try {
+    if (accountId) {
+      const poolRows = await dbJson(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(accountId)}&select=id,account_email,sealed_session&limit=1`);
+      const poolRow = Array.isArray(poolRows) ? poolRows[0] : null;
+      if (poolRow?.sealed_session) {
+        const s = await unseal(poolRow.sealed_session, env, 'session', 3800);
+        if (s && typeof s.accessToken === 'string' && Number.isFinite(s.expiresAt)) {
+          return { ...s, accountId: poolRow.id, accountEmail: poolRow.account_email || s.accountEmail || '' };
+        }
+      }
+    }
     const rows = await dbJson(env, `/freebeat_provider_sessions?user_id=eq.${encodeURIComponent(userId)}&select=sealed_session&limit=1`);
     const row = Array.isArray(rows) ? rows[0] : null;
     if (!row?.sealed_session) return null;
@@ -261,11 +426,22 @@ async function readSession(request, env, userId) {
   const usable = (value) => value && value.uid === userId && typeof value.accessToken === 'string' && Number.isFinite(value.expiresAt);
   const cookieSession = await unseal(cookieValue(request, SESSION), env, 'session');
   let session = usable(cookieSession) ? cookieSession : null;
-  const dbSession = await readDbSession(env, userId);
+  const dbSession = await readDbSession(env, userId, session?.accountId || null);
   if (usable(dbSession) && (!session || dbSession.expiresAt > session.expiresAt)) {
     session = dbSession;
     try {
-      const sealed = await seal({ uid: dbSession.uid, sid: dbSession.sid || crypto.randomUUID(), accessToken: dbSession.accessToken, refreshToken: dbSession.refreshToken, clientId: dbSession.clientId, imageAccess: dbSession.imageAccess === true, issuedAt: Number.isFinite(dbSession.issuedAt) ? dbSession.issuedAt : Date.now(), expiresAt: dbSession.expiresAt }, env, 'session');
+      const sealed = await seal({
+        ...(dbSession.accountId ? { accountId: dbSession.accountId } : {}),
+        ...(dbSession.accountEmail ? { accountEmail: dbSession.accountEmail } : {}),
+        uid: dbSession.uid,
+        sid: dbSession.sid || crypto.randomUUID(),
+        accessToken: dbSession.accessToken,
+        refreshToken: dbSession.refreshToken,
+        clientId: dbSession.clientId,
+        imageAccess: dbSession.imageAccess === true,
+        issuedAt: Number.isFinite(dbSession.issuedAt) ? dbSession.issuedAt : Date.now(),
+        expiresAt: dbSession.expiresAt,
+      }, env, 'session');
       if (sealed.length <= 3800) sessionCookies.set(request, cookie(SESSION, sealed, SESSION_COOKIE_AGE));
     } catch { /* cookie lama tetap dipakai; DB sudah menjadi sumber kebenaran */ }
   }
@@ -300,12 +476,17 @@ function mcpFailure(stage, kind, status) {
     : kind === 'network' ? 'Worker tidak dapat terhubung ke MCP Freebeat.'
       : kind === 'redirect' ? 'MCP Freebeat mengirim pengalihan yang ditolak demi keamanan.'
         : kind === 'http' && (status === 401 || status === 403) ? 'Freebeat menolak akses. Hubungkan ulang atau periksa akses akun/plan.'
-          : kind === 'http' ? `MCP Freebeat menolak permintaan (HTTP ${status}).`
-            : kind === 'size' ? 'Respons MCP Freebeat terlalu besar.'
-              : kind === 'rpc' ? 'Freebeat menolak atau tidak mendukung permintaan MCP.'
-                : 'Respons MCP Freebeat tidak valid atau tidak didukung.';
+          : kind === 'http' && status === 402 ? 'Saldo akun Freebeat habis. [FB-MCP-HTTP-402]'
+            : kind === 'http' ? `MCP Freebeat menolak permintaan (HTTP ${status}).`
+              : kind === 'size' ? 'Respons MCP Freebeat terlalu besar.'
+                : kind === 'rpc' ? 'Freebeat menolak atau tidak mendukung permintaan MCP.'
+                  : 'Respons MCP Freebeat tidak valid atau tidak didukung.';
   console.warn('Freebeat MCP request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}) });
-  return Object.assign(fail(`${message} ${tag}`, kind === 'http' && status === 401 ? 401 : 502), { isMcpFailure: true });
+  return Object.assign(fail(status === 402 ? message : `${message} ${tag}`, kind === 'http' && status === 401 ? 401 : 502), {
+    isMcpFailure: true,
+    ...(Number.isInteger(status) ? { httpStatus: status } : {}),
+    ...(status === 402 ? { balanceExhausted: true } : {}),
+  });
 }
 
 function rpcObject(text, expectedId, stage, captureToolError = false) {
@@ -314,9 +495,15 @@ function rpcObject(text, expectedId, stage, captureToolError = false) {
   if (!object || typeof object !== 'object' || Array.isArray(object) || object.id !== expectedId) return null;
   if (object.error) {
     if (captureToolError) return { isError: true, error: object.error };
-    throw mcpFailure(stage, 'rpc');
+    const err = mcpFailure(stage, 'rpc');
+    if (isFreebeatBalanceExhausted(object.error)) err.balanceExhausted = true;
+    throw err;
   }
-  if (!object.result || typeof object.result !== 'object' || (object.result.isError && !captureToolError)) throw mcpFailure(stage, 'rpc');
+  if (!object.result || typeof object.result !== 'object' || (object.result.isError && !captureToolError)) {
+    const err = mcpFailure(stage, 'rpc');
+    if (object.result && isFreebeatBalanceExhausted(object.result)) err.balanceExhausted = true;
+    throw err;
+  }
   return object.result;
 }
 
@@ -1409,14 +1596,115 @@ async function danceMessage(env, user, session, request) {
   };
 }
 
+async function optionalStartJson(request) {
+  const length = request.headers.get('content-length');
+  if (length === '0') return {};
+  const type = (request.headers.get('content-type') || '').toLowerCase();
+  if (!type.includes('application/json')) return {};
+  if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
+  try {
+    const raw = await boundedJson(request);
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch { return {}; }
+}
+
 async function dispatchFreebeat(request, url, env, user) {
   try {
     if (!user) return response({ error: 'Login diperlukan.' }, 401);
     if (user.app_metadata?.role !== 'admin') return response({ error: 'Koneksi Freebeat hanya untuk admin.' }, 403);
-    const action = url.pathname.split('/').pop();
+    const subpath = url.pathname.replace(/^\/api\/freebeat\/?/, '').replace(/\/+$/, '');
+    const action = subpath;
     if (['start', 'start-image'].includes(action) && request.method === 'POST') {
       if (url.origin !== new URL(redirectUri(env)).origin) return response({ error: 'Buka BLEA melalui domain callback Freebeat yang dikonfigurasi sebelum menghubungkan akun.' }, 400);
-      return await startFreebeat(env, user.id);
+      const startOpts = await optionalStartJson(request);
+      return await startFreebeat(env, user.id, startOpts);
+    }
+    if (action === 'accounts' && request.method === 'GET') {
+      const accounts = await listPoolAccountsAdmin(env);
+      return response({
+        ok: true,
+        accounts,
+        maxCycles: FREEBEAT_POOL_MAX_CYCLES,
+        policy: { maxCycles: FREEBEAT_POOL_MAX_CYCLES, gatewayExhaustedMessage: FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE },
+      });
+    }
+    if (action === 'accounts' && request.method === 'PATCH') {
+      const input = await imageJson(request);
+      if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
+        throw fail('ID akun OAuth tidak valid.', 400);
+      }
+      const allowedKeys = new Set(['id', 'account_email', 'account_label', 'enabled', 'priority']);
+      if (Object.keys(input).some((k) => !allowedKeys.has(k))) throw fail('Parameter pembaruan akun tidak valid.', 400);
+      const patch = { updated_at: new Date().toISOString() };
+      if (input.account_email !== undefined) {
+        if (typeof input.account_email !== 'string' || input.account_email.trim().length > 320) throw fail('Format email akun tidak valid.', 400);
+        const cleanEmail = input.account_email.trim();
+        if (cleanEmail && !EMAIL_PATTERN.test(cleanEmail)) throw fail('Masukkan alamat email akun yang valid.', 400);
+        patch.account_email = cleanEmail;
+      }
+      if (input.account_label !== undefined) {
+        if (typeof input.account_label !== 'string' || input.account_label.trim().length > 100) throw fail('Label akun maksimal 100 karakter.', 400);
+        patch.account_label = input.account_label.trim();
+      }
+      if (input.enabled !== undefined) {
+        if (typeof input.enabled !== 'boolean') throw fail('Status aktif akun tidak valid.', 400);
+        patch.enabled = input.enabled;
+      }
+      if (input.priority !== undefined) {
+        if (!Number.isSafeInteger(input.priority) || input.priority < 0 || input.priority > 100000) throw fail('Prioritas harus berupa bilangan bulat 0–100000.', 400);
+        patch.priority = input.priority;
+      }
+      const updated = await dbJson(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(input.id)}`, {
+        method: 'PATCH',
+        prefer: 'return=representation',
+        body: patch,
+      });
+      const row = Array.isArray(updated) ? updated[0] : null;
+      if (!row) throw fail('Akun OAuth Freebeat tidak ditemukan.', 404);
+      return response({ ok: true, account: sanitizePoolAccountRow(row, env) });
+    }
+    if (action === 'accounts' && request.method === 'DELETE') {
+      const input = await imageJson(request);
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => k !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
+        throw fail('ID akun OAuth tidak valid.', 400);
+      }
+      const rows = await dbJson(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(input.id)}&select=*&limit=1`);
+      const target = Array.isArray(rows) ? rows[0] : null;
+      if (!target) throw fail('Akun OAuth Freebeat tidak ditemukan.', 404);
+      let revoked = false;
+      const unsealed = target.sealed_session ? await unseal(target.sealed_session, env, 'session', 3800) : null;
+      if (unsealed?.accessToken && unsealed?.clientId) {
+        try {
+          const res = await fetch(REVOKE, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: unsealed.accessToken, client_id: unsealed.clientId }).toString() });
+          revoked = res.ok;
+        } catch { /* lanjut hapus lokal */ }
+      }
+      await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(input.id)}`, { method: 'DELETE' });
+      await syncLegacySessionFromPool(env, target.connected_by || user.id);
+      return response({ ok: true, revoked, deletedId: input.id });
+    }
+    if (action === 'accounts/reorder' && request.method === 'POST') {
+      const input = await imageJson(request);
+      const ids = Array.isArray(input?.orderedIds) ? input.orderedIds : null;
+      if (!ids || !ids.length || ids.length > 50 || ids.some((id) => typeof id !== 'string' || !TEST_ID.test(id))) {
+        throw fail('Daftar urutan akun tidak valid.', 400);
+      }
+      for (let idx = 0; idx < ids.length; idx += 1) {
+        await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(ids[idx])}`, {
+          method: 'PATCH',
+          body: { priority: (idx + 1) * 10, updated_at: new Date().toISOString() },
+        });
+      }
+      const accounts = await listPoolAccountsAdmin(env);
+      return response({ ok: true, accounts });
+    }
+    if (action === 'accounts/balance' && request.method === 'POST') {
+      const input = await optionalStartJson(request);
+      if (input.id !== undefined && (typeof input.id !== 'string' || !TEST_ID.test(input.id))) {
+        throw fail('ID akun OAuth tidak valid.', 400);
+      }
+      const result = await checkPoolAccountsBalance(env, input.id || null);
+      return response({ ok: true, ...result });
     }
     if (action === 'status' && request.method === 'GET') {
       const session = await readSession(request, env, user.id);
@@ -1571,6 +1859,9 @@ async function dispatchFreebeat(request, url, env, user) {
       }
       // Hapus salinan sisi server agar generate gambar konsumen ikut berhenti.
       await clearProviderSession(env, user.id);
+      if (session?.accountId) {
+        try { await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(session.accountId)}`, { method: 'DELETE' }); } catch { /* ignore in legacy mocks */ }
+      }
       return response({ ok: true, revoked }, 200, { 'set-cookie': cookie(SESSION, '', 0) });
     }
     return response({ error: 'Aksi Freebeat tidak dikenal.' }, 404);
@@ -1592,7 +1883,8 @@ export async function handleFreebeat(request, url, env, user) {
 // pengguna sempat terpotong sebelum di-refund. Biayanya dipotong dari kredit
 // BLEA (credit_model_prices), sedangkan kredit Freebeat keluar dari saldo akun
 // admin yang menghubungkan provider. Sesi admin disimpan tersegel di
-// freebeat_provider_sessions agar dapat dipakai request user lain.
+// freebeat_oauth_accounts / freebeat_provider_sessions agar dapat dipakai
+// request user lain secara round-robin.
 const CONSUMER_IMAGE_MODEL_DEFAULT = 122;
 // Default ID model untuk probe quote admin (diagnostik edit_image di halaman
 // admin, BUKAN bagian dari generasi pengguna).
@@ -1610,9 +1902,13 @@ function consumerImageUrl(value) {
 }
 // quote_generation untuk tool apa pun (generate_image / edit_image). Enum tool
 // di skema resmi ditandai enum_incomplete, jadi edit_image dicoba langsung.
-async function rawToolQuote(accessToken, tool, parameters, existingHeaders = null) {
+async function rawToolQuote(accessToken, tool, parameters, existingHeaders = null, captureToolError = false) {
   const headers = existingHeaders || await openMcp(accessToken);
-  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'quote_generation', arguments: { tool, parameters } } }, 'quote', headers, 262144);
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'quote_generation', arguments: { tool, parameters } } }, 'quote', headers, 262144, captureToolError);
+  if (captureToolError && (result?.isError || result?.error)) {
+    if (isFreebeatBalanceExhausted(result)) return { status: 'insufficient_credits' };
+    throw mcpFailure('quote', 'rpc');
+  }
   const content = modelContent(result);
   if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');
   return content;
@@ -1714,19 +2010,279 @@ export async function persistProviderSession(env, userId, sealedSession, imageAc
 export async function clearProviderSession(env, userId) {
   try { await dbFetch(env, `/freebeat_provider_sessions?user_id=eq.${encodeURIComponent(userId)}`, { method: 'DELETE' }); } catch { /* tidak ada yang perlu dipulihkan */ }
 }
-async function loadProviderSession(env) {
-  const rows = await dbJson(env, '/freebeat_provider_sessions?select=user_id,sealed_session&order=updated_at.desc&limit=5');
+
+function sanitizePoolAccountRow(row, env, unsealed = null) {
+  const issuedMs = row?.issued_at ? Date.parse(row.issued_at) : (Number.isFinite(unsealed?.issuedAt) ? unsealed.issuedAt : null);
+  const maxMs = sessionMaxAgeMs(env);
+  const accessExpiredNoRenew = !unsealed?.refreshToken && Number.isFinite(unsealed?.expiresAt) && unsealed.expiresAt <= Date.now();
+  const sessionExpired = Number.isFinite(issuedMs) && (Date.now() - issuedMs > maxMs);
+  return {
+    id: row.id,
+    account_email: String(row.account_email || unsealed?.accountEmail || '').trim(),
+    account_label: String(row.account_label || '').trim(),
+    connected_by: row.connected_by || null,
+    image_access: row.image_access === true,
+    enabled: row.enabled !== false,
+    priority: Number.isFinite(Number(row.priority)) ? Number(row.priority) : 100,
+    last_balance_credits: row.last_balance_credits !== null && row.last_balance_credits !== undefined && Number.isFinite(Number(row.last_balance_credits)) ? Number(row.last_balance_credits) : null,
+    last_balance: row.last_balance || null,
+    last_balance_checked_at: row.last_balance_checked_at || null,
+    consecutive_failures: Number.isFinite(Number(row.consecutive_failures)) ? Number(row.consecutive_failures) : 0,
+    last_error: typeof row.last_error === 'string' ? row.last_error : null,
+    last_used_at: row.last_used_at || null,
+    last_success_at: row.last_success_at || null,
+    issued_at: row.issued_at || null,
+    expires_at: Number.isFinite(unsealed?.expiresAt) ? new Date(unsealed.expiresAt).toISOString() : null,
+    session_expires_at: Number.isFinite(issuedMs) ? new Date(issuedMs + maxMs).toISOString() : null,
+    auto_renew: Boolean(unsealed?.refreshToken),
+    expired: Boolean(accessExpiredNoRenew || sessionExpired),
+    updated_at: row.updated_at || null,
+    created_at: row.created_at || null,
+  };
+}
+
+async function listPoolAccountsAdmin(env) {
+  const rows = await dbJson(env, '/freebeat_oauth_accounts?select=*&order=priority.asc,created_at.asc&limit=50');
   const list = Array.isArray(rows) ? rows : [];
-  const row = list.find((item) => typeof item?.sealed_session === 'string' && item.sealed_session.length <= 3800);
-  if (!row?.sealed_session) return null;
-  const session = await unseal(row.sealed_session, env, 'session', 3800);
+  const out = [];
+  for (const row of list) {
+    const unsealed = row?.sealed_session ? await unseal(row.sealed_session, env, 'session', 3800) : null;
+    out.push(sanitizePoolAccountRow(row, env, unsealed));
+  }
+  return out;
+}
+
+async function upsertPoolOAuthAccount(env, { id = null, accountEmail = '', accountLabel = '', connectedBy = null, sealedSession, imageAccess = false, issuedAt = null }) {
+  try {
+    const nowIso = new Date().toISOString();
+    let targetId = id && TEST_ID.test(id) ? id : null;
+    if (!targetId && accountEmail) {
+      const matched = await dbJson(env, `/freebeat_oauth_accounts?select=id&account_email=ilike.${encodeURIComponent(accountEmail.trim())}&limit=1`).catch(() => []);
+      if (Array.isArray(matched) && matched[0]?.id) targetId = matched[0].id;
+    }
+    if (targetId) {
+      const patch = {
+        sealed_session: sealedSession,
+        image_access: imageAccess === true,
+        enabled: true,
+        consecutive_failures: 0,
+        last_error: null,
+        issued_at: issuedAt || nowIso,
+        updated_at: nowIso,
+        ...(accountEmail ? { account_email: accountEmail } : {}),
+        ...(accountLabel ? { account_label: accountLabel } : {}),
+      };
+      await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(targetId)}`, { method: 'PATCH', body: patch });
+      return targetId;
+    }
+    const existing = await dbJson(env, '/freebeat_oauth_accounts?select=id,priority&order=priority.desc&limit=1').catch(() => []);
+    const maxPrio = Array.isArray(existing) && existing[0] && Number.isFinite(Number(existing[0].priority)) ? Number(existing[0].priority) : 0;
+    const nextPriority = Math.min(100000, maxPrio + 10);
+    const created = await dbJson(env, '/freebeat_oauth_accounts', {
+      method: 'POST',
+      prefer: 'return=representation',
+      body: {
+        account_email: accountEmail || '',
+        account_label: accountLabel || '',
+        ...(connectedBy ? { connected_by: connectedBy } : {}),
+        sealed_session: sealedSession,
+        image_access: imageAccess === true,
+        enabled: true,
+        priority: nextPriority,
+        issued_at: issuedAt || nowIso,
+        updated_at: nowIso,
+      },
+    });
+    return Array.isArray(created) ? created[0]?.id || null : null;
+  } catch {
+    return null;
+  }
+}
+
+async function updatePoolAccountSession(env, accountId, sealedSession, imageAccess) {
+  if (!accountId) return;
+  try {
+    await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(accountId)}`, {
+      method: 'PATCH',
+      body: { sealed_session: sealedSession, image_access: imageAccess === true, updated_at: new Date().toISOString() },
+    });
+  } catch { /* non-blocking */ }
+}
+
+async function syncLegacySessionFromPool(env, fallbackUserId) {
+  try {
+    const rows = await dbJson(env, '/freebeat_oauth_accounts?select=connected_by,sealed_session,image_access&enabled=eq.true&order=priority.asc,created_at.asc&limit=1');
+    const top = Array.isArray(rows) ? rows[0] : null;
+    if (top?.sealed_session) {
+      await persistProviderSession(env, top.connected_by || fallbackUserId, top.sealed_session, top.image_access === true);
+    } else if (fallbackUserId) {
+      await clearProviderSession(env, fallbackUserId);
+    }
+  } catch { /* ignore in legacy tests */ }
+}
+
+async function recordPoolAccountOutcome(env, account, { success = false, error = null, balanceCredits = undefined, balancePayload = undefined } = {}) {
+  if (!account?.id) return;
+  try {
+    const nowIso = new Date().toISOString();
+    const patch = success
+      ? {
+          last_used_at: nowIso,
+          last_success_at: nowIso,
+          consecutive_failures: 0,
+          last_error: null,
+          updated_at: nowIso,
+        }
+      : {
+          last_used_at: nowIso,
+          consecutive_failures: Math.min(1000, Number(account.consecutive_failures || 0) + 1),
+          last_error: typeof error === 'string' && error.trim() ? error.trim().slice(0, 300) : 'Gagal memproses permintaan Freebeat',
+          updated_at: nowIso,
+        };
+    if (balanceCredits !== undefined) {
+      patch.last_balance_credits = balanceCredits;
+      patch.last_balance_checked_at = nowIso;
+    }
+    if (balancePayload !== undefined) {
+      patch.last_balance = balancePayload;
+      patch.last_balance_checked_at = nowIso;
+    }
+    await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(account.id)}`, { method: 'PATCH', body: patch });
+  } catch { /* telemetry failure never aborts generation */ }
+}
+
+async function loadFreebeatAccountPool(env, { includeDisabled = false, preferredAccountId = null } = {}) {
+  let poolRows = null;
+  try {
+    poolRows = await dbJson(env, '/freebeat_oauth_accounts?select=id,account_email,account_label,connected_by,sealed_session,image_access,enabled,priority,consecutive_failures,last_balance_credits,last_balance,last_balance_checked_at,last_error,last_used_at,last_success_at,issued_at,updated_at,created_at&order=priority.asc,created_at.asc&limit=50');
+  } catch { poolRows = null; }
+
+  const entries = [];
+  if (Array.isArray(poolRows) && poolRows.length > 0) {
+    for (const row of poolRows) {
+      if (!row?.sealed_session || row.sealed_session.length > 3800) continue;
+      if (!includeDisabled && row.enabled === false) continue;
+      const rawSession = await unseal(row.sealed_session, env, 'session', 3800);
+      if (!rawSession || typeof rawSession.accessToken !== 'string' || !Number.isFinite(rawSession.expiresAt)) continue;
+      const session = { ...rawSession, accountId: row.id, accountEmail: row.account_email || rawSession.accountEmail || '' };
+      if (!includeDisabled && (!session.imageAccess || row.image_access !== true)) continue;
+      entries.push({ ...row, session });
+    }
+  } else {
+    const legacyRows = await dbJson(env, '/freebeat_provider_sessions?select=user_id,sealed_session,image_access,updated_at&order=updated_at.desc&limit=5').catch(() => []);
+    for (const row of (Array.isArray(legacyRows) ? legacyRows : [])) {
+      if (!row?.sealed_session || row.sealed_session.length > 3800) continue;
+      const session = await unseal(row.sealed_session, env, 'session', 3800);
+      if (!session || typeof session.accessToken !== 'string' || !Number.isFinite(session.expiresAt)) continue;
+      if (!includeDisabled && !session.imageAccess) continue;
+      entries.push({
+        id: null,
+        legacyUserId: row.user_id,
+        account_email: session.accountEmail || '',
+        account_label: 'Akun Utama',
+        enabled: true,
+        priority: 10,
+        image_access: session.imageAccess === true,
+        consecutive_failures: 0,
+        session,
+      });
+    }
+  }
+
+  if (preferredAccountId && entries.length > 1) {
+    entries.sort((a, b) => (a.id === preferredAccountId ? -1 : b.id === preferredAccountId ? 1 : 0));
+  }
+  return entries;
+}
+
+async function ensureUsablePoolAccount(env, entry) {
+  const session = entry?.session;
   if (!session || typeof session.accessToken !== 'string' || !Number.isFinite(session.expiresAt)) return null;
-  if (session.expiresAt - Date.now() > REFRESH_WINDOW || !session.refreshToken) return session.expiresAt > Date.now() ? session : null;
+  const issuedAt = Number.isFinite(session.issuedAt) ? session.issuedAt : session.expiresAt;
+  if (Date.now() - issuedAt > sessionMaxAgeMs(env)) return null;
+  if (session.expiresAt - Date.now() > REFRESH_WINDOW || !session.refreshToken) {
+    return session.expiresAt > Date.now() ? { ...entry, session } : null;
+  }
   try {
     const outcome = await renewAndPersist(session, env, 'db');
-    if (!outcome?.session) return session.expiresAt > Date.now() ? session : null;
-    return outcome.session;
-  } catch { return session.expiresAt > Date.now() ? session : null; }
+    if (!outcome?.session) return session.expiresAt > Date.now() ? { ...entry, session } : null;
+    return { ...entry, session: { ...outcome.session, ...(entry.id ? { accountId: entry.id } : {}), ...(entry.account_email ? { accountEmail: entry.account_email } : {}) } };
+  } catch {
+    return session.expiresAt > Date.now() ? { ...entry, session } : null;
+  }
+}
+
+async function openMcpSessionForAccount(env, entry) {
+  const session = entry.session;
+  try {
+    return { headers: await openMcp(session.accessToken), session };
+  } catch (error) {
+    if (!error?.isMcpFailure || error?.httpStatus === 402 || error?.balanceExhausted) throw error;
+    const fresh = entry.id
+      ? await readDbSession(env, session.uid, entry.id)
+      : await loadProviderSession(env);
+    if (!fresh?.accessToken || fresh.accessToken === session.accessToken) throw error;
+    console.warn('Freebeat MCP init ditolak; memakai salinan sesi terbaru');
+    return { headers: await openMcp(fresh.accessToken), session: fresh };
+  }
+}
+
+async function checkPoolAccountsBalance(env, targetId = null) {
+  const pool = await loadFreebeatAccountPool(env, { includeDisabled: true });
+  const targets = targetId ? pool.filter((item) => item.id === targetId) : pool;
+  if (targetId && !targets.length) throw fail('Akun OAuth Freebeat tidak ditemukan.', 404);
+  const results = [];
+  for (const item of targets) {
+    const usable = await ensureUsablePoolAccount(env, item);
+    if (!usable) {
+      await recordPoolAccountOutcome(env, item, { success: false, error: 'Sesi OAuth kedaluwarsa, perlu OAuth ulang' });
+      results.push({ id: item.id, account_email: item.account_email, ok: false, error: 'Sesi OAuth kedaluwarsa, perlu OAuth ulang.' });
+      continue;
+    }
+    try {
+      const balance = await getBalance(usable.session.accessToken);
+      const credits = extractNumericBalance(balance);
+      const discoveredEmail = !item.account_email ? extractEmailFromObject(balance) : '';
+      const nowIso = new Date().toISOString();
+      const patch = {
+        last_balance: balance,
+        last_balance_credits: credits,
+        last_balance_checked_at: nowIso,
+        updated_at: nowIso,
+        ...(discoveredEmail ? { account_email: discoveredEmail } : {}),
+        ...(credits !== null && credits > 0 ? { last_error: null, consecutive_failures: 0 } : {}),
+        ...(credits === 0 ? { last_error: 'Saldo Freebeat habis (0 kredit)' } : {}),
+      };
+      await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(item.id)}`, { method: 'PATCH', body: patch });
+      results.push({ id: item.id, account_email: discoveredEmail || item.account_email, ok: true, credits, balance });
+    } catch (err) {
+      const msg = err?.message || 'Gagal membaca saldo Freebeat';
+      await recordPoolAccountOutcome(env, item, { success: false, error: msg });
+      results.push({ id: item.id, account_email: item.account_email, ok: false, error: msg });
+    }
+  }
+  const accounts = await listPoolAccountsAdmin(env);
+  return { results, accounts };
+}
+
+function poolRetryDelayMs(env) {
+  const raw = env?.FREEBEAT_RETRY_DELAY_MS;
+  if (raw === undefined || raw === null || raw === '') return 150;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.min(2000, parsed) : 150;
+}
+
+async function sleepCycleDelay(ms) {
+  if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadProviderSession(env) {
+  const pool = await loadFreebeatAccountPool(env);
+  for (const item of pool) {
+    const usable = await ensureUsablePoolAccount(env, item);
+    if (usable?.session) return usable.session;
+  }
+  return null;
 }
 export function sanitizeImageRow(row) {
   const statuses = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled', 'unknown']);
@@ -1780,60 +2336,197 @@ export async function consumerImageGenerate(env, request, user) {
   if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
   const prompt = input.prompt.trim();
   const modelId = consumerImageModel(env);
-  const loaded = await loadProviderSession(env);
-  if (!loaded?.imageAccess) throw fail('Provider gambar belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.', 503);
-  // Satu handshake MCP dipakai ulang untuk katalog, quote, dan pengiriman.
-  // Selain lebih hemat, kegagalannya terjadi SEBELUM kredit dipotong, jadi
-  // tidak ada tagihan yang bergantung pada koneksi yang belum terbukti.
-  const opened = await openMcpSession(env, loaded);
-  const session = opened.session;
-  const headers = opened.headers;
-  const catalog = await getModels(session.accessToken, 'image', headers);
-  const entry = catalog.models.find((item) => item.model_id === modelId);
-  const catalogUsed = entry ? 'image' : null;
-  if (!entry) throw fail(`Model gambar ${modelId} tidak tersedia di provider saat ini.`, 409);
-  if (entry.member_only === true) throw fail('Model ini khusus member di sisi provider.', 409);
-  if (entry.available === false) throw fail('Model ini sedang tidak tersedia di sisi provider.', 409);
   const price = await consumerImagePrice(env, modelId, 'image');
-  if (price === null) throw fail(`Harga kredit untuk model gambar ini belum diatur admin; generasi tidak dikirim.`, 409);
-  const quoteContent = await rawToolQuote(session.accessToken, 'generate_image', { model_id: modelId, prompt }, headers);
-  const quote = quotedCredits(quoteContent);
+  if (price === null) throw fail('Harga kredit untuk model gambar ini belum diatur admin; generasi tidak dikirim.', 409);
+
+  const pool = await loadFreebeatAccountPool(env);
+  if (!pool.length) {
+    throw fail('Provider gambar belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.', 503);
+  }
+
   const ceiling = consumerProviderCeiling(env);
-  if (quote === null) {
-    // safeQuote hanya meloloskan kosakata status yang aman, jadi alasan provider
-    // dapat ditampilkan tanpa membocorkan pesan mentah, prompt, atau URL.
-    const masked = safeQuote(quoteContent);
-    const hint = masked && typeof masked === 'object' && typeof masked.status === 'string' ? ` Status provider: ${masked.status}.` : '';
-    throw fail(`Provider tidak memberikan quote biaya yang dapat dipakai untuk model ${modelId}; generasi tidak dikirim dan kredit tidak dipotong.${hint}`, 409);
-  }
-  if (quote > ceiling) throw fail(`Biaya provider ${quote} kredit Freebeat melebihi plafon ${ceiling}; generasi tidak dikirim.`, 409);
   const minMargin = consumerMinMargin(env);
-  if (price < quote * minMargin) throw fail(`Harga ${price} kredit BLEA lebih rendah dari biaya provider (${quote} kredit Freebeat x ${minMargin}). Admin perlu menaikkan harga model ini; generasi tidak dikirim dan kredit tidak dipotong.`, 409);
-  const rowId = crypto.randomUUID();
-  const spent = await dbRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Freebeat model ${modelId}`, p_generation_id: rowId });
-  if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
-  const metadata = { provider_quote: quote, quote_capped: false, catalog: catalogUsed, mode: 'text' };
-  let inserted = null;
-  try {
-    inserted = await dbJson(env, '/image_generations', { method: 'POST', prefer: 'return=representation', body: { id: rowId, user_id: user.id, provider: 'freebeat', model: String(modelId), prompt, credits_charged: price, status: 'processing', metadata } });
-  } catch { inserted = null; }
-  if (!Array.isArray(inserted) || inserted.length !== 1) {
-    try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat generasi gambar tidak tersimpan', p_generation_id: rowId }); } catch { /* refund manual oleh admin */ }
-    throw fail('Riwayat generasi tidak dapat disimpan; kredit BLEA dikembalikan. Silakan coba lagi.', 503);
+  const retryDelayMs = poolRetryDelayMs(env);
+  let spentState = null;
+  let sawBalanceExhausted = false;
+  let lastFailoverError = null;
+
+  const refundImageSpend = async (reason, errorMessage) => {
+    if (!spentState) return;
+    const refunded = await dbRpc(env, 'refund_credits', {
+      p_user_id: user.id,
+      p_amount: price,
+      p_description: reason,
+      p_generation_id: spentState.rowId,
+    }).catch(() => false);
+    await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(spentState.rowId)}`, {
+      method: 'PATCH',
+      body: {
+        status: 'failed',
+        error_message: errorMessage,
+        ...(refunded ? { credits_refunded: price } : {}),
+        updated_at: new Date().toISOString(),
+      },
+    }).catch(() => {});
+  };
+
+  for (let cycle = 1; cycle <= FREEBEAT_POOL_MAX_CYCLES; cycle += 1) {
+    if (cycle > 1) await sleepCycleDelay(retryDelayMs);
+    for (const rawAccount of pool) {
+      const account = await ensureUsablePoolAccount(env, rawAccount);
+      if (!account) {
+        await recordPoolAccountOutcome(env, rawAccount, { success: false, error: 'Token OAuth kedaluwarsa atau belum memiliki izin generasi' });
+        lastFailoverError = fail('Token OAuth Freebeat kedaluwarsa.', 401);
+        continue;
+      }
+
+      let opened;
+      let quoteContent;
+      try {
+        opened = await openMcpSessionForAccount(env, account);
+        const catalog = await getModels(opened.session.accessToken, 'image', opened.headers);
+        const entry = catalog.models.find((item) => item.model_id === modelId);
+        if (!entry) throw fail(`Model gambar ${modelId} tidak tersedia di provider saat ini.`, 409);
+        if (entry.member_only === true) throw fail('Model ini khusus member di sisi provider.', 409);
+        if (entry.available === false) throw fail('Model ini sedang tidak tersedia di sisi provider.', 409);
+        quoteContent = await rawToolQuote(opened.session.accessToken, 'generate_image', { model_id: modelId, prompt }, opened.headers, true);
+      } catch (err) {
+        if (isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis' : (err?.message || 'Koneksi akun gagal'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        await refundImageSpend('Refund: gagal memeriksa quote gambar Freebeat', err?.message || 'Generasi gambar gagal.');
+        throw err;
+      }
+
+      if (isFreebeatBalanceExhausted(quoteContent)) {
+        sawBalanceExhausted = true;
+        await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis (quote)' });
+        lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+        continue;
+      }
+
+      const quote = quotedCredits(quoteContent);
+      if (quote === null) {
+        const masked = safeQuote(quoteContent);
+        const hint = masked && typeof masked === 'object' && typeof masked.status === 'string' ? ` Status provider: ${masked.status}.` : '';
+        const err = fail(`Provider tidak memberikan quote biaya yang dapat dipakai untuk model ${modelId}; generasi tidak dikirim dan kredit tidak dipotong.${hint}`, 409);
+        await refundImageSpend('Refund: quote gambar Freebeat tidak tersedia', err.message);
+        throw err;
+      }
+      if (quote > ceiling) {
+        const err = fail(`Biaya provider ${quote} kredit Freebeat melebihi plafon ${ceiling}; generasi tidak dikirim.`, 409);
+        await refundImageSpend('Refund: biaya provider melebihi plafon', err.message);
+        throw err;
+      }
+      if (price < quote * minMargin) {
+        const err = fail(`Harga ${price} kredit BLEA lebih rendah dari biaya provider (${quote} kredit Freebeat x ${minMargin}). Admin perlu menaikkan harga model ini; generasi tidak dikirim dan kredit tidak dipotong.`, 409);
+        await refundImageSpend('Refund: margin harga model gambar belum mencukupi', err.message);
+        throw err;
+      }
+
+      if (!spentState) {
+        const rowId = crypto.randomUUID();
+        const spent = await dbRpc(env, 'spend_credits', { p_user_id: user.id, p_amount: price, p_description: `Generasi gambar Freebeat model ${modelId}`, p_generation_id: rowId });
+        if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi ini.', 402);
+        const metadata = {
+          provider_quote: quote,
+          quote_capped: false,
+          catalog: 'image',
+          mode: 'text',
+          ...(account.id ? { freebeat_account_id: account.id } : {}),
+          ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+        };
+        let inserted = null;
+        try {
+          inserted = await dbJson(env, '/image_generations', { method: 'POST', prefer: 'return=representation', body: { id: rowId, user_id: user.id, provider: 'freebeat', model: String(modelId), prompt, credits_charged: price, status: 'processing', metadata } });
+        } catch { inserted = null; }
+        if (!Array.isArray(inserted) || inserted.length !== 1) {
+          try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat generasi gambar tidak tersimpan', p_generation_id: rowId }); } catch { /* refund manual oleh admin */ }
+          throw fail('Riwayat generasi tidak dapat disimpan; kredit BLEA dikembalikan. Silakan coba lagi.', 503);
+        }
+        spentState = { rowId, insertedRow: inserted[0], metadata };
+      }
+
+      try {
+        const { result } = await rpc(
+          opened.session.accessToken,
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_image', arguments: { model_id: modelId, prompt, max_credits: quote } } },
+          'generate',
+          opened.headers,
+          262144,
+          true,
+        );
+        if (result?.isError || isFreebeatBalanceExhausted(result)) {
+          if (isFreebeatBalanceExhausted(result)) {
+            sawBalanceExhausted = true;
+            await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat generate gambar' });
+            lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            continue;
+          }
+          const err = fail('Provider menolak permintaan generasi gambar.', 502);
+          await refundImageSpend('Refund: permintaan gambar ditolak Freebeat', err.message);
+          throw err;
+        }
+        const content = modelContent(result);
+        if (content && isFreebeatBalanceExhausted(content) && !content.batch_id) {
+          sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat generate gambar' });
+          lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+          continue;
+        }
+        if (!content || typeof content !== 'object' || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) {
+          throw new Error('unrecognized');
+        }
+        const nextMeta = {
+          ...spentState.metadata,
+          provider_quote: quote,
+          ...(account.id ? { freebeat_account_id: account.id } : {}),
+          ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+        };
+        await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(spentState.rowId)}`, {
+          method: 'PATCH',
+          body: { external_job_id: content.batch_id, status: 'processing', metadata: nextMeta, updated_at: new Date().toISOString() },
+        });
+        await recordPoolAccountOutcome(env, account, { success: true });
+        return {
+          status: 'submitted',
+          credits: price,
+          mode: 'text',
+          generation: sanitizeImageRow({ ...spentState.insertedRow, external_job_id: content.batch_id, metadata: nextMeta }),
+        };
+      } catch (err) {
+        if (err?.status && spentState && err.message?.includes('Provider menolak permintaan')) throw err;
+        if (isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis saat generate gambar' : (err?.message || 'Gagal generate gambar'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(spentState.rowId)}`, { method: 'PATCH', body: { status: 'unknown', error_message: 'Hasil pengiriman tidak pasti; periksa status sebelum mengulang.', updated_at: new Date().toISOString() } }); } catch { /* biarkan status processing */ }
+        return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...spentState.insertedRow, status: 'unknown' }) };
+      }
+    }
   }
-  // Handshake sudah dilakukan sebelum kredit dipotong, jadi kegagalan koneksi
-  // tidak pernah meninggalkan tagihan. Setelah tool generasi terkirim, hasil
-  // apa pun diperlakukan sebagai tidak pasti dan tidak di-refund otomatis.
-  try {
-    const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_image', arguments: { model_id: modelId, prompt, max_credits: quote } } }, 'generate', headers, 262144);
-    const content = modelContent(result);
-    if (!content || typeof content !== 'object' || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) throw new Error('unrecognized');
-    await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: { external_job_id: content.batch_id, status: 'processing', updated_at: new Date().toISOString() } });
-    return { status: 'submitted', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], external_job_id: content.batch_id }) };
-  } catch {
-    try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: { status: 'unknown', error_message: 'Hasil pengiriman tidak pasti; periksa status sebelum mengulang.', updated_at: new Date().toISOString() } }); } catch { /* biarkan status processing */ }
-    return { status: 'unknown', credits: price, mode: 'text', generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
+
+  await refundImageSpend(
+    sawBalanceExhausted ? 'Refund: saldo gateway Freebeat habis setelah 3 putaran' : 'Refund: semua akun Freebeat gagal memproses gambar',
+    sawBalanceExhausted ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE : (lastFailoverError?.message || 'Generasi gambar gagal pada semua akun Freebeat.'),
+  );
+  if (sawBalanceExhausted) {
+    const err = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+    err.code = 'gateway_balance_exhausted';
+    throw err;
   }
+  throw lastFailoverError || fail('Semua akun Freebeat tidak dapat memproses permintaan saat ini.', 503);
 }
 // Kosakata alasan kegagalan yang aman ditampilkan ke user biasa. Di luar daftar
 // ini alasan hanya disimpan sebagai "lainnya" agar pesan mentah provider tidak
@@ -1895,14 +2588,26 @@ async function imageTaskInspect(accessToken, jobId, raw) {
   }).filter(Boolean) : [];
   return { job_id: jobId, status: task.status, billing: task.billing, images: task.images, reasons, root_keys: Object.keys(content).slice(0, 25), items, ...(raw ? { raw: content } : {}) };
 }
+async function loadPreferredAccountSession(env, preferredAccountId = null) {
+  const pool = await loadFreebeatAccountPool(env, { includeDisabled: true, preferredAccountId });
+  for (const item of pool) {
+    if (!item?.session?.imageAccess) continue;
+    const usable = await ensureUsablePoolAccount(env, item);
+    if (usable?.session) return usable;
+  }
+  return null;
+}
+
 export async function pollFreebeatImageRow(env, row) {
   if (!row || !['queued', 'processing'].includes(row.status) || typeof row.external_job_id !== 'string' || !TASK_ID.test(row.external_job_id)) {
     return { generation: sanitizeImageRow(row || {}), task: null };
   }
-  const session = await loadProviderSession(env);
+  const preferredAccountId = row.metadata?.freebeat_account_id || null;
+  const usable = await loadPreferredAccountSession(env, preferredAccountId);
+  const session = usable?.session || null;
   if (!session?.imageAccess) throw fail('Provider belum siap; status tidak dapat diperiksa sekarang.', 503);
-  const headers = await openMcp(session.accessToken);
-  const { result } = await rpc(session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_task_status', arguments: { task_id: row.external_job_id } } }, 'task', headers, 262144);
+  const opened = await openMcpSessionForAccount(env, usable);
+  const { result } = await rpc(opened.session.accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_task_status', arguments: { task_id: row.external_job_id } } }, 'task', opened.headers, 262144);
   const content = modelContent(result);
   const task = safeTask(content);
   let patch = null;
@@ -2024,198 +2729,318 @@ export async function consumerDanceGenerate(env, user, payload) {
     throw err;
   }
 
-  const loaded = await loadProviderSession(env);
-  if (!loaded?.imageAccess) {
+  const pool = await loadFreebeatAccountPool(env);
+  if (!pool.length) {
     throw fail('Provider Freebeat Dance belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.', 503);
   }
 
-  // Handshake, upload_audio, dan quote_generation dilakukan SEBELUM memotong
-  // kredit BLEA sehingga kegagalan validasi/musik tidak membebani saldo pengguna.
-  const opened = await openMcpSession(env, loaded);
-  const session = opened.session;
-  const headers = opened.headers;
+  const retryDelayMs = poolRetryDelayMs(env);
+  let spentState = null;
+  let sawBalanceExhausted = false;
+  let lastFailoverError = null;
 
-  let musicId;
-  try {
-    const { result: audioRes } = await rpc(session.accessToken, {
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/call',
-      params: { name: 'upload_audio', arguments: { url: input.audioUrl } },
-    }, 'upload', headers, 262144);
-    if (audioRes?.isError) throw new Error('upload_audio rejected');
-    const audioContent = modelContent(audioRes);
-    const rawId = audioContent?.music_id ?? audioContent?.musicId ?? audioContent?.id;
-    if (rawId === undefined || rawId === null || !/^[A-Za-z0-9_.:-]{1,256}$/.test(String(rawId).trim())) {
-      throw new Error('missing music_id');
-    }
-    musicId = normalizeDanceMusicId(String(rawId).trim());
-  } catch {
-    throw fail('Audio atau tautan lagu tidak dapat diproses oleh Freebeat. Periksa format file atau URL publik Anda.', 400);
-  }
-
-  const danceParams = {
-    music_id: musicId,
-    auto_mode: true,
-    aspect_ratio: input.aspectRatio,
-    ...(input.prompt ? { prompt: input.prompt } : {}),
-    ...(input.imageUrls.length ? { image_urls: input.imageUrls } : {}),
-    ...(input.startMs !== undefined ? { start_ms: input.startMs, end_ms: input.endMs } : {}),
+  const refundDanceSpend = async (reason, errorMessage, statusCode = 502) => {
+    if (!spentState) return errorMessage;
+    const refunded = await dbRpc(env, 'refund_credits', {
+      p_user_id: user.id,
+      p_amount: price,
+      p_description: reason,
+      p_generation_id: spentState.genId,
+    }).catch(() => false);
+    const fullMsg = statusCode === 503 && sawBalanceExhausted
+      ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE
+      : `${errorMessage}${refunded && !errorMessage.includes('Kredit BLEA dikembalikan') ? ' Kredit BLEA dikembalikan.' : ''}`;
+    const failedPatch = {
+      status: 'failed',
+      progress: 0,
+      error_message: fullMsg,
+      ...(refunded ? { credits_refunded: price } : {}),
+    };
+    await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
+    return fullMsg;
   };
 
-  let acceptUnknownCost = true;
-  let maxCredits = null;
-  let providerQuote = null;
-  try {
-    const quoteContent = await rawToolQuote(session.accessToken, 'generate_dance_video', danceParams, headers);
-    providerQuote = quotedCredits(quoteContent);
-    if (providerQuote !== null) {
-      const ceiling = consumerDanceCeiling(env);
-      if (providerQuote > ceiling) {
-        throw fail(`Biaya provider (${providerQuote} kredit Freebeat) melebihi plafon layanan (${ceiling}); generasi tidak dikirim.`, 409);
+  for (let cycle = 1; cycle <= FREEBEAT_POOL_MAX_CYCLES; cycle += 1) {
+    if (cycle > 1) await sleepCycleDelay(retryDelayMs);
+    for (const rawAccount of pool) {
+      const account = await ensureUsablePoolAccount(env, rawAccount);
+      if (!account) {
+        await recordPoolAccountOutcome(env, rawAccount, { success: false, error: 'Token OAuth kedaluwarsa atau belum memiliki izin generasi' });
+        lastFailoverError = fail('Token OAuth Freebeat kedaluwarsa.', 401);
+        continue;
       }
-      acceptUnknownCost = false;
-      maxCredits = providerQuote + videoHeadroom(providerQuote);
+
+      let opened;
+      let musicId;
+      try {
+        opened = await openMcpSessionForAccount(env, account);
+        const { result: audioRes } = await rpc(opened.session.accessToken, {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'upload_audio', arguments: { url: input.audioUrl } },
+        }, 'upload', opened.headers, 262144, true);
+        if (audioRes?.isError || audioRes?.error) {
+          if (isFreebeatBalanceExhausted(audioRes)) {
+            const err = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            err.balanceExhausted = true;
+            throw err;
+          }
+          throw fail('Audio atau tautan lagu tidak dapat diproses oleh Freebeat. Periksa format file atau URL publik Anda.', 400);
+        }
+        const audioContent = modelContent(audioRes);
+        const rawId = audioContent?.music_id ?? audioContent?.musicId ?? audioContent?.id;
+        if (rawId === undefined || rawId === null || !/^[A-Za-z0-9_.:-]{1,256}$/.test(String(rawId).trim())) {
+          throw fail('Audio atau tautan lagu tidak dapat diproses oleh Freebeat. Periksa format file atau URL publik Anda.', 400);
+        }
+        musicId = normalizeDanceMusicId(String(rawId).trim());
+      } catch (err) {
+        if (isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis' : (err?.message || 'Koneksi akun gagal'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        if (err?.status === 400) {
+          if (spentState) await refundDanceSpend('Refund: audio tidak dapat diproses Freebeat', err.message, 400);
+          throw err;
+        }
+        const badAudioErr = fail('Audio atau tautan lagu tidak dapat diproses oleh Freebeat. Periksa format file atau URL publik Anda.', 400);
+        if (spentState) await refundDanceSpend('Refund: audio tidak dapat diproses Freebeat', badAudioErr.message, 400);
+        throw badAudioErr;
+      }
+
+      const danceParams = {
+        music_id: musicId,
+        auto_mode: true,
+        aspect_ratio: input.aspectRatio,
+        ...(input.prompt ? { prompt: input.prompt } : {}),
+        ...(input.imageUrls.length ? { image_urls: input.imageUrls } : {}),
+        ...(input.startMs !== undefined ? { start_ms: input.startMs, end_ms: input.endMs } : {}),
+      };
+
+      let acceptUnknownCost = true;
+      let maxCredits = null;
+      let providerQuote = null;
+      let quoteBalanceExhausted = false;
+      try {
+        const quoteContent = await rawToolQuote(opened.session.accessToken, 'generate_dance_video', danceParams, opened.headers, true);
+        if (isFreebeatBalanceExhausted(quoteContent)) {
+          quoteBalanceExhausted = true;
+        } else {
+          providerQuote = quotedCredits(quoteContent);
+          if (providerQuote !== null) {
+            const ceiling = consumerDanceCeiling(env);
+            if (providerQuote > ceiling) {
+              const err = fail(`Biaya provider (${providerQuote} kredit Freebeat) melebihi plafon layanan (${ceiling}); generasi tidak dikirim.`, 409);
+              if (spentState) await refundDanceSpend('Refund: biaya provider dance melebihi plafon', err.message, 409);
+              throw err;
+            }
+            acceptUnknownCost = false;
+            maxCredits = providerQuote + videoHeadroom(providerQuote);
+          }
+        }
+      } catch (err) {
+        if (err?.status === 409) throw err;
+        if (isAccountFailoverError(err)) {
+          quoteBalanceExhausted = isFreebeatBalanceExhausted(err);
+          if (!quoteBalanceExhausted) {
+            await recordPoolAccountOutcome(env, account, { success: false, error: err?.message || 'Gagal menghubungi akun Freebeat' });
+            lastFailoverError = err;
+            continue;
+          }
+        }
+      }
+
+      if (quoteBalanceExhausted) {
+        sawBalanceExhausted = true;
+        await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis (quote)' });
+        lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+        continue;
+      }
+
+      if (!spentState) {
+        const genId = crypto.randomUUID();
+        const spent = await dbRpc(env, 'spend_credits', {
+          p_user_id: user.id,
+          p_amount: price,
+          p_description: 'Generasi video freebeat model generate_dance_video',
+          p_generation_id: genId,
+        });
+        if (!spent) {
+          const err = fail(`Kredit BLEA tidak cukup untuk generasi ini (butuh ${price} kredit).`, 402);
+          err.code = 'insufficient_credits';
+          err.credits_required = price;
+          throw err;
+        }
+
+        const metadata = {
+          mode: 'dance_video',
+          music_id: String(musicId),
+          ...(input.imageUrls.length ? { image_urls: input.imageUrls } : {}),
+          accept_unknown_cost: acceptUnknownCost,
+          ...(maxCredits !== null ? { max_credits: maxCredits } : {}),
+          ...(providerQuote !== null ? { provider_quote: providerQuote } : {}),
+          ...(input.startMs !== undefined ? { start_ms: input.startMs, end_ms: input.endMs } : {}),
+          ...(account.id ? { freebeat_account_id: account.id } : {}),
+          ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+        };
+
+        const insertBody = {
+          id: genId,
+          user_id: user.id,
+          provider: 'freebeat',
+          model: 'generate_dance_video',
+          prompt: input.prompt,
+          aspect_ratio: input.aspectRatio,
+          resolution: '720p',
+          duration: 15,
+          generate_audio: true,
+          image_url: input.imageUrls[0] || null,
+          video_url: null,
+          audio_url: input.audioUrl,
+          external_job_id: null,
+          polling_url: null,
+          credits_charged: price,
+          credits_refunded: 0,
+          status: 'queued',
+          progress: 5,
+          metadata,
+        };
+
+        let inserted = null;
+        try {
+          inserted = await dbJson(env, '/video_generations', { method: 'POST', prefer: 'return=representation', body: insertBody });
+        } catch { inserted = null; }
+        if (!Array.isArray(inserted) || inserted.length !== 1) {
+          try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat dance video tidak tersimpan', p_generation_id: genId }); } catch { /* manual review */ }
+          throw fail('Riwayat generasi dance tidak dapat disimpan; kredit BLEA dikembalikan.', 503);
+        }
+        spentState = { genId, row: inserted[0], metadata };
+      }
+
+      const dispatchArgs = {
+        ...danceParams,
+        ...(acceptUnknownCost ? { accept_unknown_cost: true } : { max_credits: maxCredits }),
+      };
+
+      const activeMeta = {
+        ...spentState.metadata,
+        music_id: String(musicId),
+        accept_unknown_cost: acceptUnknownCost,
+        ...(maxCredits !== null ? { max_credits: maxCredits } : {}),
+        ...(providerQuote !== null ? { provider_quote: providerQuote } : {}),
+        ...(account.id ? { freebeat_account_id: account.id } : {}),
+        ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+      };
+
+      let content = null;
+      let rejectedReason = null;
+      try {
+        const { result } = await rpc(opened.session.accessToken, {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'generate_dance_video', arguments: dispatchArgs },
+        }, 'generate', opened.headers, 262144, true);
+
+        if (result?.isError || result?.error) {
+          if (isFreebeatBalanceExhausted(result)) {
+            sawBalanceExhausted = true;
+            await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat generate dance video' });
+            lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            continue;
+          }
+          rejectedReason = 'rejected';
+          throw new Error('rejected');
+        }
+        content = modelContent(result);
+        if (content && isFreebeatBalanceExhausted(content) && !content.task_id) {
+          sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat generate dance video' });
+          lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+          continue;
+        }
+        if (!content || typeof content !== 'object') throw new Error('invalid');
+      } catch (err) {
+        if (!rejectedReason && isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis saat generate dance video' : (err?.message || 'Gagal generate dance video'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        await recordPoolAccountOutcome(env, account, { success: false, error: 'Freebeat menolak permintaan dance video' });
+        const fullMsg = await refundDanceSpend(
+          'Refund: Freebeat generate_dance_video gagal dikirim',
+          'Permintaan dance video gagal dikirim ke Freebeat.',
+          502,
+        );
+        throw fail(fullMsg, 502);
+      }
+
+      if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
+        const prepMeta = { ...activeMeta, preparing_music_id: String(content.music_id), retry_after_seconds: Number(content.retry_after_seconds) || 10 };
+        const prepRows = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, {
+          method: 'PATCH',
+          prefer: 'return=representation',
+          body: { status: 'queued', progress: 5, metadata: prepMeta },
+        }).catch(() => null);
+        await recordPoolAccountOutcome(env, account, { success: true });
+        return { credits: price, row: prepRows?.[0] || { ...spentState.row, status: 'queued', progress: 5, metadata: prepMeta } };
+      }
+
+      const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
+      if (!taskId) {
+        await recordPoolAccountOutcome(env, account, { success: false, error: 'ID tugas dance video tidak valid' });
+        const fullMsg = await refundDanceSpend(
+          'Refund: ID tugas dance video tidak diterima dari Freebeat',
+          'Freebeat tidak mengembalikan ID tugas yang valid.',
+          502,
+        );
+        throw fail(fullMsg, 502);
+      }
+
+      const sessionUrl = safeImageUrl(content.session_url);
+      const submittedPatch = {
+        external_job_id: taskId,
+        polling_url: sessionUrl || null,
+        status: 'in_progress',
+        progress: 10,
+        metadata: activeMeta,
+      };
+      const updated = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, {
+        method: 'PATCH',
+        prefer: 'return=representation',
+        body: submittedPatch,
+      }).catch(() => null);
+      await recordPoolAccountOutcome(env, account, { success: true });
+      return { credits: price, row: updated?.[0] || { ...spentState.row, ...submittedPatch } };
     }
-  } catch (err) {
-    if (err?.status === 409) throw err;
   }
 
-  const genId = crypto.randomUUID();
-  const spent = await dbRpc(env, 'spend_credits', {
-    p_user_id: user.id,
-    p_amount: price,
-    p_description: 'Generasi video freebeat model generate_dance_video',
-    p_generation_id: genId,
-  });
-  if (!spent) {
-    const err = fail(`Kredit BLEA tidak cukup untuk generasi ini (butuh ${price} kredit).`, 402);
-    err.code = 'insufficient_credits';
-    err.credits_required = price;
+  const finalErrorMsg = await refundDanceSpend(
+    sawBalanceExhausted ? 'Refund: saldo gateway Freebeat habis setelah 3 putaran' : 'Refund: semua akun Freebeat gagal memproses dance video',
+    sawBalanceExhausted ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE : (lastFailoverError?.message || 'Semua akun Freebeat gagal memulai generasi dance video.'),
+    sawBalanceExhausted ? 503 : 502,
+  );
+  if (sawBalanceExhausted) {
+    const err = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+    err.code = 'gateway_balance_exhausted';
     throw err;
   }
-
-  const metadata = {
-    mode: 'dance_video',
-    music_id: String(musicId),
-    ...(input.imageUrls.length ? { image_urls: input.imageUrls } : {}),
-    accept_unknown_cost: acceptUnknownCost,
-    ...(maxCredits !== null ? { max_credits: maxCredits } : {}),
-    ...(providerQuote !== null ? { provider_quote: providerQuote } : {}),
-    ...(input.startMs !== undefined ? { start_ms: input.startMs, end_ms: input.endMs } : {}),
-  };
-
-  const insertBody = {
-    id: genId,
-    user_id: user.id,
-    provider: 'freebeat',
-    model: 'generate_dance_video',
-    prompt: input.prompt,
-    aspect_ratio: input.aspectRatio,
-    resolution: '720p',
-    duration: 15,
-    generate_audio: true,
-    image_url: input.imageUrls[0] || null,
-    video_url: null,
-    audio_url: input.audioUrl,
-    external_job_id: null,
-    polling_url: null,
-    credits_charged: price,
-    credits_refunded: 0,
-    status: 'queued',
-    progress: 5,
-    metadata,
-  };
-
-  let inserted = null;
-  try {
-    inserted = await dbJson(env, '/video_generations', { method: 'POST', prefer: 'return=representation', body: insertBody });
-  } catch { inserted = null; }
-  if (!Array.isArray(inserted) || inserted.length !== 1) {
-    try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat dance video tidak tersimpan', p_generation_id: genId }); } catch { /* manual review */ }
-    throw fail('Riwayat generasi dance tidak dapat disimpan; kredit BLEA dikembalikan.', 503);
-  }
-  const row = inserted[0];
-
-  const dispatchArgs = {
-    ...danceParams,
-    ...(acceptUnknownCost ? { accept_unknown_cost: true } : { max_credits: maxCredits }),
-  };
-
-  let content;
-  try {
-    const { result } = await rpc(session.accessToken, {
-      jsonrpc: '2.0',
-      id: 3,
-      method: 'tools/call',
-      params: { name: 'generate_dance_video', arguments: dispatchArgs },
-    }, 'generate', headers, 262144);
-    if (result?.isError) throw new Error('rejected');
-    content = modelContent(result);
-    if (!content || typeof content !== 'object') throw new Error('invalid');
-  } catch {
-    const refunded = await dbRpc(env, 'refund_credits', {
-      p_user_id: user.id,
-      p_amount: price,
-      p_description: 'Refund: Freebeat generate_dance_video gagal dikirim',
-      p_generation_id: genId,
-    }).catch(() => false);
-    const failedPatch = {
-      status: 'failed',
-      progress: 0,
-      error_message: `Permintaan dance video gagal dikirim ke Freebeat.${refunded ? ' Kredit BLEA dikembalikan.' : ''}`,
-      ...(refunded ? { credits_refunded: price } : {}),
-    };
-    await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
-    throw fail(failedPatch.error_message, 502);
-  }
-
-  if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
-    const prepMeta = { ...metadata, preparing_music_id: String(content.music_id), retry_after_seconds: Number(content.retry_after_seconds) || 10 };
-    const prepRows = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, {
-      method: 'PATCH',
-      prefer: 'return=representation',
-      body: { status: 'queued', progress: 5, metadata: prepMeta },
-    }).catch(() => null);
-    return { credits: price, row: prepRows?.[0] || { ...row, status: 'queued', progress: 5, metadata: prepMeta } };
-  }
-
-  const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
-  if (!taskId) {
-    const refunded = await dbRpc(env, 'refund_credits', {
-      p_user_id: user.id,
-      p_amount: price,
-      p_description: 'Refund: ID tugas dance video tidak diterima dari Freebeat',
-      p_generation_id: genId,
-    }).catch(() => false);
-    const failedPatch = {
-      status: 'failed',
-      progress: 0,
-      error_message: `Freebeat tidak mengembalikan ID tugas yang valid.${refunded ? ' Kredit BLEA dikembalikan.' : ''}`,
-      ...(refunded ? { credits_refunded: price } : {}),
-    };
-    await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
-    throw fail(failedPatch.error_message, 502);
-  }
-
-  const sessionUrl = safeImageUrl(content.session_url);
-  const submittedPatch = {
-    external_job_id: taskId,
-    polling_url: sessionUrl || null,
-    status: 'in_progress',
-    progress: 10,
-  };
-  const updated = await dbJson(env, `/video_generations?id=eq.${encodeURIComponent(genId)}`, {
-    method: 'PATCH',
-    prefer: 'return=representation',
-    body: submittedPatch,
-  }).catch(() => null);
-  return { credits: price, row: updated?.[0] || { ...row, ...submittedPatch } };
+  throw fail(finalErrorMsg, lastFailoverError?.status || 502);
 }
 
 export async function consumerDanceStatus(env, row) {
-  const loaded = await loadProviderSession(env);
-  if (!loaded?.imageAccess) {
+  const preferredAccountId = row?.metadata?.freebeat_account_id || null;
+  const usable = await loadPreferredAccountSession(env, preferredAccountId);
+  if (!usable?.session?.imageAccess) {
     return {
       nextStatus: row.status,
       nextProgress: Number(row.progress || 0),
@@ -2224,7 +3049,7 @@ export async function consumerDanceStatus(env, row) {
       pollWarning: 'Sesi Freebeat tidak tersedia sementara.',
     };
   }
-  const opened = await openMcpSession(env, loaded);
+  const opened = await openMcpSessionForAccount(env, usable);
   const session = opened.session;
   const headers = opened.headers;
   const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? { ...row.metadata } : {};

@@ -1738,3 +1738,42 @@
 .alibaba-blea-badge.is-chat{border-color:var(--primary);color:var(--primary)}
 .alibaba-blea-badge.is-image{border-color:#0ea5e9;color:#0ea5e9}
 .admin-model-chip.is-on{border-color:var(--primary);color:var(--primary)}
+
+/* ---- Freebeat OAuth multi-account pool ---- */
+.freebeat-oauth-metrics{margin-bottom:14px}
+.freebeat-oauth-add-form{display:grid;grid-template-columns:1.3fr 1fr auto;gap:8px;margin:14px 0 8px;align-items:center}
+.freebeat-oauth-add-form input{background:var(--background);border:1px solid var(--border);border-radius:8px;padding:9px 11px;color:inherit;font:inherit;font-size:13px;min-width:0}
+@media (max-width:960px){.freebeat-oauth-add-form{grid-template-columns:1fr}}
+.freebeat-oauth-tip{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;margin:6px 0 12px;border:1px dashed var(--border);border-radius:10px;font-size:12px;line-height:1.55;color:var(--muted-foreground)}
+.freebeat-oauth-tip svg{flex:0 0 auto;margin-top:2px}
+.freebeat-oauth-tip code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;padding:0 4px;border-radius:4px;background:var(--background)}
+.freebeat-oauth-notice.is-success{border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.1);color:#16a34a}
+.dark .freebeat-oauth-notice.is-success{color:#4ade80}
+.freebeat-oauth-notice.is-warn{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.1);color:#d97706}
+.dark .freebeat-oauth-notice.is-warn{color:#fbbf24}
+.freebeat-oauth-notice.is-error{border-color:var(--destructive);background:rgba(239,68,68,.1);color:var(--destructive)}
+.freebeat-oauth-card-head{display:flex;align-items:center;gap:10px;flex:1 1 420px;min-width:0}
+.freebeat-oauth-inputs{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(160px,1fr);gap:10px;flex:1;min-width:0}
+@media (max-width:720px){.freebeat-oauth-inputs{grid-template-columns:1fr}}
+.freebeat-oauth-inline-field{display:flex;flex-direction:column;gap:3px;min-width:0}
+.freebeat-oauth-inline-field span{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;color:var(--muted-foreground)}
+.freebeat-oauth-email-input{background:var(--background);border:1px solid var(--border);border-radius:7px;color:inherit;font:inherit;font-size:13px;font-weight:600;padding:5px 9px;min-width:0}
+.freebeat-oauth-email-input:focus{outline:none;border-color:var(--primary)}
+.freebeat-oauth-badges{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.freebeat-oauth-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:999px;padding:3px 10px;font-size:11.5px;color:var(--muted-foreground);background:var(--background)}
+.freebeat-oauth-pill.is-ok{border-color:rgba(34,197,94,.45);color:#16a34a}
+.dark .freebeat-oauth-pill.is-ok{color:#4ade80}
+.freebeat-oauth-pill.is-warn{border-color:rgba(245,158,11,.45);color:#d97706}
+.dark .freebeat-oauth-pill.is-warn{color:#fbbf24}
+.freebeat-oauth-pill.is-danger{border-color:rgba(239,68,68,.45);color:#ef4444}
+.freebeat-oauth-fail-count{color:#f59e0b;font-weight:600}
+.freebeat-oauth-flow-box{display:grid;gap:10px;margin:14px 0}
+.freebeat-oauth-step{display:flex;align-items:flex-start;gap:12px;border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--card,var(--background))}
+.freebeat-oauth-step.is-alert{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.06)}
+.freebeat-oauth-step strong{display:block;font-size:13.5px;margin-bottom:4px}
+.freebeat-oauth-step p{margin:0;font-size:12.5px;line-height:1.55;color:var(--muted-foreground)}
+.freebeat-oauth-step code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;padding:1px 5px;border-radius:5px;background:var(--background);color:var(--foreground)}
+.freebeat-oauth-summary-table{overflow-x:auto;margin-top:12px}
+.freebeat-oauth-summary-table table{width:100%;border-collapse:collapse}
+.spin{animation:freebeat-spin 1s linear infinite}
+@keyframes freebeat-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}

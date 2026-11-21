@@ -58,6 +58,7 @@ function App() {
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />
+              <Route path="/admin/freebeat-oauth" element={<AdminPage initialTab="freebeat-oauth" />} />
               <Route path="/admin/freebeat" element={<FreebeatPage />} />
               <Route path="/tempmail" element={<TempMailPage />} />
             </Route>
