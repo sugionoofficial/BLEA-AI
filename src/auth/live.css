@@ -122,6 +122,9 @@
 }
 
 .dropx-shell .live-refresh-icon.is-spinning {
+  display: inline-block;
+  flex-shrink: 0;
+  transform-origin: center;
   animation: live-spin 0.9s linear infinite;
 }
 
