@@ -1353,6 +1353,10 @@ function safeTask(content) {
   const images = Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.image_url)).filter(Boolean) : [];
   const billing = {};
   for (const field of ['charged', 'refunded', 'net']) billing[field] = typeof content.billing?.[field] === 'number' && Number.isFinite(content.billing[field]) ? content.billing[field] : null;
+  if (billing.charged === null && Array.isArray(content.items)) {
+    const usedCredits = content.items.slice(0, 10).map((item) => item?.used_credits).filter((v) => typeof v === 'number' && Number.isFinite(v));
+    if (usedCredits.length > 0) billing.charged = usedCredits.reduce((sum, v) => sum + v, 0);
+  }
   const refunds = new Set(['none', 'pending', 'completed', 'failed', 'not_applicable']);
   billing.refund_state = refunds.has(content.billing?.refund_state) ? content.billing.refund_state : null;
   return { status, images, billing };
@@ -1440,6 +1444,7 @@ async function submitVideo(env, user, session, request) {
   }
   let taskId;
   let initialDiagnostics = null;
+  let batchSummary = null;
   try {
     // Dispatch mirrors the official generate_video schema (model_id, prompt,
     // generation_type enum string, images, duration, resolution, aspect_ratio,
@@ -1450,13 +1455,20 @@ async function submitVideo(env, user, session, request) {
     const content = modelContent(result);
     if (!content || typeof content.batch_id !== 'string' || !TASK_ID.test(content.batch_id)) throw new Error('unrecognized');
     taskId = content.batch_id;
+    if (typeof content.accepted_count === 'number' || typeof content.failed_count === 'number' || typeof content.accepted_credits === 'number') {
+      batchSummary = {
+        accepted_count: typeof content.accepted_count === 'number' && Number.isFinite(content.accepted_count) ? content.accepted_count : null,
+        failed_count: typeof content.failed_count === 'number' && Number.isFinite(content.failed_count) ? content.failed_count : null,
+        accepted_credits: typeof content.accepted_credits === 'number' && Number.isFinite(content.accepted_credits) ? content.accepted_credits : null,
+      };
+    }
   } catch {
     try { await videoMark(env, user.id, ticket.id, 'unknown'); } catch { /* retain lock */ }
     return { id: ticket.id, status: 'unknown', ...(input.private_diagnostics === true ? { initial_diagnostics: initialDiagnostics || { received: false, messages: [] } } : {}) };
   }
   try { await videoMark(env, user.id, ticket.id, 'submitted', taskId); }
-  catch { return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId, ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}) }; }
-  return { id: ticket.id, status: 'submitted', ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}) };
+  catch { return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId, ...(batchSummary ? { batch_summary: batchSummary } : {}), ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}) }; }
+  return { id: ticket.id, status: 'submitted', ...(batchSummary ? { batch_summary: batchSummary } : {}), ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}) };
 }
 async function videoTests(env, user, session) {
   const rows = await videoDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,model_id,quote_credits,max_credits,status,created_at,session_hash&order=created_at.desc&limit=20`);
@@ -1478,6 +1490,24 @@ function safeVideoFailure(value) {
     retryable: typeof value.retryable === 'boolean' ? value.retryable : null,
   };
 }
+function safeOpenRpcFailure(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const rawCode = value.error_code ?? value.code;
+  const reason = typeof rawCode === 'string' && VIDEO_FAILURE_REASONS.has(rawCode.toLowerCase()) ? rawCode.toLowerCase() : null;
+  const errorCode = !reason && ((typeof rawCode === 'number' && Number.isSafeInteger(rawCode)) || (typeof rawCode === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(rawCode))) ? String(rawCode) : null;
+  const hasMessage = (typeof value.error_message === 'string' && value.error_message.trim().length > 0) || (typeof value.message === 'string' && value.message.trim().length > 0);
+  const itemFailed = ['failed', 'failure', 'rejected', 'error'].includes(String(value.status || '').toLowerCase());
+  const hasUnmappedCode = rawCode !== undefined && rawCode !== null && !reason && !errorCode;
+  if (!reason && !errorCode && !hasMessage && !itemFailed && !hasUnmappedCode) return null;
+  return {
+    stage: null,
+    stage_hidden: false,
+    reason,
+    reason_hidden: Boolean(hasMessage || hasUnmappedCode),
+    retryable: null,
+    ...(errorCode ? { error_code: errorCode } : {}),
+  };
+}
 async function videoTaskContent(env, user, session, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID uji tidak valid.', 400);
   const rows = await videoDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash&limit=1`);
@@ -1496,7 +1526,12 @@ async function videoTaskContent(env, user, session, input) {
 async function pollVideo(env, user, session, request) {
   const content = await videoTaskContent(env, user, session, await imageJson(request));
   const summary = safeTask(content);
-  return { status: summary.status, billing: summary.billing, videos: Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.video_url)).filter(Boolean) : [], failure: safeVideoFailure(content.failure), item_failures: Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeVideoFailure(item?.failure)).filter(Boolean) : [] };
+  const failedStatus = ['failed', 'partial_failed', 'action_required'].includes(summary.status);
+  const failure = content.failure ? safeVideoFailure(content.failure) : (failedStatus ? safeOpenRpcFailure(content) : null);
+  const item_failures = Array.isArray(content.items)
+    ? content.items.slice(0, 10).map((item) => item?.failure ? safeVideoFailure(item.failure) : safeOpenRpcFailure(item)).filter(Boolean)
+    : [];
+  return { status: summary.status, billing: summary.billing, videos: Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.video_url)).filter(Boolean) : [], failure, item_failures };
 }
 // Best-effort redaction only. Free-form provider text may still include sensitive
 // data; reveal to the submitting admin only, on explicit request, never log it.
@@ -1543,11 +1578,15 @@ function privateModelHelp(value) {
   return { help: visit(value, 0), truncated };
 }
 
+function formatProviderCode(value, prefix) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${prefix}: ${value}` : value;
+}
+
 // Extract only selected batch/item message fields from the original create
 // response. The provider body is not stored or logged; redaction is best effort.
 function initialVideoMessages(result) {
   const candidates = [];
-  const fields = (value) => [value?.failure?.reason, value?.error_code, value?.error_message, value?.message, value?.error?.message];
+  const fields = (value) => [value?.failure?.reason, formatProviderCode(value?.error_code, 'error_code'), formatProviderCode(value?.code, 'code'), value?.error_message, value?.message, value?.error?.message];
   function collect(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
     candidates.push(...fields(value));
@@ -1570,13 +1609,23 @@ async function privateVideoFailure(env, user, session, request) {
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['id', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi privasi diperlukan.', 400);
   const content = await videoTaskContent(env, user, session, { id: input.id, acknowledge: true });
-  if (!['failed', 'partial_failed', 'action_required'].includes(content.status)) throw fail('Pesan kegagalan tidak tersedia untuk status ini.', 409);
-  // Status responses can carry useful details in failure.reason, error_message
-  // or message at batch/item level. The original create response is not stored,
-  // so this can only reveal fields that get_task_status still returns.
-  const fields = (value) => [value?.failure?.reason, value?.error_code, value?.error_message, value?.message];
+  const status = String(content.status || '').toLowerCase();
+  if (!['failed', 'partial_failed', 'action_required', 'rejected'].includes(status)) throw fail('Pesan kegagalan tidak tersedia untuk status ini.', 409);
+  // Status responses can carry useful details in failure.reason, error_code,
+  // code, error_message or message at batch/item level.
+  const fields = (value) => [value?.failure?.reason, formatProviderCode(value?.error_code, 'error_code'), formatProviderCode(value?.code, 'code'), value?.error_message, value?.message];
   const candidates = [...fields(content), ...(Array.isArray(content.items) ? content.items.slice(0, 10).flatMap(fields) : [])];
   const reasons = [...new Set(candidates.map(privateFailureReason).filter(Boolean))];
+  if (reasons.length === 0 && Array.isArray(content.items)) {
+    for (const [idx, item] of content.items.slice(0, 10).entries()) {
+      const itemStatus = typeof item?.status === 'string' && item.status.trim() ? item.status.trim() : null;
+      const usedCredits = typeof item?.used_credits === 'number' && Number.isFinite(item.used_credits) ? item.used_credits : null;
+      if (itemStatus || usedCredits !== null) {
+        const line = privateFailureReason(`Item #${idx + 1}: status=${itemStatus || '-'}, used_credits=${usedCredits ?? '-'}`);
+        if (line) reasons.push(line);
+      }
+    }
+  }
   return { reasons };
 }
 

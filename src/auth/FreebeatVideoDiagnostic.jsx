@@ -372,7 +372,14 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
     try {
       const result = await request('video-submit', 'POST', { approval: receipt, confirm: true, ...(capture ? { private_diagnostics: true } : {}) });
       if (capture && version === visibilityVersion.current) setInitialDiagnostics(result.initial_diagnostics || { received: false, messages: [] });
-      if (result.status === 'submitted') setTestNotice('Permintaan diterima untuk dipantau, bukan konfirmasi video selesai atau biaya akhir.');
+      if (result.status === 'submitted') {
+        const bs = result.batch_summary;
+        if (bs && (bs.accepted_count === 0 || (bs.failed_count ?? 0) > 0)) {
+          setTestNotice(`Freebeat membuat batch ID, tetapi melaporkan accepted_count=${bs.accepted_count ?? '-'}, failed_count=${bs.failed_count ?? '-'}, accepted_credits=${bs.accepted_credits ?? '-'}. Klik "Periksa status video" lalu buka "Tampilkan pesan kegagalan pribadi" untuk melihat alasan penolakan Freebeat.`);
+        } else {
+          setTestNotice('Permintaan diterima untuk dipantau, bukan konfirmasi video selesai atau biaya akhir.');
+        }
+      }
       else setError(`Hasil pengiriman tidak pasti dan mungkin sudah memakai kredit. Jangan ulangi; periksa Freebeat dan catatan uji.${result.recoveryTaskId ? ` ID tugas untuk pemulihan pribadi: ${result.recoveryTaskId}` : ''}`);
     } catch (err) {
       if (capture && version === visibilityVersion.current) setInitialDiagnostics({ received: false, messages: [] });
@@ -615,6 +622,16 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
         {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={busy} onClick={() => poll(test.id)}>Periksa status video</button></div>}
         {taskResults[test.id] && <div className="freebeat-task-result"><p>Status tugas: {taskResults[test.id].status}. Biaya/refund yang tidak dilaporkan tidak diketahui.</p><pre>{JSON.stringify(taskResults[test.id].billing, null, 2)}</pre>
           {['failed', 'partial_failed', 'action_required'].includes(taskResults[test.id].status) && <>
+            {(() => {
+              const t = taskResults[test.id];
+              const entries = [t.failure, ...(Array.isArray(t.item_failures) ? t.item_failures : [])].filter(Boolean);
+              const codes = entries.map((entry) => [entry.stage ? `stage=${entry.stage}` : null, entry.reason ? `reason=${entry.reason}` : null, entry.error_code ? `error_code=${entry.error_code}` : null].filter(Boolean).join(', ')).filter(Boolean);
+              const needsPrivateView = entries.length === 0 || entries.some((entry) => entry.reason_hidden || (!entry.reason && !entry.error_code));
+              return <>
+                {codes.length > 0 && <p>Ringkasan kode kegagalan tersaring: {codes.join(' | ')}.</p>}
+                {needsPrivateView && <div className="freebeat-alert">Penyebab rinci belum tercantum pada ringkasan tersaring (pesan mentah disembunyikan demi privasi atau memakai format non-standar). Centang konfirmasi di bawah lalu klik <strong>Tampilkan pesan kegagalan pribadi</strong> untuk melihat kode/pesan asli dari Freebeat.</div>}
+              </>;
+            })()}
             <p>Rincian kegagalan di bawah disaring; nilai kosong berarti tidak diketahui atau tidak dilaporkan. Pesan bebas disembunyikan demi privasi. Nilai retryable bukan persetujuan membuat ulang video.</p>
             <FreebeatCopyResult title="Status video dan rincian kegagalan yang disaring" value={{ status: taskResults[test.id].status, billing: taskResults[test.id].billing, failure: taskResults[test.id].failure, item_failures: taskResults[test.id].item_failures }} />
             {(test.canPoll || Boolean(taskResults[test.id])) && connected && <div className="freebeat-result">
