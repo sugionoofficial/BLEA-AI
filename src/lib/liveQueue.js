@@ -1,3 +1,33 @@
+export function maskEmailAfter4(email) {
+  const raw = String(email || '').trim();
+  if (!raw) return '';
+  const atIdx = raw.indexOf('@');
+  if (atIdx <= 0) {
+    const keep = raw.length > 4 ? 4 : Math.max(1, raw.length - 1);
+    return `${raw.slice(0, keep)}****`;
+  }
+  const local = raw.slice(0, atIdx);
+  const domain = raw.slice(atIdx + 1);
+  const keep = local.length > 4 ? 4 : Math.max(1, local.length - 1);
+  const maskedLocal = `${local.slice(0, keep)}****`;
+  return domain ? `${maskedLocal}@${domain}` : maskedLocal;
+}
+
+export function resolveOwnerName(profile, email, { isOwn = false, viewerName = '' } = {}) {
+  const fromProfile = String(profile?.full_name || '').trim();
+  if (fromProfile) return fromProfile.slice(0, 80);
+  const fromViewer = isOwn ? String(viewerName || '').trim() : '';
+  if (fromViewer) return fromViewer.slice(0, 80);
+  const rawEmail = String(email || '').trim();
+  const atIdx = rawEmail.indexOf('@');
+  if (atIdx > 0) {
+    const local = rawEmail.slice(0, atIdx);
+    const keep = local.length > 4 ? 4 : Math.max(1, local.length - 1);
+    return `${local.slice(0, keep)}****`;
+  }
+  return 'Pengguna BLEA';
+}
+
 export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
   const createdMs = Date.parse(row?.created_at || '') || nowMs;
   const updatedMs = Date.parse(row?.updated_at || row?.created_at || '') || createdMs;
@@ -31,7 +61,11 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
   return null;
 }
 
-export function formatLiveQueueItem(row, kind, { isAdmin = false, viewerId = '', emailMap = null, nowMs = Date.now() } = {}) {
+export function formatLiveQueueItem(
+  row,
+  kind,
+  { isAdmin = false, viewerId = '', viewerName = '', emailMap = null, profileMap = null, nowMs = Date.now() } = {},
+) {
   const isOwn = Boolean(viewerId && row?.user_id === viewerId);
   const diagnostic = diagnosePendingGeneration(kind, row, nowMs);
   const canPoll = kind === 'image'
@@ -40,6 +74,11 @@ export function formatLiveQueueItem(row, kind, { isAdmin = false, viewerId = '',
         ['queued', 'in_progress'].includes(row?.status)
         && (row?.external_job_id || row?.polling_url || (row?.provider === 'freebeat' && row?.metadata?.preparing_music_id)),
       );
+  const profile = profileMap?.get(row.user_id) || null;
+  const rawEmail = profile?.email ?? emailMap?.get(row.user_id) ?? null;
+  const ownerName = resolveOwnerName(profile, rawEmail, { isOwn, viewerName });
+  const ownerEmailMasked = rawEmail ? maskEmailAfter4(rawEmail) : null;
+
   const item = {
     id: row.id,
     kind,
@@ -51,6 +90,8 @@ export function formatLiveQueueItem(row, kind, { isAdmin = false, viewerId = '',
     created_at: row.created_at,
     updated_at: row.updated_at || row.created_at,
     is_own: isOwn,
+    owner_name: ownerName,
+    owner_email_masked: ownerEmailMasked,
     has_external_job: Boolean(row?.external_job_id),
     can_poll: canPoll,
     stalled: Boolean(diagnostic),
@@ -66,7 +107,7 @@ export function formatLiveQueueItem(row, kind, { isAdmin = false, viewerId = '',
   }
   if (isAdmin) {
     item.user_id = row.user_id;
-    item.user_email = emailMap?.get(row.user_id) || null;
+    item.user_email = rawEmail;
     item.external_job_id = row.external_job_id || null;
     item.agent_status = row?.metadata?.agent_status || null;
     item.can_cancel = true;

@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, AlertTriangle, Clock, Film, Image as ImageIcon, RefreshCw, ShieldAlert, XCircle } from 'lucide-react';
+import {
+  Activity,
+  AlertTriangle,
+  Clock,
+  Film,
+  Image as ImageIcon,
+  RefreshCw,
+  ShieldAlert,
+  UserRound,
+  XCircle,
+} from 'lucide-react';
 import { cancelAdminGeneration, fetchLiveGenerations } from '../api/generation';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
 import { formatElapsedHuman, formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
+import { maskEmailAfter4 } from '../lib/liveQueue';
 import { useCredits } from '../lib/useCredits';
 import { useAuth } from './AuthProvider';
 import './live.css';
@@ -16,6 +27,23 @@ const STATUS_LABELS = {
   unknown: 'Status Tidak Pasti',
   cancelled: 'Dibatalkan',
 };
+
+function getOwnerInitials(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return 'BL';
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase();
+}
+
+function formatShortTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('id-ID', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 export function LiveQueuePage() {
   const { user } = useAuth();
@@ -85,7 +113,6 @@ export function LiveQueuePage() {
     return () => clearInterval(timer);
   }, [user?.id, pollIntervalMs, loadLive]);
 
-  // 1-second live runtime clock while viewing /live
   const clientNowMs = useNowTick(true, 1000);
   const effectiveNowMs = clientNowMs + serverOffsetMs;
 
@@ -152,15 +179,15 @@ export function LiveQueuePage() {
               </span>
               {isAdmin && (
                 <span className="live-pill is-stalled">
-                  <ShieldAlert size={13} aria-hidden="true" />
+                  <ShieldAlert size={12} aria-hidden="true" />
                   Mode Admin · Pembatalan &amp; Refund Aktif
                 </span>
               )}
             </div>
             <p className="live-hero-desc">
               {isAdmin
-                ? 'Menampilkan seluruh proses aktif di platform beserta akun pemilik, ID job upstream, diagnosa hambatan, dan tombol Cancel + Refund kredit otomatis.'
-                : 'Semua proses generasi yang sedang berjalan di platform ditampilkan secara live dengan durasi waktu nyata. Proses milik pengguna lain disamarkan demi privasi.'}
+                ? 'Pantau seluruh proses aktif secara real-time dengan nama akun, email tersensor, durasi berjalan, diagnosa hambatan, dan tombol Cancel + Refund otomatis.'
+                : 'Semua proses generasi yang sedang berjalan di platform ditampilkan secara live dengan nama akun dan email tersensor; prompt milik pengguna lain disamarkan demi privasi.'}
             </p>
           </div>
           <div className="live-toolbar-actions">
@@ -170,7 +197,7 @@ export function LiveQueuePage() {
               onClick={() => loadLive({ poll: true, background: false })}
               disabled={syncing}
             >
-              <RefreshCw size={15} aria-hidden="true" />
+              <RefreshCw size={15} className={`live-refresh-icon ${syncing ? 'is-spinning' : ''}`} aria-hidden="true" />
               {syncing ? 'Menyinkronkan…' : 'Perbarui & Cek Status'}
             </button>
           </div>
@@ -178,20 +205,40 @@ export function LiveQueuePage() {
 
         <div className="live-stats-row">
           <div className="live-stat-card">
-            <span className="live-stat-label">Sedang Berjalan</span>
-            <span className="live-stat-value">{counts.total}</span>
+            <div className="live-stat-meta">
+              <span className="live-stat-label">Sedang Berjalan</span>
+              <span className="live-stat-value">{counts.total}</span>
+            </div>
+            <span className="live-stat-icon" aria-hidden="true">
+              <Activity size={18} />
+            </span>
           </div>
-          <div className="live-stat-card">
-            <span className="live-stat-label">Video Aktif</span>
-            <span className="live-stat-value">{counts.video}</span>
+          <div className="live-stat-card is-video">
+            <div className="live-stat-meta">
+              <span className="live-stat-label">Video Aktif</span>
+              <span className="live-stat-value">{counts.video}</span>
+            </div>
+            <span className="live-stat-icon" aria-hidden="true">
+              <Film size={18} />
+            </span>
           </div>
-          <div className="live-stat-card">
-            <span className="live-stat-label">Gambar Aktif</span>
-            <span className="live-stat-value">{counts.image}</span>
+          <div className="live-stat-card is-image">
+            <div className="live-stat-meta">
+              <span className="live-stat-label">Gambar Aktif</span>
+              <span className="live-stat-value">{counts.image}</span>
+            </div>
+            <span className="live-stat-icon" aria-hidden="true">
+              <ImageIcon size={18} />
+            </span>
           </div>
           <div className={`live-stat-card ${counts.stalled > 0 ? 'is-warn' : ''}`}>
-            <span className="live-stat-label">Perlu Perhatian / Macet</span>
-            <span className="live-stat-value">{counts.stalled}</span>
+            <div className="live-stat-meta">
+              <span className="live-stat-label">Perlu Perhatian</span>
+              <span className="live-stat-value">{counts.stalled}</span>
+            </div>
+            <span className="live-stat-icon" aria-hidden="true">
+              <AlertTriangle size={18} />
+            </span>
           </div>
         </div>
 
@@ -253,6 +300,8 @@ export function LiveQueuePage() {
               const elapsedClock = formatElapsedRuntime(item.created_at, effectiveNowMs);
               const elapsedHuman = formatElapsedHuman(item.created_at, effectiveNowMs);
               const canSeeFull = item.is_own || isAdmin;
+              const ownerName = item.owner_name || 'Pengguna BLEA';
+              const maskedEmail = item.owner_email_masked || (item.user_email ? maskEmailAfter4(item.user_email) : '—');
               const progressPct = item.kind === 'video'
                 ? Math.max(8, Math.min(100, Number(item.progress || 15)))
                 : (item.status === 'unknown' ? 100 : 65);
@@ -260,14 +309,14 @@ export function LiveQueuePage() {
               return (
                 <article
                   key={itemKey}
-                  className={`live-card ${item.stalled ? 'is-stalled' : ''}`}
+                  className={`live-card ${item.is_own ? 'is-own' : ''} ${item.stalled ? 'is-stalled' : ''}`}
                 >
                   <div className="live-card-top">
                     <div className="live-card-badges">
                       <span className="live-pill">
                         {item.kind === 'video'
-                          ? <Film size={12} aria-hidden="true" />
-                          : <ImageIcon size={12} aria-hidden="true" />}
+                          ? <Film size={11} aria-hidden="true" />
+                          : <ImageIcon size={11} aria-hidden="true" />}
                         {item.kind === 'video' ? 'Video' : 'Gambar'}
                       </span>
                       <span className="live-pill">{providerLabel}</span>
@@ -275,36 +324,45 @@ export function LiveQueuePage() {
                         <span className="live-badge-dot" aria-hidden="true" />
                         {STATUS_LABELS[item.status] || item.status}
                       </span>
-                      {item.is_own ? (
-                        <span className="live-pill is-own">Milik Anda</span>
-                      ) : (
-                        <span className="live-pill is-anon">
-                          {isAdmin ? (item.user_email || item.user_id || 'Pengguna') : 'Pengguna lain (disamarkan)'}
-                        </span>
-                      )}
                       {item.stalled && (
                         <span className="live-pill is-stalled">
-                          <AlertTriangle size={12} aria-hidden="true" />
-                          Perlu Perhatian
+                          <AlertTriangle size={11} aria-hidden="true" />
+                          Macet
                         </span>
                       )}
                     </div>
 
-                    <div className="live-runtime-box" title={`Mulai ${item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'}`}>
-                      <Clock size={13} aria-hidden="true" />
-                      <span>Berjalan: {elapsedClock}</span>
+                    <div
+                      className="live-runtime-box"
+                      title={`Mulai ${item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'}`}
+                    >
+                      <Clock size={12} aria-hidden="true" />
+                      <span>{elapsedClock}</span>
+                    </div>
+                  </div>
+
+                  <div className="live-owner-strip">
+                    <span className="live-owner-avatar" aria-hidden="true">
+                      {ownerName === 'Pengguna BLEA' ? <UserRound size={14} /> : getOwnerInitials(ownerName)}
+                    </span>
+                    <div className="live-owner-text">
+                      <div className="live-owner-name-row">
+                        <span className="live-owner-name">{ownerName}</span>
+                        {item.is_own && <span className="live-pill is-own">Milik Anda</span>}
+                      </div>
+                      <span className="live-owner-email">{maskedEmail}</span>
                     </div>
                   </div>
 
                   <div className="live-card-main">
-                    <h2 className="live-card-title">{modelLabel}</h2>
+                    <h2 className="live-card-title" title={modelLabel}>{modelLabel}</h2>
                     {canSeeFull ? (
                       <p className="live-card-prompt">
                         {item.prompt || '(Permintaan berbasis media tanpa prompt teks)'}
                       </p>
                     ) : (
                       <p className="live-card-prompt">
-                        Prompt dan pratinjau media disembunyikan untuk menjaga privasi pengguna lain.
+                        Prompt &amp; media milik pengguna lain disamarkan demi privasi.
                       </p>
                     )}
 
@@ -315,98 +373,112 @@ export function LiveQueuePage() {
                       <span className="live-progress-label">
                         {item.kind === 'video'
                           ? `${Number(item.progress || 0)}%`
-                          : (item.status === 'unknown' ? 'Tidak pasti' : 'Proses')}
+                          : (item.status === 'unknown' ? 'Tdk Pasti' : 'Proses')}
                       </span>
                     </div>
 
                     {item.diagnostic && (
                       <div className="live-diagnostic" role="note">
-                        <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
+                        <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
                         <span>{item.diagnostic}</span>
                       </div>
                     )}
                   </div>
 
-                  <div className="live-card-meta">
-                    <div className="live-meta-items">
-                      <span>Durasi berjalan: {elapsedHuman}</span>
-                      <span>Mulai: {item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'}</span>
-                      <span>Update terakhir: {item.updated_at ? new Date(item.updated_at).toLocaleString('id-ID') : '—'}</span>
-                      {canSeeFull && item.credits_charged > 0 && (
-                        <span>Biaya: {formatCredits(item.credits_charged)} kredit</span>
-                      )}
-                      {canSeeFull && item.kind === 'video' && (item.resolution || item.duration) && (
-                        <span>
-                          {[item.aspect_ratio, item.resolution, item.duration ? `${item.duration}s` : null].filter(Boolean).join(' · ')}
-                        </span>
-                      )}
-                      {isAdmin && (
-                        <span>
-                          Job ID: {item.external_job_id || 'belum tersimpan'}
-                        </span>
-                      )}
+                  <div className="live-telemetry-grid">
+                    <div className="live-telemetry-cell">
+                      <span className="live-telemetry-label">Berjalan</span>
+                      <span className="live-telemetry-value">{elapsedHuman}</span>
                     </div>
-
-                    <div className="live-admin-actions">
-                      {item.is_own && (
-                        <Link className="live-link-btn" to={`/history?highlight=${encodeURIComponent(item.id)}`}>
-                          Lihat di History
-                        </Link>
-                      )}
-                      {isAdmin && !isConfirming && (
-                        <button
-                          type="button"
-                          className="live-cancel-btn"
-                          onClick={() => {
-                            setConfirmKey(itemKey);
-                            setCancelReason('');
-                          }}
-                        >
-                          <XCircle size={14} aria-hidden="true" />
-                          Batalkan &amp; Refund
-                        </button>
-                      )}
+                    <div className="live-telemetry-cell">
+                      <span className="live-telemetry-label">Mulai</span>
+                      <span className="live-telemetry-value">{formatShortTime(item.created_at)}</span>
+                    </div>
+                    <div className="live-telemetry-cell">
+                      <span className="live-telemetry-label">Update</span>
+                      <span className="live-telemetry-value">{formatShortTime(item.updated_at)}</span>
+                    </div>
+                    <div className="live-telemetry-cell">
+                      <span className="live-telemetry-label">{canSeeFull ? 'Biaya / Spek' : 'Status'}</span>
+                      <span className="live-telemetry-value">
+                        {canSeeFull
+                          ? (item.credits_charged > 0
+                              ? `${formatCredits(item.credits_charged)} kredit`
+                              : ([item.aspect_ratio, item.resolution, item.duration ? `${item.duration}s` : null].filter(Boolean).join(' · ') || 'Aktif'))
+                          : (STATUS_LABELS[item.status] || item.status)}
+                      </span>
                     </div>
                   </div>
+
+                  {(item.is_own || isAdmin) && (
+                    <div className="live-card-footer">
+                      {isAdmin && (
+                        <span className="live-job-id" title={item.external_job_id || 'belum tersimpan'}>
+                          ID: {item.external_job_id || 'belum tersimpan'}
+                        </span>
+                      )}
+                      <div className="live-admin-actions">
+                        {item.is_own && (
+                          <Link className="live-link-btn" to={`/history?highlight=${encodeURIComponent(item.id)}`}>
+                            History
+                          </Link>
+                        )}
+                        {isAdmin && !isConfirming && (
+                          <button
+                            type="button"
+                            className="live-cancel-btn"
+                            onClick={() => {
+                              setConfirmKey(itemKey);
+                              setCancelReason('');
+                            }}
+                          >
+                            <XCircle size={13} aria-hidden="true" />
+                            Batalkan &amp; Refund
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {isAdmin && isConfirming && (
                     <div className="live-confirm-panel" role="region" aria-label="Konfirmasi pembatalan proses">
                       <span>
-                        Batalkan proses <strong>{modelLabel}</strong>
-                        {item.user_email ? ` (${item.user_email})` : ''}
+                        Batalkan <strong>{modelLabel}</strong> ({ownerName} · {maskedEmail})
                         {item.credits_charged > 0
-                          ? ` dan kembalikan ${formatCredits(item.credits_charged)} kredit BLEA secara otomatis?`
+                          ? ` & refund ${formatCredits(item.credits_charged)} kredit BLEA?`
                           : '?'}
                       </span>
                       <div className="live-confirm-row">
                         <input
                           type="text"
                           className="live-reason-input"
-                          placeholder="Alasan pembatalan (opsional, misalnya: antrean provider macet)"
+                          placeholder="Alasan pembatalan (opsional)"
                           maxLength={180}
                           value={cancelReason}
                           onChange={(e) => setCancelReason(e.target.value)}
                           disabled={isBusyCancel}
                         />
-                        <button
-                          type="button"
-                          className="live-confirm-submit"
-                          disabled={isBusyCancel}
-                          onClick={() => handleConfirmCancel(item)}
-                        >
-                          {isBusyCancel ? 'Membatalkan…' : 'Ya, Batalkan & Refund'}
-                        </button>
-                        <button
-                          type="button"
-                          className="live-confirm-abort"
-                          disabled={isBusyCancel}
-                          onClick={() => {
-                            setConfirmKey('');
-                            setCancelReason('');
-                          }}
-                        >
-                          Tutup
-                        </button>
+                        <div className="live-confirm-btns">
+                          <button
+                            type="button"
+                            className="live-confirm-submit"
+                            disabled={isBusyCancel}
+                            onClick={() => handleConfirmCancel(item)}
+                          >
+                            {isBusyCancel ? 'Membatalkan…' : 'Ya, Batalkan & Refund'}
+                          </button>
+                          <button
+                            type="button"
+                            className="live-confirm-abort"
+                            disabled={isBusyCancel}
+                            onClick={() => {
+                              setConfirmKey('');
+                              setCancelReason('');
+                            }}
+                          >
+                            Tutup
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
