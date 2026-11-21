@@ -13,6 +13,7 @@ export function FreebeatVocalSchemaDiagnostic({ connected, loading, request }) {
   useEffect(() => {
     if (!connected) {
       requestVersion.current += 1;
+      setBusy(false);
       setSchemas(null);
       setError('');
       setDetailConsent(false);

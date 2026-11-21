@@ -197,8 +197,10 @@ test('FreebeatVocalSchemaDiagnostic renders safe & detailed inspection, enforces
   const { FreebeatVocalSchemaDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVocalSchemaDiagnostic.jsx');
 
   const calls = [];
+  let deferred = null;
   const request = async (...args) => {
     calls.push(args);
+    if (deferred) return deferred.promise;
     const body = args[2] || {};
     return {
       ok: true,
@@ -250,6 +252,35 @@ test('FreebeatVocalSchemaDiagnostic renders safe & detailed inspection, enforces
     })));
     assert.equal(document.querySelector('textarea[aria-label="Struktur tool Singing & Lip-Sync Video"]'), null);
     assert.equal(document.querySelector('input[type=checkbox]').checked, false);
+
+    // Reconnect, start an in-flight request, disconnect mid-request, then reconnect again: busy must be reset
+    await React.act(async () => root.render(React.createElement(FreebeatVocalSchemaDiagnostic, {
+      connected: true,
+      loading: false,
+      request,
+    })));
+    let resolvePending;
+    deferred = { promise: new Promise((resolve) => { resolvePending = resolve; }) };
+    await React.act(async () => { button('Periksa skema Singing & Lip-Sync').click(); });
+    assert.ok(button('Memeriksa…'));
+    await React.act(async () => root.render(React.createElement(FreebeatVocalSchemaDiagnostic, {
+      connected: false,
+      loading: false,
+      request,
+    })));
+    await React.act(async () => {
+      resolvePending({ ok: true, mode: 'safe', tools: { generate_singing_video: { type: 'object' } }, available_tools: [], missing_tools: [], truncated: false });
+      await deferred.promise;
+    });
+    deferred = null;
+    await React.act(async () => root.render(React.createElement(FreebeatVocalSchemaDiagnostic, {
+      connected: true,
+      loading: false,
+      request,
+    })));
+    assert.equal(button('Periksa skema Singing & Lip-Sync').disabled, false);
+    assert.equal(document.querySelector('input[type=checkbox]').disabled, false);
+    assert.equal(document.querySelector('textarea[aria-label="Struktur tool Singing & Lip-Sync Video"]'), null);
   } finally {
     await React.act(async () => root.unmount());
     await vite.close();
