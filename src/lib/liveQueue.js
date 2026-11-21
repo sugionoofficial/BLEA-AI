@@ -66,7 +66,12 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
     return 'Agen Freebeat menunggu konfirmasi lanjutan; sistem memeriksa saldo/sesi dan mengirim nudge otomatis berkala atau admin dapat membatalkan.';
   }
   if (row?.provider === 'freebeat' && Number(row?.progress || 0) >= 90 && staleMs > 5 * 60_000) {
-    return 'Antrean Freebeat Music-to-Dance di tahap akhir (90%) tanpa pembaruan >5 menit (estimasi normal 15–60 menit, atau macet di sisi Freebeat).';
+    const fbLabel = row?.model === 'generate_singing_video'
+      ? 'Singing Video'
+      : row?.model === 'generate_lip_sync_video'
+        ? 'Lip-Sync Video'
+        : 'Music-to-Dance';
+    return `Antrean Freebeat ${fbLabel} di tahap akhir (90%) tanpa pembaruan >5 menit (estimasi normal 15–60 menit, atau macet di sisi Freebeat).`;
   }
   if (!row?.external_job_id && !(row?.provider === 'freebeat' && row?.metadata?.preparing_music_id) && !row?.polling_url) {
     return 'Task ID upstream belum tersimpan.';

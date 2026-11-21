@@ -109,6 +109,8 @@ test('/api/catalog supports freebeat and built-in provider fallback with provide
     assert.ok(fbIds.includes('80'));
     assert.ok(fbIds.includes('202'));
     assert.ok(fbIds.includes('generate_dance_video'));
+    assert.ok(fbIds.includes('generate_singing_video'));
+    assert.ok(fbIds.includes('generate_lip_sync_video'));
 
     const openaiRes = await worker.fetch(apiRequest('/api/catalog', { body: { provider: 'openai' } }), createEnv());
     assert.equal(openaiRes.status, 200);

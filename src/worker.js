@@ -47,13 +47,14 @@ import {
   patchImageGeneration as patchImageGenerationRow,
 } from './lib/liveQueue.js';
 import {
-  consumerDanceConfig,
   consumerDanceGenerate,
   consumerDanceStatus,
+  consumerFreebeatVideoConfigs,
   consumerImageConfig,
   consumerImageGenerate,
   consumerImageHistory,
   consumerImageStatus,
+  consumerVocalGenerate,
   fetchFreebeatCatalogModels,
   freebeatCallback,
   handleFreebeat,
@@ -3681,11 +3682,11 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
 
-      const [keysRes, modelsRes, pricesRes, danceCfg] = await Promise.all([
+      const [keysRes, modelsRes, pricesRes, freebeatCfgs] = await Promise.all([
         servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label'),
         servicePostgrest(env, '/provider_models?select=provider,model,active&active=eq.true&order=created_at.desc&limit=500'),
         servicePostgrest(env, '/credit_model_prices?modality=eq.video&active=eq.true&select=provider,model,credits&limit=500').catch(() => null),
-        consumerDanceConfig(env).catch(() => null),
+        consumerFreebeatVideoConfigs(env).catch(() => null),
       ]);
       const keyRows = await keysRes.json().catch(() => []);
       const dbModelRows = await modelsRes.json().catch(() => []);
@@ -3761,8 +3762,15 @@ async function handleApi(request, url, env) {
         });
       }
 
-      // 3. Freebeat MCP Dance Video (OAuth provider session + credit_model_prices)
+      // 3. Freebeat MCP Video Tools (Dance, Singing, Lip-Sync — OAuth provider session + credit_model_prices)
+      const danceCfg = freebeatCfgs?.generate_dance_video || null;
+      const singingCfg = freebeatCfgs?.generate_singing_video || null;
+      const lipSyncCfg = freebeatCfgs?.generate_lip_sync_video || null;
+      const anyFreebeatVideoReady = Boolean(freebeatCfgs?.provider_ready);
+      let hasAnyFreebeatVideo = false;
+
       if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
+        hasAnyFreebeatVideo = true;
         const danceCredits = Number.isSafeInteger(danceCfg.credits) ? danceCfg.credits : null;
         const dancePriced = Number.isSafeInteger(danceCredits) && danceCredits > 0;
         merged.set('freebeat:generate_dance_video', {
@@ -3791,6 +3799,72 @@ async function handleApi(request, url, env) {
         });
       }
 
+      if (singingCfg && (Number.isSafeInteger(singingCfg.credits) || singingCfg.provider_ready)) {
+        hasAnyFreebeatVideo = true;
+        const singingCredits = Number.isSafeInteger(singingCfg.credits) ? singingCfg.credits : null;
+        const singingPriced = Number.isSafeInteger(singingCredits) && singingCredits > 0;
+        merged.set('freebeat:generate_singing_video', {
+          id: 'generate_singing_video',
+          name: 'Singing Video (AI Vocal & MV)',
+          provider: 'freebeat',
+          providerLabel: 'Freebeat',
+          providerConfigured: singingCfg.provider_ready === true,
+          activeInAdmin: singingPriced,
+          online: singingCfg.provider_ready === true,
+          credits: singingPriced ? singingCredits : null,
+          priced: singingPriced,
+          isFree: false,
+          priceLabel: singingPriced ? `${singingCredits} kredit` : 'Tarif belum diatur',
+          aspectRatios: ['9:16', '16:9', '1:1'],
+          resolutions: ['720p'],
+          durations: [5, 10, 15, 20, 30],
+          singingModes: Array.isArray(singingCfg.singingModes) && singingCfg.singingModes.length ? singingCfg.singingModes : ['auto', 'duet'],
+          supportsImage: true,
+          supportsVideo: false,
+          supportsAudio: true,
+          supportsAudioInput: true,
+          supportsAudioOutput: true,
+          requiresAudio: true,
+          requiresImage: true,
+          maxImages: singingCfg.maxImages || 5,
+          mediaMode: 'singing_video',
+          description: 'Video bernyanyi AI (solo atau duet) dari 1–5 foto karakter & file lagu/audio (MP3/WAV/link musik). Pilih rasio 9:16, 16:9, atau 1:1 dan durasi video.',
+        });
+      }
+
+      if (lipSyncCfg && (Number.isSafeInteger(lipSyncCfg.credits) || lipSyncCfg.provider_ready)) {
+        hasAnyFreebeatVideo = true;
+        const lipSyncCredits = Number.isSafeInteger(lipSyncCfg.credits) ? lipSyncCfg.credits : null;
+        const lipSyncPriced = Number.isSafeInteger(lipSyncCredits) && lipSyncCredits > 0;
+        merged.set('freebeat:generate_lip_sync_video', {
+          id: 'generate_lip_sync_video',
+          name: 'Lip-Sync Video',
+          provider: 'freebeat',
+          providerLabel: 'Freebeat',
+          providerConfigured: lipSyncCfg.provider_ready === true,
+          activeInAdmin: lipSyncPriced,
+          online: lipSyncCfg.provider_ready === true,
+          credits: lipSyncPriced ? lipSyncCredits : null,
+          priced: lipSyncPriced,
+          isFree: false,
+          priceLabel: lipSyncPriced ? `${lipSyncCredits} kredit` : 'Tarif belum diatur',
+          aspectRatios: [],
+          supportsRatio: false,
+          resolutions: ['720p'],
+          durations: [5, 10, 15, 20, 30],
+          supportsImage: false,
+          supportsVideo: true,
+          supportsAudio: true,
+          supportsAudioInput: true,
+          supportsAudioOutput: true,
+          requiresVideo: true,
+          requiresAudio: true,
+          maxImages: 0,
+          mediaMode: 'lip_sync_video',
+          description: 'Sinkronkan gerakan bibir video sumber (MP4/MOV/WebM) dengan audio suara atau lagu (MP3/WAV/link musik).',
+        });
+      }
+
       const models = Array.from(merged.values()).sort((a, b) => {
         if (a.activeInAdmin !== b.activeInAdmin) return a.activeInAdmin ? -1 : 1;
         if (a.providerConfigured !== b.providerConfigured) return a.providerConfigured ? -1 : 1;
@@ -3800,8 +3874,8 @@ async function handleApi(request, url, env) {
       });
 
       const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
-      if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
-        providers.push({ id: 'freebeat', label: 'Freebeat', configured: danceCfg.provider_ready === true, hasBaseUrl: false });
+      if (hasAnyFreebeatVideo) {
+        providers.push({ id: 'freebeat', label: 'Freebeat', configured: anyFreebeatVideoReady, hasBaseUrl: false });
       }
       for (const preset of Object.values(PROVIDER_PRESETS)) {
         if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;
@@ -3851,17 +3925,19 @@ async function handleApi(request, url, env) {
       // Validasi input murah lebih dulu: permintaan yang pasti ditolak tidak
       // perlu membebani database, dan penolakannya tidak bergantung pada
       // ketersediaan tabel profil.
-      if (!provider || provider === 'unorouter' || (provider === 'freebeat' && model !== 'generate_dance_video')) {
+      if (!provider || provider === 'unorouter' || (provider === 'freebeat' && !['generate_dance_video', 'generate_singing_video', 'generate_lip_sync_video'].includes(model))) {
         return jsonResponse({ error: 'Provider video tidak tersedia. Pilih provider yang didukung.' }, 400);
       }
       if (!model) return jsonResponse({ error: 'Pilih model video terlebih dahulu.' }, 400);
       if (provider === 'freebeat') {
         try {
-          const out = await consumerDanceGenerate(env, user, payload);
+          const out = model === 'generate_dance_video'
+            ? await consumerDanceGenerate(env, user, payload)
+            : await consumerVocalGenerate(env, user, payload);
           return jsonResponse({ ok: true, credits: out.credits, generation: await sanitizeGenerationRow(out.row, env) });
         } catch (err) {
           return jsonResponse({
-            error: err?.message || 'Gagal memulai generasi dance video.',
+            error: err?.message || 'Gagal memulai generasi video Freebeat.',
             ...(err?.code ? { code: err.code } : {}),
             ...(err?.credits_required ? { credits_required: err.credits_required } : {}),
           }, err?.status || 502);
