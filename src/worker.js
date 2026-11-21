@@ -39,6 +39,11 @@ import { ALIBABA_FREE_QUOTA_MODELS } from './lib/alibabaFreeQuota.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
 import { handleOrderReview, handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
+  diagnosePendingGeneration,
+  formatLiveQueueItem,
+  patchImageGeneration as patchImageGenerationRow,
+} from './lib/liveQueue.js';
+import {
   consumerDanceConfig,
   consumerDanceGenerate,
   consumerDanceStatus,
@@ -48,6 +53,7 @@ import {
   consumerImageStatus,
   freebeatCallback,
   handleFreebeat,
+  pollFreebeatImageRow,
   sanitizeImageRow,
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
@@ -2413,20 +2419,21 @@ async function alibabaImageGenerate(env, user, rawInput) {
           metadata: { ...baseMetadata, base_url: base, ...(syncUrls.length > 1 ? { image_urls: syncUrls } : {}) },
           updated_at: new Date().toISOString(),
         };
-        await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: patch }).catch(() => {});
+        await patchImageGeneration(env, rowId, patch);
         return { status: 'completed', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], ...patch }) };
       }
       if (!taskId) {
         uncertain += 1;
-        await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, {
-          method: 'PATCH',
-          body: { status: 'unknown', error_message: req.isSync ? 'Respons provider tidak berisi URL gambar maupun task_id; kredit mungkin terpakai. Jangan ulangi.' : 'Respons provider tidak berisi task_id; kredit mungkin terpakai. Jangan ulangi.', updated_at: new Date().toISOString() },
-        }).catch(() => {});
+        await patchImageGeneration(env, rowId, {
+          status: 'unknown',
+          error_message: req.isSync ? 'Respons provider tidak berisi URL gambar maupun task_id; kredit mungkin terpakai. Jangan ulangi.' : 'Respons provider tidak berisi task_id; kredit mungkin terpakai. Jangan ulangi.',
+          updated_at: new Date().toISOString(),
+        });
         return { status: 'unknown', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], status: 'unknown' }) };
       }
       await markPoolKeyResult(env, cand, { success: true });
       const patch = { external_job_id: taskId, status: 'processing', provider_key_id: cand.id || null, metadata: { ...baseMetadata, base_url: base }, updated_at: new Date().toISOString() };
-      await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(rowId)}`, { method: 'PATCH', body: patch }).catch(() => {});
+      await patchImageGeneration(env, rowId, patch);
       return { status: 'submitted', credits: price, mode: genMode, generation: sanitizeImageRow({ ...inserted[0], ...patch }) };
     }
     if (isAlibabaQuotaError(res.status, text)) {
@@ -2497,6 +2504,10 @@ function extractImageResultUrl(data) {
   return extractImageResultUrls(data)[0] || '';
 }
 
+async function patchImageGeneration(env, rowId, patch) {
+  return patchImageGenerationRow(env, rowId, patch, (p, opts) => servicePostgrest(env, p, opts));
+}
+
 async function alibabaImageStatus(env, user, row) {
   if (!['queued', 'processing'].includes(row.status) || !row.external_job_id) {
     return { generation: sanitizeImageRow(row), task: null };
@@ -2549,22 +2560,22 @@ async function alibabaImageStatus(env, user, row) {
     patch = url
       ? { status: 'completed', image_url: url, ...(nextMeta ? { metadata: nextMeta } : {}), error_message: null, updated_at: new Date().toISOString() }
       : { status: 'failed', error_message: 'Tugas selesai tetapi URL gambar tidak ditemukan di respons provider.', updated_at: new Date().toISOString() };
-  } else if (raw === 'FAILED' || raw === 'CANCELED' || raw === 'UNKNOWN') {
+  } else if (raw === 'CANCELED' || raw === 'CANCELLED') {
+    patch = { status: 'cancelled', error_message: 'Provider membatalkan generasi gambar.', updated_at: new Date().toISOString() };
+  } else if (raw === 'FAILED' || raw === 'UNKNOWN') {
     const detail = redactUpstreamDetail(extractUpstreamError(pollData));
     patch = { status: 'failed', error_message: detail ? `Provider melaporkan generasi gagal: ${detail}` : 'Provider melaporkan generasi gagal.', updated_at: new Date().toISOString() };
   } else {
     patch = { status: 'processing', updated_at: new Date().toISOString() };
   }
-  try {
-    await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch });
-  } catch { /* biarkan status lama; percobaan berikutnya memperbarui */ }
-  if (patch.status === 'failed' && Number(row.credits_charged) > 0 && Number(row.credits_refunded || 0) === 0) {
-    const refunded = await refundImageCredits(env, user.id, Number(row.credits_charged), row.id, 'Refund: generasi gambar gagal');
+  await patchImageGeneration(env, row.id, patch);
+  const ownerId = row.user_id || user?.id;
+  if (['failed', 'cancelled'].includes(patch.status) && ownerId && Number(row.credits_charged) > 0 && Number(row.credits_refunded || 0) === 0) {
+    const refundDesc = patch.status === 'cancelled' ? 'Refund: generasi gambar dibatalkan provider' : 'Refund: generasi gambar gagal';
+    const refunded = await refundImageCredits(env, ownerId, Number(row.credits_charged), row.id, refundDesc);
     if (refunded) {
       row.credits_refunded = Number(row.credits_charged);
-      try {
-        await servicePostgrest(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: { credits_refunded: Number(row.credits_charged), updated_at: new Date().toISOString() } });
-      } catch { /* ledger sudah benar */ }
+      await patchImageGeneration(env, row.id, { credits_refunded: Number(row.credits_charged), updated_at: new Date().toISOString() });
     }
   }
   return { generation: sanitizeImageRow({ ...row, ...patch }), task: { status: raw.toLowerCase() || 'processing' } };
@@ -3946,163 +3957,179 @@ async function handleApi(request, url, env) {
         return jsonResponse({ error: 'Forbidden' }, 403);
       }
 
-      if (['completed', 'failed', 'cancelled', 'expired'].includes(row.status)) {
-        return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
-      }
+      const result = await pollVideoGenerationRow(env, row);
+      return jsonResponse({ ok: true, ...result });
+    }
 
-      let keyRow = null;
-      let apiBase = '';
-      let pollUrl = '';
-      let pollRes = null;
-      let nextStatus = row.status;
-      let nextProgress = Number(row.progress || 0);
-      let upstreamUrl = row.upstream_result_url;
-      let errMsg = row.error_message;
-      let extraPatch = {};
+    // ---- /generations/live: live active processes across platform (anonymized for regular users, full + cancelable for admin) ----
+    if (path === 'generations/live' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
 
-      if (row.provider === 'freebeat') {
-        let dancePoll;
-        try {
-          dancePoll = await consumerDanceStatus(env, row);
-        } catch (err) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: err?.message || 'Freebeat status gagal diperiksa.' });
-        }
-        if (dancePoll.pollWarning && dancePoll.nextStatus === row.status && !dancePoll.externalJobId) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: dancePoll.pollWarning });
-        }
-        nextStatus = dancePoll.nextStatus;
-        nextProgress = dancePoll.nextProgress;
-        upstreamUrl = dancePoll.upstreamUrl || row.upstream_result_url;
-        errMsg = dancePoll.errMsg || row.error_message;
-        extraPatch = {
-          ...(dancePoll.externalJobId ? { external_job_id: dancePoll.externalJobId } : {}),
-          ...(dancePoll.pollingUrl ? { polling_url: dancePoll.pollingUrl } : {}),
-          ...(dancePoll.metadata ? { metadata: dancePoll.metadata } : {}),
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const shouldPoll = body?.poll === true || url.searchParams.get('poll') === '1' || url.searchParams.get('poll') === 'true';
+      const isAdmin = user?.app_metadata?.role === 'admin';
+
+      const fetchActiveRows = async () => {
+        const [vidRes, imgRes] = await Promise.all([
+          servicePostgrest(env, '/video_generations?select=*&status=in.(queued,in_progress)&order=created_at.desc,id.desc&limit=100'),
+          servicePostgrest(env, '/image_generations?select=*&status=in.(queued,processing,unknown)&order=created_at.desc,id.desc&limit=100'),
+        ]);
+        const videos = vidRes?.ok ? await vidRes.json().catch(() => []) : [];
+        const images = imgRes?.ok ? await imgRes.json().catch(() => []) : [];
+        return {
+          videos: Array.isArray(videos) ? videos : [],
+          images: Array.isArray(images) ? images : [],
         };
-      } else if (row.provider === 'alibaba') {
-        // Task milik workspace akun tertentu: coba akun yang submit dulu
-        // (provider_key_id tersimpan), lalu akun pool lain sebagai cadangan.
-        const seeded = [];
-        if (row.provider_key_id) {
-          try {
-            const res = await servicePostgrest(env, `/provider_key_pool?select=id,provider,label,api_key,base_url,priority,consecutive_failures,cooldown_until&id=eq.${encodeURIComponent(row.provider_key_id)}&limit=1`);
-            const rows = res.ok ? await res.json().catch(() => []) : [];
-            if (rows?.[0]?.api_key) seeded.push(rows[0]);
-          } catch { /* abaikan — coba kandidat pool */ }
-        }
-        for (const cand of await alibabaKeyCandidates(env)) {
-          if (!seeded.some((rowSeed) => rowSeed.id === cand.id)) seeded.push(cand);
-        }
-        if (!seeded.length || !row.external_job_id) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
-        }
-        for (const cand of seeded) {
-          const base = resolveProviderApiBase('alibaba', cand.base_url);
-          if (!base) continue;
-          let res = null;
-          try {
-            res = await fetch(`${base}/api/v1/tasks/${encodeURIComponent(row.external_job_id)}`, {
-              method: 'GET',
-              headers: { authorization: `Bearer ${cand.api_key}` },
-              signal: AbortSignal.timeout(30_000),
-            });
-          } catch {
-            await markPoolKeyResult(env, cand, { success: false, error: 'poll jaringan gagal' });
-            continue;
-          }
-          if (isAlibabaQuotaError(res.status, '')) {
-            await markPoolKeyResult(env, cand, { success: false, error: `poll HTTP ${res.status}` });
-            continue;
-          }
-          pollRes = res;
-          keyRow = cand;
-          apiBase = base;
-          if (res.ok) await markPoolKeyResult(env, cand, { success: true });
-          break;
-        }
-        if (!pollRes) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: 'Semua akun Alibaba gagal polling.' });
-        }
-      } else {
-        keyRow = await fetchProviderKeyRecord(env, row.provider || 'unorouter');
-        if (!keyRow?.api_key) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
-        }
-        apiBase = resolveProviderApiBase(row.provider || 'unorouter', keyRow.base_url);
-        pollUrl = row.polling_url || (row.external_job_id ? `${apiBase}/videos/${encodeURIComponent(row.external_job_id)}` : '');
-        if (!pollUrl) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env) });
-        }
-        pollRes = await fetch(pollUrl, {
-          method: 'GET',
-          headers: { authorization: `Bearer ${keyRow.api_key}` },
-          signal: AbortSignal.timeout(30_000),
-        });
-      }
-      if (row.provider !== 'freebeat') {
-        if (!pollRes.ok) {
-          return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(row, env), pollWarning: `HTTP ${pollRes.status}` });
-        }
+      };
 
-        const pollData = await pollRes.json().catch(() => ({}));
-        nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || pollData?.output?.task_status || row.status);
-        nextProgress = extractProgressPercent(pollData, nextStatus);
-        upstreamUrl = nextStatus === 'completed'
-          ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
-          : row.upstream_result_url;
-        errMsg = nextStatus === 'failed'
-          ? (redactUpstreamDetail(extractUpstreamError(pollData), 300) || 'Generasi video gagal di server provider.')
-          : row.error_message;
+      let { videos, images } = await fetchActiveRows();
+      if (shouldPoll) {
+        const now = Date.now();
+        const staleCandidates = [
+          ...videos
+            .filter((row) => ['queued', 'in_progress'].includes(row.status) && (row.external_job_id || row.polling_url || (row.provider === 'freebeat' && row.metadata?.preparing_music_id)))
+            .map((row) => ({ kind: 'video', row, ts: Date.parse(row.updated_at || row.created_at || '') || 0 })),
+          ...images
+            .filter((row) => ['queued', 'processing'].includes(row.status) && row.external_job_id)
+            .map((row) => ({ kind: 'image', row, ts: Date.parse(row.updated_at || row.created_at || '') || 0 })),
+        ]
+          .filter((entry) => now - entry.ts >= 8000)
+          .sort((a, b) => a.ts - b.ts)
+          .slice(0, 4);
+
+        if (staleCandidates.length > 0) {
+          await Promise.allSettled(staleCandidates.map((entry) => {
+            if (entry.kind === 'video') return pollVideoGenerationRow(env, entry.row);
+            if (entry.row.provider === 'freebeat') return pollFreebeatImageRow(env, entry.row);
+            return alibabaImageStatus(env, { id: entry.row.user_id }, entry.row);
+          }));
+          ({ videos, images } = await fetchActiveRows());
+        }
+      }
+
+      const emailMap = new Map();
+      if (isAdmin) {
+        const userIds = Array.from(new Set(
+          [...videos, ...images]
+            .map((row) => String(row?.user_id || '').trim())
+            .filter((id) => LIVE_UUID_RE.test(id)),
+        ));
+        if (userIds.length > 0) {
+          const profRes = await servicePostgrest(
+            env,
+            `/profiles?select=id,email&id=in.(${userIds.join(',')})&limit=200`,
+          ).catch(() => null);
+          const profiles = profRes?.ok ? await profRes.json().catch(() => []) : [];
+          for (const profile of profiles || []) {
+            if (profile?.id) emailMap.set(profile.id, profile.email || null);
+          }
+        }
+      }
+
+      const nowMs = Date.now();
+      const items = [
+        ...videos.map((row) => formatLiveQueueItem(row, 'video', { isAdmin, viewerId: user.id, emailMap, nowMs })),
+        ...images.map((row) => formatLiveQueueItem(row, 'image', { isAdmin, viewerId: user.id, emailMap, nowMs })),
+      ].sort((a, b) => (Date.parse(b.created_at || '') || 0) - (Date.parse(a.created_at || '') || 0));
+
+      return jsonResponse({
+        ok: true,
+        is_admin: isAdmin,
+        server_time: new Date(nowMs).toISOString(),
+        counts: {
+          total: items.length,
+          video: videos.length,
+          image: images.length,
+          own: items.filter((item) => item.is_own).length,
+          stalled: items.filter((item) => item.stalled).length,
+        },
+        items,
+      });
+    }
+
+    // ---- /admin/generations/cancel: admin-only cancel active/hanging generation + refund unrefunded credits ----
+    if (path === 'admin/generations/cancel' && method === 'POST') {
+      const origin = request.headers.get('origin');
+      if (!origin || origin !== url.origin) {
+        return jsonResponse({ error: 'Permintaan harus berasal dari halaman BLEA ini.' }, 403);
+      }
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      if (user?.app_metadata?.role !== 'admin') {
+        return jsonResponse({ error: 'Akses khusus admin diperlukan untuk membatalkan proses.' }, 403);
+      }
+
+      const body = await request.json().catch(() => ({}));
+      const id = String(body?.id || '').trim();
+      const kind = String(body?.kind || '').trim().toLowerCase();
+      const reason = String(body?.reason || '').trim().slice(0, 200);
+      if (!LIVE_UUID_RE.test(id)) return jsonResponse({ error: 'ID generasi tidak valid.' }, 400);
+      if (kind !== 'video' && kind !== 'image') return jsonResponse({ error: 'Jenis generasi harus video atau image.' }, 400);
+
+      const table = kind === 'video' ? 'video_generations' : 'image_generations';
+      const activeStatuses = kind === 'video' ? 'queued,in_progress' : 'queued,processing,unknown';
+      const rowRes = await servicePostgrest(env, `/${table}?select=*&id=eq.${encodeURIComponent(id)}&limit=1`);
+      const rows = rowRes?.ok ? await rowRes.json().catch(() => []) : [];
+      const row = rows?.[0];
+      if (!row) return jsonResponse({ error: 'Proses generasi tidak ditemukan.' }, 404);
+
+      if (['completed', 'failed', 'cancelled', 'expired'].includes(row.status)) {
+        return jsonResponse({ error: 'Proses ini sudah selesai atau dibatalkan sebelumnya.' }, 409);
       }
 
       const charged = Number(row.credits_charged || 0);
-      const shouldRefund = ['failed', 'cancelled', 'expired'].includes(nextStatus)
-        && charged > 0
-        && Number(row.credits_refunded || 0) === 0;
-      const patchQuery = shouldRefund
-        ? `/video_generations?id=eq.${encodeURIComponent(row.id)}&credits_refunded=eq.0`
-        : `/video_generations?id=eq.${encodeURIComponent(row.id)}`;
-      const patchRes = await servicePostgrest(
-        env,
-        patchQuery,
-        {
-          method: 'PATCH',
-          headers: { Prefer: 'return=representation' },
-          body: {
-            status: nextStatus,
-            progress: nextProgress,
-            ...(upstreamUrl ? { upstream_result_url: upstreamUrl } : {}),
-            ...(errMsg ? { error_message: errMsg } : {}),
-            ...extraPatch,
-            ...(shouldRefund ? { credits_refunded: charged } : {}),
-          },
-        },
-      );
-      const patched = patchRes.ok ? await patchRes.json().catch(() => []) : [];
-      if (shouldRefund && Array.isArray(patched) && patched.length > 0) {
-        const refunded = await refundVideoCredits(
-          env,
-          row.user_id,
-          charged,
-          row.id,
-          `Refund: generasi video ${row.provider} (${row.model}) ${nextStatus}`,
-        );
-        if (!refunded && patched[0]) {
+      const shouldRefund = charged > 0 && Number(row.credits_refunded || 0) === 0;
+      const cancelNote = reason ? `Dibatalkan oleh admin: ${reason}` : 'Dibatalkan oleh admin.';
+      const nowIso = new Date().toISOString();
+      const patchQuery = `/${table}?id=eq.${encodeURIComponent(id)}&status=in.(${activeStatuses})${shouldRefund ? '&credits_refunded=eq.0' : ''}`;
+      const patchBody = {
+        status: 'cancelled',
+        error_message: cancelNote.slice(0, 300),
+        updated_at: nowIso,
+        ...(kind === 'video' ? { progress: 0 } : {}),
+        ...(shouldRefund ? { credits_refunded: charged } : {}),
+      };
+      const patchRes = await servicePostgrest(env, patchQuery, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: patchBody,
+      });
+      if (!patchRes?.ok) {
+        const errText = patchRes ? await patchRes.text().catch(() => '') : '';
+        return jsonResponse({ error: 'Gagal memperbarui status pembatalan di database.', detail: errText.slice(0, 200) }, 500);
+      }
+      const patched = await patchRes.json().catch(() => []);
+      if (!Array.isArray(patched) || patched.length === 0) {
+        return jsonResponse({ error: 'Status proses berubah secara bersamaan; muat ulang daftar proses.' }, 409);
+      }
+
+      let refundedAmount = 0;
+      if (shouldRefund) {
+        const desc = `Refund: proses ${kind} ${row.provider} (${row.model}) dibatalkan oleh admin`;
+        const refunded = kind === 'video'
+          ? await refundVideoCredits(env, row.user_id, charged, row.id, desc)
+          : await refundImageCredits(env, row.user_id, charged, row.id, desc);
+        if (refunded) {
+          refundedAmount = charged;
+        } else {
           patched[0].credits_refunded = 0;
-          await servicePostgrest(env, `/video_generations?id=eq.${encodeURIComponent(row.id)}`, {
+          await servicePostgrest(env, `/${table}?id=eq.${encodeURIComponent(id)}`, {
             method: 'PATCH',
-            body: { credits_refunded: 0 },
+            body: { credits_refunded: 0, updated_at: new Date().toISOString() },
           }).catch(() => {});
         }
       }
-      const updated = patched?.[0] || {
-        ...row,
-        status: nextStatus,
-        progress: nextProgress,
-        upstream_result_url: upstreamUrl,
-        error_message: errMsg,
-      };
-      return jsonResponse({ ok: true, generation: await sanitizeGenerationRow(updated, env) });
+
+      return jsonResponse({
+        ok: true,
+        id: row.id,
+        kind,
+        refunded: refundedAmount,
+        generation: kind === 'video' ? await sanitizeGenerationRow(patched[0], env) : sanitizeImageRow(patched[0]),
+      });
     }
 
     // ---- /search: web search untuk mode agen (internet access) ----
@@ -4576,6 +4603,171 @@ async function handleApi(request, url, env) {
     return jsonResponse({ error: String(e) }, 500);
   }
 }
+
+async function pollVideoGenerationRow(env, row) {
+  if (!row) return { generation: null, pollWarning: 'Generation not found' };
+  if (['completed', 'failed', 'cancelled', 'expired'].includes(row.status)) {
+    return { generation: await sanitizeGenerationRow(row, env) };
+  }
+
+  let keyRow = null;
+  let apiBase = '';
+  let pollUrl = '';
+  let pollRes = null;
+  let nextStatus = row.status;
+  let nextProgress = Number(row.progress || 0);
+  let upstreamUrl = row.upstream_result_url;
+  let errMsg = row.error_message;
+  let extraPatch = {};
+
+  if (row.provider === 'freebeat') {
+    let dancePoll;
+    try {
+      dancePoll = await consumerDanceStatus(env, row);
+    } catch (err) {
+      return { generation: await sanitizeGenerationRow(row, env), pollWarning: err?.message || 'Freebeat status gagal diperiksa.' };
+    }
+    if (dancePoll.pollWarning && dancePoll.nextStatus === row.status && !dancePoll.externalJobId && !dancePoll.metadata) {
+      return { generation: await sanitizeGenerationRow(row, env), pollWarning: dancePoll.pollWarning };
+    }
+    nextStatus = dancePoll.nextStatus;
+    nextProgress = dancePoll.nextProgress;
+    upstreamUrl = dancePoll.upstreamUrl || row.upstream_result_url;
+    errMsg = dancePoll.errMsg || row.error_message;
+    extraPatch = {
+      ...(dancePoll.externalJobId ? { external_job_id: dancePoll.externalJobId } : {}),
+      ...(dancePoll.pollingUrl ? { polling_url: dancePoll.pollingUrl } : {}),
+      ...(dancePoll.metadata ? { metadata: dancePoll.metadata } : {}),
+    };
+  } else if (row.provider === 'alibaba') {
+    const seeded = [];
+    if (row.provider_key_id) {
+      try {
+        const res = await servicePostgrest(env, `/provider_key_pool?select=id,provider,label,api_key,base_url,priority,consecutive_failures,cooldown_until&id=eq.${encodeURIComponent(row.provider_key_id)}&limit=1`);
+        const rows = res.ok ? await res.json().catch(() => []) : [];
+        if (rows?.[0]?.api_key) seeded.push(rows[0]);
+      } catch { /* abaikan — coba kandidat pool */ }
+    }
+    for (const cand of await alibabaKeyCandidates(env)) {
+      if (!seeded.some((rowSeed) => rowSeed.id === cand.id)) seeded.push(cand);
+    }
+    if (!seeded.length || !row.external_job_id) {
+      return { generation: await sanitizeGenerationRow(row, env) };
+    }
+    for (const cand of seeded) {
+      const base = resolveProviderApiBase('alibaba', cand.base_url);
+      if (!base) continue;
+      let res = null;
+      try {
+        res = await fetch(`${base}/api/v1/tasks/${encodeURIComponent(row.external_job_id)}`, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${cand.api_key}` },
+          signal: AbortSignal.timeout(30_000),
+        });
+      } catch {
+        await markPoolKeyResult(env, cand, { success: false, error: 'poll jaringan gagal' });
+        continue;
+      }
+      if (isAlibabaQuotaError(res.status, '')) {
+        await markPoolKeyResult(env, cand, { success: false, error: `poll HTTP ${res.status}` });
+        continue;
+      }
+      pollRes = res;
+      keyRow = cand;
+      apiBase = base;
+      if (res.ok) await markPoolKeyResult(env, cand, { success: true });
+      break;
+    }
+    if (!pollRes) {
+      return { generation: await sanitizeGenerationRow(row, env), pollWarning: 'Semua akun Alibaba gagal polling.' };
+    }
+  } else {
+    keyRow = await fetchProviderKeyRecord(env, row.provider || 'unorouter');
+    if (!keyRow?.api_key) {
+      return { generation: await sanitizeGenerationRow(row, env) };
+    }
+    apiBase = resolveProviderApiBase(row.provider || 'unorouter', keyRow.base_url);
+    pollUrl = row.polling_url || (row.external_job_id ? `${apiBase}/videos/${encodeURIComponent(row.external_job_id)}` : '');
+    if (!pollUrl) {
+      return { generation: await sanitizeGenerationRow(row, env) };
+    }
+    pollRes = await fetch(pollUrl, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${keyRow.api_key}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+  }
+
+  if (row.provider !== 'freebeat') {
+    if (!pollRes.ok) {
+      return { generation: await sanitizeGenerationRow(row, env), pollWarning: `HTTP ${pollRes.status}` };
+    }
+    const pollData = await pollRes.json().catch(() => ({}));
+    nextStatus = normalizeVideoStatus(pollData?.status || pollData?.data?.status || pollData?.output?.task_status || row.status);
+    nextProgress = extractProgressPercent(pollData, nextStatus);
+    upstreamUrl = nextStatus === 'completed'
+      ? extractUpstreamVideoUrl(pollData, apiBase, row.external_job_id)
+      : row.upstream_result_url;
+    errMsg = nextStatus === 'failed'
+      ? (redactUpstreamDetail(extractUpstreamError(pollData), 300) || 'Generasi video gagal di server provider.')
+      : row.error_message;
+  }
+
+  const charged = Number(row.credits_charged || 0);
+  const shouldRefund = ['failed', 'cancelled', 'expired'].includes(nextStatus)
+    && charged > 0
+    && Number(row.credits_refunded || 0) === 0;
+  const patchQuery = shouldRefund
+    ? `/video_generations?id=eq.${encodeURIComponent(row.id)}&credits_refunded=eq.0`
+    : `/video_generations?id=eq.${encodeURIComponent(row.id)}`;
+  const nowIso = new Date().toISOString();
+  const patchRes = await servicePostgrest(
+    env,
+    patchQuery,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: {
+        status: nextStatus,
+        progress: nextProgress,
+        ...(upstreamUrl ? { upstream_result_url: upstreamUrl } : {}),
+        ...(errMsg ? { error_message: errMsg } : {}),
+        ...extraPatch,
+        ...(shouldRefund ? { credits_refunded: charged } : {}),
+        updated_at: nowIso,
+      },
+    },
+  );
+  const patched = patchRes.ok ? await patchRes.json().catch(() => []) : [];
+  if (shouldRefund && Array.isArray(patched) && patched.length > 0) {
+    const refunded = await refundVideoCredits(
+      env,
+      row.user_id,
+      charged,
+      row.id,
+      `Refund: generasi video ${row.provider} (${row.model}) ${nextStatus}`,
+    );
+    if (!refunded && patched[0]) {
+      patched[0].credits_refunded = 0;
+      await servicePostgrest(env, `/video_generations?id=eq.${encodeURIComponent(row.id)}`, {
+        method: 'PATCH',
+        body: { credits_refunded: 0, updated_at: new Date().toISOString() },
+      }).catch(() => {});
+    }
+  }
+  const updated = patched?.[0] || {
+    ...row,
+    status: nextStatus,
+    progress: nextProgress,
+    upstream_result_url: upstreamUrl,
+    error_message: errMsg,
+    ...extraPatch,
+    updated_at: nowIso,
+  };
+  return { generation: await sanitizeGenerationRow(updated, env) };
+}
+
+const LIVE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default {
   async fetch(request, env) {

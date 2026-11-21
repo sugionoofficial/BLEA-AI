@@ -813,7 +813,7 @@ function safeImageUrl(value) {
 }
 function safeTask(content) {
   if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('task', 'response');
-  const statuses = new Set(['pending', 'queued', 'processing', 'running', 'completed', 'failed', 'partial_failed', 'action_required']);
+  const statuses = new Set(['pending', 'queued', 'processing', 'running', 'completed', 'failed', 'partial_failed', 'cancelled', 'expired', 'action_required']);
   const status = statuses.has(content.status) ? content.status : 'unknown';
   const images = Array.isArray(content.items) ? content.items.slice(0, 10).map((item) => safeImageUrl(item?.image_url)).filter(Boolean) : [];
   const billing = {};
@@ -1729,7 +1729,7 @@ async function loadProviderSession(env) {
   } catch { return session.expiresAt > Date.now() ? session : null; }
 }
 export function sanitizeImageRow(row) {
-  const statuses = new Set(['queued', 'processing', 'completed', 'failed', 'unknown']);
+  const statuses = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled', 'unknown']);
   const extraUrls = Array.isArray(row.metadata?.image_urls)
     ? row.metadata.image_urls.map(safeImageUrl).filter(Boolean)
     : [];
@@ -1746,6 +1746,7 @@ export function sanitizeImageRow(row) {
     credits_refunded: Number.isSafeInteger(row.credits_refunded) ? row.credits_refunded : 0,
     error_message: typeof row.error_message === 'string' ? row.error_message.slice(0, 300) : null,
     created_at: row.created_at || null,
+    updated_at: row.updated_at || row.created_at || null,
     canPoll: ['queued', 'processing'].includes(row.status) && typeof row.external_job_id === 'string' && TASK_ID.test(row.external_job_id),
   };
 }
@@ -1894,13 +1895,10 @@ async function imageTaskInspect(accessToken, jobId, raw) {
   }).filter(Boolean) : [];
   return { job_id: jobId, status: task.status, billing: task.billing, images: task.images, reasons, root_keys: Object.keys(content).slice(0, 25), items, ...(raw ? { raw: content } : {}) };
 }
-export async function consumerImageStatus(env, request, user) {
-  const input = await imageJson(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID generasi tidak valid.', 400);
-  const rows = await dbJson(env, `/image_generations?id=eq.${encodeURIComponent(input.id)}&user_id=eq.${encodeURIComponent(user.id)}&select=*&limit=1`);
-  const row = Array.isArray(rows) ? rows[0] : null;
-  if (!row) throw fail('Riwayat generasi tidak ditemukan.', 404);
-  if (!['queued', 'processing'].includes(row.status) || typeof row.external_job_id !== 'string' || !TASK_ID.test(row.external_job_id)) return { generation: sanitizeImageRow(row), task: null };
+export async function pollFreebeatImageRow(env, row) {
+  if (!row || !['queued', 'processing'].includes(row.status) || typeof row.external_job_id !== 'string' || !TASK_ID.test(row.external_job_id)) {
+    return { generation: sanitizeImageRow(row || {}), task: null };
+  }
   const session = await loadProviderSession(env);
   if (!session?.imageAccess) throw fail('Provider belum siap; status tidak dapat diperiksa sekarang.', 503);
   const headers = await openMcp(session.accessToken);
@@ -1913,18 +1911,24 @@ export async function consumerImageStatus(env, request, user) {
   const metaPatch = { ...(row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {}), provider_billing: task.billing };
   if (task.status === 'completed') {
     patch = { status: 'completed', image_url: task.images[0] || null, error_message: null, metadata: metaPatch, updated_at: new Date().toISOString() };
-  } else if (task.status === 'failed' || task.status === 'partial_failed') {
+  } else if (task.status === 'failed' || task.status === 'partial_failed' || task.status === 'cancelled' || task.status === 'expired') {
     const reasons = imageFailureReasons(content);
     const detail = reasons.length ? reasons.join(', ') : (imageFailureFields(content).some((value) => typeof value === 'string' && value.trim()) ? 'lainnya (lihat pemeriksaan admin)' : null);
-    patch = { status: 'failed', error_message: detail ? `Provider melaporkan generasi gagal: ${detail}.` : 'Provider melaporkan generasi gagal.', metadata: { ...metaPatch, failure_reasons: reasons, failure_detail_hidden: detail === 'lainnya (lihat pemeriksaan admin)' }, updated_at: new Date().toISOString() };
+    const nextStatus = task.status === 'cancelled' ? 'cancelled' : 'failed';
+    const errText = task.status === 'cancelled'
+      ? 'Provider membatalkan generasi gambar.'
+      : task.status === 'expired'
+        ? 'Tugas generasi gambar kedaluwarsa di provider.'
+        : (detail ? `Provider melaporkan generasi gagal: ${detail}.` : 'Provider melaporkan generasi gagal.');
+    patch = { status: nextStatus, error_message: errText, metadata: { ...metaPatch, failure_reasons: reasons, failure_detail_hidden: detail === 'lainnya (lihat pemeriksaan admin)' }, updated_at: new Date().toISOString() };
   } else if (['pending', 'queued', 'processing', 'running'].includes(task.status)) {
     patch = { status: 'processing', updated_at: new Date().toISOString() };
   }
   if (patch) {
     try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch }); } catch { /* status lama tetap ditampilkan */ }
-    if (patch.status === 'failed' && Number(row.credits_charged) > 0 && Number(row.credits_refunded) === 0) {
+    if (['failed', 'cancelled'].includes(patch.status) && Number(row.credits_charged) > 0 && Number(row.credits_refunded) === 0) {
       let refunded = false;
-      try { refunded = await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: Number(row.credits_charged), p_description: 'Refund: generasi gambar gagal', p_generation_id: row.id }); } catch { refunded = false; }
+      try { refunded = await dbRpc(env, 'refund_credits', { p_user_id: row.user_id, p_amount: Number(row.credits_charged), p_description: patch.status === 'cancelled' ? 'Refund: generasi gambar dibatalkan provider' : 'Refund: generasi gambar gagal', p_generation_id: row.id }); } catch { refunded = false; }
       if (refunded) {
         try { await dbFetch(env, `/image_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: { credits_refunded: Number(row.credits_charged), updated_at: new Date().toISOString() } }); } catch { /* ledger sudah benar */ }
         row.credits_refunded = Number(row.credits_charged);
@@ -1932,6 +1936,14 @@ export async function consumerImageStatus(env, request, user) {
     }
   }
   return { generation: sanitizeImageRow({ ...row, ...(patch || {}) }), task: { status: task.status, billing: task.billing } };
+}
+export async function consumerImageStatus(env, request, user) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) throw fail('ID generasi tidak valid.', 400);
+  const rows = await dbJson(env, `/image_generations?id=eq.${encodeURIComponent(input.id)}&user_id=eq.${encodeURIComponent(user.id)}&select=*&limit=1`);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) throw fail('Riwayat generasi tidak ditemukan.', 404);
+  return await pollFreebeatImageRow(env, row);
 }
 export async function consumerImageHistory(env, user) {
   const rows = await dbJson(env, `/image_generations?user_id=eq.${encodeURIComponent(user.id)}&select=*&order=created_at.desc,id.desc&limit=40`);
@@ -2332,35 +2344,55 @@ export async function consumerDanceStatus(env, row) {
       nextProgress: 0,
       upstreamUrl: null,
       errMsg,
-      metadata: { ...meta, provider_billing: safeTask(resultContent).billing },
+      metadata: { ...meta, agent_status: summary.status, provider_billing: safeTask(resultContent).billing },
     };
   }
 
-  if (summary.status === 'action_required' && !meta.auto_nudged) {
-    try {
-      await rpc(session.accessToken, {
-        jsonrpc: '2.0',
-        id: 3,
-        method: 'tools/call',
-        params: {
-          name: 'send_video_agent_message',
-          arguments: { task_id: row.external_job_id, message: 'Continue automatically and finish the dance video.', auto_mode: true },
-        },
-      }, 'task', headers, 262144);
-      return {
-        nextStatus: 'in_progress',
-        nextProgress: Math.min(90, Math.max(20, Number(row.progress || 10) + 5)),
-        upstreamUrl: null,
-        errMsg: null,
-        metadata: { ...meta, auto_nudged: true },
-      };
-    } catch { /* fall through */ }
+  if (summary.status === 'action_required') {
+    const nudgeCount = Number(meta.auto_nudge_count || (meta.auto_nudged ? 1 : 0));
+    const rawLastNudge = meta.last_nudge_at;
+    const parsedLastNudge = typeof rawLastNudge === 'number'
+      ? rawLastNudge
+      : (/^\d+$/.test(String(rawLastNudge || '')) ? Number(rawLastNudge) : Date.parse(String(rawLastNudge || '')));
+    const lastNudgeAt = Number.isFinite(parsedLastNudge) ? parsedLastNudge : 0;
+    const canNudge = nudgeCount < 3 && (Date.now() - lastNudgeAt >= 30_000);
+    if (canNudge) {
+      try {
+        await rpc(session.accessToken, {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: {
+            name: 'send_video_agent_message',
+            arguments: { task_id: row.external_job_id, message: 'Continue automatically and finish the dance video.', auto_mode: true },
+          },
+        }, 'task', headers, 262144);
+        return {
+          nextStatus: 'in_progress',
+          nextProgress: Math.min(90, Math.max(20, Number(row.progress || 10) + 5)),
+          upstreamUrl: null,
+          errMsg: null,
+          metadata: { ...meta, auto_nudged: true, auto_nudge_count: nudgeCount + 1, last_nudge_at: Date.now(), agent_status: 'action_required' },
+        };
+      } catch { /* fall through */ }
+    }
+    return {
+      nextStatus: 'in_progress',
+      nextProgress: Math.min(90, Math.max(20, Number(row.progress || 10))),
+      upstreamUrl: null,
+      errMsg: null,
+      metadata: { ...meta, agent_status: 'action_required' },
+    };
   }
 
+  const nextMeta = meta.agent_status !== summary.status
+    ? { ...meta, agent_status: summary.status }
+    : undefined;
   return {
     nextStatus: 'in_progress',
     nextProgress: Math.min(90, Math.max(15, Number(row.progress || 10) + 5)),
     upstreamUrl: null,
     errMsg: null,
+    ...(nextMeta ? { metadata: nextMeta } : {}),
   };
 }

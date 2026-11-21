@@ -29,6 +29,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'Dashboard', href: '/app' },
       { title: 'Chat AI', href: '/studio' },
       { title: 'Generate', href: '/generate' },
+      { title: 'Proses Live', href: '/live' },
       { title: 'Kredit', href: '/credits' },
       { title: 'History', href: '/history' },
       { title: 'Setting', href: '/settings' },
@@ -42,6 +43,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'Dashboard', href: '/app' },
       { title: 'Chat AI', href: '/studio' },
       { title: 'Generate', href: '/generate' },
+      { title: 'Proses Live', href: '/live' },
       { title: 'Kredit', href: '/credits' },
       { title: 'History', href: '/history' },
       { title: 'Admin Panel', href: '/admin' },
@@ -81,6 +83,7 @@ test('activeNavHref highlights the exact matching route and respects admin role'
   assert.equal(nav.activeNavHref('/app'), '/app');
   assert.equal(nav.activeNavHref('/studio'), '/studio');
   assert.equal(nav.activeNavHref('/generate'), '/generate');
+  assert.equal(nav.activeNavHref('/live'), '/live');
   assert.equal(nav.activeNavHref('/history'), '/history');
   assert.equal(nav.activeNavHref('/credits'), '/credits');
   assert.equal(nav.activeNavHref('/projects'), null);
