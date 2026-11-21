@@ -697,9 +697,51 @@ function sessionHasConfirmationPrompt(payload, depth = 0) {
 const IMAGE_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_image', 'edit_image', 'upload_image', 'get_task_status']);
 const VIDEO_TOOLS = new Set(['list_models', 'get_model_help', 'quote_generation', 'generate_video', 'get_task_status']);
 const DANCE_TOOLS = new Set(['upload_audio', 'upload_image', 'quote_generation', 'generate_dance_video', 'get_task_status', 'get_task_result', 'get_video_session', 'send_video_agent_message']);
+const VOCAL_VIDEO_TOOLS = new Set([
+  'generate_singing_video',
+  'generate_lip_sync_video',
+  'upload_video',
+  'upload_audio',
+  'upload_image',
+  'quote_generation',
+  'get_task_status',
+  'get_task_result',
+  'get_video_session',
+  'send_video_agent_message',
+]);
+const VOCAL_VIDEO_PRIMARY_TOOLS = ['generate_singing_video', 'generate_lip_sync_video', 'upload_video', 'upload_audio', 'upload_image'];
 const SAFE_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']);
 const SAFE_SCHEMA_ENUMS = new Set(['image', 'image_edit', 'generate_image', 'generate_video', 'text', 'video', 'transition', 'reference']);
 const SAFE_DANCE_SCHEMA_ENUMS = new Set([...SAFE_SCHEMA_ENUMS, 'generate_dance_video', 'upload_audio', '16:9', '9:16', '1:1', '4:3', '3:4', '720p']);
+const SAFE_VOCAL_VIDEO_SCHEMA_ENUMS = new Set([
+  ...SAFE_DANCE_SCHEMA_ENUMS,
+  'generate_singing_video',
+  'generate_lip_sync_video',
+  'upload_video',
+  'upload_image',
+  '480p',
+  '1080p',
+  '2k',
+  '4k',
+  'auto',
+  'standard',
+  'pro',
+  'fast',
+  'normal',
+  'high',
+  'low',
+  'portrait',
+  'landscape',
+  'square',
+  'male',
+  'female',
+  'solo',
+  'duet',
+  'singing',
+  'lip_sync',
+  'lipsync',
+  '21:9',
+]);
 function schemaName(value) { return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value); }
 function imageSchema(schema, depth = 0, allowedEnums = SAFE_SCHEMA_ENUMS) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 5) return {};
@@ -715,6 +757,58 @@ function imageSchema(schema, depth = 0, allowedEnums = SAFE_SCHEMA_ENUMS) {
     out.known_enum_values = schema.enum.filter((item) => allowedEnums.has(item)).slice(0, 20);
     out.enum_incomplete = out.known_enum_values.length !== schema.enum.length;
   }
+  return out;
+}
+
+function sanitizeDetailedSchemaValue(value, depth = 0) {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') return privateFailureReason(value)?.slice(0, 200) ?? '';
+  if (Array.isArray(value)) {
+    if (depth >= 3) return [];
+    return value.slice(0, 20).map((item) => sanitizeDetailedSchemaValue(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    if (depth >= 3) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([name]) => schemaName(name) && !/secret|token|password|credential|key|auth|cookie/i.test(name))
+        .slice(0, 20)
+        .map(([name, child]) => [name, sanitizeDetailedSchemaValue(child, depth + 1)]),
+    );
+  }
+  return null;
+}
+
+function detailedToolSchema(schema, depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 6) return {};
+  const out = {};
+  if (SAFE_SCHEMA_TYPES.has(schema.type)) out.type = schema.type;
+  if (typeof schema.description === 'string') {
+    const clean = privateFailureReason(schema.description);
+    if (clean) out.description = clean.slice(0, 500);
+  }
+  if (Array.isArray(schema.required)) out.required = schema.required.filter(schemaName).slice(0, 50);
+  if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+    out.properties = Object.fromEntries(
+      Object.entries(schema.properties)
+        .filter(([name]) => schemaName(name))
+        .slice(0, 50)
+        .map(([name, child]) => [name, detailedToolSchema(child, depth + 1)]),
+    );
+  }
+  if (schema.items && typeof schema.items === 'object') out.items = detailedToolSchema(schema.items, depth + 1);
+  for (const name of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(schema[name])) out[name] = schema[name].slice(0, 8).map((child) => detailedToolSchema(child, depth + 1));
+  }
+  if (typeof schema.additionalProperties === 'boolean') out.additionalProperties = schema.additionalProperties;
+  for (const bound of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'minItems', 'maxItems']) {
+    if (typeof schema[bound] === 'number' && Number.isFinite(schema[bound])) out[bound] = schema[bound];
+  }
+  if (Array.isArray(schema.enum)) {
+    out.enum = schema.enum.slice(0, 50).map((item) => sanitizeDetailedSchemaValue(item, 1));
+  }
+  if (schema.default !== undefined) out.default = sanitizeDetailedSchemaValue(schema.default, 0);
   return out;
 }
 
@@ -735,6 +829,47 @@ async function getToolSchemas(accessToken, allowedTools, allowedEnums = SAFE_SCH
     if (page === 4) truncated = true;
   }
   return { tools: Object.fromEntries(tools), truncated };
+}
+
+async function getVocalVideoSchemas(accessToken, { acknowledge = false } = {}) {
+  const headers = await openMcp(accessToken);
+  const tools = new Map();
+  const availableTools = [];
+  const seenNames = new Set();
+  const cursors = new Set();
+  let cursor;
+  let truncated = false;
+  for (let page = 0; page < 5; page += 1) {
+    const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: page + 2, method: 'tools/list', params: cursor ? { cursor } : {} }, 'inspect', headers, 262144);
+    if (!Array.isArray(result.tools)) throw mcpFailure('inspect', 'response');
+    for (const tool of result.tools) {
+      if (!tool || typeof tool.name !== 'string') continue;
+      if (schemaName(tool.name) && !/secret|token|password|credential/i.test(tool.name) && !seenNames.has(tool.name) && availableTools.length < 100) {
+        seenNames.add(tool.name);
+        availableTools.push(tool.name);
+      }
+      if (VOCAL_VIDEO_TOOLS.has(tool.name) && !tools.has(tool.name)) {
+        tools.set(
+          tool.name,
+          acknowledge
+            ? detailedToolSchema(tool.inputSchema, 0)
+            : imageSchema(tool.inputSchema, 0, SAFE_VOCAL_VIDEO_SCHEMA_ENUMS),
+        );
+      }
+    }
+    if (!result.nextCursor) break;
+    if (typeof result.nextCursor !== 'string' || result.nextCursor.length > 1024 || cursors.has(result.nextCursor)) throw mcpFailure('inspect', 'response');
+    cursors.add(result.nextCursor);
+    cursor = result.nextCursor;
+    if (page === 4) truncated = true;
+  }
+  return {
+    mode: acknowledge ? 'detailed' : 'safe',
+    tools: Object.fromEntries(tools),
+    available_tools: availableTools,
+    missing_tools: VOCAL_VIDEO_PRIMARY_TOOLS.filter((name) => !tools.has(name)),
+    truncated,
+  };
 }
 
 function modelContent(result) {
@@ -2258,6 +2393,27 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'dance-task' && request.method === 'POST') return response({ ok: true, task: await pollDance(env, user, session, request) });
       if (action === 'dance-session' && request.method === 'POST') return response({ ok: true, session: await danceSession(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'dance-message' && request.method === 'POST') return response({ ok: true, ...(await danceMessage(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+    }
+    if (action === 'vocal-video-schemas' && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      const origin = request.headers.get('origin');
+      if (origin && origin !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
+      let acknowledge = false;
+      const contentType = request.headers.get('content-type') || '';
+      const contentLength = request.headers.get('content-length');
+      if (contentType || (contentLength && contentLength !== '0')) {
+        const input = await imageJson(request);
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'acknowledge')) {
+          throw fail('Permintaan tidak valid.', 400);
+        }
+        if (input.acknowledge !== undefined && typeof input.acknowledge !== 'boolean') {
+          throw fail('Parameter acknowledge harus boolean.', 400);
+        }
+        acknowledge = input.acknowledge === true;
+      }
+      const result = await getVocalVideoSchemas(session.accessToken, { acknowledge });
+      return response({ ok: true, ...result }, 200, acknowledge ? { 'referrer-policy': 'no-referrer' } : {});
     }
     if (['video-prepare', 'video-submit', 'video-tests', 'video-task', 'video-private-failure'].includes(action)) {
       const session = await readSession(request, env, user.id);

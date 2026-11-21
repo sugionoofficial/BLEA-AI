@@ -261,6 +261,8 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Model video'));
   assert.equal(html.includes('Prompt video Gemini'), false);
   assert.ok(html.includes('video-quote-help'));
+  assert.ok(html.includes('Inspeksi skema Singing &amp; Lip-Sync Video'));
+  assert.ok(html.includes('Periksa skema Singing &amp; Lip-Sync'));
 });
 
 test('Freebeat image preparation explains every blocking condition and enables only with valid inputs and permission', async () => {

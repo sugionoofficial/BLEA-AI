@@ -7,6 +7,7 @@ import { FreebeatTaskResult } from './FreebeatTaskResult';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { FreebeatDanceDiagnostic } from './FreebeatDanceDiagnostic';
 import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
+import { FreebeatVocalSchemaDiagnostic } from './FreebeatVocalSchemaDiagnostic';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 import { freebeatRequest as request } from '../api/freebeat';
@@ -386,6 +387,7 @@ export function FreebeatPage() {
         <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} videoModels={videoModels} videoBusy={videoBusy} />
       </section>
       <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
+      <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
     </div>
   </DropXLayout>;
 }
