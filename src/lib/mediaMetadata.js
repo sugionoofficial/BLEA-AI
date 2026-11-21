@@ -6,7 +6,9 @@ const latin1Decoder = new TextDecoder('latin1');
 const utf8Encoder = new TextEncoder();
 
 export const METADATA_SERVICE_COST = 100;
-export const METADATA_MAX_FILE_BYTES = 30 * 1024 * 1024; // 30 MB
+export const METADATA_MAX_FILE_BYTES = 250 * 1024 * 1024; // 250 MB
+export const METADATA_WORKER_PROCESS_MAX_BYTES = 20 * 1024 * 1024; // 20 MB batas aman RAM Cloudflare Worker
+export const METADATA_STORAGE_UPLOAD_MAX_BYTES = 45 * 1024 * 1024; // 45 MB batas aman Storage bucket 50 MB
 
 const PNG_SIG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -1017,7 +1019,7 @@ function shouldDropMp4Box(bytes, box) {
   return false;
 }
 
-function rebuildMp4BoxTree(bytes, start, end, removedCounter, trail = '') {
+function rebuildMp4BoxTree(bytes, start, end, removedCounter, trail = '', { skipConcat = false } = {}) {
   const boxes = parseMp4Boxes(bytes, start, end);
   const kept = [];
   for (const box of boxes) {
@@ -1060,11 +1062,11 @@ function rebuildMp4BoxTree(bytes, start, end, removedCounter, trail = '') {
         type: box.type,
         oldStart: box.start,
         oldEnd: box.end,
-        bytes: bytes.slice(box.start, box.end),
+        bytes: bytes.subarray(box.start, box.end),
       });
     }
   }
-  return { kept, bytes: concatBytes(kept.map((k) => k.bytes)) };
+  return { kept, bytes: skipConcat ? null : concatBytes(kept.map((k) => k.bytes)) };
 }
 
 function shiftMp4ChunkOffsets(buf, start, end, topLevelOffsets) {
@@ -1114,9 +1116,9 @@ function lookupTopLevelShift(offset, topLevelOffsets) {
   return 0;
 }
 
-function stripMp4(bytes) {
+function stripMp4(bytes, { asParts = false } = {}) {
   const removedCounter = { count: 0 };
-  const rebuilt = rebuildMp4BoxTree(bytes, 0, bytes.length, removedCounter);
+  const rebuilt = rebuildMp4BoxTree(bytes, 0, bytes.length, removedCounter, '', { skipConcat: true });
   let cursor = 0;
   const topLevelOffsets = [];
   for (const box of rebuilt.kept) {
@@ -1129,9 +1131,28 @@ function stripMp4(bytes) {
     });
     cursor += box.bytes.length;
   }
-  const out = rebuilt.bytes;
-  shiftMp4ChunkOffsets(out, 0, out.length, topLevelOffsets);
-  return { cleanedBytes: out, removedChunks: removedCounter.count };
+  for (const box of rebuilt.kept) {
+    if (MP4_CONTAINER_BOXES.has(box.type)) {
+      shiftMp4ChunkOffsets(box.bytes, 0, box.bytes.length, topLevelOffsets);
+    }
+  }
+  const cleanedChunks = rebuilt.kept.map((k) => k.bytes);
+  if (asParts) {
+    const afterEntries = [];
+    for (const box of rebuilt.kept) {
+      if (box.type !== 'mdat') {
+        scanMp4Container(box.bytes, 0, box.bytes.length, afterEntries);
+      }
+    }
+    return {
+      cleanedBytes: null,
+      cleanedChunks,
+      cleanedSize: cursor,
+      removedChunks: removedCounter.count,
+      afterEntries,
+    };
+  }
+  return { cleanedBytes: concatBytes(cleanedChunks), cleanedSize: cursor, removedChunks: removedCounter.count };
 }
 
 // ---- WebM / MKV (EBML) ----
@@ -1253,18 +1274,84 @@ function writeEbmlVoidInPlace(buf, start, end) {
   return false;
 }
 
-function stripWebm(bytes) {
+function stripWebm(bytes, { asParts = false } = {}) {
   const entries = [];
   const scrubTargets = [];
   collectEbmlMetadata(bytes, 0, bytes.length, entries, scrubTargets);
+  const sorted = [...scrubTargets]
+    .sort((a, b) => (a.start - b.start) || (b.end - a.end))
+    .filter((target, idx, arr) => {
+      for (let i = 0; i < idx; i += 1) {
+        if (target.start >= arr[i].start && target.end <= arr[i].end) return false;
+      }
+      return true;
+    });
+
+  if (asParts) {
+    const cleanedChunks = [];
+    const remainingEntries = [];
+    let cursor = 0;
+    let removed = 0;
+    for (const target of sorted) {
+      if (target.start > cursor) {
+        cleanedChunks.push(bytes.subarray(cursor, target.start));
+      }
+      const patch = bytes.slice(target.start, target.end);
+      if (writeEbmlVoidInPlace(patch, 0, patch.length)) {
+        removed += 1;
+      } else {
+        collectEbmlMetadata(patch, 0, patch.length, remainingEntries, []);
+      }
+      cleanedChunks.push(patch);
+      cursor = target.end;
+    }
+    if (cursor < bytes.length) {
+      cleanedChunks.push(bytes.subarray(cursor));
+    }
+    return {
+      cleanedBytes: null,
+      cleanedChunks,
+      cleanedSize: bytes.length,
+      removedChunks: removed,
+      afterEntries: remainingEntries,
+    };
+  }
+
   const out = bytes.slice();
   let removed = 0;
-  for (const target of scrubTargets) {
+  for (const target of sorted) {
     if (writeEbmlVoidInPlace(out, target.start, target.end)) {
       removed += 1;
     }
   }
-  return { cleanedBytes: out, removedChunks: removed };
+  return { cleanedBytes: out, cleanedSize: out.length, removedChunks: removed };
+}
+
+function buildScanReportFromEntries(detected, fileSize, entries) {
+  const toolSet = new Set();
+  const reasonSet = new Set();
+  for (const entry of entries) {
+    for (const tool of entry.aiTools || []) toolSet.add(tool);
+    for (const reason of entry.aiReasons || []) reasonSet.add(reason);
+  }
+  const aiEntriesCount = entries.filter((e) => e.isAi).length;
+  return {
+    ok: true,
+    supported: true,
+    format: detected.format,
+    formatLabel: detected.label,
+    mediaKind: detected.mediaKind,
+    mimeType: detected.mimeType,
+    ext: detected.ext,
+    fileSize,
+    aiDetected: toolSet.size > 0,
+    detectedTools: Array.from(toolSet),
+    aiSignals: Array.from(reasonSet),
+    entries,
+    totalEntries: entries.length,
+    aiEntriesCount,
+    removable: entries.length > 0,
+  };
 }
 
 // ---- Public APIs ----
@@ -1302,34 +1389,10 @@ export async function scanMediaMetadata(input, { fileName = '', mimeType = '' } 
     collectEbmlMetadata(bytes, 0, bytes.length, entries, scrubTargets);
   }
 
-  const toolSet = new Set();
-  const reasonSet = new Set();
-  for (const entry of entries) {
-    for (const tool of entry.aiTools || []) toolSet.add(tool);
-    for (const reason of entry.aiReasons || []) reasonSet.add(reason);
-  }
-
-  const aiEntriesCount = entries.filter((e) => e.isAi).length;
-  return {
-    ok: true,
-    supported: true,
-    format: detected.format,
-    formatLabel: detected.label,
-    mediaKind: detected.mediaKind,
-    mimeType: detected.mimeType,
-    ext: detected.ext,
-    fileSize: bytes.length,
-    aiDetected: toolSet.size > 0,
-    detectedTools: Array.from(toolSet),
-    aiSignals: Array.from(reasonSet),
-    entries,
-    totalEntries: entries.length,
-    aiEntriesCount,
-    removable: entries.length > 0,
-  };
+  return buildScanReportFromEntries(detected, bytes.length, entries);
 }
 
-export async function stripMediaMetadata(input, { fileName = '', mimeType = '' } = {}) {
+export async function stripMediaMetadata(input, { fileName = '', mimeType = '', asParts = false } = {}) {
   const bytes = toUint8Array(input);
   const before = await scanMediaMetadata(bytes, { fileName, mimeType });
   if (!before.supported) {
@@ -1341,11 +1404,22 @@ export async function stripMediaMetadata(input, { fileName = '', mimeType = '' }
   else if (before.format === 'jpeg') result = stripJpeg(bytes);
   else if (before.format === 'webp') result = stripWebp(bytes);
   else if (before.format === 'gif') result = stripGif(bytes);
-  else if (before.format === 'mp4') result = stripMp4(bytes);
-  else if (before.format === 'webm') result = stripWebm(bytes);
+  else if (before.format === 'mp4') result = stripMp4(bytes, { asParts });
+  else if (before.format === 'webm') result = stripWebm(bytes, { asParts });
   else throw new Error('Format file tidak didukung.');
 
-  const after = await scanMediaMetadata(result.cleanedBytes, { fileName, mimeType });
+  const cleanedSize = Number.isFinite(result.cleanedSize) ? result.cleanedSize : result.cleanedBytes.length;
+  const cleanedChunks = result.cleanedChunks || (result.cleanedBytes ? [result.cleanedBytes] : []);
+  const after = result.cleanedBytes
+    ? await scanMediaMetadata(result.cleanedBytes, { fileName, mimeType })
+    : buildScanReportFromEntries({
+      format: before.format,
+      label: before.formatLabel,
+      mediaKind: before.mediaKind,
+      mimeType: before.mimeType,
+      ext: before.ext,
+    }, cleanedSize, result.afterEntries || []);
+
   const removedCount = Math.max(before.totalEntries - after.totalEntries, result.removedChunks);
 
   return {
@@ -1356,8 +1430,9 @@ export async function stripMediaMetadata(input, { fileName = '', mimeType = '' }
     mimeType: before.mimeType,
     ext: before.ext,
     originalSize: bytes.length,
-    cleanedSize: result.cleanedBytes.length,
-    cleanedBytes: result.cleanedBytes,
+    cleanedSize,
+    cleanedBytes: result.cleanedBytes || null,
+    cleanedChunks,
     removedChunks: result.removedChunks,
     removedCount,
     before,

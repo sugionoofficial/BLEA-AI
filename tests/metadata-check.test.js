@@ -205,6 +205,10 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   assert.equal(mp4Clean.after.aiDetected, false);
   assert.equal(mp4Clean.after.totalEntries, 0);
   assert.equal(new TextDecoder().decode(mp4Clean.cleanedBytes).includes('OpenAI Sora Handler'), false);
+  const mp4CleanParts = await stripMediaMetadata(mp4, { fileName: 'sora.mp4', mimeType: 'video/mp4', asParts: true });
+  assert.equal(mp4CleanParts.after.aiDetected, false);
+  assert.equal(mp4CleanParts.after.totalEntries, 0);
+  assert.deepEqual(concat(...mp4CleanParts.cleanedChunks), mp4Clean.cleanedBytes);
   // Verify stco now points directly to 'VIDEO-DATA-PAYLOAD'
   const stcoIdx = Buffer.from(mp4Clean.cleanedBytes).indexOf('stco');
   const dv = new DataView(mp4Clean.cleanedBytes.buffer, mp4Clean.cleanedBytes.byteOffset);
@@ -223,6 +227,10 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   assert.equal(webmClean.after.totalEntries, 0);
   assert.equal(webmClean.cleanedBytes.length, webm.length);
   assert.equal(Buffer.from(webmClean.cleanedBytes).indexOf('WEBM'), Buffer.from(webm).indexOf('WEBM'));
+  const webmCleanParts = await stripMediaMetadata(webm, { fileName: 'comfy.webm', mimeType: 'video/webm', asParts: true });
+  assert.equal(webmCleanParts.after.aiDetected, false);
+  assert.equal(webmCleanParts.after.totalEntries, 0);
+  assert.deepEqual(concat(...webmCleanParts.cleanedChunks), webmClean.cleanedBytes);
 });
 
 test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + fallback model & mengembalikan 503 bila belum aktif', async () => {
@@ -549,6 +557,49 @@ test('Worker /api/metadata/* mengenakan 100 kredit, muncul di /api/generations/l
     const cancelData = await cancelRes.json();
     assert.equal(cancelData.refunded, 100);
     assert.equal(userBalance, 200);
+
+    // 9. Large video (57.61 MB = 60,408,463 bytes) works end-to-end via client_cleaned & auto-refunds on client_failed
+    const bigVideoSize = 60_408_463;
+    const bigStartRes = await worker.fetch(apiReq('/api/metadata/start', {
+      body: {
+        filename: 'sora-57mb.mp4',
+        mime_type: 'video/mp4',
+        media_kind: 'video',
+        original_size: bigVideoSize,
+        scan_before: { aiDetected: true, detectedTools: ['OpenAI (Sora / DALL-E / ChatGPT)'], totalEntries: 2 },
+      },
+    }), env);
+    assert.equal(bigStartRes.status, 200);
+    const bigJobId = (await bigStartRes.json()).job.id;
+    assert.equal(userBalance, 100);
+
+    const bigDoneRes = await worker.fetch(apiReq('/api/metadata/process', {
+      body: {
+        id: bigJobId,
+        client_cleaned: true,
+        cleaned_size: bigVideoSize - 4096,
+        removed_count: 2,
+        scan_after: { aiDetected: false, totalEntries: 0, detectedTools: [] },
+      },
+    }), env);
+    assert.equal(bigDoneRes.status, 200);
+    const bigDone = await bigDoneRes.json();
+    assert.equal(bigDone.job.status, 'completed');
+    assert.equal(bigDone.job.progress, 100);
+    assert.equal(bigDone.localOnlyDownload, true);
+    assert.equal(bigDone.removedCount, 2);
+
+    // Client failure triggers automatic 100-credit refund
+    const failStartRes = await worker.fetch(apiReq('/api/metadata/start', {
+      body: { filename: 'broken-big.mp4', mime_type: 'video/mp4', media_kind: 'video', original_size: bigVideoSize },
+    }), env);
+    const failJobId = (await failStartRes.json()).job.id;
+    assert.equal(userBalance, 0);
+    const clientFailRes = await worker.fetch(apiReq('/api/metadata/process', {
+      body: { id: failJobId, client_failed: true, error_message: 'Out of memory in test' },
+    }), env);
+    assert.equal(clientFailRes.status, 500);
+    assert.equal(userBalance, 100);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -592,6 +643,7 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
 
   const jobId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   let walletBalance = 300;
+  let seenClientCleaned = false;
   const completedJob = {
     id: jobId,
     user_id: USER_ID,
@@ -655,6 +707,22 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
       return Response.json({ ok: true, cost: 100, job: { ...completedJob, status: 'processing', progress: 25 } });
     }
     if (sUrl === '/api/metadata/process') {
+      const bodyStr = typeof init.body === 'string' ? init.body : '';
+      let parsedBody = null;
+      if (bodyStr.startsWith('{')) {
+        try { parsedBody = JSON.parse(bodyStr); } catch {}
+      }
+      if (parsedBody?.client_cleaned) {
+        seenClientCleaned = true;
+        return Response.json({
+          ok: true,
+          job: { ...completedJob, media_kind: 'video', filename: 'sora-57mb.mp4', result_url: null, download_url: null, cleaned_size: parsedBody.cleaned_size },
+          removedCount: parsedBody.removed_count || 3,
+          localOnlyDownload: true,
+          before: { aiDetected: true, totalEntries: 3, detectedTools: completedJob.detected_tools },
+          after: parsedBody.scan_after || { aiDetected: false, totalEntries: 0, detectedTools: [] },
+        });
+      }
       return Response.json({
         ok: true,
         job: completedJob,
@@ -748,6 +816,31 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
     ));
     assert.match(document.body.textContent, /Metadata \(1\)/);
     assert.match(document.body.textContent, /Bersihkan Metadata Gambar/);
+
+    // Large video 57.61 MB (60,408,463 bytes) is accepted, scanned via Cloudflare AI, stripped client-side & ready for instant Download Hasil Bersih
+    await React.act(async () => root.render(
+      React.createElement(MemoryRouter, { initialEntries: ['/metadata'] },
+        React.createElement(AuthProvider, { initialSession: session }, React.createElement(MetadataCheckPage))),
+    ));
+    const { file: mp4Bytes } = buildAiMp4();
+    const bigVideoFile = new File([mp4Bytes], 'sora-57mb.mp4', { type: 'video/mp4' });
+    Object.defineProperty(bigVideoFile, 'size', { value: 60_408_463 });
+    Object.defineProperty(bigVideoFile, 'arrayBuffer', {
+      value: async () => mp4Bytes.buffer.slice(mp4Bytes.byteOffset, mp4Bytes.byteOffset + mp4Bytes.byteLength),
+    });
+    const bigInput = document.querySelector('input[type="file"]');
+    Object.defineProperty(bigInput, 'files', { value: [bigVideoFile], configurable: true });
+    await React.act(async () => {
+      bigInput.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    });
+    assert.doesNotMatch(document.body.textContent, /Ukuran file terlalu besar/);
+    assert.match(primaryBtn().textContent, /Scan Metadata/);
+    await React.act(async () => { primaryBtn().click(); });
+    assert.match(primaryBtn().textContent, /Remove Metadata \(100 Kredit\)/);
+    await React.act(async () => { primaryBtn().click(); });
+    assert.equal(seenClientCleaned, true);
+    assert.match(primaryBtn().textContent, /Download Hasil Bersih/);
+    assert.match(document.body.textContent, /langsung dari perangkat Anda/);
   } finally {
     await React.act(async () => root.unmount());
     supabase.auth.getSession = oldGet;

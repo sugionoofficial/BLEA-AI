@@ -64,8 +64,22 @@ export async function startMetadataClean(payload) {
   return edgeRequest('/metadata/start', payload);
 }
 
-// Cek & Bersihkan Metadata AI — proses penghapusan metadata & simpan hasil bersih (via FormData atau JSON storage_path).
-export async function processMetadataClean({ id, file, storagePath, filename, mimeType } = {}) {
+// Cek & Bersihkan Metadata AI — proses penghapusan metadata & simpan hasil bersih (via FormData, JSON storage_path, atau hasil bersih client-side untuk file besar).
+export async function processMetadataClean({
+  id,
+  file,
+  storagePath,
+  filename,
+  mimeType,
+  clientCleaned = false,
+  clientFailed = false,
+  errorMessage = '',
+  cleanedSize = 0,
+  removedCount = 0,
+  scanBefore = null,
+  scanAfter = null,
+  cleanedStoragePath = '',
+} = {}) {
   if (file && typeof file.arrayBuffer === 'function') {
     const form = new FormData();
     if (id) form.append('id', id);
@@ -76,6 +90,24 @@ export async function processMetadataClean({ id, file, storagePath, filename, mi
       : new Blob([await file.arrayBuffer()], { type: mimeType || file.type || 'application/octet-stream' });
     form.append('file', uploadBlob, filename || 'media');
     return edgeFormRequest('/metadata/process', form);
+  }
+  if (clientFailed) {
+    return edgeRequest('/metadata/process', {
+      id,
+      client_failed: true,
+      error_message: errorMessage,
+    });
+  }
+  if (clientCleaned) {
+    return edgeRequest('/metadata/process', {
+      id,
+      client_cleaned: true,
+      cleaned_size: cleanedSize,
+      removed_count: removedCount,
+      ...(scanBefore ? { scan_before: scanBefore } : {}),
+      ...(scanAfter ? { scan_after: scanAfter } : {}),
+      ...(cleanedStoragePath ? { cleaned_storage_path: cleanedStoragePath } : {}),
+    });
   }
   return edgeRequest('/metadata/process', {
     ...(id ? { id } : {}),
