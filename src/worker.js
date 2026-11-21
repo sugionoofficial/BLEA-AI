@@ -22,6 +22,7 @@
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 
 import {
+  BUILTIN_CATALOG_PROVIDER_MODELS,
   BUILTIN_VIDEO_MODELS,
   CLOUDFLARE_FREE_LLM_MODELS,
   PROVIDER_PRESETS,
@@ -53,6 +54,7 @@ import {
   consumerImageGenerate,
   consumerImageHistory,
   consumerImageStatus,
+  fetchFreebeatCatalogModels,
   freebeatCallback,
   handleFreebeat,
   pollFreebeatImageRow,
@@ -3180,6 +3182,7 @@ async function handleApi(request, url, env) {
         return jsonResponse({
           models: CLOUDFLARE_FREE_LLM_MODELS.map((m) => ({
             id: m.id,
+            name: m.name || m.id,
             provider: 'cloudflare',
             category: 'Text',
             tags: m.tags,
@@ -3196,6 +3199,7 @@ async function handleApi(request, url, env) {
         // Wan (video) + daftar free quota resmi (teks/gambar/video/speech).
         const builtin = BUILTIN_VIDEO_MODELS.filter((m) => m.provider === 'alibaba').map((m) => ({
           id: m.id,
+          name: m.name || m.id,
           provider: 'alibaba',
           category: 'Video',
           blea: 'video',
@@ -3209,6 +3213,7 @@ async function handleApi(request, url, env) {
           .filter((m) => !builtin.some((row) => row.id === m.id))
           .map((m) => ({
             id: m.id,
+            name: m.name || m.id,
             provider: 'alibaba',
             category: m.category,
             blea: m.blea || null,
@@ -3221,42 +3226,126 @@ async function handleApi(request, url, env) {
         return jsonResponse({ models: [...builtin, ...freeQuota] });
       }
 
-      if (provider !== 'unorouter') {
-        try {
-          const keyRow = await fetchProviderKeyRecord(env, provider);
-          const apiBase = resolveProviderApiBase(provider, body.baseUrl || keyRow?.base_url);
-          const headers = keyRow?.api_key ? { authorization: `Bearer ${keyRow.api_key}` } : {};
-          const upstream = await fetch(`${apiBase}/models`, {
-            headers,
-            signal: AbortSignal.timeout(20_000),
-          });
-          if (!upstream.ok) return jsonResponse({ error: `Catalog ${provider} gagal dimuat (HTTP ${upstream.status}).`, status: upstream.status }, 502);
-          const payload = await upstream.json().catch(() => ({}));
-          const rawList = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload?.models) ? payload.models : []);
-          const models = rawList
-            .map((item) => {
-              const id = typeof item === 'string' ? item : (item?.id || item?.model || '');
-              if (!id) return null;
-              const isVid = isVideoModelId(id);
-              const isEmb = /embedding|embed/i.test(id);
-              const isImg = /dall-e|imagen|flux|image/i.test(id);
-              const category = isVid ? 'Video' : (isEmb ? 'Embedding' : (isImg ? 'Image' : 'Text'));
-              return {
-                id,
-                provider,
-                category,
-                tags: [category, provider.toUpperCase()],
-                description: item?.description || item?.owned_by || '',
-                isFree: id.endsWith(':free') || provider === 'pekpik',
-                online: true,
-                priceLabel: id.endsWith(':free') ? 'Gratis' : (provider === 'pekpik' ? 'Free Tier' : 'API'),
-              };
-            })
-            .filter(Boolean);
-          return jsonResponse({ models });
-        } catch (e) {
-          return jsonResponse({ error: String(e) }, 502);
+      if (provider === 'freebeat') {
+        const models = await fetchFreebeatCatalogModels(env).catch(() => []);
+        const [pmRes, priceRes] = await Promise.all([
+          servicePostgrest(env, '/provider_models?select=model,active&provider=eq.freebeat&limit=200').catch(() => null),
+          servicePostgrest(env, '/credit_model_prices?select=model,modality&provider=eq.freebeat&limit=200').catch(() => null),
+        ]);
+        const pmRows = pmRes?.ok ? await pmRes.json().catch(() => []) : [];
+        const priceRows = priceRes?.ok ? await priceRes.json().catch(() => []) : [];
+        const byId = new Map(models.map((m) => [String(m.id), m]));
+        for (const r of [...(Array.isArray(pmRows) ? pmRows : []), ...(Array.isArray(priceRows) ? priceRows : [])]) {
+          const id = String(r?.model || '').trim();
+          if (!id || byId.has(id)) continue;
+          const cat = r?.modality === 'video' || /video/i.test(id) ? 'Video' : 'Image';
+          const entry = {
+            id,
+            name: id,
+            provider: 'freebeat',
+            category: cat,
+            tags: [cat, 'Freebeat'],
+            description: `Model Freebeat ${id}`,
+            isFree: false,
+            online: true,
+            priceLabel: 'Kredit BLEA',
+          };
+          byId.set(id, entry);
+          models.push(entry);
         }
+        return jsonResponse({ models });
+      }
+
+      if (provider !== 'unorouter') {
+        const builtinForProvider = [
+          ...BUILTIN_VIDEO_MODELS
+            .filter((m) => m.provider === provider)
+            .map((m) => ({
+              id: m.id,
+              name: m.name || m.id,
+              provider,
+              category: 'Video',
+              blea: 'video',
+              tags: ['Video', PROVIDER_PRESETS[provider]?.label || provider.toUpperCase()],
+              description: m.description || m.name || '',
+              isFree: Boolean(m.isFree),
+              online: true,
+              priceLabel: m.priceLabel || 'Video',
+            })),
+          ...(BUILTIN_CATALOG_PROVIDER_MODELS[provider] || []).map((m) => ({
+            id: m.id,
+            name: m.name || m.id,
+            provider,
+            category: m.category || 'Text',
+            tags: [m.category || 'Text', PROVIDER_PRESETS[provider]?.label || provider.toUpperCase()],
+            description: m.description || m.name || '',
+            isFree: Boolean(m.isFree),
+            online: true,
+            priceLabel: m.priceLabel || 'API',
+          })),
+        ];
+        let upstreamModels = [];
+        let upstreamError = '';
+        let upstreamStatus = 502;
+        try {
+          const [keyRow, poolRes] = await Promise.all([
+            fetchProviderKeyRecord(env, provider).catch(() => null),
+            servicePostgrest(env, `/provider_key_pool?select=api_key,base_url&provider=eq.${encodeURIComponent(provider)}&enabled=eq.true&order=priority.asc&limit=1`).catch(() => null),
+          ]);
+          const poolRows = poolRes?.ok ? await poolRes.json().catch(() => []) : [];
+          const activeKey = keyRow?.api_key || poolRows?.[0]?.api_key || '';
+          const rawBase = body.baseUrl || keyRow?.base_url || poolRows?.[0]?.base_url;
+          const apiBase = resolveProviderApiBase(provider, rawBase);
+          if (apiBase) {
+            const headers = activeKey ? { authorization: `Bearer ${activeKey}` } : {};
+            const upstream = await fetch(`${apiBase}/models`, {
+              headers,
+              signal: AbortSignal.timeout(20_000),
+            });
+            if (upstream.ok) {
+              const payload = await upstream.json().catch(() => ({}));
+              const rawList = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload?.models) ? payload.models : []);
+              upstreamModels = rawList
+                .map((item) => {
+                  const id = typeof item === 'string' ? item : (item?.id || item?.model || '');
+                  if (!id) return null;
+                  const isVid = isVideoModelId(id);
+                  const isSpeech = /tts|whisper|speech|audio/i.test(id);
+                  const isEmb = /embedding|embed/i.test(id);
+                  const isImg = /dall-e|imagen|flux|image/i.test(id);
+                  const category = isVid ? 'Video' : (isSpeech ? 'Speech' : (isEmb ? 'Embedding' : (isImg ? 'Image' : 'Text')));
+                  return {
+                    id,
+                    name: item?.name || id,
+                    provider,
+                    category,
+                    tags: [category, provider.toUpperCase()],
+                    description: item?.description || item?.owned_by || '',
+                    isFree: id.endsWith(':free') || provider === 'pekpik',
+                    online: true,
+                    priceLabel: id.endsWith(':free') ? 'Gratis' : (provider === 'pekpik' ? 'Free Tier' : 'API'),
+                  };
+                })
+                .filter(Boolean);
+            } else {
+              upstreamStatus = upstream.status;
+              upstreamError = `Catalog ${provider} gagal dimuat (HTTP ${upstream.status}).`;
+            }
+          } else if (!builtinForProvider.length) {
+            upstreamError = `Base URL untuk provider "${provider}" belum valid.`;
+          }
+        } catch (e) {
+          upstreamError = String(e);
+        }
+        const mergedMap = new Map();
+        for (const m of [...builtinForProvider, ...upstreamModels]) {
+          if (!mergedMap.has(m.id)) mergedMap.set(m.id, m);
+        }
+        const models = Array.from(mergedMap.values());
+        if (!models.length && upstreamError) {
+          return jsonResponse({ error: upstreamError, status: upstreamStatus }, 502);
+        }
+        return jsonResponse({ models, ...(upstreamError ? { warning: upstreamError } : {}) });
       }
 
       try {
@@ -3301,15 +3390,59 @@ async function handleApi(request, url, env) {
       }
     }
 
-    // ---- /admin-models: full model list across all providers (admin) ----
+    // ---- /admin-models: full model list & registered providers (admin) ----
     if (path === 'admin-models' && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       if (!(await isAdmin(env, token))) return jsonResponse({ error: 'admin required' }, 403);
-      const res = await servicePostgrest(env, '/provider_models?select=provider,model,active&order=created_at.desc&limit=500');
+      const [res, keysRes, poolRes, fbAccRes, fbSessRes, priceProvRes] = await Promise.all([
+        servicePostgrest(env, '/provider_models?select=provider,model,active&order=created_at.desc&limit=500'),
+        servicePostgrest(env, '/provider_api_keys?select=provider,label,base_url,api_key&order=provider').catch(() => null),
+        servicePostgrest(env, '/provider_key_pool?select=provider,enabled&limit=200').catch(() => null),
+        servicePostgrest(env, '/freebeat_oauth_accounts?select=id,enabled&limit=10').catch(() => null),
+        servicePostgrest(env, '/freebeat_provider_sessions?select=user_id&limit=1').catch(() => null),
+        servicePostgrest(env, '/credit_model_prices?select=provider&limit=500').catch(() => null),
+      ]);
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
       const models = (rows ?? []).map((m) => ({ id: m.model, active: m.active, provider: m.provider }));
-      return jsonResponse({ models });
+
+      const providerMap = new Map();
+      const upsertProv = (idRaw, labelRaw, source) => {
+        const id = String(idRaw || '').trim().toLowerCase();
+        if (!id) return;
+        const defaultLabel = id === 'freebeat'
+          ? 'Freebeat (OAuth)'
+          : (PROVIDER_PRESETS[id]?.label || id);
+        const existing = providerMap.get(id);
+        providerMap.set(id, {
+          provider: id,
+          label: existing?.label || String(labelRaw || '').trim() || defaultLabel,
+          sources: [...new Set([...(existing?.sources || []), source])],
+        });
+      };
+
+      const keyRows = keysRes?.ok ? await keysRes.json().catch(() => []) : [];
+      for (const row of Array.isArray(keyRows) ? keyRows : []) {
+        upsertProv(row.provider, row.label, 'api_key');
+      }
+      const poolRows = poolRes?.ok ? await poolRes.json().catch(() => []) : [];
+      for (const row of Array.isArray(poolRows) ? poolRows : []) {
+        upsertProv(row.provider, '', 'key_pool');
+      }
+      const fbAccRows = fbAccRes?.ok ? await fbAccRes.json().catch(() => []) : [];
+      const fbSessRows = fbSessRes?.ok ? await fbSessRes.json().catch(() => []) : [];
+      if ((Array.isArray(fbAccRows) && fbAccRows.length > 0) || (Array.isArray(fbSessRows) && fbSessRows.length > 0)) {
+        upsertProv('freebeat', 'Freebeat (OAuth)', 'oauth');
+      }
+      for (const row of Array.isArray(rows) ? rows : []) {
+        upsertProv(row.provider, '', 'models');
+      }
+      const priceRows = priceProvRes?.ok ? await priceProvRes.json().catch(() => []) : [];
+      for (const row of Array.isArray(priceRows) ? priceRows : []) {
+        upsertProv(row.provider, '', 'prices');
+      }
+
+      return jsonResponse({ models, providers: Array.from(providerMap.values()) });
     }
 
     // ---- /save-models: upsert model enablement per provider (admin) ----
@@ -3781,7 +3914,7 @@ async function handleApi(request, url, env) {
       const videoCredits = Number(Array.isArray(priceRows) ? priceRows[0]?.credits : null);
       if (!Number.isSafeInteger(videoCredits) || videoCredits <= 0) {
         return jsonResponse({
-          error: `Harga kredit untuk model video "${model}" (${provider}) belum diatur admin. Atur dulu di Kredit → Admin · Harga generasi.`,
+          error: `Harga kredit untuk model video "${model}" (${provider}) belum diatur admin. Atur dulu di Admin → API Key → Katalog Model.`,
           code: 'video_price_missing',
         }, 409);
       }

@@ -415,7 +415,7 @@ test('GenerateImagePanel: tampilkan pengingat admin saat ada model Alibaba aktif
         React.createElement(AuthProvider, { initialSession: session }, React.createElement(GenerateImagePanel))),
     ));
     assert.match(document.body.textContent, /2 model gambar Alibaba sudah aktif di Katalog Model tetapi belum punya harga kredit BLEA/);
-    assert.ok(document.querySelector('a[href="/credits"]'));
+    assert.ok(document.querySelector('a[href="/admin?tab=api-keys&sub=catalog"]'));
   } finally {
     await React.act(async () => root.unmount());
     await new Promise((resolve) => setTimeout(resolve, 25));

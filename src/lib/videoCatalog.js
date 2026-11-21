@@ -886,6 +886,38 @@ export function isVideoCatalogModel(row, meta = {}) {
   return isVideoModelId(row?.model_name);
 }
 
+export const BUILTIN_CATALOG_PROVIDER_MODELS = Object.freeze({
+  openai: [
+    { id: 'sora-2', name: 'OpenAI Sora 2', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'OpenAI Sora 2 text/image-to-video.' },
+    { id: 'sora-2-pro', name: 'OpenAI Sora 2 Pro', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'OpenAI Sora 2 Pro video generasi resolusi tinggi.' },
+    { id: 'gpt-image-1', name: 'GPT Image 1', category: 'Image', isFree: false, priceLabel: 'API', description: 'Model generasi & edit gambar OpenAI.' },
+    { id: 'gpt-4o-mini', name: 'GPT-4o Mini', category: 'Text', isFree: false, priceLabel: 'API', description: 'Model teks cepat & hemat OpenAI.' },
+  ],
+  google: [
+    { id: 'veo3.1', name: 'Google Veo 3.1', category: 'Video', isFree: false, priceLabel: '$0.40/s', description: 'Google Veo 3.1 dengan audio terpadu.' },
+    { id: 'veo3.1-fast', name: 'Google Veo 3.1 Fast', category: 'Video', isFree: false, priceLabel: '$0.40/s', description: 'Google Veo 3.1 Fast.' },
+    { id: 'gemini-omni-1.2-flash:free', name: 'Gemini Omni 1.2 Flash', category: 'Video', isFree: true, priceLabel: 'Gratis', description: 'Video multimodal Google hingga 15 detik.' },
+    { id: 'gemini-omni-1.1-flash:free', name: 'Gemini Omni 1.1 Flash', category: 'Video', isFree: true, priceLabel: 'Gratis', description: 'Generasi & editing video multimodal Google.' },
+  ],
+  xai: [
+    { id: 'grok-video-3', name: 'xAI Grok Video 3', category: 'Video', isFree: false, priceLabel: '$0.05/s', description: 'Model video cepat xAI Grok Imagine.' },
+    { id: 'grok-imagine-video', name: 'xAI Grok Imagine Video', category: 'Video', isFree: false, priceLabel: 'API', description: 'Endpoint resmi xAI Grok Imagine Video.' },
+    { id: 'grok-3', name: 'xAI Grok 3', category: 'Text', isFree: false, priceLabel: 'API', description: 'Model chat & penalaran xAI.' },
+  ],
+  doubao: [
+    { id: 'doubao-seedance-1-5-pro-251215', name: 'ByteDance Seedance 1.5 Pro', category: 'Video', isFree: false, priceLabel: '$0.48/s', description: 'ByteDance Seedance 1.5 Pro video & audio sinkron.' },
+  ],
+  kling: [
+    { id: 'kling-v2.6', name: 'Kling v2.6', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'Kling AI v2.6 video generation.' },
+    { id: 'kling-v3', name: 'Kling v3', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'Kling AI v3 video generation.' },
+    { id: 'kling-v4.0', name: 'Kling v4.0', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'Kling AI v4.0 video generation.' },
+  ],
+  hailuo: [
+    { id: 'minimax-hailuo-2.3', name: 'MiniMax Hailuo 2.3', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'MiniMax Hailuo 2.3 video generation.' },
+    { id: 'minimax-h3', name: 'MiniMax H3', category: 'Video', isFree: false, priceLabel: 'Berbayar', description: 'MiniMax H3 video generation.' },
+  ],
+});
+
 function resolveRawVideoProfile(modelId, provider = 'unorouter') {
   const id = String(modelId || '').trim();
   const lower = id.toLowerCase();
