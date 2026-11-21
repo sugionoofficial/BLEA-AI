@@ -53,7 +53,11 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
   }
   const agentStatus = row?.metadata?.agent_status;
   if (row?.provider === 'freebeat' && agentStatus === 'action_required') {
-    return 'Agen Freebeat menunggu konfirmasi lanjutan; sistem mengirim nudge otomatis berkala atau admin dapat membatalkan.';
+    const nudgeCount = Number(row?.metadata?.auto_nudge_count || 0);
+    if (nudgeCount >= 3) {
+      return 'Agen Freebeat belum merespons setelah 3 nudge otomatis (atau menunggu kredit/konfirmasi); sistem akan menghentikan proses & mengembalikan kredit BLEA pada polling berikutnya.';
+    }
+    return 'Agen Freebeat menunggu konfirmasi lanjutan; sistem memeriksa saldo/sesi dan mengirim nudge otomatis berkala atau admin dapat membatalkan.';
   }
   if (row?.provider === 'freebeat' && Number(row?.progress || 0) >= 90 && staleMs > 5 * 60_000) {
     return 'Antrean Freebeat Music-to-Dance di tahap akhir (90%) tanpa pembaruan >5 menit (estimasi normal 15–60 menit, atau macet di sisi Freebeat).';
