@@ -662,6 +662,9 @@
 }
 
 .spinning {
+  display: inline-block;
+  flex-shrink: 0;
+  transform-origin: center;
   animation: admin-spin 1s linear infinite;
 }
 

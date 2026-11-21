@@ -92,6 +92,9 @@
 }
 
 .showcase-spin {
+  display: inline-block;
+  flex-shrink: 0;
+  transform-origin: center;
   animation: showcase-spin 0.9s linear infinite;
 }
 

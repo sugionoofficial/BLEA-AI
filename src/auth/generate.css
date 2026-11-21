@@ -678,11 +678,14 @@
 }
 
 .dropx-shell .generate-btn-spinner {
+  display: inline-block;
+  flex-shrink: 0;
   width: 14px;
   height: 14px;
   border-radius: 50%;
   border: 2px solid rgb(255 255 255 / 0.35);
   border-top-color: #fff;
+  transform-origin: center;
   animation: gen-spin 0.75s linear infinite;
 }
 

@@ -509,3 +509,65 @@ iframe {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ---------- Loading spinners selalu berputar di HP (termasuk hemat baterai / reduce motion) ---------- */
+.loader-orbit,
+.button-loader,
+.spinning,
+.tempmail-spin,
+.showcase-spin,
+.studio-send-loader,
+.dropx-shell .generate-btn-spinner,
+.dropx-shell .generate-orbit-ring,
+.dropx-shell .generate-img-orbit,
+.dropx-shell .live-refresh-icon.is-spinning {
+  display: inline-block;
+  flex-shrink: 0;
+  transform-origin: center;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loader-orbit {
+    animation: auth-spin 0.9s linear infinite !important;
+  }
+  .button-loader {
+    animation: auth-spin 0.8s linear infinite !important;
+  }
+  .spinning {
+    animation: admin-spin 1s linear infinite !important;
+  }
+  .tempmail-spin {
+    animation: tempmail-spin 0.8s linear infinite !important;
+  }
+  .showcase-spin {
+    animation: showcase-spin 0.9s linear infinite !important;
+  }
+  .studio-send-loader {
+    animation: studio-spin 0.8s linear infinite !important;
+  }
+  .dropx-shell .generate-btn-spinner {
+    animation: gen-spin 0.75s linear infinite !important;
+  }
+  .dropx-shell .generate-orbit-ring {
+    animation: gen-spin 1.4s linear infinite !important;
+  }
+  .dropx-shell .generate-orbit-ring.is-inner {
+    animation: gen-spin-rev 1.9s linear infinite !important;
+  }
+  .dropx-shell .generate-img-orbit {
+    animation: gen-spin 1.1s linear infinite !important;
+  }
+  .dropx-shell .live-refresh-icon.is-spinning {
+    animation: live-spin 0.9s linear infinite !important;
+  }
+  .dropx-shell .live-badge-dot {
+    animation: live-pulse-dot 1.4s ease-in-out infinite !important;
+  }
+  .dropx-shell .generate-pulse-dot {
+    animation: gen-pulse 1.3s ease-in-out infinite !important;
+  }
+  .dropx-shell .generate-eq i {
+    animation: gen-eq-wave 1.05s ease-in-out infinite !important;
+  }
+}

@@ -411,4 +411,10 @@ test('Mobile polish and animated loading stages are wired across Dashboard, Chat
   assert.match(mobileCss, /\.dropx-shell\s+\.generate-card\s*\{[^}]*overflow-x:\s*clip;/s);
   assert.match(generateCss, /\.dropx-shell\s+\.generate-model-popover/);
   assert.match(generateCss, /\.dropx-shell\s+\.generate-img-live-stage/);
+
+  // Mobile loading spinners must NEVER be stopped globally by prefers-reduced-motion
+  assert.equal(/\*\s*,\s*\*::before\s*,\s*\*::after\s*\{[^}]*animation-duration:\s*\.01ms/s.test(stylesCss), false);
+  assert.equal(authCss.includes('.loader-orbit,.button-loader{animation-duration:.01ms'), false);
+  assert.match(mobileCss, /\.loader-orbit,[\s\S]*?\.dropx-shell\s+\.live-refresh-icon\.is-spinning\s*\{[^}]*transform-origin:\s*center;/s);
+  assert.match(mobileCss, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.dropx-shell\s+\.generate-orbit-ring\s*\{[^}]*animation:\s*gen-spin\s+1\.4s\s+linear\s+infinite\s*!important;/s);
 });
