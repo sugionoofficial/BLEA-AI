@@ -745,13 +745,99 @@
 }
 
 .dropx-shell .meta-entry-ai-tag {
-  margin-left: auto;
   padding: 2px 7px;
   border-radius: 999px;
   background: rgb(239 68 68 / 0.14);
   color: var(--destructive);
   font-size: 10.5px;
   font-weight: 700;
+}
+
+.dropx-shell .meta-entry-model-tag {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgb(99 102 241 / 0.14);
+  color: var(--primary);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-entry-action-tag {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(245 158 11 / 0.14);
+  border: 1px solid rgb(245 158 11 / 0.32);
+  color: var(--warning);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-entry-action-tag.is-done {
+  background: rgb(16 185 129 / 0.14);
+  border-color: rgb(16 185 129 / 0.34);
+  color: var(--success);
+}
+
+.dropx-shell .meta-entry-action-tag.is-visual {
+  background: var(--muted);
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+
+.dropx-shell .meta-cf-engine-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px;
+  border-radius: 12px;
+  border: 1px solid rgb(99 102 241 / 0.28);
+  background: rgb(99 102 241 / 0.06);
+}
+
+.dropx-shell .meta-cf-engine-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.dropx-shell .meta-cf-engine-badge,
+.dropx-shell .meta-cf-frames {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid rgb(99 102 241 / 0.3);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dropx-shell .meta-cf-model-id {
+  font-size: 11px;
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.dropx-shell .meta-cf-visual {
+  margin: 0;
+  font-size: 12.2px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+.dropx-shell .meta-entry-reason {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--primary);
 }
 
 .dropx-shell .meta-entry-val {

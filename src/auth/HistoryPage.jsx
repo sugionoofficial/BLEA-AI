@@ -176,10 +176,12 @@ export function HistoryPage() {
               const metaTools = item.kind === 'metadata' && Array.isArray(item.detected_tools)
                 ? item.detected_tools.filter(Boolean).join(', ')
                 : '';
+              const metaModel = item.kind === 'metadata' ? String(item.scan_before?.aiEngine?.model || '').trim() : '';
               const metaSummary = item.kind === 'metadata'
                 ? [
                     item.filename || 'Media',
                     metaTools ? `Terdeteksi AI: ${metaTools}` : (item.ai_detected ? 'Metadata AI terdeteksi' : 'Metadata standar'),
+                    metaModel ? `Scan: ${metaModel}` : null,
                     Number(item.removed_count || 0) > 0 ? `${item.removed_count} metadata dibersihkan` : null,
                   ].filter(Boolean).join(' · ')
                 : '';

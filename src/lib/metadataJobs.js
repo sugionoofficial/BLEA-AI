@@ -3,9 +3,17 @@ import {
   METADATA_SERVICE_COST,
   compactScanSummary,
   detectMediaFormat,
+  mergeAiScanFindings,
   scanMediaMetadata,
   stripMediaMetadata,
 } from './mediaMetadata.js';
+
+const CLOUDFLARE_METADATA_VISION_MODELS = [
+  '@cf/meta/llama-4-scout-17b-16e-instruct',
+  '@cf/google/gemma-3-12b-it',
+  '@cf/meta/llama-3.2-11b-vision-instruct',
+];
+const DATA_IMAGE_RE = /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,[a-z0-9+/=]+$/i;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STORAGE_BUCKET = 'ai-studio-uploads';
@@ -155,6 +163,225 @@ async function patchMetadataJob(servicePostgrest, env, jobId, patch) {
   if (!res?.ok) return null;
   const rows = await res.json().catch(() => []);
   return rows?.[0] || null;
+}
+
+function extractCloudflareText(data) {
+  const choice = data?.choices?.[0];
+  const msg = choice?.message;
+  const raw = msg?.content;
+  let text = '';
+  if (typeof raw === 'string') text = raw;
+  else if (Array.isArray(raw)) {
+    text = raw.map((p) => (typeof p === 'string' ? p : p?.text || '')).filter(Boolean).join('\n');
+  }
+  if (!text.trim() && typeof data?.response === 'string') text = data.response;
+  if (!text.trim() && typeof data?.result?.response === 'string') text = data.result.response;
+  if (!text.trim() && typeof data?.output_text === 'string') text = data.output_text;
+  return text.trim();
+}
+
+function parseAiScanJson(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const stripped = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+  const candidates = [stripped];
+  const firstBrace = stripped.indexOf('{');
+  const lastBrace = stripped.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(stripped.slice(firstBrace, lastBrace + 1));
+  }
+  for (const cand of candidates) {
+    try {
+      const parsed = JSON.parse(cand);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // try next candidate
+    }
+  }
+  return {
+    ai_detected: /terdeteksi|ai[-_\s]generated|c2pa|comfyui|sora|midjourney|stable diffusion|wan|kling|veo|imagen|dall-e|flux|runway/i.test(raw),
+    confidence: 'sedang',
+    visual_assessment: raw.slice(0, 500),
+    detected_models: [],
+    metadata_tags_to_remove: [],
+    summary: raw.slice(0, 300),
+  };
+}
+
+function hasValidCfRestBase(baseUrl) {
+  const raw = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!raw || !/^https?:\/\//i.test(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    return !/[<{]account[_-]?id[>}]/i.test(raw) && /\/accounts\/[^/]+\/ai/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function runCloudflareVisionModel({ env, servicePostgrest, messages }) {
+  const hasBinding = Boolean(env?.AI && typeof env.AI.run === 'function');
+  let restKey = '';
+  let restBase = '';
+  try {
+    const keyRes = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url&provider=eq.cloudflare&limit=1');
+    const rows = keyRes?.ok ? await keyRes.json().catch(() => []) : [];
+    const row = rows?.[0];
+    if (row?.api_key && row.api_key !== 'binding:AI' && hasValidCfRestBase(row.base_url)) {
+      restKey = String(row.api_key).trim();
+      restBase = String(row.base_url).trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
+    }
+  } catch {
+    // ignore key table lookup errors when env.AI binding exists
+  }
+
+  if (!hasBinding && !restKey) {
+    return {
+      ok: false,
+      status: 503,
+      code: 'cloudflare_ai_unavailable',
+      error: 'Model AI Cloudflare Workers AI belum aktif di environment ini. Pastikan binding [ai] env.AI aktif atau isi API Token & Account ID Cloudflare di Admin Panel.',
+    };
+  }
+
+  const singleFrameMessages = messages.map((msg) => {
+    if (!Array.isArray(msg.content)) return msg;
+    const textParts = msg.content.filter((p) => p?.type === 'text');
+    const imgParts = msg.content.filter((p) => p?.type === 'image_url').slice(0, 1);
+    return { ...msg, content: [...textParts, ...imgParts] };
+  });
+
+  const attempts = [];
+  for (const model of CLOUDFLARE_METADATA_VISION_MODELS) {
+    attempts.push({ model, msgList: messages });
+    if (messages !== singleFrameMessages) {
+      attempts.push({ model, msgList: singleFrameMessages });
+    }
+  }
+
+  let lastError = 'Gagal menjalankan model AI Cloudflare.';
+  for (const { model, msgList } of attempts) {
+    try {
+      if (restKey) {
+        const res = await fetch(`${restBase}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${restKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: msgList,
+            temperature: 0.1,
+            max_tokens: 1400,
+          }),
+          signal: AbortSignal.timeout(45_000),
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const text = extractCloudflareText(data);
+          if (text) return { ok: true, model, mode: 'rest', text };
+        } else {
+          lastError = `Cloudflare REST ${model} (HTTP ${res.status})`;
+        }
+      }
+      if (hasBinding) {
+        const data = await env.AI.run(model, {
+          messages: msgList,
+          temperature: 0.1,
+          max_tokens: 1400,
+        });
+        const text = extractCloudflareText(data);
+        if (text) return { ok: true, model, mode: 'binding', text };
+      }
+    } catch (err) {
+      lastError = String(err?.message || err || lastError);
+    }
+  }
+
+  return {
+    ok: false,
+    status: 502,
+    code: 'cloudflare_ai_failed',
+    error: `Model AI Cloudflare gagal memproses media: ${lastError.slice(0, 220)}`,
+  };
+}
+
+export async function handleMetadataScan({ request, env, user, jsonResponse, servicePostgrest }) {
+  if (!user) return jsonResponse({ error: 'Login diperlukan.' }, 401);
+  const body = await request.json().catch(() => ({}));
+  const filename = String(body.filename || 'media').replace(/^.*[\\/]/, '').trim().slice(0, 260) || 'media';
+  const mimeType = String(body.mime_type || '').trim().slice(0, 100);
+  const mediaKind = body.media_kind === 'video' || mimeType.startsWith('video/') ? 'video' : 'image';
+  const fileSize = Number(body.file_size || 0);
+  const binaryScan = compactScanSummary(body.binary_scan || {});
+
+  const rawFrames = Array.isArray(body.frames) ? body.frames : [];
+  const validFrames = rawFrames
+    .filter((item) => typeof item === 'string' && item.length <= 750_000 && DATA_IMAGE_RE.test(item.trim()))
+    .map((item) => item.trim())
+    .slice(0, 3);
+
+  const entriesForPrompt = Array.isArray(binaryScan.entries)
+    ? binaryScan.entries.slice(0, 40).map((e) => `- [${e.group}] ${e.key}: ${e.value} (${e.location})`).join('\n')
+    : '';
+
+  const promptText = [
+    'Kamu adalah analis forensik media & metadata AI untuk BLEA AI. Jawab HANYA dalam JSON valid tanpa markdown tambahan.',
+    `File: "${filename}" | Tipe: ${mediaKind === 'video' ? 'Video' : 'Gambar'} (${binaryScan.formatLabel || mimeType || 'media'}) | Ukuran: ${fileSize} byte | Frame visual terlampir: ${validFrames.length}`,
+    '',
+    'Tugasmu:',
+    '1. Amati visual gambar / frame video terlampir secara teliti (cari ciri generasi AI, watermark/logo generator AI seperti Sora, Veo, Wan, Kling, Midjourney, DALL-E, Runway, Gemini, dll).',
+    '2. Periksa seluruh daftar tag metadata file di bawah ini — temukan setiap NAMA MODEL AI, nama generator, workflow (ComfyUI/A1111/Flux), C2PA/JUMBF, AIGC, XMP, EXIF Software/CreatorTool/Artist/UserComment, atau atom video (udta/meta/ilst/hdlr/Tags/WritingApp) yang menandakan AI atau perlu dihapus.',
+    '3. Kembalikan JSON persis berformat:',
+    '{',
+    '  "ai_detected": true/false,',
+    '  "confidence": "tinggi" | "sedang" | "rendah",',
+    '  "visual_assessment": "penjelasan singkat hasil pembacaan visual gambar/frame video dalam Bahasa Indonesia",',
+    '  "detected_models": ["Daftar nama model / generator AI yang ditemukan"],',
+    '  "metadata_tags_to_remove": [{"tag": "nama tag/chunk", "value": "isi/nama model", "category": "kategori", "model_name": "nama model jika ada", "reason": "alasan tag ini menandakan AI dan akan dihapus"}],',
+    '  "summary": "ringkasan 1-2 kalimat dalam Bahasa Indonesia"',
+    '}',
+    '',
+    entriesForPrompt
+      ? `Daftar tag metadata mentah yang diekstrak dari file:\n${entriesForPrompt}`
+      : 'Daftar tag metadata mentah dari file: (tidak ada tag metadata biner yang ditemukan di header/container file).',
+  ].join('\n');
+
+  const userContent = validFrames.length > 0
+    ? [
+        { type: 'text', text: promptText },
+        ...validFrames.map((url) => ({ type: 'image_url', image_url: { url } })),
+      ]
+    : promptText;
+
+  const messages = [
+    {
+      role: 'system',
+      content: 'Anda adalah sistem inspeksi visual & metadata AI berbasis Cloudflare Workers AI. Selalu keluarkan JSON valid.',
+    },
+    { role: 'user', content: userContent },
+  ];
+
+  const aiResult = await runCloudflareVisionModel({ env, servicePostgrest, messages });
+  if (!aiResult.ok) {
+    return jsonResponse({ error: aiResult.error, code: aiResult.code }, aiResult.status || 502);
+  }
+
+  const parsed = parseAiScanJson(aiResult.text);
+  const merged = mergeAiScanFindings(binaryScan, parsed, {
+    model: aiResult.model,
+    mode: aiResult.mode,
+    framesAnalyzed: validFrames.length,
+  });
+
+  return jsonResponse({
+    ok: true,
+    scan: merged,
+  });
 }
 
 export async function handleMetadataStart({ request, env, user, jsonResponse, servicePostgrest, creditRpc }) {
@@ -419,7 +646,25 @@ export async function handleMetadataProcess({ request, env, user, jsonResponse, 
       await storageRequest(env, 'DELETE', storagePath).catch(() => {});
     }
 
-    const beforeSummary = compactScanSummary(stripped.before);
+    const existingBefore = existingJob.scan_before && typeof existingJob.scan_before === 'object' ? existingJob.scan_before : {};
+    const rawBeforeSummary = compactScanSummary(stripped.before);
+    const mergedTools = Array.from(new Set([
+      ...(Array.isArray(rawBeforeSummary.detectedTools) ? rawBeforeSummary.detectedTools : []),
+      ...(Array.isArray(existingJob.detected_tools) ? existingJob.detected_tools : []),
+      ...(Array.isArray(existingBefore.detectedTools) ? existingBefore.detectedTools : []),
+    ].filter(Boolean))).slice(0, 16);
+    const beforeSummary = {
+      ...rawBeforeSummary,
+      aiDetected: Boolean(rawBeforeSummary.aiDetected || existingJob.ai_detected || existingBefore.aiDetected),
+      detectedTools: mergedTools,
+      ...(existingBefore.aiEngine ? { aiEngine: existingBefore.aiEngine } : {}),
+      ...(existingBefore.confidence ? { confidence: existingBefore.confidence } : {}),
+      ...(existingBefore.visualAssessment ? { visualAssessment: existingBefore.visualAssessment } : {}),
+      ...(existingBefore.aiSummary ? { aiSummary: existingBefore.aiSummary } : {}),
+      ...(Array.isArray(existingBefore.entries) && existingBefore.entries.length >= rawBeforeSummary.entries.length
+        ? { entries: existingBefore.entries }
+        : {}),
+    };
     const afterSummary = compactScanSummary(stripped.after);
     const doneRow = await patchMetadataJob(servicePostgrest, env, existingJob.id, {
       media_kind: stripped.mediaKind,

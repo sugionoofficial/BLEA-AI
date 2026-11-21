@@ -85,6 +85,25 @@ export async function processMetadataClean({ id, file, storagePath, filename, mi
   });
 }
 
+// Cek & Bersihkan Metadata AI — scan multimodal (gambar/video + tag metadata) via Cloudflare Workers AI.
+export async function scanMetadataWithCloudflareAI({
+  filename,
+  mimeType = '',
+  mediaKind = 'image',
+  fileSize = 0,
+  binaryScan = {},
+  frames = [],
+}) {
+  return edgeRequest('/metadata/scan', {
+    filename,
+    mime_type: mimeType,
+    media_kind: mediaKind,
+    file_size: fileSize,
+    binary_scan: binaryScan,
+    frames,
+  });
+}
+
 // Cek & Bersihkan Metadata AI — riwayat job milik pengguna.
 export async function fetchMetadataHistory({ offset = 0 } = {}) {
   return edgeRequest('/metadata/history', { offset });
