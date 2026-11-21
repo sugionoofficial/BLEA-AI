@@ -291,16 +291,16 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
 
   if (subTab === 'failover') {
     return (
-      <section className="admin-section">
+      <section className="admin-section freebeat-oauth-section">
         <div className="admin-table-card">
-          <div className="admin-table-toolbar">
-            <div>
+          <div className="admin-table-toolbar freebeat-oauth-toolbar">
+            <div className="freebeat-oauth-toolbar-text">
               <strong>Alur Failover Multi-Akun Freebeat (Round-Robin {policy.maxCycles || 3}x Putaran)</strong>
               <p className="admin-hint">
                 Ketika akun utama kehabisan kredit Freebeat, sesi MCP habis, atau gagal memproses, BLEA otomatis berpindah ke akun berikutnya sampai {policy.maxCycles || 3} putaran penuh.
               </p>
             </div>
-            <div className="alibaba-account-actions">
+            <div className="alibaba-account-actions freebeat-oauth-toolbar-actions">
               <button type="button" className="admin-btn-secondary" onClick={() => handleCheckBalance(null)} disabled={checkingAll || loading}>
                 {checkingAll ? <LoaderCircle size={14} className="spin" /> : <Coins size={14} />} Cek Semua Saldo
               </button>
@@ -310,101 +310,103 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
             </div>
           </div>
 
-          <div className="freebeat-oauth-flow-box">
-            <div className="freebeat-oauth-step">
-              <span className="alibaba-priority">Putaran 1 → 3</span>
-              <div>
-                <strong>Rotasi Berurutan (#1 → #2 → … → Kembali ke #1)</strong>
-                <p>Setiap permintaan gambar atau dance video mencoba akun aktif sesuai urutan prioritas. Saldo akun yang terbaca ≤ 0 dilewati terlebih dahulu bila masih ada akun bersaldo positif, dan akun lain dicoba ulang hingga {policy.maxCycles || 3} siklus.</p>
+          <div className="freebeat-oauth-body">
+            <div className="freebeat-oauth-flow-box">
+              <div className="freebeat-oauth-step">
+                <span className="alibaba-priority">Putaran 1 → 3</span>
+                <div>
+                  <strong>Rotasi Berurutan (#1 → #2 → … → Kembali ke #1)</strong>
+                  <p>Setiap permintaan gambar atau dance video mencoba akun aktif sesuai urutan prioritas. Saldo akun yang terbaca ≤ 0 dilewati terlebih dahulu bila masih ada akun bersaldo positif, dan akun lain dicoba ulang hingga {policy.maxCycles || 3} siklus.</p>
+                </div>
+              </div>
+              <div className="freebeat-oauth-step">
+                <span className="alibaba-priority">OAuth Auto-Renew</span>
+                <div>
+                  <strong>Token Diperbarui Otomatis Per Akun</strong>
+                  <p>Masing-masing akun menyimpan refresh token terenkripsi (AES-256-GCM) di database server-only agar perpindahan akun tidak bergantung pada cookie satu browser.</p>
+                </div>
+              </div>
+              <div className="freebeat-oauth-step is-alert">
+                <span className="alibaba-priority">Jika Semua Habis</span>
+                <div>
+                  <strong>Refund Kredit BLEA Otomatis &amp; Notifikasi Pengguna (HTTP 503)</strong>
+                  <p>Setelah {policy.maxCycles || 3} putaran penuh seluruh akun gagal atau saldo habis, kredit BLEA pengguna dikembalikan otomatis dan halaman generate menampilkan: <code>{policy.gatewayExhaustedMessage}</code></p>
+                </div>
               </div>
             </div>
-            <div className="freebeat-oauth-step">
-              <span className="alibaba-priority">OAuth Auto-Renew</span>
-              <div>
-                <strong>Token Diperbarui Otomatis Per Akun</strong>
-                <p>Masing-masing akun menyimpan refresh token terenkripsi (AES-256-GCM) di database server-only agar perpindahan akun tidak bergantung pada cookie satu browser.</p>
-              </div>
-            </div>
-            <div className="freebeat-oauth-step is-alert">
-              <span className="alibaba-priority">Jika Semua Habis</span>
-              <div>
-                <strong>Refund Kredit BLEA Otomatis &amp; Notifikasi Pengguna (HTTP 503)</strong>
-                <p>Setelah {policy.maxCycles || 3} putaran penuh seluruh akun gagal atau saldo habis, kredit BLEA pengguna dikembalikan otomatis dan halaman generate menampilkan: <code>{policy.gatewayExhaustedMessage}</code></p>
-              </div>
-            </div>
-          </div>
 
-          {accounts.length > 0 && (
-            <div className="freebeat-oauth-summary-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Urutan</th>
-                    <th>Email Akun</th>
-                    <th>Label</th>
-                    <th>Saldo Freebeat</th>
-                    <th>Status Pool</th>
-                    <th>Error Terakhir</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accounts.map((acc, idx) => (
-                    <tr key={acc.id}>
-                      <td><strong>#{idx + 1}</strong></td>
-                      <td>{acc.account_email || <em style={{ opacity: 0.65 }}>Belum diisi</em>}</td>
-                      <td>{acc.account_label || '—'}</td>
-                      <td>{formatCredits(acc.last_balance_credits)}</td>
-                      <td>
-                        <span className={`alibaba-blea-badge ${acc.enabled && acc.image_access && !acc.expired ? 'is-video' : ''}`}>
-                          {!acc.enabled ? 'Nonaktif' : acc.expired ? 'Sesi Kedaluwarsa' : acc.image_access ? 'Siap' : 'Terbatas'}
-                        </span>
-                      </td>
-                      <td>{acc.last_error || '—'}</td>
+            {accounts.length > 0 && (
+              <div className="freebeat-oauth-summary-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Urutan</th>
+                      <th>Email Akun</th>
+                      <th>Label</th>
+                      <th>Saldo Freebeat</th>
+                      <th>Status Pool</th>
+                      <th>Error Terakhir</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody>
+                    {accounts.map((acc, idx) => (
+                      <tr key={acc.id}>
+                        <td><strong>#{idx + 1}</strong></td>
+                        <td>{acc.account_email || <em style={{ opacity: 0.65 }}>Belum diisi</em>}</td>
+                        <td>{acc.account_label || '—'}</td>
+                        <td>{formatCredits(acc.last_balance_credits)}</td>
+                        <td>
+                          <span className={`alibaba-blea-badge ${acc.enabled && acc.image_access && !acc.expired ? 'is-video' : ''}`}>
+                            {!acc.enabled ? 'Nonaktif' : acc.expired ? 'Sesi Kedaluwarsa' : acc.image_access ? 'Siap' : 'Terbatas'}
+                          </span>
+                        </td>
+                        <td>{acc.last_error || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="admin-section">
+    <section className="admin-section freebeat-oauth-section">
       <div className="admin-metrics freebeat-oauth-metrics">
-        <article>
-          <span>Total Akun Pool</span>
-          <b>{metrics.total}</b>
-          <small>Akun Freebeat OAuth terdaftar</small>
+        <article style={{ '--metric-accent': 'var(--purple)' }}>
+          <span className="freebeat-oauth-metric-label">Total Akun Pool</span>
+          <b className="freebeat-oauth-metric-value">{metrics.total}</b>
+          <small className="freebeat-oauth-metric-sub">Akun Freebeat OAuth terdaftar</small>
         </article>
-        <article>
-          <span>Siap Generate</span>
-          <b>{metrics.ready}</b>
-          <small>Aktif · izin generate · token valid</small>
+        <article style={{ '--metric-accent': 'var(--success)' }}>
+          <span className="freebeat-oauth-metric-label">Siap Generate</span>
+          <b className="freebeat-oauth-metric-value">{metrics.ready}</b>
+          <small className="freebeat-oauth-metric-sub">Aktif · izin generate · token valid</small>
         </article>
-        <article>
-          <span>Total Kredit Freebeat</span>
-          <b>{metrics.knownCount > 0 ? metrics.totalCredits.toLocaleString('id-ID') : '—'}</b>
-          <small>{metrics.knownCount}/{metrics.total} akun sudah dicek saldonya</small>
+        <article style={{ '--metric-accent': 'var(--info)' }}>
+          <span className="freebeat-oauth-metric-label">Total Kredit Freebeat</span>
+          <b className="freebeat-oauth-metric-value">{metrics.knownCount > 0 ? metrics.totalCredits.toLocaleString('id-ID') : '—'}</b>
+          <small className="freebeat-oauth-metric-sub">{metrics.knownCount}/{metrics.total} akun sudah dicek saldonya</small>
         </article>
-        <article>
-          <span>Kebijakan Rotasi</span>
-          <b>{policy.maxCycles || 3}x Putaran</b>
-          <small>{metrics.depleted > 0 ? `${metrics.depleted} akun saldo 0` : 'Round-robin #1 → #N → #1'}</small>
+        <article style={{ '--metric-accent': 'var(--warning)' }}>
+          <span className="freebeat-oauth-metric-label">Kebijakan Rotasi</span>
+          <b className="freebeat-oauth-metric-value">{policy.maxCycles || 3}x Putaran</b>
+          <small className="freebeat-oauth-metric-sub">{metrics.depleted > 0 ? `${metrics.depleted} akun saldo 0` : 'Round-robin #1 → #N → #1'}</small>
         </article>
       </div>
 
       <div className="admin-table-card">
-        <div className="admin-table-toolbar">
-          <div>
+        <div className="admin-table-toolbar freebeat-oauth-toolbar">
+          <div className="freebeat-oauth-toolbar-text">
             <strong>Pool Akun Freebeat OAuth ({accounts.length})</strong>
             <p className="admin-hint">
               Hubungkan beberapa akun Gmail/Freebeat melalui OAuth. Setiap akun dilabeli emailnya dan diputar otomatis (round-robin maksimal {policy.maxCycles || 3} putaran) saat saldo habis atau gagal.
             </p>
           </div>
-          <div className="alibaba-account-actions">
+          <div className="alibaba-account-actions freebeat-oauth-toolbar-actions">
             <button type="button" className="admin-btn-secondary" onClick={() => handleCheckBalance(null)} disabled={checkingAll || loading || accounts.length === 0}>
               {checkingAll ? <LoaderCircle size={14} className="spin" /> : <Coins size={14} />} Cek Semua Saldo
             </button>
@@ -417,7 +419,8 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
           </div>
         </div>
 
-        <form className="freebeat-oauth-add-form" onSubmit={handleConnectNew}>
+        <div className="freebeat-oauth-body">
+          <form className="freebeat-oauth-add-form" onSubmit={handleConnectNew}>
           <input
             type="email"
             placeholder="Email akun Freebeat (opsional — otomatis jika dikirim OAuth)"
@@ -606,6 +609,7 @@ export function FreebeatOAuthPanel({ subTab = 'accounts', onCountChange }) {
             );
           })
         )}
+        </div>
       </div>
     </section>
   );
