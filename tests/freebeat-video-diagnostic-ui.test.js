@@ -668,4 +668,43 @@ test('member_only metadata displays non-blocking note and keeps quote/prepare en
   }
 });
 
+test('UI highlights zero-accepted batch summary, filtered error_code, and private failure guide', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  let submitted = false;
+  const request = async (action) => {
+    if (action === 'video-prepare') return { approval: 'ticket', settings: { model_id: 182, generation_type: 'text', duration: 5, resolution: '480p', aspect_ratio: '16:9' }, prompt: 'Uji Wan 3.0', images: [], credits: 50, expiresAt: Date.now() + 60000 };
+    if (action === 'video-submit') { submitted = true; return { status: 'submitted', batch_summary: { accepted_count: 0, failed_count: 1, accepted_credits: 0 } }; }
+    if (action === 'video-tests') return { tests: submitted ? [{ id: 'test-182', model_id: 182, max_credits: 60, status: 'submitted', created_at: new Date().toISOString(), canPoll: true }] : [] };
+    if (action === 'video-task') return { task: { status: 'failed', billing: { charged: 0, refunded: null, net: null, refund_state: null }, videos: [], failure: { stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: null }, item_failures: [{ stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: null, error_code: '4031' }] } };
+    throw new Error(`unexpected ${action}`);
+  };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const checkbox = (label) => [...document.querySelectorAll('label')].find((item) => item.textContent.includes(label)).querySelector('input');
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: catalog })));
+    await selectModel(React, dom, '182');
+    const prompt = document.querySelector('input[type=text]');
+    await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(prompt, 'Uji Wan 3.0'); prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
+    await React.act(async () => checkbox('Saya menyetujui satu kali generasi video').click());
+    await React.act(async () => button('Setujui dan kirim satu video').click());
+    assert.match(document.body.textContent, /accepted_count=0, failed_count=1, accepted_credits=0/);
+    await React.act(async () => button('Periksa status video').click());
+    assert.match(document.body.textContent, /Ringkasan kode kegagalan tersaring: error_code=4031/);
+    assert.match(document.body.textContent, /Tampilkan pesan kegagalan pribadi/);
+    assert.match(document.body.textContent, /Penyebab rinci belum tercantum pada ringkasan tersaring/);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+
 

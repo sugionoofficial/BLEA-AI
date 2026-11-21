@@ -94,7 +94,7 @@ function fixture() {
         if (generateMode === 'bad') data = { batch_id: 'not a valid id', secret: 'SECRET-DATA' };
         else data = createResult || { batch_id: 'batch-123', secret: 'SECRET-DATA' };
       } else if (body.params.name === 'get_task_status') {
-        assert.deepEqual(body.params.arguments, { task_id: 'batch-123' });
+        assert.deepEqual(body.params.arguments, { task_id: createResult?.batch_id || 'batch-123' });
         data = taskResult || { status: 'completed', items: [{ video_url: 'https://cdn.example/video.mp4' }, { video_url: 'javascript:alert(1)' }, { video_url: 'https://user:pass@example.com/img' }], billing: { charged: 23, refunded: null, net: 23, refund_state: 'none', secret: 'SECRET' }, token: 'SECRET' };
       } else throw new Error(`Unexpected tool ${body.params.name}`);
       return Response.json({ id: body.id, result: { structuredContent: data } });
@@ -704,5 +704,73 @@ test('admin diagnostic allows member_only=true models like Wan 3.0 (182) for quo
     globalThis.fetch = original;
   }
 });
+
+test('Open RPC batch numeric error_code, used_credits, and zero-accepted submit summary surface cleanly without leaking prose', async () => {
+  const original = globalThis.fetch;
+  const f = fixture();
+  globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect();
+    f.setCreateResult({
+      batch_id: 'OB001573701563149979648H5UE',
+      accepted_count: 0,
+      failed_count: 1,
+      accepted_credits: 0,
+      items: [{ accepted: false, code: 4031, message: 'Membership required https://private.example/upgrade?token=SECRET' }],
+    });
+    const { approval } = await (await prepare(cookie)).json();
+    const submittedRes = await submit(cookie, approval, { private_diagnostics: true });
+    assert.equal(submittedRes.status, 200);
+    const submittedText = await submittedRes.text();
+    assert.doesNotMatch(submittedText, /private\.example|token=SECRET/);
+    const submitted = JSON.parse(submittedText);
+    assert.equal(submitted.status, 'submitted');
+    assert.deepEqual(submitted.batch_summary, { accepted_count: 0, failed_count: 1, accepted_credits: 0 });
+    assert.deepEqual(submitted.initial_diagnostics, {
+      received: true,
+      messages: ['code: 4031', 'Membership required [URL disembunyikan]'],
+    });
+
+    f.setTaskResult({
+      task_type: 'open_rpc_batch',
+      status: 'failed',
+      batch_id: 'OB001573701563149979648H5UE',
+      message: 'Batch failed.',
+      items: [{
+        status: 'failed',
+        used_credits: 0,
+        error_code: 4031,
+        error_message: 'Model requires active membership https://private.example/p?token=SECRET',
+      }],
+    });
+    const pollRes = await api('video-task', { cookie, method: 'POST', data: { id: submitted.id } });
+    assert.equal(pollRes.status, 200);
+    const pollText = await pollRes.text();
+    assert.doesNotMatch(pollText, /Model requires|private\.example|token=SECRET|Batch failed/);
+    const { task } = JSON.parse(pollText);
+    assert.deepEqual(task.billing, { charged: 0, refunded: null, net: null, refund_state: null });
+    assert.deepEqual(task.failure, { stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: null });
+    assert.deepEqual(task.item_failures, [{ stage: null, stage_hidden: false, reason: null, reason_hidden: true, retryable: null, error_code: '4031' }]);
+
+    const privRes = await api('video-private-failure', { cookie, method: 'POST', data: { id: submitted.id, acknowledge: true } });
+    assert.equal(privRes.status, 200);
+    const privText = await privRes.text();
+    assert.doesNotMatch(privText, /private\.example|token=SECRET/);
+    assert.deepEqual(JSON.parse(privText).reasons, ['Batch failed.', 'error_code: 4031', 'Model requires active membership [URL disembunyikan]']);
+
+    f.setTaskResult({
+      task_type: 'open_rpc_batch',
+      status: 'failed',
+      batch_id: 'OB001573701563149979648H5UE',
+      items: [{ status: 'failed', used_credits: 0 }],
+    });
+    const fallbackPrivRes = await api('video-private-failure', { cookie, method: 'POST', data: { id: submitted.id, acknowledge: true } });
+    assert.equal(fallbackPrivRes.status, 200);
+    assert.deepEqual((await fallbackPrivRes.json()).reasons, ['Item #1: status=failed, used_credits=0']);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 
 
