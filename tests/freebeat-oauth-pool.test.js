@@ -643,6 +643,11 @@ test('FreebeatOAuthPanel renders pool add form, failover policy, AdminPage nav g
     assert.equal(freebeatApiSource.includes('accounts/balance'), true);
     assert.equal(freebeatPageSource.includes('/admin?tab=freebeat-oauth'), true);
 
+    const adminCss = await fs.readFile(new URL('../src/auth/admin.css', import.meta.url), 'utf8');
+    assert.equal(adminCss.includes('.admin-metrics.freebeat-oauth-metrics article > b'), true);
+    assert.equal(adminCss.includes('position:static;inset:auto'), true);
+    assert.equal(adminCss.includes('@media (max-width:520px){.admin-metrics.freebeat-oauth-metrics{grid-template-columns:1fr}}'), true);
+
     const accountsHtml = renderToStaticMarkup(
       React.createElement(MemoryRouter, null, React.createElement(FreebeatOAuthPanel, { subTab: 'accounts' })),
     );
@@ -650,6 +655,8 @@ test('FreebeatOAuthPanel renders pool add form, failover policy, AdminPage nav g
     assert.equal(accountsHtml.includes('Hubungkan Akun Freebeat (OAuth)'), true);
     assert.equal(accountsHtml.includes('3x Putaran'), true);
     assert.equal(accountsHtml.includes('Email akun Freebeat'), true);
+    assert.equal(accountsHtml.includes('freebeat-oauth-metric-value'), true);
+    assert.equal(accountsHtml.includes('freebeat-oauth-body'), true);
 
     const failoverHtml = renderToStaticMarkup(
       React.createElement(MemoryRouter, null, React.createElement(FreebeatOAuthPanel, { subTab: 'failover' })),
