@@ -7,6 +7,7 @@ import worker from '../src/worker.js';
 import {
   diagnosePendingGeneration,
   formatLiveQueueItem,
+  maskEmailAfter4,
   patchImageGeneration,
 } from '../src/lib/liveQueue.js';
 import { consumerDanceStatus } from '../src/lib/freebeatMcp.js';
@@ -54,7 +55,16 @@ test('formatElapsedRuntime & formatElapsedHuman format sub-hour, multi-hour, and
   assert.equal(formatElapsedHuman(base, base + (2 * 3600 + 5 * 60 + 9) * 1000), '2 jam 05 mnt');
 });
 
-test('diagnosePendingGeneration and formatLiveQueueItem anonymize other users while exposing full details to owner/admin', () => {
+test('maskEmailAfter4 censors emails after the first 4 characters cleanly', () => {
+  assert.equal(maskEmailAfter4('sugionoofficial88@gmail.com'), 'sugi****@gmail.com');
+  assert.equal(maskEmailAfter4('reki.alamsyah88@gmail.com'), 'reki****@gmail.com');
+  assert.equal(maskEmailAfter4('creator@example.com'), 'crea****@example.com');
+  assert.equal(maskEmailAfter4('blea@gmail.com'), 'ble****@gmail.com');
+  assert.equal(maskEmailAfter4('ab@x.id'), 'a****@x.id');
+  assert.equal(maskEmailAfter4(''), '');
+});
+
+test('diagnosePendingGeneration and formatLiveQueueItem anonymize other users while exposing account name and masked email', () => {
   const now = Date.parse('2026-11-20T20:00:00.000Z');
   const videoRow = {
     id: VID_ID,
@@ -88,28 +98,34 @@ test('diagnosePendingGeneration and formatLiveQueueItem anonymize other users wh
   assert.match(diagnosePendingGeneration('video', videoRow, now), /90%.*5 menit/);
   assert.match(diagnosePendingGeneration('image', stuckImageRow, now), /Task ID upstream belum tersimpan/);
 
-  const emailMap = new Map([
-    [ADMIN_ID, 'sugionoofficial88@gmail.com'],
-    [USER_ID, 'creator@example.com'],
+  const profileMap = new Map([
+    [ADMIN_ID, { email: 'sugionoofficial88@gmail.com', full_name: 'BLEA' }],
+    [USER_ID, { email: 'creator@example.com', full_name: 'Creator Satu' }],
   ]);
 
-  // Regular user viewing admin's video -> anonymized
-  const otherForUser = formatLiveQueueItem(videoRow, 'video', { isAdmin: false, viewerId: USER_ID, emailMap, nowMs: now });
+  // Regular user viewing admin's video -> anonymized (no raw prompt/email/user_id/cancel), still has owner_name + owner_email_masked
+  const otherForUser = formatLiveQueueItem(videoRow, 'video', { isAdmin: false, viewerId: USER_ID, profileMap, nowMs: now });
   assert.equal(otherForUser.is_own, false);
+  assert.equal(otherForUser.owner_name, 'BLEA');
+  assert.equal(otherForUser.owner_email_masked, 'sugi****@gmail.com');
   assert.equal('prompt' in otherForUser, false);
   assert.equal('user_email' in otherForUser, false);
   assert.equal('user_id' in otherForUser, false);
   assert.equal('external_job_id' in otherForUser, false);
   assert.equal('can_cancel' in otherForUser, false);
 
-  // Regular user viewing own image -> full prompt visible, still no admin fields
-  const ownForUser = formatLiveQueueItem(stuckImageRow, 'image', { isAdmin: false, viewerId: USER_ID, emailMap, nowMs: now });
+  // Regular user viewing own image -> full prompt visible + owner_name + masked email, still no admin fields
+  const ownForUser = formatLiveQueueItem(stuckImageRow, 'image', { isAdmin: false, viewerId: USER_ID, profileMap, nowMs: now });
   assert.equal(ownForUser.is_own, true);
+  assert.equal(ownForUser.owner_name, 'Creator Satu');
+  assert.equal(ownForUser.owner_email_masked, 'crea****@example.com');
   assert.equal(ownForUser.prompt, 'User own prompt');
   assert.equal('can_cancel' in ownForUser, false);
 
-  // Admin viewing both -> emails, external_job_id, and can_cancel present
-  const videoForAdmin = formatLiveQueueItem(videoRow, 'video', { isAdmin: true, viewerId: ADMIN_ID, emailMap, nowMs: now });
+  // Admin viewing both -> raw email, external_job_id, and can_cancel present alongside masked email & owner name
+  const videoForAdmin = formatLiveQueueItem(videoRow, 'video', { isAdmin: true, viewerId: ADMIN_ID, profileMap, nowMs: now });
+  assert.equal(videoForAdmin.owner_name, 'BLEA');
+  assert.equal(videoForAdmin.owner_email_masked, 'sugi****@gmail.com');
   assert.equal(videoForAdmin.user_email, 'sugionoofficial88@gmail.com');
   assert.equal(videoForAdmin.external_job_id, 'dance:M001');
   assert.equal(videoForAdmin.can_cancel, true);
@@ -208,8 +224,8 @@ test('/api/generations/live enforces auth + user privacy and /api/admin/generati
     }
     if (url.pathname === '/rest/v1/profiles') {
       return Response.json([
-        { id: ADMIN_ID, email: 'sugionoofficial88@gmail.com', status: 'active' },
-        { id: USER_ID, email: 'creator@example.com', status: 'active' },
+        { id: ADMIN_ID, email: 'sugionoofficial88@gmail.com', full_name: 'BLEA', status: 'active' },
+        { id: USER_ID, email: 'creator@example.com', full_name: 'Creator Satu', status: 'active' },
       ]);
     }
     if (url.pathname === '/rest/v1/provider_key_pool') {
@@ -302,10 +318,14 @@ test('/api/generations/live enforces auth + user privacy and /api/admin/generati
     const adminJobForUser = userLive.items.find((it) => it.id === VID_ID);
     const ownJobForUser = userLive.items.find((it) => it.id === IMG_ACTIVE_ID);
     assert.equal(adminJobForUser.is_own, false);
+    assert.equal(adminJobForUser.owner_name, 'BLEA');
+    assert.equal(adminJobForUser.owner_email_masked, 'sugi****@gmail.com');
     assert.equal('prompt' in adminJobForUser, false);
     assert.equal('user_email' in adminJobForUser, false);
     assert.equal('can_cancel' in adminJobForUser, false);
     assert.equal(ownJobForUser.is_own, true);
+    assert.equal(ownJobForUser.owner_name, 'Creator Satu');
+    assert.equal(ownJobForUser.owner_email_masked, 'crea****@example.com');
     assert.equal(ownJobForUser.prompt, 'User active image');
 
     // 3. Regular user cannot call admin cancel
@@ -528,6 +548,15 @@ test('LiveQueuePage renders user privacy message for regular users and admin mod
     );
     assert.ok(adminHtml.includes('Mode Admin'));
     assert.ok(adminHtml.includes('Pembatalan &amp; Refund Aktif'));
+
+    const fs = await import('node:fs');
+    const liveCss = fs.readFileSync(new URL('../src/auth/live.css', import.meta.url), 'utf8');
+    const liveSrc = fs.readFileSync(new URL('../src/auth/LiveQueuePage.jsx', import.meta.url), 'utf8');
+    assert.match(liveCss, /\.dropx-shell\s+\.live-page\s*\{[^}]*max-width:\s*1100px;/s);
+    assert.match(liveCss, /\.dropx-shell\s+\.live-list\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(100%,\s*332px\),\s*1fr\)\);/s);
+    assert.ok(liveSrc.includes('live-owner-strip'));
+    assert.ok(liveSrc.includes('owner_email_masked'));
+    assert.ok(liveSrc.includes('live-telemetry-grid'));
   } finally {
     await vite.close();
   }

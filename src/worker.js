@@ -4009,29 +4009,33 @@ async function handleApi(request, url, env) {
         }
       }
 
-      const emailMap = new Map();
-      if (isAdmin) {
-        const userIds = Array.from(new Set(
-          [...videos, ...images]
-            .map((row) => String(row?.user_id || '').trim())
-            .filter((id) => LIVE_UUID_RE.test(id)),
-        ));
-        if (userIds.length > 0) {
-          const profRes = await servicePostgrest(
-            env,
-            `/profiles?select=id,email&id=in.(${userIds.join(',')})&limit=200`,
-          ).catch(() => null);
-          const profiles = profRes?.ok ? await profRes.json().catch(() => []) : [];
-          for (const profile of profiles || []) {
-            if (profile?.id) emailMap.set(profile.id, profile.email || null);
+      const profileMap = new Map();
+      const userIds = Array.from(new Set(
+        [...videos, ...images]
+          .map((row) => String(row?.user_id || '').trim())
+          .filter((id) => LIVE_UUID_RE.test(id)),
+      ));
+      if (userIds.length > 0) {
+        const profRes = await servicePostgrest(
+          env,
+          `/profiles?select=id,email,full_name&id=in.(${userIds.join(',')})&limit=200`,
+        ).catch(() => null);
+        const profiles = profRes?.ok ? await profRes.json().catch(() => []) : [];
+        for (const profile of profiles || []) {
+          if (profile?.id) {
+            profileMap.set(profile.id, {
+              email: profile.email || null,
+              full_name: profile.full_name || '',
+            });
           }
         }
       }
 
       const nowMs = Date.now();
+      const viewerName = String(user?.user_metadata?.full_name || '').trim();
       const items = [
-        ...videos.map((row) => formatLiveQueueItem(row, 'video', { isAdmin, viewerId: user.id, emailMap, nowMs })),
-        ...images.map((row) => formatLiveQueueItem(row, 'image', { isAdmin, viewerId: user.id, emailMap, nowMs })),
+        ...videos.map((row) => formatLiveQueueItem(row, 'video', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
+        ...images.map((row) => formatLiveQueueItem(row, 'image', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
       ].sort((a, b) => (Date.parse(b.created_at || '') || 0) - (Date.parse(a.created_at || '') || 0));
 
       return jsonResponse({
