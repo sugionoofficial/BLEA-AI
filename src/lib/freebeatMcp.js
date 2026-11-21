@@ -16,24 +16,95 @@ const FREEBEAT_ALLOWED_RETURNS = new Set(['/admin/freebeat', '/admin?tab=freebea
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const encoder = new TextEncoder();
 
-function extractEmailFromJwt(token) {
+function decodeJwtClaims(token) {
   try {
     const parts = String(token || '').split('.');
-    if (parts.length !== 3 || !parts[1]) return '';
+    if (parts.length !== 3 || !parts[1]) return null;
     const json = new TextDecoder().decode(unb64(parts[1]));
     const claims = JSON.parse(json);
-    return extractEmailFromObject(claims);
-  } catch { return ''; }
+    return claims && typeof claims === 'object' && !Array.isArray(claims) ? claims : null;
+  } catch { return null; }
+}
+function extractEmailFromJwt(token) {
+  return extractEmailFromObject(decodeJwtClaims(token));
 }
 function extractEmailFromObject(obj) {
   if (!obj || typeof obj !== 'object') return '';
-  for (const cand of [obj.email, obj.user_email, obj.account_email, obj.user?.email, obj.account?.email, obj.data?.email]) {
+  for (const cand of [
+    obj.email,
+    obj.user_email,
+    obj.account_email,
+    obj.primary_email,
+    obj.mail,
+    obj.preferred_username,
+    obj.upn,
+    obj.username,
+    obj.user?.email,
+    obj.user?.user_email,
+    obj.account?.email,
+    obj.profile?.email,
+    obj.data?.email,
+    obj.data?.user?.email,
+  ]) {
     if (typeof cand === 'string') {
       const clean = cand.trim().slice(0, 320);
       if (EMAIL_PATTERN.test(clean)) return clean;
     }
   }
   return '';
+}
+function extractSubjectFromObject(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  for (const cand of [obj.sub, obj.user_id, obj.account_id, obj.uid, obj.id, obj.user?.sub, obj.user?.id, obj.data?.id]) {
+    if ((typeof cand === 'string' && cand.trim()) || (typeof cand === 'number' && Number.isFinite(cand))) {
+      return String(cand).trim().slice(0, 128);
+    }
+  }
+  return '';
+}
+async function resolveFreebeatOAuthIdentity(tokens) {
+  const tokenEmail = extractEmailFromObject(tokens);
+  const idClaims = decodeJwtClaims(tokens?.id_token);
+  const accessClaims = decodeJwtClaims(tokens?.access_token);
+  let email = tokenEmail || extractEmailFromObject(idClaims) || extractEmailFromObject(accessClaims) || '';
+  let subject = extractSubjectFromObject(idClaims) || extractSubjectFromObject(accessClaims) || extractSubjectFromObject(tokens) || '';
+  if (email) return { email, subject };
+
+  const userinfoCandidates = new Set();
+  for (const metaUrl of ['https://freebeat.ai/.well-known/oauth-authorization-server', 'https://freebeat.ai/.well-known/openid-configuration']) {
+    try {
+      const res = await fetch(metaUrl, { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const meta = await res.json().catch(() => null);
+        if (typeof meta?.userinfo_endpoint === 'string') {
+          const parsed = new URL(meta.userinfo_endpoint);
+          if (parsed.protocol === 'https:' && parsed.origin === 'https://freebeat.ai') {
+            userinfoCandidates.add(parsed.toString());
+          }
+        }
+        break;
+      }
+    } catch { /* metadata discovery is optional */ }
+  }
+  userinfoCandidates.add('https://freebeat.ai/oauth/userinfo');
+
+  for (const endpoint of userinfoCandidates) {
+    try {
+      const res = await fetch(endpoint, {
+        headers: { authorization: `Bearer ${tokens.access_token}`, accept: 'application/json' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!res.ok) continue;
+      const profile = await res.json().catch(() => null);
+      const foundEmail = extractEmailFromObject(profile);
+      const foundSub = extractSubjectFromObject(profile);
+      if (foundEmail) email = foundEmail;
+      if (!subject && foundSub) subject = foundSub;
+      if (email) break;
+    } catch { /* userinfo is optional */ }
+  }
+  return { email, subject };
 }
 function extractNumericBalance(payload, depth = 0) {
   if (depth > 3 || payload === null || payload === undefined) return null;
@@ -272,11 +343,16 @@ export async function freebeatCallback(request, env) {
     const lifetime = Math.min(86400, Number(tokens.expires_in) || 300);
     if (lifetime < 1) return finish('failed');
     const now = Date.now();
-    const discoveredEmail = String(pending.accountEmail || extractEmailFromJwt(tokens.access_token) || '').trim().slice(0, 320);
+    const oauthIdentity = await resolveFreebeatOAuthIdentity(tokens);
+    const manualEmail = typeof pending.accountEmail === 'string' ? pending.accountEmail.trim().slice(0, 320) : '';
+    const resolvedEmail = String(oauthIdentity.email || manualEmail || '').trim().slice(0, 320);
+    const emailSource = oauthIdentity.email ? 'oauth' : (manualEmail ? 'manual' : 'unverified');
     const targetAccountId = typeof pending.accountId === 'string' && TEST_ID.test(pending.accountId) ? pending.accountId : null;
     const encrypted = await seal({
       ...(targetAccountId ? { accountId: targetAccountId } : {}),
-      ...(discoveredEmail ? { accountEmail: discoveredEmail } : {}),
+      ...(resolvedEmail ? { accountEmail: resolvedEmail } : {}),
+      ...(oauthIdentity.subject ? { oauthSubject: oauthIdentity.subject } : {}),
+      ...(resolvedEmail || manualEmail || targetAccountId ? { emailSource } : {}),
       uid: pending.uid,
       sid: crypto.randomUUID(),
       accessToken: tokens.access_token,
@@ -293,8 +369,10 @@ export async function freebeatCallback(request, env) {
     await persistProviderSession(env, pending.uid, encrypted, imageAccess);
     await upsertPoolOAuthAccount(env, {
       id: targetAccountId,
-      accountEmail: discoveredEmail,
+      accountEmail: resolvedEmail,
       accountLabel: pending.accountLabel || '',
+      oauthSubject: oauthIdentity.subject,
+      emailSource,
       connectedBy: pending.uid,
       sealedSession: encrypted,
       imageAccess,
@@ -1641,6 +1719,7 @@ async function dispatchFreebeat(request, url, env, user) {
         const cleanEmail = input.account_email.trim();
         if (cleanEmail && !EMAIL_PATTERN.test(cleanEmail)) throw fail('Masukkan alamat email akun yang valid.', 400);
         patch.account_email = cleanEmail;
+        patch.email_source = cleanEmail ? 'manual' : 'unverified';
       }
       if (input.account_label !== undefined) {
         if (typeof input.account_label !== 'string' || input.account_label.trim().length > 100) throw fail('Label akun maksimal 100 karakter.', 400);
@@ -2016,10 +2095,13 @@ function sanitizePoolAccountRow(row, env, unsealed = null) {
   const maxMs = sessionMaxAgeMs(env);
   const accessExpiredNoRenew = !unsealed?.refreshToken && Number.isFinite(unsealed?.expiresAt) && unsealed.expiresAt <= Date.now();
   const sessionExpired = Number.isFinite(issuedMs) && (Date.now() - issuedMs > maxMs);
+  const cleanEmail = String(row.account_email || unsealed?.accountEmail || '').trim();
+  const rawSource = row.email_source || unsealed?.emailSource || (cleanEmail ? 'manual' : 'unverified');
   return {
     id: row.id,
-    account_email: String(row.account_email || unsealed?.accountEmail || '').trim(),
+    account_email: cleanEmail,
     account_label: String(row.account_label || '').trim(),
+    email_source: rawSource,
     connected_by: row.connected_by || null,
     image_access: row.image_access === true,
     enabled: row.enabled !== false,
@@ -2052,7 +2134,7 @@ async function listPoolAccountsAdmin(env) {
   return out;
 }
 
-async function upsertPoolOAuthAccount(env, { id = null, accountEmail = '', accountLabel = '', connectedBy = null, sealedSession, imageAccess = false, issuedAt = null }) {
+async function upsertPoolOAuthAccount(env, { id = null, accountEmail = '', accountLabel = '', oauthSubject = '', emailSource = 'manual', connectedBy = null, sealedSession, imageAccess = false, issuedAt = null }) {
   try {
     const nowIso = new Date().toISOString();
     let targetId = id && TEST_ID.test(id) ? id : null;
@@ -2060,16 +2142,25 @@ async function upsertPoolOAuthAccount(env, { id = null, accountEmail = '', accou
       const matched = await dbJson(env, `/freebeat_oauth_accounts?select=id&account_email=ilike.${encodeURIComponent(accountEmail.trim())}&limit=1`).catch(() => []);
       if (Array.isArray(matched) && matched[0]?.id) targetId = matched[0].id;
     }
+    if (!targetId && oauthSubject) {
+      const matchedSub = await dbJson(env, `/freebeat_oauth_accounts?select=id&oauth_subject=eq.${encodeURIComponent(oauthSubject)}&limit=1`).catch(() => []);
+      if (Array.isArray(matchedSub) && matchedSub[0]?.id) targetId = matchedSub[0].id;
+    }
     if (targetId) {
+      const prevRows = await dbJson(env, `/freebeat_oauth_accounts?select=id,account_email,oauth_subject,email_source&id=eq.${encodeURIComponent(targetId)}&limit=1`).catch(() => []);
+      const prev = Array.isArray(prevRows) ? prevRows[0] : null;
+      const subjectChanged = Boolean(oauthSubject && prev?.oauth_subject && prev.oauth_subject !== oauthSubject);
       const patch = {
         sealed_session: sealedSession,
         image_access: imageAccess === true,
         enabled: true,
         consecutive_failures: 0,
         last_error: null,
+        email_source: emailSource,
+        ...(oauthSubject ? { oauth_subject: oauthSubject } : {}),
         issued_at: issuedAt || nowIso,
         updated_at: nowIso,
-        ...(accountEmail ? { account_email: accountEmail } : {}),
+        ...(accountEmail ? { account_email: accountEmail } : (subjectChanged ? { account_email: '' } : {})),
         ...(accountLabel ? { account_label: accountLabel } : {}),
       };
       await dbFetch(env, `/freebeat_oauth_accounts?id=eq.${encodeURIComponent(targetId)}`, { method: 'PATCH', body: patch });
@@ -2084,6 +2175,8 @@ async function upsertPoolOAuthAccount(env, { id = null, accountEmail = '', accou
       body: {
         account_email: accountEmail || '',
         account_label: accountLabel || '',
+        email_source: emailSource,
+        ...(oauthSubject ? { oauth_subject: oauthSubject } : {}),
         ...(connectedBy ? { connected_by: connectedBy } : {}),
         sealed_session: sealedSession,
         image_access: imageAccess === true,
@@ -2154,7 +2247,7 @@ async function recordPoolAccountOutcome(env, account, { success = false, error =
 async function loadFreebeatAccountPool(env, { includeDisabled = false, preferredAccountId = null } = {}) {
   let poolRows = null;
   try {
-    poolRows = await dbJson(env, '/freebeat_oauth_accounts?select=id,account_email,account_label,connected_by,sealed_session,image_access,enabled,priority,consecutive_failures,last_balance_credits,last_balance,last_balance_checked_at,last_error,last_used_at,last_success_at,issued_at,updated_at,created_at&order=priority.asc,created_at.asc&limit=50');
+    poolRows = await dbJson(env, '/freebeat_oauth_accounts?select=id,account_email,account_label,email_source,oauth_subject,connected_by,sealed_session,image_access,enabled,priority,consecutive_failures,last_balance_credits,last_balance,last_balance_checked_at,last_error,last_used_at,last_success_at,issued_at,updated_at,created_at&order=priority.asc,created_at.asc&limit=50');
   } catch { poolRows = null; }
 
   const entries = [];
@@ -2242,14 +2335,18 @@ async function checkPoolAccountsBalance(env, targetId = null) {
     try {
       const balance = await getBalance(usable.session.accessToken);
       const credits = extractNumericBalance(balance);
-      const discoveredEmail = !item.account_email ? extractEmailFromObject(balance) : '';
+      let discoveredEmail = extractEmailFromObject(balance);
+      if (!discoveredEmail && item.email_source !== 'oauth') {
+        const identity = await resolveFreebeatOAuthIdentity({ access_token: usable.session.accessToken }).catch(() => ({ email: '' }));
+        if (identity?.email) discoveredEmail = identity.email;
+      }
       const nowIso = new Date().toISOString();
       const patch = {
         last_balance: balance,
         last_balance_credits: credits,
         last_balance_checked_at: nowIso,
         updated_at: nowIso,
-        ...(discoveredEmail ? { account_email: discoveredEmail } : {}),
+        ...(discoveredEmail ? { account_email: discoveredEmail, email_source: 'oauth' } : {}),
         ...(credits !== null && credits > 0 ? { last_error: null, consecutive_failures: 0 } : {}),
         ...(credits === 0 ? { last_error: 'Saldo Freebeat habis (0 kredit)' } : {}),
       };
