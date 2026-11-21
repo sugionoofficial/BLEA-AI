@@ -306,7 +306,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       const result = await request(action, 'POST', input);
       if (version !== catalogVersion.current || connectionVersion !== visibilityVersion.current) return;
       if (action === 'video-model-help') setHelp({ model_id: result.model_id, help: result.help });
-      else setQuote({ ...result.settings, ...(result.adjusted?.length ? { adjusted: result.adjusted } : {}), ...(result.supported ? { supported: result.supported } : {}), quote: result.quote });
+      else setQuote({ ...result.settings, ...(result.member_only ? { member_only: true } : {}), ...(result.adjusted?.length ? { adjusted: result.adjusted } : {}), ...(result.supported ? { supported: result.supported } : {}), quote: result.quote });
     } catch (err) { setError(err.message || 'Pemeriksaan video gagal.'); }
     finally { setBusy(false); }
   }
@@ -436,6 +436,7 @@ export function FreebeatVideoDiagnostic({ connected, imageAccess, loading, reque
       </select>
     </label>
     {isWan3Selected && <p className="freebeat-note" role="status">Profil Wan 3.0 aktif: gunakan <strong>Keyframe</strong> (0–2 gambar: text / First Frame / First+Last Frame) atau <strong>Omni Reference</strong> (1–3 gambar referensi), resolusi 480p / 720p / 1080p, dan durasi hingga 30 detik.</p>}
+    {selectedModelItem?.member_only && <p className="freebeat-note" role="status">Catatan metadata MCP: Freebeat menandai model ini sebagai khusus member; quote dan uji tetap diizinkan untuk akun admin, namun akun tanpa akses MCP dapat ditolak saat eksekusi.</p>}
     {connected && !videoBusy && !modelOptions.length && <p>Belum ada model ber-ID angka yang dapat dipilih. Muat ulang daftar model di atas.</p>}
     {videoModels?.truncated && <p>Daftar Freebeat dibatasi sampai 100 model; mungkin belum lengkap.</p>}
     {videoModels?.models?.length > modelOptions.length && <p>Hanya model dengan ID angka yang dapat diperiksa; ID lain atau duplikat tidak ditampilkan.</p>}

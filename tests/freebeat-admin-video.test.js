@@ -608,3 +608,101 @@ test('Wan 3.0 supports keyframe (0-2 images -> text/image/transition) and omni_r
   }
 });
 
+test('admin diagnostic allows member_only=true models like Wan 3.0 (182) for quote, prepare, and submit unless FREEBEAT_ALLOW_MEMBER_ONLY=0 or available=false', async () => {
+  const original = globalThis.fetch;
+  const rows = new Map();
+  const mcpCalls = [];
+  let modelMeta = { model_id: 182, name: 'Wan 3.0', member_only: true, available: true };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    if (url.href === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'admin', app_metadata: { role: 'admin' } });
+    if (url.href === 'https://freebeat.ai/oauth/register') return Response.json({ client_id: 'client' });
+    if (url.href === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: 'TOKEN', expires_in: 600, scope: 'freebeat:read freebeat:generate' });
+    if (url.pathname === '/rest/v1/freebeat_admin_video_tests') {
+      if (init.method === 'POST') {
+        const row = JSON.parse(init.body);
+        row.created_at = new Date().toISOString();
+        rows.set(row.id, row);
+        return Response.json([row]);
+      }
+      if (init.method === 'PATCH') {
+        const id = url.searchParams.get('id').slice(3);
+        const row = rows.get(id);
+        Object.assign(row, JSON.parse(init.body));
+        return Response.json([row]);
+      }
+      return Response.json([...rows.values()]);
+    }
+    assert.equal(url.href, 'https://freebeat.ai/api/mcp');
+    const body = JSON.parse(init.body);
+    mcpCalls.push(body);
+    if (body.method === 'initialize') return Response.json({ id: body.id, result: { protocolVersion: '2025-03-26' } });
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    const tool = body.params?.name;
+    if (tool === 'list_models') return Response.json({ id: body.id, result: { structuredContent: { models: [{ model_id: 182, name: 'Wan 3.0', member_only: modelMeta.member_only, available: modelMeta.available }] } } });
+    if (tool === 'get_model_help') {
+      return Response.json({
+        id: body.id,
+        result: {
+          structuredContent: {
+            model: { ...modelMeta },
+            modes: [{ generation_type: 'image', min_duration: 2, max_duration: 30, resolutions: ['480p', '720p', '1080p'], aspect_ratios: ['16:9', '9:16'] }],
+          },
+        },
+      });
+    }
+    if (tool === 'quote_generation') return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: 50 } } });
+    if (tool === 'generate_video') return Response.json({ id: body.id, result: { structuredContent: { batch_id: 'batch-member-ok' } } });
+    throw new Error(`Unexpected tool ${tool}`);
+  };
+  try {
+    const cookie = await connect();
+
+    // Without FREEBEAT_ALLOW_MEMBER_ONLY set, member_only=true succeeds across quote, prepare, and submit
+    const quoteRes = await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: { model_id: 182, prompt: 'Test Wan 3.0', input_mode: 'keyframe', images: ['https://cdn.example/frame.png'], duration: 5, resolution: '720p', aspect_ratio: '16:9' },
+    });
+    assert.equal(quoteRes.status, 200);
+    const quoted = await quoteRes.json();
+    assert.equal(quoted.member_only, true);
+    assert.equal(quoted.quote.credits, 50);
+
+    const prepRes = await api('video-prepare', {
+      cookie,
+      method: 'POST',
+      data: { model_id: 182, prompt: 'Test Wan 3.0', input_mode: 'keyframe', images: ['https://cdn.example/frame.png'], duration: 5, resolution: '720p', aspect_ratio: '16:9' },
+    });
+    assert.equal(prepRes.status, 200);
+    const prepared = await prepRes.json();
+    assert.equal(prepared.member_only, true);
+
+    const submitRes = await submit(cookie, prepared.approval);
+    assert.equal(submitRes.status, 200);
+    assert.equal((await submitRes.json()).status, 'submitted');
+    assert.equal(mcpCalls.filter((c) => c.params?.name === 'generate_video').length, 1);
+
+    // Explicit opt-out FREEBEAT_ALLOW_MEMBER_ONLY=0 blocks member_only=true with 409
+    const optOutEnv = { ...env, FREEBEAT_ALLOW_MEMBER_ONLY: '0' };
+    const optOutRes = await worker.fetch(new Request(`${base}/api/freebeat/video-model-quote`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer admin', cookie, 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ model_id: 182, prompt: 'Blocked test', input_mode: 'keyframe', images: ['https://cdn.example/frame.png'], duration: 5 }),
+    }), optOutEnv);
+    assert.equal(optOutRes.status, 409);
+
+    // available: false remains blocked with 409
+    modelMeta = { model_id: 182, name: 'Wan 3.0', member_only: false, available: false };
+    const unavailableRes = await api('video-model-quote', {
+      cookie,
+      method: 'POST',
+      data: { model_id: 182, prompt: 'Unavailable test', input_mode: 'keyframe', images: ['https://cdn.example/frame.png'], duration: 5 },
+    });
+    assert.equal(unavailableRes.status, 409);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+

@@ -630,3 +630,42 @@ test('Wan 3.0 keyframe and omni_reference modes support 0-3 uploaded images, 480
   }
 });
 
+test('member_only metadata displays non-blocking note and keeps quote/prepare enabled for Wan 3.0', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });
+  const { FreebeatVideoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatVideoDiagnostic.jsx');
+  const calls = [];
+  const request = async (...args) => {
+    calls.push(args);
+    if (args[0] === 'video-model-quote') return { member_only: true, settings: { model_id: 182, generation_type: 'text', duration: 5, resolution: '480p', aspect_ratio: '16:9' }, quote: { status: 'quoted', credits: 50 } };
+    if (args[0] === 'video-prepare') return { approval: 'ticket', member_only: true, settings: { model_id: 182, generation_type: 'text', duration: 5, resolution: '480p', aspect_ratio: '16:9' }, prompt: args[2].prompt, images: [], credits: 50, expiresAt: Date.now() + 60000 };
+    if (args[0] === 'video-tests') return { tests: [] };
+    throw new Error(`unexpected ${args[0]}`);
+  };
+  const root = createRoot(document.getElementById('root'));
+  const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent === label);
+  const memberCatalog = { models: [{ model_id: 182, name: 'Wan 3.0', member_only: true, available: true }], truncated: false };
+  try {
+    await React.act(async () => root.render(React.createElement(FreebeatVideoDiagnostic, { connected: true, imageAccess: true, loading: false, request, videoModels: memberCatalog })));
+    await selectModel(React, dom, '182');
+    assert.match(document.body.textContent, /Wan 3\.0 · khusus member · ID 182/);
+    assert.match(document.body.textContent, /Catatan metadata MCP: Freebeat menandai model ini sebagai khusus member/);
+    const prompt = document.querySelector('input[type=text]');
+    await React.act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(prompt, 'Uji Wan 3.0'); prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    assert.equal(button('Periksa quote').disabled, false);
+    assert.equal(button('Siapkan quote untuk persetujuan video').disabled, false);
+    await React.act(async () => button('Periksa quote').click());
+    assert.equal(JSON.parse(document.querySelector('[aria-label="Quote video yang disaring"]').value).member_only, true);
+    await React.act(async () => button('Siapkan quote untuk persetujuan video').click());
+    assert.equal(Boolean(button('Setujui dan kirim satu video')), true);
+  } finally {
+    await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+

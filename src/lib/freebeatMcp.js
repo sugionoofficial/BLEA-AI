@@ -878,14 +878,20 @@ const HELP_RESOLUTION = /^(360p|480p|540p|720p|768p|1080p|1440p|2160p|2k|4k)$/i;
 const HELP_PAIR = /^(\d{3,4}p|2k|4k)\|(\d{1,3})$/i; // price-map keys like "480p|5"
 const GEN_NAME_MAP = {
   'image-to-video': 'image',
+  image2video: 'image',
+  img2video: 'image',
   image: 'image',
   'text-to-video': 'text',
+  text2video: 'text',
   text: 'text',
   'first/last-frame transition': 'transition',
   'first/last frame transition': 'transition',
   'first-last-frame': 'transition',
+  'first_last_frame': 'transition',
+  'first_last_frame_transition': 'transition',
   transition: 'transition',
   'reference-to-video': 'reference',
+  'reference_to_video': 'reference',
   'omni-reference': 'reference',
   'omni_reference': 'reference',
   'omni reference': 'reference',
@@ -1049,15 +1055,17 @@ function normalizeVideoSettings(help, settings, wantedTarget) {
     },
   };
 }
-// Member-only models reject non-member accounts at dispatch time with no
-// usable reason (0 accepted credits). Fail early with an actionable message.
-// Set FREEBEAT_ALLOW_MEMBER_ONLY=1 on the Worker once the account has membership.
+// Allow admin diagnostics on /admin/freebeat to quote and test models even
+// when Freebeat MCP metadata marks `member_only: true` (e.g. Wan 3.0 on accounts
+// that already have Studio access). Only fail early on `available === false`
+// or when an operator explicitly opts out via FREEBEAT_ALLOW_MEMBER_ONLY=0.
 function assertModelUsable(help, modelId, env) {
-  if (env && String(env.FREEBEAT_ALLOW_MEMBER_ONLY) === '1') return;
   const model = help && typeof help === 'object' && help.model && typeof help.model === 'object' ? help.model : null;
   if (!model) return;
   if (model.available === false) throw fail(`Model ${modelId} sedang tidak tersedia di Freebeat. Pilih model lain.`, 409);
-  if (model.member_only === true) throw fail(`Model ${modelId} khusus member Freebeat; akun tanpa membership ditolak penyedia saat pengiriman (0 accepted credits). Pilih model non-member atau aktifkan membership, lalu set FREEBEAT_ALLOW_MEMBER_ONLY=1 bila sudah member.`, 409);
+  if (model.member_only === true && env && String(env.FREEBEAT_ALLOW_MEMBER_ONLY) === '0') {
+    throw fail(`Model ${modelId} diblokir karena kebijakan FREEBEAT_ALLOW_MEMBER_ONLY=0.`, 409);
+  }
 }
 
 // Do not dispatch an upload unless the live tool exposes a zero-credit ceiling
@@ -1397,7 +1405,17 @@ async function prepareVideo(env, user, session, input) {
   const expires = Date.now() + APPROVAL_LIFETIME;
   const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, prompt: exact.prompt, images: exact.images, credits, expires }, env, 'video-approval');
   if (approval.length > 14000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
-  return { approval, settings, ...exact, credits, max_credits: credits + videoHeadroom(credits), adjusted: normalized.adjusted, supported: normalized.options, expiresAt: expires };
+  return {
+    approval,
+    settings,
+    ...exact,
+    credits,
+    max_credits: credits + videoHeadroom(credits),
+    adjusted: normalized.adjusted,
+    supported: normalized.options,
+    member_only: help?.model?.member_only === true,
+    expiresAt: expires,
+  };
 }
 async function submitVideo(env, user, session, request) {
   await requireImageSession(session);
