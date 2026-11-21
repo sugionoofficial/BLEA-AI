@@ -5,10 +5,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import worker from '../src/worker.js';
 import {
+  LIVE_FINISH_HOLD_MS,
+  compareRaceItems,
+  computeLiveProgress,
   diagnosePendingGeneration,
   formatLiveQueueItem,
   maskEmailAfter4,
   patchImageGeneration,
+  reconcileRaceEntries,
 } from '../src/lib/liveQueue.js';
 import { consumerDanceStatus } from '../src/lib/freebeatMcp.js';
 import { formatElapsedHuman, formatElapsedRuntime, getElapsedMs } from '../src/lib/formatRuntime.js';
@@ -247,6 +251,8 @@ test('/api/generations/live enforces auth + user privacy and /api/admin/generati
         if (idFilter) rows = rows.filter((r) => r.id === idFilter);
         if (statusFilter === 'in.(queued,in_progress)') {
           rows = rows.filter((r) => ['queued', 'in_progress'].includes(r.status));
+        } else if (statusFilter === 'eq.completed') {
+          rows = rows.filter((r) => r.status === 'completed');
         }
         return Response.json(rows);
       }
@@ -272,6 +278,8 @@ test('/api/generations/live enforces auth + user privacy and /api/admin/generati
         if (idFilter) rows = rows.filter((r) => r.id === idFilter);
         if (statusFilter === 'in.(queued,processing,unknown)') {
           rows = rows.filter((r) => ['queued', 'processing', 'unknown'].includes(r.status));
+        } else if (statusFilter === 'eq.completed') {
+          rows = rows.filter((r) => r.status === 'completed');
         }
         return Response.json(rows);
       }
@@ -343,7 +351,7 @@ test('/api/generations/live enforces auth + user privacy and /api/admin/generati
     }), env);
     assert.equal(csrfCancelRes.status, 403);
 
-    // 5. Admin live poll resolves pollable Alibaba image (ali-task-active -> completed) while showing emails & cancel capability for remaining stuck rows
+    // 5. Admin live poll resolves pollable Alibaba image (ali-task-active -> completed), jumps it straight to #1 for 5s celebration, while showing emails & cancel capability for remaining stuck rows
     const adminLiveRes = await worker.fetch(apiRequest('/api/generations/live', {
       token: 'admin-jwt',
       body: { poll: true },
@@ -351,8 +359,12 @@ test('/api/generations/live enforces auth + user privacy and /api/admin/generati
     assert.equal(adminLiveRes.status, 200);
     const adminLive = await adminLiveRes.json();
     assert.equal(adminLive.is_admin, true);
-    assert.equal(adminLive.items.find((it) => it.id === IMG_ACTIVE_ID), undefined); // resolved to completed!
     assert.equal(dbImages.find((it) => it.id === IMG_ACTIVE_ID).status, 'completed');
+    const resolvedItem = adminLive.items.find((it) => it.id === IMG_ACTIVE_ID);
+    assert.equal(adminLive.items[0]?.id, IMG_ACTIVE_ID); // newly completed jumps to #1!
+    assert.equal(resolvedItem?.status, 'completed');
+    assert.equal(resolvedItem?.progress, 100);
+    assert.equal(resolvedItem?.can_cancel, false);
     const stuckImgAdmin = adminLive.items.find((it) => it.id === IMG_STUCK_ID);
     assert.equal(stuckImgAdmin.user_email, 'sugionoofficial88@gmail.com');
     assert.equal(stuckImgAdmin.stalled, true);
@@ -552,12 +564,117 @@ test('LiveQueuePage renders user privacy message for regular users and admin mod
     const fs = await import('node:fs');
     const liveCss = fs.readFileSync(new URL('../src/auth/live.css', import.meta.url), 'utf8');
     const liveSrc = fs.readFileSync(new URL('../src/auth/LiveQueuePage.jsx', import.meta.url), 'utf8');
-    assert.match(liveCss, /\.dropx-shell\s+\.live-page\s*\{[^}]*max-width:\s*1100px;/s);
-    assert.match(liveCss, /\.dropx-shell\s+\.live-list\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(100%,\s*332px\),\s*1fr\)\);/s);
+    assert.match(liveCss, /\.dropx-shell\s+\.live-page\s*\{[^}]*max-width:\s*920px;/s);
+    assert.match(liveCss, /\.dropx-shell\s+\.live-race-row\s*\{/);
+    assert.match(liveCss, /\.dropx-shell\s+\.live-rank-badge\s*\{/);
     assert.ok(liveSrc.includes('live-owner-strip'));
     assert.ok(liveSrc.includes('owner_email_masked'));
+    assert.ok(liveSrc.includes('live-finish-bar'));
+    assert.ok(liveSrc.includes('live-delta-pill'));
     assert.ok(liveSrc.includes('live-telemetry-grid'));
   } finally {
     await vite.close();
   }
+});
+
+test('MotoGP race leaderboard sorting, overtakes, and 5-second finish hold work cleanly', () => {
+  const t0 = Date.parse('2026-11-21T03:00:00.000Z');
+  const queuedItem = {
+    id: 'q1',
+    kind: 'video',
+    status: 'queued',
+    progress: 0,
+    stalled: false,
+    created_at: new Date(t0 - 15_000).toISOString(),
+    updated_at: new Date(t0 - 15_000).toISOString(),
+  };
+  const stalledItem = {
+    id: 's1',
+    kind: 'image',
+    status: 'processing',
+    has_external_job: false,
+    stalled: true,
+    created_at: new Date(t0 - 120_000).toISOString(),
+    updated_at: new Date(t0 - 120_000).toISOString(),
+  };
+  const slowerActive = {
+    id: 'a1',
+    kind: 'video',
+    status: 'in_progress',
+    progress: 35,
+    stalled: false,
+    created_at: new Date(t0 - 20_000).toISOString(),
+    updated_at: new Date(t0 - 5_000).toISOString(),
+  };
+  const fasterActive = {
+    id: 'a2',
+    kind: 'video',
+    status: 'in_progress',
+    progress: 72,
+    stalled: false,
+    created_at: new Date(t0 - 10_000).toISOString(),
+    updated_at: new Date(t0 - 1_000).toISOString(),
+  };
+
+  // Round 1: healthy fasterActive (72%) -> #1, slowerActive (35%) -> #2, queued -> #3, stalled -> #4
+  const round1 = reconcileRaceEntries({
+    incomingItems: [queuedItem, stalledItem, slowerActive, fasterActive],
+    nowMs: t0,
+    holdMs: LIVE_FINISH_HOLD_MS,
+  });
+  assert.deepEqual(round1.items.map((x) => x.id), ['a2', 'a1', 'q1', 's1']);
+
+  // Round 2: slowerActive overtakes fasterActive (progress climbs 35 -> 88)
+  const overtaker = { ...slowerActive, progress: 88, updated_at: new Date(t0 + 2000).toISOString() };
+  const round2 = reconcileRaceEntries({
+    holdMap: round1.holdMap,
+    dismissedSet: round1.dismissedSet,
+    incomingItems: [queuedItem, stalledItem, overtaker, fasterActive],
+    nowMs: t0 + 2000,
+    holdMs: LIVE_FINISH_HOLD_MS,
+  });
+  assert.deepEqual(round2.items.map((x) => x.id), ['a1', 'a2', 'q1', 's1']);
+
+  // Round 3: queuedItem finishes straight to completed! Immediately shoots to #1 with 5s hold
+  const winner = {
+    ...queuedItem,
+    status: 'completed',
+    progress: 100,
+    completed_at: new Date(t0 + 4000).toISOString(),
+    updated_at: new Date(t0 + 4000).toISOString(),
+  };
+  const round3 = reconcileRaceEntries({
+    holdMap: round2.holdMap,
+    dismissedSet: round2.dismissedSet,
+    incomingItems: [winner, stalledItem, overtaker, fasterActive],
+    nowMs: t0 + 4000,
+    holdMs: LIVE_FINISH_HOLD_MS,
+  });
+  assert.equal(round3.items[0].id, 'q1');
+  assert.equal(round3.items[0].status, 'completed');
+  assert.equal(round3.items[0].finish_remaining_ms, 5000);
+  assert.equal(computeLiveProgress(round3.items[0]), 100);
+
+  // At t + 3500ms after completion, still at #1 with 1500ms left
+  const round3Mid = reconcileRaceEntries({
+    holdMap: round3.holdMap,
+    dismissedSet: round3.dismissedSet,
+    incomingItems: [winner, stalledItem, overtaker, fasterActive],
+    nowMs: t0 + 7500,
+    holdMs: LIVE_FINISH_HOLD_MS,
+  });
+  assert.equal(round3Mid.items[0].id, 'q1');
+  assert.equal(round3Mid.items[0].finish_remaining_ms, 1500);
+
+  // At t + 5001ms after completion, vanishes automatically even if backend still sends it in 12s window!
+  const round4 = reconcileRaceEntries({
+    holdMap: round3Mid.holdMap,
+    dismissedSet: round3Mid.dismissedSet,
+    incomingItems: [winner, stalledItem, overtaker, fasterActive],
+    nowMs: t0 + 9001,
+    holdMs: LIVE_FINISH_HOLD_MS,
+  });
+  assert.equal(round4.items.find((x) => x.id === 'q1'), undefined);
+  assert.deepEqual(round4.items.map((x) => x.id), ['a1', 'a2', 's1']);
+  assert.ok(compareRaceItems(overtaker, stalledItem, t0 + 9001) < 0);
 });
