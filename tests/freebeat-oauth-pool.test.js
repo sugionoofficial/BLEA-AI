@@ -191,6 +191,10 @@ function createPoolHarness({
       }
     }
     if (url.pathname === '/rest/v1/video_generations') {
+      if (method === 'GET') {
+        const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        return Response.json(idEq ? videoRows.filter((r) => r.id === idEq) : videoRows);
+      }
       if (method === 'POST') {
         const b = { created_at: new Date().toISOString(), ...jsonBody() };
         videoRows.push(b);
@@ -198,8 +202,12 @@ function createPoolHarness({
       }
       if (method === 'PATCH') {
         const idEq = url.searchParams.get('id')?.replace(/^eq\./, '');
+        const refundGuard = url.searchParams.get('credits_refunded');
         const b = jsonBody();
         const row = videoRows.find((r) => r.id === idEq);
+        if (refundGuard === 'eq.0' && (!row || Number(row.credits_refunded || 0) !== 0)) {
+          return Response.json([]);
+        }
         if (row) Object.assign(row, b);
         return Response.json(row ? [row] : []);
       }
@@ -775,4 +783,210 @@ test('OAuth callback updates account_email from JWT/userinfo over stale label an
     h.cleanup();
   }
 });
+
+test('dance video pre-flight skips low-balance Freebeat accounts (< 800 credits) before burning partial credits', async () => {
+  // Skenario 1: Akun #1 saldo 345 (< 800), Akun #2 saldo 1500 -> generate_dance_video TIDAK pernah dipanggil di Akun #1, sukses di Akun #2
+  let h = createPoolHarness({
+    onMcpCall: ({ token, tool, id }) => {
+      if (tool === 'get_credit_balance') {
+        return mcpSuccess(id, { available_credits: token === 'tok-1' ? 345 : 1500 });
+      }
+      if (tool === 'upload_audio') return mcpSuccess(id, { music_id: `music-${token}` });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'unknown' });
+      if (tool === 'generate_dance_video') {
+        return mcpSuccess(id, { task_id: `dance-${token}`, session_url: 'https://freebeat.ai/session/2' });
+      }
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'low@gmail.com', label: 'Saldo Rendah' });
+    await connectAccountViaOAuth(h, { email: 'cukup@gmail.com', label: 'Saldo Cukup' });
+
+    const res = await worker.fetch(apiRequest('/api/video/generate', {
+      token: 'user-jwt',
+      body: {
+        provider: 'freebeat',
+        model: 'generate_dance_video',
+        audio_url: 'https://cdn.example/beat.mp3',
+        aspect_ratio: '9:16',
+      },
+    }), h.env);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.generation.external_job_id, 'dance-tok-2');
+    // Akun #1 tidak pernah disentuh generate_dance_video agar 345 kredit tidak terbakar sia-sia
+    assert.deepEqual(h.mcpSequence.filter((c) => c.tool === 'generate_dance_video').map((c) => c.token), ['tok-2']);
+    assert.equal(h.poolRows[0].last_balance_credits, 345);
+    assert.match(String(h.poolRows[0].last_error || ''), /345/);
+    assert.equal(h.spends.length, 1);
+    assert.equal(h.refunds.length, 0);
+  } finally {
+    h.cleanup();
+  }
+
+  // Skenario 2: Semua akun di bawah batas minimal dance (345 kredit) -> 503 tanpa membakar kredit Freebeat maupun memotong BLEA
+  h = createPoolHarness({
+    onMcpCall: ({ tool, id }) => {
+      if (tool === 'get_credit_balance') return mcpSuccess(id, { available_credits: 345 });
+      if (tool === 'upload_audio') return mcpSuccess(id, { music_id: 'music-tok-1' });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'unknown' });
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'low-only@gmail.com', label: 'Satu-satunya' });
+    const failRes = await worker.fetch(apiRequest('/api/video/generate', {
+      token: 'user-jwt',
+      body: {
+        provider: 'freebeat',
+        model: 'generate_dance_video',
+        audio_url: 'https://cdn.example/beat.mp3',
+        aspect_ratio: '9:16',
+      },
+    }), h.env);
+    assert.equal(failRes.status, 503);
+    const body = await failRes.json();
+    assert.equal(body.error, 'SALDO GATEWAY HABIS, SILAHKAN HUBUNGI ADMIN.');
+    assert.equal(body.code, 'gateway_balance_exhausted');
+    assert.equal(h.mcpSequence.filter((c) => c.tool === 'generate_dance_video').length, 0);
+    assert.equal(h.spends.length, 0);
+    assert.equal(h.refunds.length, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('action_required halts nudging immediately and refunds BLEA credits on insufficient Freebeat credits or after 3-nudge timeout', async () => {
+  // Kasus 1: get_video_session melaporkan kredit tidak cukup -> 0 nudge + fail + refund atomik 3000 kredit
+  let sessionMode = 'explicit-insufficient';
+  let taskStatusPayload = { status: 'action_required', task_id: 'dance:M100', progress: 90 };
+  const h = createPoolHarness({
+    onMcpCall: ({ tool, id }) => {
+      if (tool === 'get_credit_balance') {
+        return mcpSuccess(id, { available_credits: sessionMode === 'low-balance-ambiguous' ? 345 : 1500 });
+      }
+      if (tool === 'upload_audio') return mcpSuccess(id, { music_id: 'm-1' });
+      if (tool === 'quote_generation') return mcpSuccess(id, { status: 'unknown' });
+      if (tool === 'generate_dance_video') return mcpSuccess(id, { task_id: 'dance:M100', session_url: 'https://freebeat.ai/session/100' });
+      if (tool === 'get_task_status') return mcpSuccess(id, taskStatusPayload);
+      if (tool === 'get_video_session') {
+        if (sessionMode === 'explicit-insufficient') {
+          return mcpSuccess(id, {
+            status: 'action_required',
+            messages: [{ role: 'assistant', content: 'Insufficient credits to continue this dance video. Please top up credits.' }],
+          });
+        }
+        if (sessionMode === 'low-balance-ambiguous') {
+          return mcpSuccess(id, {
+            status: 'action_required',
+            messages: [{ role: 'assistant', text: 'Please confirm to proceed with generating the next scene.' }],
+          });
+        }
+        return mcpSuccess(id, {
+          status: 'action_required',
+          messages: [{ role: 'assistant', text: 'Choose choreography transition style.' }],
+        });
+      }
+      if (tool === 'get_task_result') return mcpSuccess(id, { status: 'action_required' });
+      return mcpSuccess(id, {});
+    },
+  });
+
+  try {
+    await connectAccountViaOAuth(h, { email: 'dance-acc@gmail.com', label: 'Dance Pool' });
+    const genRes = await worker.fetch(apiRequest('/api/video/generate', {
+      token: 'user-jwt',
+      body: { provider: 'freebeat', model: 'generate_dance_video', audio_url: 'https://cdn.example/song.mp3', aspect_ratio: '9:16' },
+    }), h.env);
+    assert.equal(genRes.status, 200);
+    const job1 = (await genRes.json()).generation;
+
+    const status1 = await worker.fetch(apiRequest(`/api/video/status?id=${encodeURIComponent(job1.id)}`, { method: 'GET', token: 'user-jwt' }), h.env);
+    assert.equal(status1.status, 200);
+    const s1 = await status1.json();
+    assert.equal(s1.generation.status, 'failed');
+    assert.equal(s1.generation.credits_refunded, 3000);
+    assert.equal(h.mcpSequence.filter((c) => c.tool === 'send_video_agent_message').length, 0);
+    assert.equal(h.refunds.length, 1);
+    assert.equal(h.refunds[0].p_amount, 3000);
+    assert.match(String(h.poolRows[0].last_error || ''), /Saldo Freebeat/);
+
+    // Kasus 2: Pesan konfirmasi ambigu di get_video_session saat saldo akun tinggal 345 (< 400) -> tetap stop tanpa nudge & refund
+    sessionMode = 'low-balance-ambiguous';
+    h.videoRows.push({
+      id: '11111111-1111-4111-8111-111111111112',
+      user_id: 'user-1',
+      provider: 'freebeat',
+      model: 'generate_dance_video',
+      prompt: 'Dance 2',
+      aspect_ratio: '9:16',
+      resolution: '720p',
+      duration: 15,
+      generate_audio: true,
+      external_job_id: 'dance:M101',
+      credits_charged: 3000,
+      credits_refunded: 0,
+      status: 'in_progress',
+      progress: 90,
+      metadata: { mode: 'dance_video', freebeat_account_id: h.poolRows[0].id },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    const status2 = await worker.fetch(apiRequest('/api/video/status?id=11111111-1111-4111-8111-111111111112', { method: 'GET', token: 'user-jwt' }), h.env);
+    assert.equal(status2.status, 200);
+    const s2 = await status2.json();
+    assert.equal(s2.generation.status, 'failed');
+    assert.equal(s2.generation.credits_refunded, 3000);
+    assert.equal(h.mcpSequence.filter((c) => c.tool === 'send_video_agent_message').length, 0);
+    assert.equal(h.poolRows[0].last_balance_credits, 345);
+    assert.equal(h.refunds.length, 2);
+
+    // Kasus 3: Sudah 3 kali nudge > 60 detik lalu (tanpa pesan saldo, saldo akun cukup) -> fail otomatis agar job tidak nyangkut selamanya di 90%
+    sessionMode = 'other-confirm';
+    h.videoRows.push({
+      id: '11111111-1111-4111-8111-111111111113',
+      user_id: 'user-1',
+      provider: 'freebeat',
+      model: 'generate_dance_video',
+      prompt: 'Dance 3',
+      aspect_ratio: '9:16',
+      resolution: '720p',
+      duration: 15,
+      generate_audio: true,
+      external_job_id: 'dance:M102',
+      credits_charged: 3000,
+      credits_refunded: 0,
+      status: 'in_progress',
+      progress: 90,
+      metadata: {
+        mode: 'dance_video',
+        freebeat_account_id: h.poolRows[0].id,
+        auto_nudged: true,
+        auto_nudge_count: 3,
+        last_nudge_at: Date.now() - 120_000,
+        agent_status: 'action_required',
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    const { diagnosePendingGeneration } = await import('../src/lib/liveQueue.js');
+    const notice = diagnosePendingGeneration('video', h.videoRows[2]);
+    assert.match(String(notice || ''), /3 nudge otomatis/);
+
+    const status3 = await worker.fetch(apiRequest('/api/video/status?id=11111111-1111-4111-8111-111111111113', { method: 'GET', token: 'user-jwt' }), h.env);
+    assert.equal(status3.status, 200);
+    const s3 = await status3.json();
+    assert.equal(s3.generation.status, 'failed');
+    assert.equal(s3.generation.credits_refunded, 3000);
+    assert.equal(s3.generation.metadata.agent_status, 'action_required_timeout');
+    assert.equal(h.mcpSequence.filter((c) => c.tool === 'send_video_agent_message').length, 0);
+    assert.equal(h.refunds.length, 3);
+  } finally {
+    h.cleanup();
+  }
+});
+
 

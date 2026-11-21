@@ -137,7 +137,7 @@ function extractNumericBalance(payload, depth = 0) {
   }
   return null;
 }
-const BALANCE_EXHAUSTED_REGEX = /insufficient[_\s-]?credit|not[\s_-]?enough[\s_-]?credit|no[\s_-]?credits?[\s_-]?(?:left|remaining|available)?|out[\s_-]?of[\s_-]?credits?|credit[s]?[\s_-]*(?:exhausted|depleted|empty|habis|kurang)|balance[\s_-]*(?:is\s*)?(?:0|zero|empty|insufficient|too\s*low)|quota[\s_-]*(?:exceeded|exhausted)|saldo[\s_-]*(?:habis|kosong|kurang|tidak\s*cukup)|please\s*(?:top\s*up|recharge|purchase\s*credits)/i;
+const BALANCE_EXHAUSTED_REGEX = /insufficient[_\s-]?credit|not[\s_-]?enough[\s_-]?credit|(?:don't|do\s+not|doesn't|does\s+not)\s+have\s+enough\s+credit|(?:lack|short)\s+(?:of\s+)?credit|no[\s_-]?credits?(?:[\s_-]+(?:left|remaining|available))?(?![\s_-]+(?:required|needed|card))|(?:out|ran\s+out)[\s_-]?of[\s_-]?credits?|credit[s]?[\s_-]*(?:balance[\s_-]*(?:is[\s_-]*)?(?:too[\s_-]*low|insufficient|empty|0)|exhausted|depleted|empty|insufficient|not[\s_-]+enough|too[\s_-]+low|habis|kurang|tidak[\s_-]+cukup)|(?:need|require|requires)s?\s+(?:more|additional)\s+credit|balance[\s_-]*(?:is\s*)?(?:0|zero|empty|insufficient|too\s*low)|quota[\s_-]*(?:exceeded|exhausted)|(?:saldo|kredit)[\s_-]*(?:habis|kosong|kurang|tidak\s*cukup)|(?:please|kindly)\s*(?:top\s*up|recharge|purchase\s*credits?|buy\s*credits?|add\s*credits?)|(?:top[\s_-]*up|recharge|upgrade\s*(?:your\s*)?plan)[\s_-]+(?:to\s+(?:continue|proceed|resume)|required|credits?)/i;
 export function isFreebeatBalanceExhausted(payload) {
   if (!payload) return false;
   if (typeof payload === 'string') return BALANCE_EXHAUSTED_REGEX.test(payload);
@@ -145,11 +145,11 @@ export function isFreebeatBalanceExhausted(payload) {
   if (payload.balanceExhausted === true || payload.httpStatus === 402) return true;
   if (String(payload.status || '').trim().toLowerCase() === 'insufficient_credits') return true;
   const check = (value, depth = 0) => {
-    if (depth > 4 || value === null || value === undefined) return false;
+    if (depth > 5 || value === null || value === undefined) return false;
     if (typeof value === 'string') return BALANCE_EXHAUSTED_REGEX.test(value);
-    if (Array.isArray(value)) return value.slice(0, 15).some((item) => check(item, depth + 1));
+    if (Array.isArray(value)) return value.slice(0, 20).some((item) => check(item, depth + 1));
     if (typeof value === 'object') {
-      for (const k of ['reason', 'error_code', 'code', 'error_message', 'message', 'status_message', 'status', 'text', 'error', 'failure', 'content', 'structuredContent', 'details']) {
+      for (const k of ['reason', 'error_code', 'code', 'error_message', 'message', 'status_message', 'status', 'text', 'error', 'failure', 'content', 'structuredContent', 'details', 'messages', 'events', 'items', 'pending_action', 'action_reason', 'prompt', 'question', 'reply', 'description', 'title']) {
         if (k in value && check(value[k], depth + 1)) return true;
       }
     }
@@ -664,6 +664,32 @@ async function getBalance(accessToken) {
   const data = call.result.structuredContent ?? call.result.content;
   if (!data) throw mcpFailure('balance', 'response');
   return data;
+}
+async function readMcpAccountBalance(accessToken, headers) {
+  try {
+    const call = await rpc(
+      accessToken,
+      { jsonrpc: '2.0', id: 901, method: 'tools/call', params: { name: 'get_credit_balance', arguments: {} } },
+      'balance',
+      headers,
+      65536,
+    );
+    const data = call?.result?.structuredContent ?? call?.result?.content ?? null;
+    return { credits: extractNumericBalance(data), payload: data };
+  } catch {
+    return { credits: null, payload: null };
+  }
+}
+const CONFIRMATION_HINT_REGEX = /confirm|continue|proceed|credit|balance|cost|charge|top[\s_-]?up|recharge|upgrade|plan|konfirmasi|lanjut|saldo|kredit|biaya/i;
+function sessionHasConfirmationPrompt(payload, depth = 0) {
+  if (!payload || depth > 5) return false;
+  if (typeof payload === 'string') return CONFIRMATION_HINT_REGEX.test(payload);
+  if (Array.isArray(payload)) return payload.slice(0, 20).some((item) => sessionHasConfirmationPrompt(item, depth + 1));
+  if (typeof payload !== 'object') return false;
+  for (const k of ['messages', 'events', 'items', 'message', 'status_message', 'pending_action', 'action_reason', 'prompt', 'question', 'reply', 'description', 'text', 'content', 'structuredContent']) {
+    if (k in payload && sessionHasConfirmationPrompt(payload[k], depth + 1)) return true;
+  }
+  return false;
 }
 
 // Only structural metadata for these image tools is returned; provider descriptions,
@@ -2757,6 +2783,22 @@ function consumerDanceCeiling(env) {
   const n = Number(env?.FREEBEAT_DANCE_MAX_PROVIDER_CREDITS);
   return Number.isSafeInteger(n) && n >= 100 && n <= 100000 ? n : 2000;
 }
+function consumerDanceMinBalance(env) {
+  const raw = env?.FREEBEAT_DANCE_MIN_CREDITS;
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 100000) return n;
+  }
+  return 800;
+}
+function consumerDanceActionBalanceFloor(env) {
+  const raw = env?.FREEBEAT_DANCE_ACTION_MIN_CREDITS;
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 100000) return n;
+  }
+  return 400;
+}
 
 export async function consumerDanceConfig(env) {
   let credits = null;
@@ -2868,9 +2910,18 @@ export async function consumerDanceGenerate(env, user, payload) {
       }
 
       let opened;
+      let balanceCheck = { credits: null, payload: null };
       let musicId;
       try {
         opened = await openMcpSessionForAccount(env, account);
+        if (account.id) {
+          balanceCheck = await readMcpAccountBalance(opened.session.accessToken, opened.headers);
+          if (balanceCheck.credits !== null && balanceCheck.credits <= 0) {
+            const err = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            err.balanceExhausted = true;
+            throw err;
+          }
+        }
         const { result: audioRes } = await rpc(opened.session.accessToken, {
           jsonrpc: '2.0',
           id: 2,
@@ -2897,6 +2948,7 @@ export async function consumerDanceGenerate(env, user, payload) {
           await recordPoolAccountOutcome(env, account, {
             success: false,
             error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis' : (err?.message || 'Koneksi akun gagal'),
+            ...(balanceCheck.credits !== null ? { balanceCredits: balanceCheck.credits, balancePayload: balanceCheck.payload } : {}),
           });
           lastFailoverError = err;
           continue;
@@ -2954,7 +3006,27 @@ export async function consumerDanceGenerate(env, user, payload) {
 
       if (quoteBalanceExhausted) {
         sawBalanceExhausted = true;
-        await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis (quote)' });
+        await recordPoolAccountOutcome(env, account, {
+          success: false,
+          error: 'Saldo Freebeat habis (quote)',
+          ...(balanceCheck.credits !== null ? { balanceCredits: balanceCheck.credits, balancePayload: balanceCheck.payload } : {}),
+        });
+        lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+        continue;
+      }
+
+      const requiredDanceCredits = providerQuote !== null ? providerQuote : consumerDanceMinBalance(env);
+      if (balanceCheck.credits !== null && balanceCheck.credits < requiredDanceCredits) {
+        sawBalanceExhausted = true;
+        const lowErr = providerQuote !== null
+          ? `Saldo Freebeat (${balanceCheck.credits} kredit) kurang dari biaya quote (${providerQuote} kredit)`
+          : `Saldo Freebeat (${balanceCheck.credits} kredit) belum mencukupi minimal dance video (${requiredDanceCredits} kredit)`;
+        await recordPoolAccountOutcome(env, account, {
+          success: false,
+          error: lowErr,
+          balanceCredits: balanceCheck.credits,
+          balancePayload: balanceCheck.payload,
+        });
         lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
         continue;
       }
@@ -3167,11 +3239,33 @@ export async function consumerDanceStatus(env, row) {
         id: 2,
         method: 'tools/call',
         params: { name: 'generate_dance_video', arguments: args },
-      }, 'generate', headers, 262144);
-      if (result?.isError) {
-        return { nextStatus: 'failed', nextProgress: 0, upstreamUrl: null, errMsg: 'Persiapan audio dance video ditolak oleh Freebeat.' };
+      }, 'generate', headers, 262144, true);
+      if (result?.isError || isFreebeatBalanceExhausted(result)) {
+        const exhausted = isFreebeatBalanceExhausted(result);
+        if (exhausted && usable?.id) {
+          await recordPoolAccountOutcome(env, usable, { success: false, error: 'Saldo Freebeat habis saat persiapan dance video' });
+        }
+        return {
+          nextStatus: 'failed',
+          nextProgress: 0,
+          upstreamUrl: null,
+          errMsg: exhausted ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE : 'Persiapan audio dance video ditolak oleh Freebeat.',
+          ...(exhausted ? { metadata: { ...meta, agent_status: 'insufficient_credits', stopped_reason: 'balance_exhausted' } } : {}),
+        };
       }
       const prepContent = modelContent(result);
+      if (prepContent && isFreebeatBalanceExhausted(prepContent) && !prepContent?.task_id) {
+        if (usable?.id) {
+          await recordPoolAccountOutcome(env, usable, { success: false, error: 'Saldo Freebeat habis saat persiapan dance video' });
+        }
+        return {
+          nextStatus: 'failed',
+          nextProgress: 0,
+          upstreamUrl: null,
+          errMsg: FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE,
+          metadata: { ...meta, agent_status: 'insufficient_credits', stopped_reason: 'balance_exhausted' },
+        };
+      }
       if (prepContent?.status === 'preparing' && !prepContent?.task_id) {
         return { nextStatus: 'queued', nextProgress: 5, upstreamUrl: null, errMsg: null };
       }
@@ -3256,37 +3350,139 @@ export async function consumerDanceStatus(env, row) {
       const parsed = modelContent(finalRes);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
     } catch { /* fallback to statusContent */ }
+    const exhausted = isFreebeatBalanceExhausted(statusContent) || isFreebeatBalanceExhausted(resultContent);
+    if (exhausted && usable?.id) {
+      await recordPoolAccountOutcome(env, usable, { success: false, error: 'Saldo Freebeat habis saat memproses dance video' });
+    }
     const failureInfo = safeVideoFailure(resultContent?.failure || statusContent?.failure);
     const reasonCode = Array.isArray(imageFailureReasons(resultContent)) && imageFailureReasons(resultContent)[0];
-    const errMsg = reasonCode
-      ? `Freebeat gagal memproses dance video (${reasonCode}).`
-      : (failureInfo?.stage && !failureInfo.stage_hidden ? `Freebeat gagal pada tahap ${failureInfo.stage}.` : 'Freebeat melaporkan dance video gagal dibuat.');
+    const errMsg = exhausted
+      ? 'Saldo akun Freebeat tidak mencukupi saat memproses dance video; proses gagal dan kredit BLEA dikembalikan.'
+      : (reasonCode
+        ? `Freebeat gagal memproses dance video (${reasonCode}).`
+        : (failureInfo?.stage && !failureInfo.stage_hidden ? `Freebeat gagal pada tahap ${failureInfo.stage}.` : 'Freebeat melaporkan dance video gagal dibuat.'));
     return {
       nextStatus: summary.status === 'cancelled' ? 'cancelled' : summary.status === 'expired' ? 'expired' : 'failed',
       nextProgress: 0,
       upstreamUrl: null,
       errMsg,
-      metadata: { ...meta, agent_status: summary.status, provider_billing: safeTask(resultContent).billing },
+      metadata: {
+        ...meta,
+        agent_status: exhausted ? 'insufficient_credits' : summary.status,
+        ...(exhausted ? { stopped_reason: 'balance_exhausted' } : {}),
+        provider_billing: safeTask(resultContent).billing,
+      },
     };
   }
 
   if (summary.status === 'action_required') {
+    let insufficientCredits = isFreebeatBalanceExhausted(statusContent);
+    let sessionContent = null;
+    if (!insufficientCredits) {
+      try {
+        const { result: sessRes } = await rpc(session.accessToken, {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'get_video_session', arguments: { task_id: row.external_job_id } },
+        }, 'task', headers, 262144);
+        const parsed = modelContent(sessRes);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          sessionContent = parsed;
+          if (isFreebeatBalanceExhausted(sessionContent)) insufficientCredits = true;
+        }
+      } catch { /* non-fatal: session inspection optional */ }
+    }
+
+    let resultContent = null;
+    if (!insufficientCredits) {
+      try {
+        const { result: finalRes } = await rpc(session.accessToken, {
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'tools/call',
+          params: { name: 'get_task_result', arguments: { task_id: row.external_job_id } },
+        }, 'task', headers, 262144);
+        const parsed = modelContent(finalRes);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          resultContent = parsed;
+          if (isFreebeatBalanceExhausted(resultContent)) insufficientCredits = true;
+        }
+      } catch { /* non-fatal: task result optional during action_required */ }
+    }
+
+    let balanceCheck = { credits: null, payload: null };
+    if (!insufficientCredits) {
+      balanceCheck = await readMcpAccountBalance(session.accessToken, headers);
+      if (balanceCheck.credits !== null) {
+        if (balanceCheck.credits <= 0) {
+          insufficientCredits = true;
+        } else if (
+          balanceCheck.credits < consumerDanceActionBalanceFloor(env)
+          && sessionHasConfirmationPrompt(sessionContent || resultContent || statusContent)
+        ) {
+          insufficientCredits = true;
+        }
+      }
+    }
+
+    if (insufficientCredits) {
+      if (usable?.id) {
+        await recordPoolAccountOutcome(env, usable, {
+          success: false,
+          error: 'Saldo Freebeat tidak mencukupi saat agen dance berjalan (action_required)',
+          ...(balanceCheck.credits !== null ? { balanceCredits: balanceCheck.credits, balancePayload: balanceCheck.payload } : {}),
+        });
+      }
+      return {
+        nextStatus: 'failed',
+        nextProgress: 0,
+        upstreamUrl: null,
+        errMsg: 'Saldo akun Freebeat tidak mencukupi saat memproses dance video; proses dihentikan otomatis dan kredit BLEA dikembalikan.',
+        metadata: {
+          ...meta,
+          agent_status: 'insufficient_credits',
+          stopped_reason: 'balance_exhausted',
+          ...(balanceCheck.credits !== null ? { freebeat_balance_credits: balanceCheck.credits } : {}),
+        },
+      };
+    }
+
     const nudgeCount = Number(meta.auto_nudge_count || (meta.auto_nudged ? 1 : 0));
     const rawLastNudge = meta.last_nudge_at;
     const parsedLastNudge = typeof rawLastNudge === 'number'
       ? rawLastNudge
       : (/^\d+$/.test(String(rawLastNudge || '')) ? Number(rawLastNudge) : Date.parse(String(rawLastNudge || '')));
     const lastNudgeAt = Number.isFinite(parsedLastNudge) ? parsedLastNudge : 0;
+
+    if (nudgeCount >= 3 && lastNudgeAt > 0 && Date.now() - lastNudgeAt >= 60_000) {
+      return {
+        nextStatus: 'failed',
+        nextProgress: 0,
+        upstreamUrl: null,
+        errMsg: 'Agen Freebeat menunggu konfirmasi terlalu lama setelah 3 percobaan otomatis. Proses dihentikan dan kredit BLEA dikembalikan.',
+        metadata: {
+          ...meta,
+          agent_status: 'action_required_timeout',
+          stopped_reason: 'nudge_limit_exceeded',
+        },
+      };
+    }
+
     const canNudge = nudgeCount < 3 && (Date.now() - lastNudgeAt >= 30_000);
     if (canNudge) {
       try {
         await rpc(session.accessToken, {
           jsonrpc: '2.0',
-          id: 3,
+          id: 5,
           method: 'tools/call',
           params: {
             name: 'send_video_agent_message',
-            arguments: { task_id: row.external_job_id, message: 'Continue automatically and finish the dance video.', auto_mode: true },
+            arguments: {
+              task_id: row.external_job_id,
+              message: 'Continue automatically and finish the dance video. If credits are insufficient or cost exceeds remaining balance, stop immediately and report insufficient credits.',
+              auto_mode: true,
+            },
           },
         }, 'task', headers, 262144);
         return {
@@ -3294,7 +3490,14 @@ export async function consumerDanceStatus(env, row) {
           nextProgress: Math.min(90, Math.max(20, Number(row.progress || 10) + 5)),
           upstreamUrl: null,
           errMsg: null,
-          metadata: { ...meta, auto_nudged: true, auto_nudge_count: nudgeCount + 1, last_nudge_at: Date.now(), agent_status: 'action_required' },
+          metadata: {
+            ...meta,
+            auto_nudged: true,
+            auto_nudge_count: nudgeCount + 1,
+            last_nudge_at: Date.now(),
+            action_required_since: meta.action_required_since || Date.now(),
+            agent_status: 'action_required',
+          },
         };
       } catch { /* fall through */ }
     }
