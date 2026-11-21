@@ -31,9 +31,12 @@ import { formatCredits } from '../lib/formatCredits';
 import {
   METADATA_MAX_FILE_BYTES,
   METADATA_SERVICE_COST,
+  METADATA_STORAGE_UPLOAD_MAX_BYTES,
+  METADATA_WORKER_PROCESS_MAX_BYTES,
   compactScanSummary,
   formatBytesCompact,
   scanMediaMetadata,
+  stripMediaMetadata,
 } from '../lib/mediaMetadata';
 import { supabase } from '../lib/supabase';
 import { useCredits } from '../lib/useCredits';
@@ -160,6 +163,7 @@ export function MetadataCheckPage() {
 
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [localCleanUrl, setLocalCleanUrl] = useState('');
   const [mediaKind, setMediaKind] = useState('image');
   const [phase, setPhase] = useState('idle'); // idle | ready | scanning | scanned | removing | cleaned
   const [progress, setProgress] = useState(0);
@@ -176,10 +180,18 @@ export function MetadataCheckPage() {
     };
   }, [previewUrl]);
 
+  useEffect(() => {
+    return () => {
+      if (localCleanUrl) URL.revokeObjectURL(localCleanUrl);
+    };
+  }, [localCleanUrl]);
+
   function resetAll() {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (localCleanUrl) URL.revokeObjectURL(localCleanUrl);
     setFile(null);
     setPreviewUrl('');
+    setLocalCleanUrl('');
     setMediaKind('image');
     setPhase('idle');
     setProgress(0);
@@ -197,6 +209,10 @@ export function MetadataCheckPage() {
     setNotice('');
     setScanResult(null);
     setCleanResult(null);
+    if (localCleanUrl) {
+      URL.revokeObjectURL(localCleanUrl);
+      setLocalCleanUrl('');
+    }
     setProgress(0);
     setProgressLabel('');
 
@@ -319,9 +335,14 @@ export function MetadataCheckPage() {
       refreshCredits();
       const jobId = startRes.data.job.id;
       setProgress(40);
-      setProgressLabel('Mengunggah media & menghapus seluruh metadata AI secara lossless…');
+      setProgressLabel(
+        file.size > METADATA_WORKER_PROCESS_MAX_BYTES
+          ? 'Menghapus metadata video/media ukuran besar secara lossless di perangkat Anda…'
+          : 'Mengunggah media & menghapus seluruh metadata AI secara lossless…',
+      );
 
       let processRes;
+      let createdLocalUrl = '';
       if (file.size <= DIRECT_UPLOAD_LIMIT) {
         processRes = await processMetadataClean({
           id: jobId,
@@ -329,7 +350,7 @@ export function MetadataCheckPage() {
           filename: file.name,
           mimeType: scanResult.mimeType || file.type || '',
         });
-      } else {
+      } else if (file.size <= METADATA_WORKER_PROCESS_MAX_BYTES) {
         if (!user?.id) throw new Error('Sesi login diperlukan untuk mengunggah file besar.');
         const safeName = String(file.name || 'media').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
         storageInputPath = `${user.id}/metadata-inputs/${jobId}-${safeName}`;
@@ -347,9 +368,66 @@ export function MetadataCheckPage() {
           filename: file.name,
           mimeType: scanResult.mimeType || file.type || '',
         });
+      } else {
+        // File > 20 MB (mis. video 57.6 MB - 250 MB): bersihkan lossless langsung di browser
+        // agar tidak melampaui batas RAM 128 MB Cloudflare Worker maupun batas 50 MB Storage.
+        let stripped;
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          stripped = await stripMediaMetadata(bytes, {
+            fileName: file.name,
+            mimeType: scanResult.mimeType || file.type || '',
+            asParts: true,
+          });
+        } catch (stripErr) {
+          const errMsg = String(stripErr?.message || stripErr || 'Gagal menghapus metadata file besar.');
+          await processMetadataClean({ id: jobId, clientFailed: true, errorMessage: errMsg }).catch(() => {});
+          throw new Error(errMsg);
+        }
+
+        const cleanMime = stripped.mimeType || scanResult.mimeType || file.type || 'application/octet-stream';
+        const cleanBlob = new Blob(
+          stripped.cleanedChunks && stripped.cleanedChunks.length ? stripped.cleanedChunks : [stripped.cleanedBytes],
+          { type: cleanMime },
+        );
+        createdLocalUrl = URL.createObjectURL(cleanBlob);
+
+        let cleanedStoragePath = '';
+        if (user?.id && cleanBlob.size <= METADATA_STORAGE_UPLOAD_MAX_BYTES) {
+          setProgress(70);
+          setProgressLabel('Menyimpan hasil bersih ke penyimpanan History…');
+          try {
+            const cleanName = buildDownloadFilename({
+              kind: 'metadata',
+              id: jobId,
+              filename: file.name,
+              mimeType: cleanMime,
+            });
+            const candidatePath = `${user.id}/metadata-clean/${jobId}/${cleanName}`;
+            const { error: upCleanErr } = await supabase.storage
+              .from('ai-studio-uploads')
+              .upload(candidatePath, cleanBlob, { contentType: cleanMime, upsert: true });
+            if (!upCleanErr) cleanedStoragePath = candidatePath;
+          } catch {
+            // non-fatal: local Blob download remains available
+          }
+        }
+
+        setProgress(85);
+        setProgressLabel('Menyelesaikan verifikasi bersih & mencatat ke History…');
+        processRes = await processMetadataClean({
+          id: jobId,
+          clientCleaned: true,
+          cleanedSize: cleanBlob.size,
+          removedCount: stripped.removedCount,
+          scanBefore: compactScanSummary(scanResult),
+          scanAfter: compactScanSummary(stripped.after),
+          cleanedStoragePath,
+        });
       }
 
       if (!processRes.ok || !processRes.data?.job) {
+        if (createdLocalUrl) URL.revokeObjectURL(createdLocalUrl);
         setPhase('scanned');
         setProgress(0);
         setProgressLabel('');
@@ -358,11 +436,18 @@ export function MetadataCheckPage() {
         return;
       }
 
+      if (createdLocalUrl) {
+        if (localCleanUrl) URL.revokeObjectURL(localCleanUrl);
+        setLocalCleanUrl(createdLocalUrl);
+      }
       setProgress(100);
       setProgressLabel('Pembersihan selesai! File bersih siap diunduh.');
       setCleanResult(processRes.data);
       setPhase('cleaned');
-      setNotice(`Berhasil membersihkan ${processRes.data.removedCount ?? scanResult.totalEntries} metadata (${METADATA_SERVICE_COST} kredit BLEA). Riwayat & file bersih tersimpan di History.`);
+      const localNote = processRes.data.localOnlyDownload
+        ? ' Klik Download Hasil Bersih sekarang untuk mengunduh langsung dari perangkat Anda (file > 45 MB tidak diarsipkan di penyimpanan server).'
+        : ' Riwayat & file bersih tersimpan di History.';
+      setNotice(`Berhasil membersihkan ${processRes.data.removedCount ?? scanResult.totalEntries} metadata (${METADATA_SERVICE_COST} kredit BLEA).${localNote}`);
       refreshCredits();
     } catch (err) {
       setPhase('scanned');
@@ -375,14 +460,14 @@ export function MetadataCheckPage() {
 
   function handleDownload() {
     const job = cleanResult?.job;
-    const rawUrl = job?.download_url || job?.result_url;
+    const rawUrl = localCleanUrl || job?.download_url || job?.result_url;
     if (!rawUrl) return;
-    const downloadUrl = withDownloadParam(rawUrl);
+    const downloadUrl = localCleanUrl ? localCleanUrl : withDownloadParam(rawUrl);
     const cleanName = buildDownloadFilename({
       kind: 'metadata',
-      id: job.id,
-      filename: job.filename || file?.name || 'media',
-      mimeType: job.mime_type || scanResult?.mimeType || file?.type || '',
+      id: job?.id || 'hasil',
+      filename: job?.filename || file?.name || 'media',
+      mimeType: job?.mime_type || scanResult?.mimeType || file?.type || '',
       url: downloadUrl,
     });
     const link = document.createElement('a');
@@ -450,7 +535,7 @@ export function MetadataCheckPage() {
   })();
 
   const PrimaryIcon = primaryButtonConfig.icon;
-  const cleanedPreviewSrc = cleanResult?.job?.result_url || previewUrl;
+  const cleanedPreviewSrc = localCleanUrl || cleanResult?.job?.result_url || previewUrl;
 
   return (
     <DropXLayout
@@ -587,7 +672,9 @@ export function MetadataCheckPage() {
                 </div>
                 <strong>Seret &amp; lepas gambar atau video di sini</strong>
                 <span>atau klik untuk memilih file dari perangkat Anda</span>
-                <small>PNG · JPG/JPEG · WebP · GIF · MP4 · MOV · WebM (maks 30 MB)</small>
+                <small>
+                  PNG · JPG/JPEG · WebP · GIF · MP4 · MOV · WebM (maks {Math.round(METADATA_MAX_FILE_BYTES / (1024 * 1024))} MB)
+                </small>
               </div>
             ) : (
               <div className="meta-preview-wrap">

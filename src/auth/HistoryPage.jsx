@@ -194,7 +194,7 @@ export function HistoryPage() {
                       : <img src={item.result_url} alt={item.filename || 'Hasil bersih metadata'} loading="lazy" />)
                     : pending
                       ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status} · {formatElapsedRuntime(item.created_at, liveNowMs)}</span></div>
-                      : <div className="history-preview">{labels[item.status] || item.status}</div>)
+                      : <div className="history-preview">{item.status === 'completed' ? 'Selesai · Unduhan langsung (>45 MB)' : (labels[item.status] || item.status)}</div>)
                   : item.kind === 'image'
                   ? (item.status === 'completed' && imageUrls[0]
                     ? <img src={imageUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />

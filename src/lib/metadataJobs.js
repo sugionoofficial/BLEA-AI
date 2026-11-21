@@ -1,6 +1,7 @@
 import {
   METADATA_MAX_FILE_BYTES,
   METADATA_SERVICE_COST,
+  METADATA_WORKER_PROCESS_MAX_BYTES,
   compactScanSummary,
   detectMediaFormat,
   mergeAiScanFindings,
@@ -469,6 +470,14 @@ export async function handleMetadataProcess({ request, env, user, jsonResponse, 
   let mimeType = '';
   let inputBytes = null;
   let storagePath = '';
+  let clientCleaned = false;
+  let clientFailed = false;
+  let clientErrorMessage = '';
+  let clientCleanedSize = 0;
+  let clientRemovedCount = 0;
+  let clientScanBefore = null;
+  let clientScanAfter = null;
+  let clientCleanedStoragePath = '';
 
   if (contentType.includes('multipart/form-data')) {
     const form = await request.formData().catch(() => null);
@@ -487,6 +496,14 @@ export async function handleMetadataProcess({ request, env, user, jsonResponse, 
     filename = String(body.filename || 'media').replace(/^.*[\\/]/, '').trim().slice(0, 260) || 'media';
     mimeType = String(body.mime_type || '').trim();
     storagePath = String(body.storage_path || '').trim();
+    clientCleaned = body.client_cleaned === true;
+    clientFailed = body.client_failed === true;
+    clientErrorMessage = String(body.error_message || '').trim().slice(0, 300);
+    clientCleanedSize = Number(body.cleaned_size || 0);
+    clientRemovedCount = Number(body.removed_count || 0);
+    clientScanBefore = body.scan_before && typeof body.scan_before === 'object' ? body.scan_before : null;
+    clientScanAfter = body.scan_after && typeof body.scan_after === 'object' ? body.scan_after : null;
+    clientCleanedStoragePath = String(body.cleaned_storage_path || '').trim();
     if (typeof body.base64 === 'string' && body.base64.trim()) {
       try {
         inputBytes = decodeBase64(body.base64);
@@ -544,6 +561,91 @@ export async function handleMetadataProcess({ request, env, user, jsonResponse, 
   };
 
   try {
+    if (clientFailed) {
+      if (!existingJob) return jsonResponse({ error: 'Proses metadata tidak ditemukan.' }, 404);
+      return await failAndRefund(clientErrorMessage || 'Pembersihan metadata pada browser gagal diproses.', 500);
+    }
+
+    if (clientCleaned) {
+      if (!existingJob) return jsonResponse({ error: 'Proses pembersihan metadata wajib dimulai lewat /api/metadata/start.' }, 400);
+      let verifiedCleanedPath = null;
+      if (clientCleanedStoragePath) {
+        if (
+          !isSafeUserStoragePath(user.id, clientCleanedStoragePath)
+          || !clientCleanedStoragePath.includes(`/metadata-clean/${existingJob.id}/`)
+        ) {
+          return await failAndRefund('Path file hasil bersih tidak valid.', 403);
+        }
+        const probeRes = await storageRequest(env, 'GET', clientCleanedStoragePath, {
+          headers: { range: 'bytes=0-0' },
+        }).catch(() => null);
+        if (probeRes?.ok || probeRes?.status === 206) {
+          verifiedCleanedPath = clientCleanedStoragePath;
+        }
+      }
+
+      const existingBefore = existingJob.scan_before && typeof existingJob.scan_before === 'object' ? existingJob.scan_before : {};
+      const nextBefore = clientScanBefore ? compactScanSummary(clientScanBefore) : {};
+      const mergedTools = Array.from(new Set([
+        ...(Array.isArray(nextBefore.detectedTools) ? nextBefore.detectedTools : []),
+        ...(Array.isArray(existingJob.detected_tools) ? existingJob.detected_tools : []),
+        ...(Array.isArray(existingBefore.detectedTools) ? existingBefore.detectedTools : []),
+      ].filter(Boolean))).slice(0, 16);
+      const beforeSummary = {
+        ...existingBefore,
+        ...nextBefore,
+        aiDetected: Boolean(nextBefore.aiDetected || existingJob.ai_detected || existingBefore.aiDetected),
+        detectedTools: mergedTools,
+        ...(existingBefore.aiEngine ? { aiEngine: existingBefore.aiEngine } : {}),
+        ...(existingBefore.confidence ? { confidence: existingBefore.confidence } : {}),
+        ...(existingBefore.visualAssessment ? { visualAssessment: existingBefore.visualAssessment } : {}),
+        ...(existingBefore.aiSummary ? { aiSummary: existingBefore.aiSummary } : {}),
+        ...(Array.isArray(existingBefore.entries) && existingBefore.entries.length >= (nextBefore.entries?.length || 0)
+          ? { entries: existingBefore.entries }
+          : {}),
+      };
+      const afterSummary = compactScanSummary(clientScanAfter || { totalEntries: 0, aiDetected: false, detectedTools: [], entries: [] });
+      const finalCleanedSize = Number.isFinite(clientCleanedSize) && clientCleanedSize > 0
+        ? Math.min(clientCleanedSize, METADATA_MAX_FILE_BYTES)
+        : Number(existingJob.original_size || 0);
+      const finalRemovedCount = Math.max(0, Math.round(Number(clientRemovedCount || 0)));
+
+      const doneRow = await patchMetadataJob(servicePostgrest, env, existingJob.id, {
+        cleaned_size: finalCleanedSize,
+        status: 'completed',
+        progress: 100,
+        ai_detected: Boolean(beforeSummary.aiDetected),
+        detected_tools: beforeSummary.detectedTools || [],
+        scan_before: beforeSummary,
+        scan_after: afterSummary,
+        removed_count: finalRemovedCount,
+        cleaned_path: verifiedCleanedPath,
+        error_message: null,
+      });
+
+      const sanitized = await sanitizeMetadataJobRow(doneRow || {
+        ...existingJob,
+        cleaned_size: finalCleanedSize,
+        status: 'completed',
+        progress: 100,
+        ai_detected: Boolean(beforeSummary.aiDetected),
+        detected_tools: beforeSummary.detectedTools || [],
+        scan_before: beforeSummary,
+        scan_after: afterSummary,
+        removed_count: finalRemovedCount,
+        cleaned_path: verifiedCleanedPath,
+      }, env);
+
+      return jsonResponse({
+        ok: true,
+        job: sanitized,
+        removedCount: finalRemovedCount,
+        before: beforeSummary,
+        after: afterSummary,
+        localOnlyDownload: !verifiedCleanedPath,
+      });
+    }
+
     if (!inputBytes && storagePath) {
       if (!isSafeUserStoragePath(user.id, storagePath)) {
         return await failAndRefund('Path file unggahan tidak valid.', 403);
@@ -560,6 +662,9 @@ export async function handleMetadataProcess({ request, env, user, jsonResponse, 
     }
     if (inputBytes.length > METADATA_MAX_FILE_BYTES) {
       return await failAndRefund(`Ukuran file melebihi batas ${Math.round(METADATA_MAX_FILE_BYTES / (1024 * 1024))} MB.`, 400);
+    }
+    if (inputBytes.length > METADATA_WORKER_PROCESS_MAX_BYTES) {
+      return await failAndRefund(`File di atas ${Math.round(METADATA_WORKER_PROCESS_MAX_BYTES / (1024 * 1024))} MB diproses langsung melalui mode browser.`, 413);
     }
 
     const detected = detectMediaFormat(inputBytes, { fileName: filename, mimeType });
