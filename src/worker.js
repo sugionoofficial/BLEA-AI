@@ -672,7 +672,30 @@ function hasCloudflareRestConfig(keyRow) {
 function isChatCapableModelId(modelId) {
   const id = String(modelId || '').trim();
   if (!id || isVideoModelId(id)) return false;
-  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-|qwen-image|qwen3-asr|asr-flash)/i.test(id);
+  // ID numerik murni adalah katalog gambar/video Freebeat (122, 209, ...),
+  // bukan model chat.
+  if (/^\d+$/.test(id)) return false;
+  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-|qwen-image|qwen-mt-image|z-image|image|t2i|i2i|dance|vocal|lip-?sync|asr|music|suno)/i.test(id);
+}
+
+// Provider yang seluruh katalognya gambar/video — tidak pernah untuk Chat.
+const NON_CHAT_PROVIDERS = new Set(['freebeat']);
+
+// Modality harga yang menandakan model bukan teks/chat.
+const NON_CHAT_MODALITIES = new Set(['image', 'image_edit', 'image_edit_2k', 'video', 'speech', 'embedding']);
+
+// Model yang punya harga eksplisit non-teks di credit_model_prices tidak boleh
+// muncul di daftar Chat, walau namanya tidak cocok dengan pola di atas.
+function collectPricedNonChatModels(priceRows) {
+  const keys = new Set();
+  for (const row of priceRows || []) {
+    const modality = String(row?.modality || '').toLowerCase().trim();
+    if (!NON_CHAT_MODALITIES.has(modality)) continue;
+    const provider = String(row?.provider || '').toLowerCase().trim();
+    const model = String(row?.model || '').trim();
+    if (provider && model) keys.add(`${provider}::${model}`);
+  }
+  return keys;
 }
 
 function scoreFallbackModel(modelId) {
@@ -3143,7 +3166,18 @@ async function handleApi(request, url, env) {
       const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
-      let chatRows = (rows ?? []).filter((m) => isChatCapableModelId(m.model));
+      const priceRes = await servicePostgrest(
+        env,
+        '/credit_model_prices?select=provider,model,modality&active=eq.true&limit=1000',
+      ).catch(() => null);
+      const priceRows = priceRes?.ok ? await priceRes.json().catch(() => []) : [];
+      const pricedNonChat = collectPricedNonChatModels(priceRows);
+      let chatRows = (rows ?? []).filter((m) => {
+        const provider = String(m?.provider || 'unorouter').toLowerCase().trim();
+        if (NON_CHAT_PROVIDERS.has(provider)) return false;
+        if (!isChatCapableModelId(m.model)) return false;
+        return !pricedNonChat.has(`${provider}::${String(m.model || '').trim()}`);
+      });
       const workersAiBound = hasWorkersAiBinding(env);
 
       if (chatRows.some((m) => String(m.provider || '').toLowerCase() === 'cloudflare') && !workersAiBound) {
