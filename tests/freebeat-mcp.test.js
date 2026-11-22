@@ -282,12 +282,44 @@ test('registration retries once and succeeds after a transient server_error, wit
     globalThis.fetch = async () => { calls += 1; return Response.json({ error: 'invalid_scope' }, { status: 400 }); };
     await assert.rejects(startFreebeat(env, 'admin'), /FB-REGISTER-HTTP/);
     assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
 
-    // Two consecutive server_error responses still fail, surfacing the code.
+test('registration falls back to dropping the refresh_token grant when server_error persists, and still fails cleanly if that also fails', async () => {
+  // Regression seen live: a second deploy with an automatic retry still hit
+  // server_error on BOTH the original and the retried attempt, pointing at
+  // the specific grant combination rather than a one-off blip. The third,
+  // last-resort attempt drops `refresh_token` from grant_types (shortening
+  // session lifetime, since later renewSession() calls will then fail, but
+  // that is strictly better than being unable to connect at all).
+  const { startFreebeat } = await import('../src/lib/freebeatMcp.js');
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    let calls = 0;
+    const seenGrantTypes = [];
+    globalThis.fetch = async (url, init) => {
+      calls += 1;
+      seenGrantTypes.push(JSON.parse(init.body).grant_types);
+      if (calls <= 2) return Response.json({ error: 'server_error' }, { status: 400 });
+      return Response.json({ client_id: 'registered-without-refresh-grant' });
+    };
+    const result = await startFreebeat(env, 'admin');
+    assert.equal(result.status, 200);
+    assert.equal(calls, 3);
+    assert.deepEqual(seenGrantTypes, [
+      ['authorization_code', 'refresh_token'],
+      ['authorization_code', 'refresh_token'],
+      ['authorization_code'],
+    ]);
+
+    // All three attempts failing still surfaces the real OAuth code, not a
+    // silent/opaque failure, and does not retry a 4th time.
     calls = 0;
     globalThis.fetch = async () => { calls += 1; return Response.json({ error: 'server_error' }, { status: 400 }); };
     await assert.rejects(startFreebeat(env, 'admin'), (err) => /FB-REGISTER-HTTP/.test(err.message) && /server_error/.test(err.message));
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
 

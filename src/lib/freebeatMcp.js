@@ -296,25 +296,50 @@ async function jsonFetch(url, options, stage) {
 }
 
 // Register a new dynamic OAuth client with Freebeat. This has been observed
-// live to fail intermittently with the generic OAuth error code
-// `server_error` ("the authorization server encountered an unexpected
-// condition", RFC 6749 §4.1.2.1) -- a problem on Freebeat's own backend, not
-// a rejection of our client metadata (that combination of client_name,
-// redirect_uris, grant_types and scope was already accepted live before).
-// Registration has no single-use side effect (each call simply mints a new
-// client), so it is safe to retry once after a short delay in case the
-// failure is a transient backend hiccup rather than a persistent outage.
+// live to fail with the generic OAuth error code `server_error` ("the
+// authorization server encountered an unexpected condition", RFC 6749
+// Sec 4.1.2.1) -- a problem on Freebeat's own backend, not a declared
+// rejection of our client metadata. Registration has no single-use side
+// effect (each call simply mints a new client), so it is safe to retry.
+//
+// Escalation, in order, stopping at the first success:
+//   1. The full, intended combination (both grants, both scopes).
+//   2. The identical payload again after a short delay, in case attempt 1
+//      hit a transient backend hiccup that clears on an immediate retry.
+//   3. The same scope but WITHOUT the `refresh_token` grant. This has been
+//      observed live to keep failing with `server_error` on attempts 1-2
+//      even after Freebeat was given time to recover, which points at the
+//      specific grant combination rather than a one-off blip. Dropping
+//      `refresh_token` only shortens how long a connected session lasts
+//      before it needs a fresh reconnect (renewSession's later
+//      grant_type=refresh_token call would then be rejected instead of
+//      renewing) -- a real but bounded regression, and strictly better than
+//      not being able to connect at all.
+// If every attempt still fails, the error from the LAST attempt is thrown
+// (it reflects the most current state) so the real OAuth code is still
+// visible to the user and in the logs either way.
 async function registerFreebeatClient(redirect, requestedScope) {
   const headers = { 'content-type': 'application/json', accept: 'application/json' };
-  const body = JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: requestedScope });
-  try {
-    return await jsonFetch(REGISTER, { method: 'POST', headers, body }, 'register');
-  } catch (err) {
-    if (err?.freebeatKind !== 'http' || err?.freebeatOauthCode !== 'server_error') throw err;
-    console.warn('Freebeat OAuth registration returned server_error, retrying once');
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    return jsonFetch(REGISTER, { method: 'POST', headers, body }, 'register');
+  const base = { client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', response_types: ['code'], scope: requestedScope };
+  const fullGrants = ['authorization_code', 'refresh_token'];
+  const noRefreshGrants = ['authorization_code'];
+  const attempts = [
+    { grant_types: fullGrants, delayMs: 0, note: null },
+    { grant_types: fullGrants, delayMs: 400, note: null },
+    { grant_types: noRefreshGrants, delayMs: 0, note: 'falling back to a client without the refresh_token grant (sessions will need to reconnect more often)' },
+  ];
+  let lastError = null;
+  for (const attempt of attempts) {
+    if (attempt.delayMs) await new Promise((resolve) => setTimeout(resolve, attempt.delayMs));
+    try {
+      return await jsonFetch(REGISTER, { method: 'POST', headers, body: JSON.stringify({ ...base, grant_types: attempt.grant_types }) }, 'register');
+    } catch (err) {
+      lastError = err;
+      if (err?.freebeatKind !== 'http' || err?.freebeatOauthCode !== 'server_error') throw err;
+      console.warn(`Freebeat OAuth registration returned server_error${attempt.note ? `, ${attempt.note}` : ', retrying'}`);
+    }
   }
+  throw lastError;
 }
 
 export async function startFreebeat(env, userId, options = {}) {
