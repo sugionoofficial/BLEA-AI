@@ -128,16 +128,24 @@ dapat memakai CPU laptop Anda. Mitigasi yang disarankan:
 
 ## 5. Named tunnel permanen (butuh domain di Cloudflare)
 
+Kalau tunnel ini akan dipakai rutin, ganti quick tunnel dengan named tunnel supaya URL-nya
+tetap dan hidup otomatis sebagai service Windows:
+
+**→ Panduan lengkap: [`ollama-named-tunnel.md`](./ollama-named-tunnel.md)** (config.yml,
+`cloudflared service install`, jebakan profil `systemprofile`, verifikasi URL tetap setelah
+reboot, dan opsi keamanan).
+
+Ringkasnya:
+
 ```powershell
 cloudflared tunnel login
 cloudflared tunnel create blea-ollama
 cloudflared tunnel route dns blea-ollama ollama.contoh.com
-cloudflared tunnel run --url http://localhost:11434 blea-ollama
+cloudflared tunnel run blea-ollama        # uji foreground, lalu Ctrl+C
+cloudflared service install               # PowerShell Administrator
 ```
 
-Lalu pakai `https://ollama.contoh.com` sebagai `base_url`. Hanya URL ini yang perlu
-diperbarui; URL quick tunnel berubah setiap restart sehingga `base_url` di database harus
-di-`update` juga.
+Setelah itu `base_url` cukup diisi sekali: `https://ollama.contoh.com`.
 
 ## 6. Batasan yang perlu diketahui
 
