@@ -997,7 +997,9 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
     : `${resolvedBase}/chat/completions`;
   const envMaxTokens = Number(env?.OLLAMA_MAX_TOKENS);
   const ollamaMaxTokens = Number.isFinite(envMaxTokens) && envMaxTokens > 0 ? Math.trunc(envMaxTokens) : 0;
-  const upstream = await fetch(chatUrl, {
+  let upstream;
+  try {
+    upstream = await fetch(chatUrl, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -1020,7 +1022,21 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
       stream: Boolean(stream),
     }),
     signal: AbortSignal.timeout(timeoutMs),
-  });
+    });
+  } catch (err) {
+    // Gagal konek (provider mati, tunnel putus, DNS gagal) atau timeout bukan
+    // lagi melempar error ke handler: kembalikan status yang bisa di-fallback
+    // (502/504) supaya chat otomatis beralih ke model lain bila diizinkan.
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    const detail = timedOut
+      ? `Provider "${provider}" tidak merespons dalam ${Math.round(timeoutMs / 1000)} detik.`
+      : `Tidak dapat terhubung ke provider "${provider}": ${String(err?.message || err)}`;
+    return {
+      ok: false,
+      status: timedOut ? 504 : 502,
+      errorInfo: parseChatUpstreamError(detail, timedOut ? 504 : 502),
+    };
+  }
   if (!upstream.ok) {
     const rawText = await upstream.text().catch(() => '');
     const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'));
