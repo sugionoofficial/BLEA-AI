@@ -84,6 +84,15 @@ ditempel di Supabase SQL Editor.
 > **Keamanan:** service-role key memberi akses penuh ke database. Simpan hanya di komputer
 > pribadi. Jika ragu, jalankan dengan `-NoUpdate` dan tempel SQL manual.
 
+Skrip mencetak sendiri hasil setiap langkah (Ollama, cloudflared, URL, status `/v1/models`,
+status pembaruan database), jadi tidak perlu menyalin log terminal ke mana pun.
+
+Kalau muncul `ParserError` seperti `An expression was expected after '('` atau
+`Missing closing '}'`, itu tanda berkas skripnya sudah usang atau tersimpan dengan encoding
+yang salah - jalankan `git pull` lalu ulangi. Berkas `.ps1` di repo ini wajib ASCII murni dan
+disimpan dengan BOM UTF-8; ada tes (`tests/powershell-encoding.test.js`) yang menjaga aturan
+itu.
+
 ## 3. Daftarkan provider di BLEA
 
 Provider key disimpan di tabel Supabase `provider_api_keys`.
