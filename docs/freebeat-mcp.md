@@ -81,7 +81,7 @@ BLEA mendukung dua tool generasi vokal resmi dari Freebeat Remote MCP:
   - Penemuan skema live (`POST /api/freebeat/vocal-video-schemas`),
   - Upload sumber video/audio ke `ai-studio-uploads`,
   - Quote (`POST /api/freebeat/vocal-quote`) dan persiapan persetujuan HMAC (`POST /api/freebeat/vocal-prepare`),
-  - Pengiriman satu kali (`POST /api/freebeat/vocal-submit`) dengan opsi `max_credits` + `accept_unknown_cost`,
+  - Pengiriman satu kali (`POST /api/freebeat/vocal-submit`) dengan opsi `max_credits` + `accept_unknown_cost` serta opsi privat `private_diagnostics` untuk membaca pesan penolakan/respons awal yang disamarkan,
   - Riwayat & polling status (`GET /api/freebeat/vocal-tests`, `POST /api/freebeat/vocal-task`), serta agen sesi video (`POST /api/freebeat/vocal-session`, `POST /api/freebeat/vocal-message`).
 
 ### Konsumen (`/generate`)
@@ -92,5 +92,13 @@ BLEA mendukung dua tool generasi vokal resmi dari Freebeat Remote MCP:
 ## Inspeksi skema 7 tool Freebeat lainnya (baca-saja)
 
 Bagian **Inspeksi skema 7 tool Freebeat lainnya** (`FreebeatRemainingSchemaDiagnostic`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-schemas` untuk mengambil `inputSchema` resmi dari `tools/list` bagi 7 tool Freebeat MCP yang belum terintegrasi (`list_music_models`, `generate_music`, `generate_music_video`, `generate_lyric_video`, `list_effects`, `generate_effect`, `generate_text`) beserta `quote_generation`, tanpa memakai kredit dan tanpa menjalankan `tools/call`. Mode bawaan hanya mengembalikan struktur tipe, properti, dan enumerasi aman (`SAFE_REMAINING_SCHEMA_ENUMS`); mode lengkap (`acknowledge: true`, disertai `referrer-policy: no-referrer`) menambahkan deskripsi, batas angka, nilai bawaan, serta daftar enum lengkap setelah penyamaran pola URL, email, dan kredensial, dan dikosongkan otomatis saat sesi diputus. Ke-7 tool tersebut belum memiliki integrasi `tools/call` maupun harga kredit di BLEA.
+
+## Inspeksi katalog musik, efek & teks (baca-saja)
+
+Bagian **Inspeksi katalog musik, efek & teks** (`FreebeatCatalogInspector`) di `/admin/freebeat` menyediakan tiga endpoint admin baca-saja (tanpa `generate_*` dan tanpa pemakaian kredit):
+- `POST /api/freebeat/music-models`: memanggil `list_music_models` dan menyamarkan field teks bebas serta membuang field bertipe rahasia.
+- `POST /api/freebeat/effects-list`: memanggil `list_effects` (`page` 1–50, `page_size` 1–100) dengan mempertahankan tautan media HTTPS tervalidasi (`image_url`, dll.) dan menyamarkan teks bebas.
+- `POST /api/freebeat/text-models`: memanggil `list_models(type=text)` untuk membaca model teks yang terdaftar.
+Helper backend `freebeatUploadImages` juga disiapkan untuk fase implementasi berikutnya agar URL gambar eksternal dapat diunggah terlebih dahulu melalui `upload_image`.
 
 

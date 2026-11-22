@@ -931,21 +931,140 @@ function safeModelId(id) {
   return (Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(id));
 }
 async function getModels(accessToken, type, existingHeaders = null) {
-  if (!['image', 'image_edit', 'video'].includes(type)) throw mcpFailure('models', 'response');
+  if (!['image', 'image_edit', 'video', 'text'].includes(type)) throw mcpFailure('models', 'response');
   const headers = existingHeaders || await openMcp(accessToken);
   const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_models', arguments: { type } } }, 'models', headers, 262144);
   const content = modelContent(result);
   const list = Array.isArray(content) ? content : content?.models ?? content?.items ?? content?.data?.models ?? content?.data?.items ?? (Array.isArray(content?.data) ? content.data : null);
   if (!Array.isArray(list)) throw mcpFailure('models', 'response');
   const models = list.slice(0, 100).flatMap((item) => {
+    if (type === 'text' && typeof item === 'string' && safeModelId(item.trim()) && !/[\x00-\x1f\x7f]/.test(item)) {
+      const clean = item.trim();
+      return [{ model_id: clean, name: clean, member_only: false, available: true }];
+    }
     if (!item || typeof item !== 'object') return [];
-    const id = item.model_id ?? item.modelId ?? item.id;
-    const name = item.display_name ?? item.displayName ?? item.name;
+    const id = item.model_id ?? item.modelId ?? item.id ?? (type === 'text' ? item.name : undefined);
+    const name = item.display_name ?? item.displayName ?? item.name ?? (type === 'text' && typeof id === 'string' ? id : undefined);
     if (!safeModelId(id) || typeof name !== 'string' || !name.trim() || name.length > 200 || /[\x00-\x1f\x7f]/.test(name)) return [];
     return [{ model_id: id, name, member_only: item.member_only === true, available: item.available !== false }];
   });
   if (list.length && !models.length) throw mcpFailure('models', 'response');
   return { models, truncated: list.length > 100 };
+}
+
+const CATALOG_MEDIA_URL_KEYS = new Set(['image_url', 'cover_url', 'thumbnail_url', 'preview_url', 'video_url', 'audio_url', 'url']);
+const CATALOG_MEDIA_LIST_KEYS = new Set(['reference_image_urls', 'image_urls', 'images']);
+function sanitizeCatalogPayload(value, depth = 0, parentKey = '') {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    if (CATALOG_MEDIA_URL_KEYS.has(parentKey) || CATALOG_MEDIA_LIST_KEYS.has(parentKey)) {
+      return safeImageUrl(value);
+    }
+    return privateFailureReason(value)?.slice(0, 500) ?? '';
+  }
+  if (Array.isArray(value)) {
+    if (depth >= 5) return [];
+    return value.slice(0, 100).map((item) => sanitizeCatalogPayload(item, depth + 1, parentKey));
+  }
+  if (typeof value === 'object') {
+    if (depth >= 5) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([name]) => (
+          typeof name === 'string'
+          && /^[A-Za-z0-9_.:-]{1,80}$/.test(name)
+          && !['__proto__', 'constructor', 'prototype'].includes(name)
+          && !/secret|token|password|credential|auth|cookie|api[_-]?key|private[_-]?key/i.test(name)
+        ))
+        .slice(0, 50)
+        .map(([name, child]) => [name, sanitizeCatalogPayload(child, depth + 1, name)]),
+    );
+  }
+  return null;
+}
+function extractCatalogList(content, preferredKey = null) {
+  if (Array.isArray(content)) return content;
+  if (!content || typeof content !== 'object') return null;
+  if (preferredKey && Array.isArray(content[preferredKey])) return content[preferredKey];
+  for (const key of ['models', 'effects', 'items', 'results', 'list', 'data']) {
+    if (Array.isArray(content[key])) return content[key];
+  }
+  if (preferredKey && Array.isArray(content.data?.[preferredKey])) return content.data[preferredKey];
+  for (const key of ['models', 'effects', 'items', 'results', 'list']) {
+    if (Array.isArray(content.data?.[key])) return content.data[key];
+  }
+  return null;
+}
+async function getMusicModels(accessToken, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'list_music_models', arguments: {} },
+  }, 'models', headers, 262144);
+  const content = modelContent(result);
+  if (content !== null) {
+    const safeData = sanitizeCatalogPayload(content);
+    const list = extractCatalogList(safeData, 'models');
+    return {
+      catalog: 'music',
+      count: Array.isArray(list) ? list.length : null,
+      truncated: Array.isArray(extractCatalogList(content, 'models')) && extractCatalogList(content, 'models').length > 100,
+      data: safeData,
+    };
+  }
+  const rawText = Array.isArray(result.content) ? result.content.find((item) => item?.type === 'text' && typeof item.text === 'string')?.text : null;
+  if (!rawText) throw mcpFailure('models', 'response');
+  return { catalog: 'music', count: null, truncated: false, data: { text: privateFailureReason(rawText)?.slice(0, 2000) ?? '' } };
+}
+function parseEffectsListInput(input) {
+  if (input === undefined || input === null) return { page: 1, page_size: 20 };
+  if (typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !['page', 'page_size'].includes(k))) {
+    throw fail('Parameter list_effects tidak valid.', 400);
+  }
+  let page = 1;
+  if (input.page !== undefined) {
+    if (!Number.isSafeInteger(input.page) || input.page < 1 || input.page > 50) {
+      throw fail('page harus berupa bilangan bulat antara 1 dan 50.', 400);
+    }
+    page = input.page;
+  }
+  let page_size = 20;
+  if (input.page_size !== undefined) {
+    if (!Number.isSafeInteger(input.page_size) || input.page_size < 1 || input.page_size > 100) {
+      throw fail('page_size harus berupa bilangan bulat antara 1 dan 100.', 400);
+    }
+    page_size = input.page_size;
+  }
+  return { page, page_size };
+}
+async function getEffectsCatalog(accessToken, input = {}, existingHeaders = null) {
+  const { page, page_size } = parseEffectsListInput(input);
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'list_effects', arguments: { page, page_size } },
+  }, 'models', headers, 262144);
+  const content = modelContent(result);
+  if (content !== null) {
+    const safeData = sanitizeCatalogPayload(content);
+    const list = extractCatalogList(safeData, 'effects');
+    return {
+      catalog: 'effects',
+      page,
+      page_size,
+      count: Array.isArray(list) ? list.length : null,
+      truncated: Array.isArray(extractCatalogList(content, 'effects')) && extractCatalogList(content, 'effects').length > 100,
+      data: safeData,
+    };
+  }
+  const rawText = Array.isArray(result.content) ? result.content.find((item) => item?.type === 'text' && typeof item.text === 'string')?.text : null;
+  if (!rawText) throw mcpFailure('models', 'response');
+  return { catalog: 'effects', page, page_size, count: null, truncated: false, data: { text: privateFailureReason(rawText)?.slice(0, 2000) ?? '' } };
 }
 
 const QUOTE_SAFE_TEXT = new Set(['generate_image', 'image', 'available', 'unavailable', 'unknown', 'known', 'exact', 'estimated', 'credits', 'credit', 'success', 'error']);
@@ -1776,7 +1895,16 @@ function formatProviderCode(value, prefix) {
 // response. The provider body is not stored or logged; redaction is best effort.
 function initialVideoMessages(result) {
   const candidates = [];
-  const fields = (value) => [value?.failure?.reason, formatProviderCode(value?.error_code, 'error_code'), formatProviderCode(value?.code, 'code'), value?.error_message, value?.message, value?.error?.message];
+  const fields = (value) => [
+    value?.failure?.reason,
+    formatProviderCode(value?.error_code, 'error_code'),
+    formatProviderCode(value?.code, 'code'),
+    value?.error_message,
+    value?.message,
+    typeof value?.error === 'string' ? value.error : value?.error?.message,
+    value?.detail,
+    value?.reason,
+  ];
   function collect(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
     candidates.push(...fields(value));
@@ -2619,10 +2747,20 @@ async function prepareVocal(env, user, session, input) {
 async function submitVocal(env, user, session, request) {
   await requireImageSession(session);
   const input = await imageJson(request);
-  const allowedKeys = new Set(['approval', 'confirm', 'confirm_unknown_cost']);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !allowedKeys.has(k)) || input.confirm !== true || typeof input.approval !== 'string' || input.approval.length > 14000) {
+  const allowedKeys = new Set(['approval', 'confirm', 'confirm_unknown_cost', 'private_diagnostics']);
+  if (
+    !input
+    || typeof input !== 'object'
+    || Array.isArray(input)
+    || Object.keys(input).some((k) => !allowedKeys.has(k))
+    || input.confirm !== true
+    || (input.private_diagnostics !== undefined && typeof input.private_diagnostics !== 'boolean')
+    || typeof input.approval !== 'string'
+    || input.approval.length > 14000
+  ) {
     throw fail('Persetujuan uji singing/lip-sync video tidak valid.', 400);
   }
+  const captureDiagnostics = input.private_diagnostics === true;
   const ticket = await unseal(input.approval, env, 'vocal-approval', 14000);
   if (!ticket || ticket.uid !== user.id || ticket.sessionHash !== await sessionHash(session) || !TEST_ID.test(ticket.id || '') || !VOCAL_TOOLS_ALLOWED.has(ticket.tool) || !Number.isFinite(ticket.expires) || ticket.expires <= Date.now() || ticket.expires > Date.now() + APPROVAL_LIFETIME) {
     throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
@@ -2664,6 +2802,7 @@ async function submitVocal(env, user, session, request) {
     throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada video dikirim.', 409);
   }
   let content;
+  let initialDiagnostics = null;
   try {
     const args = {
       ...parameters,
@@ -2674,13 +2813,34 @@ async function submitVocal(env, user, session, request) {
       id: 2,
       method: 'tools/call',
       params: { name: tool, arguments: args },
-    }, 'generate', headers, 262144);
+    }, 'generate', headers, 262144, captureDiagnostics);
+    if (captureDiagnostics) {
+      const messages = initialVideoMessages(result);
+      if (!messages.length && result && typeof result === 'object') {
+        const structured = modelContent(result);
+        const target = structured && typeof structured === 'object' && !Array.isArray(structured) ? structured : result;
+        const keys = Object.keys(target).filter((k) => !/secret|token|password|credential|key/i.test(k)).slice(0, 20);
+        if (keys.length) messages.push(`root_keys: ${keys.join(', ')}`);
+      }
+      initialDiagnostics = { received: true, messages: messages.slice(0, 50) };
+    }
     if (result.isError) throw new Error('unrecognized');
     content = modelContent(result);
     if (!content || typeof content !== 'object') throw new Error('unrecognized');
-  } catch {
+  } catch (err) {
     try { await vocalMark(env, user.id, ticket.id, 'unknown', { task_id: null }); } catch { /* retain lock */ }
-    return { id: ticket.id, status: 'unknown' };
+    return {
+      id: ticket.id,
+      status: 'unknown',
+      ...(captureDiagnostics
+        ? {
+            initial_diagnostics: initialDiagnostics || {
+              received: false,
+              messages: err?.message ? [privateFailureReason(err.message) || err.message] : [],
+            },
+          }
+        : {}),
+    };
   }
   if (content.success === true && content.status === 'preparing' && content.music_id !== undefined && content.music_id !== null && !content.task_id) {
     try { await vocalMark(env, user.id, ticket.id, 'reviewed', { task_id: null }); } catch { /* retain lock */ }
@@ -2689,20 +2849,35 @@ async function submitVocal(env, user, session, request) {
       status: 'preparing',
       music_id: String(content.music_id),
       retry_after_seconds: Number.isFinite(content.retry_after_seconds) ? content.retry_after_seconds : 10,
+      ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
     };
   }
   const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
   if (!taskId) {
     try { await vocalMark(env, user.id, ticket.id, 'unknown', { task_id: null }); } catch { /* retain lock */ }
-    return { id: ticket.id, status: 'unknown' };
+    return {
+      id: ticket.id,
+      status: 'unknown',
+      ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
+    };
   }
   const sessionUrl = safeImageUrl(content.session_url);
   try {
     await vocalMark(env, user.id, ticket.id, 'submitted', { task_id: taskId, ...(sessionUrl ? { session_url: sessionUrl } : {}) });
   } catch {
-    return { id: ticket.id, status: 'unknown', recoveryTaskId: taskId };
+    return {
+      id: ticket.id,
+      status: 'unknown',
+      recoveryTaskId: taskId,
+      ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
+    };
   }
-  return { id: ticket.id, status: 'submitted', ...(sessionUrl ? { session_url: sessionUrl } : {}) };
+  return {
+    id: ticket.id,
+    status: 'submitted',
+    ...(sessionUrl ? { session_url: sessionUrl } : {}),
+    ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
+  };
 }
 
 async function vocalTests(env, user, session) {
@@ -3001,6 +3176,28 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'image-edit-models') return response({ ok: true, catalog: 'image_edit', ...(await getModels(session.accessToken, 'image_edit')) });
       if (action === 'video-models') return response({ ok: true, catalog: 'video', ...(await getModels(session.accessToken, 'video')) });
       return response({ ok: true, quote: await quoteImage(session.accessToken, await parseImageQuote(request)) });
+    }
+    if (['music-models', 'effects-list', 'text-models'].includes(action) && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      const origin = request.headers.get('origin');
+      if (origin && origin !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
+      let bodyInput;
+      const contentType = request.headers.get('content-type') || '';
+      const contentLength = request.headers.get('content-length');
+      if (contentType || (contentLength && contentLength !== '0')) {
+        bodyInput = await imageJson(request);
+      }
+      if (action === 'effects-list') {
+        return response({ ok: true, ...(await getEffectsCatalog(session.accessToken, bodyInput)) }, 200, { 'referrer-policy': 'no-referrer' });
+      }
+      if (bodyInput !== undefined && (!bodyInput || typeof bodyInput !== 'object' || Array.isArray(bodyInput) || Object.keys(bodyInput).length > 0)) {
+        throw fail('Permintaan tidak valid.', 400);
+      }
+      if (action === 'music-models') {
+        return response({ ok: true, ...(await getMusicModels(session.accessToken)) }, 200, { 'referrer-policy': 'no-referrer' });
+      }
+      return response({ ok: true, catalog: 'text', ...(await getModels(session.accessToken, 'text')) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-upload-check', 'video-upload-image'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
@@ -4002,6 +4199,54 @@ async function imageUploadHost(accessToken, photoUrl) {
     return null;
   };
   return { upload: redact(content) };
+}
+// Helper bersama untuk fase berikutnya (generate_music_video, generate_lyric_video,
+// generate_effect): unggah URL gambar eksternal lewat tool upload_image dan
+// lewatkan URL yang sudah di-host di domain Freebeat.
+export async function freebeatUploadImages(accessToken, urls, existingHeaders = null, captureToolError = false) {
+  if (!Array.isArray(urls) || urls.length === 0 || urls.length > 5) {
+    throw fail('Daftar URL gambar untuk upload_image harus 1 hingga 5 item.', 400);
+  }
+  const cleanUrls = urls.map((raw) => {
+    const safe = consumerImageUrl(typeof raw === 'string' ? raw : '');
+    if (!safe) throw fail('Setiap URL gambar harus berupa HTTPS publik yang valid.', 400);
+    return safe;
+  });
+  const externalIndices = [];
+  const externalUrls = [];
+  cleanUrls.forEach((url, idx) => {
+    if (!isFreebeatHostedMediaUrl(url)) {
+      externalIndices.push(idx);
+      externalUrls.push(url);
+    }
+  });
+  if (externalUrls.length === 0) {
+    return { urls: cleanUrls, uploaded_count: 0 };
+  }
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'upload_image', arguments: { urls: externalUrls } },
+  }, 'upload', headers, 262144, captureToolError);
+  if (result?.isError || result?.error) throw mcpFailure('upload', 'rpc');
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('upload', 'response');
+  const rawList = content.urls ?? content.uploaded_urls ?? content.images ?? content.files ?? content.items ?? content.data?.urls ?? content.data?.uploaded_urls ?? content.data?.files ?? (Array.isArray(content.data) ? content.data : null);
+  const resolved = Array.isArray(rawList)
+    ? rawList.map((entry) => safeImageUrl(typeof entry === 'string' ? entry : (entry?.download_url ?? entry?.image_url ?? entry?.url))).filter(Boolean)
+    : (externalUrls.length === 1
+      ? [safeImageUrl(content.download_url ?? content.image_url ?? content.url ?? content.data?.download_url ?? content.data?.image_url ?? content.data?.url)].filter(Boolean)
+      : []);
+  if (resolved.length !== externalUrls.length) {
+    throw fail('Freebeat tidak mengembalikan URL upload_image lengkap untuk seluruh gambar.', 502);
+  }
+  const out = [...cleanUrls];
+  externalIndices.forEach((origIdx, i) => {
+    out[origIdx] = resolved[i];
+  });
+  return { urls: out, uploaded_count: externalUrls.length };
 }
 // Pemeriksaan job gambar apa pun oleh admin, termasuk job milik pengguna yang
 // dibuat lewat halaman Generate (riwayat uji admin tidak memuatnya).
