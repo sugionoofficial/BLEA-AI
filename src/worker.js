@@ -1430,6 +1430,13 @@ function contentAttachmentFilename(prefix, id, contentType, fallbackExt, suffix 
   return `${prefix}-${safeId}${suffix}.${ext}`;
 }
 
+// Cloudflare Workers' fetch() sends NO User-Agent by default (unlike Node/browser fetch or curl).
+// Freebeat's media CDN (fb-video-n3.freebeat.ai on CloudFront) rejects empty-UA requests with a
+// 403 "Request blocked" HTML page, which previously surfaced to users as
+// "Failed to stream upstream music media" (502) even though the generation itself had succeeded.
+// Every subrequest that proxies third-party media must identify itself.
+const UPSTREAM_MEDIA_USER_AGENT = 'Mozilla/5.0 (compatible; BLEA-AI/1.0; +https://blea.ai)';
+
 function isSafeRemoteMediaUrl(raw) {
   if (typeof raw !== 'string' || raw.length > 4096) return false;
   try {
@@ -1581,7 +1588,7 @@ async function maybeInlineImage(imageUrl) {
   if (!url || url.startsWith('data:')) return url;
   if (!/^https:\/\//i.test(url)) return url;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(url, { headers: { 'user-agent': UPSTREAM_MEDIA_USER_AGENT }, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return url;
     const contentType = (res.headers.get('content-type') || 'image/png').split(';')[0].trim().toLowerCase();
     const mime = ['image/jpeg', 'image/png', 'image/webp'].includes(contentType) ? contentType : 'image/png';
@@ -2893,7 +2900,7 @@ async function handleApi(request, url, env) {
         });
       }
 
-      const upstreamHeaders = {};
+      const upstreamHeaders = { 'user-agent': UPSTREAM_MEDIA_USER_AGENT, accept: 'video/*,*/*;q=0.8' };
       const range = request.headers.get('range');
       if (range && !wantDownload) upstreamHeaders.range = range;
       try {
@@ -3003,6 +3010,7 @@ async function handleApi(request, url, env) {
       for (let hop = 0; hop <= 3; hop += 1) {
         upstream = await fetch(currentUrl, {
           method,
+          headers: { 'user-agent': UPSTREAM_MEDIA_USER_AGENT, accept: 'image/*' },
           redirect: 'manual',
           signal: AbortSignal.timeout(30_000),
         });
@@ -3124,7 +3132,11 @@ async function handleApi(request, url, env) {
         for (let hop = 0; hop <= 3; hop += 1) {
           res = await fetch(currentUrl, {
             method,
-            headers: range && !wantDownload && kind === 'audio' ? { range } : {},
+            headers: {
+              'user-agent': UPSTREAM_MEDIA_USER_AGENT,
+              accept: kind === 'cover' ? 'image/*' : 'audio/*,*/*;q=0.8',
+              ...(range && !wantDownload && kind === 'audio' ? { range } : {}),
+            },
             redirect: 'manual',
             signal: AbortSignal.timeout(45_000),
           });
