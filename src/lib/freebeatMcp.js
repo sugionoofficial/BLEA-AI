@@ -710,6 +710,19 @@ const VOCAL_VIDEO_TOOLS = new Set([
   'send_video_agent_message',
 ]);
 const VOCAL_VIDEO_PRIMARY_TOOLS = ['generate_singing_video', 'generate_lip_sync_video', 'upload_video', 'upload_audio', 'upload_image'];
+const REMAINING_PRIMARY_TOOLS = [
+  'list_music_models',
+  'generate_music',
+  'generate_music_video',
+  'generate_lyric_video',
+  'list_effects',
+  'generate_effect',
+  'generate_text',
+];
+const REMAINING_TOOLS = new Set([
+  ...REMAINING_PRIMARY_TOOLS,
+  'quote_generation',
+]);
 const SAFE_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']);
 const SAFE_SCHEMA_ENUMS = new Set(['image', 'image_edit', 'generate_image', 'generate_video', 'text', 'video', 'transition', 'reference']);
 const SAFE_DANCE_SCHEMA_ENUMS = new Set([...SAFE_SCHEMA_ENUMS, 'generate_dance_video', 'upload_audio', '16:9', '9:16', '1:1', '4:3', '3:4', '720p']);
@@ -741,6 +754,24 @@ const SAFE_VOCAL_VIDEO_SCHEMA_ENUMS = new Set([
   'lip_sync',
   'lipsync',
   '21:9',
+]);
+const SAFE_REMAINING_SCHEMA_ENUMS = new Set([
+  ...SAFE_VOCAL_VIDEO_SCHEMA_ENUMS,
+  ...REMAINING_PRIMARY_TOOLS,
+  'custom',
+  'instrumental',
+  'vocal',
+  'lyrics',
+  'lyric',
+  'manual',
+  'quality',
+  'balanced',
+  'effect',
+  'music',
+  'music_video',
+  'lyric_video',
+  'json',
+  'markdown',
 ]);
 function schemaName(value) { return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value); }
 function imageSchema(schema, depth = 0, allowedEnums = SAFE_SCHEMA_ENUMS) {
@@ -831,7 +862,7 @@ async function getToolSchemas(accessToken, allowedTools, allowedEnums = SAFE_SCH
   return { tools: Object.fromEntries(tools), truncated };
 }
 
-async function getVocalVideoSchemas(accessToken, { acknowledge = false } = {}) {
+async function inspectMcpToolSchemas(accessToken, { allowedTools, primaryTools, safeEnums, acknowledge = false }) {
   const headers = await openMcp(accessToken);
   const tools = new Map();
   const availableTools = [];
@@ -848,12 +879,12 @@ async function getVocalVideoSchemas(accessToken, { acknowledge = false } = {}) {
         seenNames.add(tool.name);
         availableTools.push(tool.name);
       }
-      if (VOCAL_VIDEO_TOOLS.has(tool.name) && !tools.has(tool.name)) {
+      if (allowedTools.has(tool.name) && !tools.has(tool.name)) {
         tools.set(
           tool.name,
           acknowledge
             ? detailedToolSchema(tool.inputSchema, 0)
-            : imageSchema(tool.inputSchema, 0, SAFE_VOCAL_VIDEO_SCHEMA_ENUMS),
+            : imageSchema(tool.inputSchema, 0, safeEnums),
         );
       }
     }
@@ -867,9 +898,27 @@ async function getVocalVideoSchemas(accessToken, { acknowledge = false } = {}) {
     mode: acknowledge ? 'detailed' : 'safe',
     tools: Object.fromEntries(tools),
     available_tools: availableTools,
-    missing_tools: VOCAL_VIDEO_PRIMARY_TOOLS.filter((name) => !tools.has(name)),
+    missing_tools: primaryTools.filter((name) => !tools.has(name)),
     truncated,
   };
+}
+
+function getVocalVideoSchemas(accessToken, { acknowledge = false } = {}) {
+  return inspectMcpToolSchemas(accessToken, {
+    allowedTools: VOCAL_VIDEO_TOOLS,
+    primaryTools: VOCAL_VIDEO_PRIMARY_TOOLS,
+    safeEnums: SAFE_VOCAL_VIDEO_SCHEMA_ENUMS,
+    acknowledge,
+  });
+}
+
+function getRemainingToolSchemas(accessToken, { acknowledge = false } = {}) {
+  return inspectMcpToolSchemas(accessToken, {
+    allowedTools: REMAINING_TOOLS,
+    primaryTools: REMAINING_PRIMARY_TOOLS,
+    safeEnums: SAFE_REMAINING_SCHEMA_ENUMS,
+    acknowledge,
+  });
 }
 
 function modelContent(result) {
@@ -3032,7 +3081,7 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'dance-session' && request.method === 'POST') return response({ ok: true, session: await danceSession(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'dance-message' && request.method === 'POST') return response({ ok: true, ...(await danceMessage(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
-    if (action === 'vocal-video-schemas' && request.method === 'POST') {
+    if (['vocal-video-schemas', 'remaining-schemas'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       const origin = request.headers.get('origin');
@@ -3050,7 +3099,9 @@ async function dispatchFreebeat(request, url, env, user) {
         }
         acknowledge = input.acknowledge === true;
       }
-      const result = await getVocalVideoSchemas(session.accessToken, { acknowledge });
+      const result = action === 'remaining-schemas'
+        ? await getRemainingToolSchemas(session.accessToken, { acknowledge })
+        : await getVocalVideoSchemas(session.accessToken, { acknowledge });
       return response({ ok: true, ...result }, 200, acknowledge ? { 'referrer-policy': 'no-referrer' } : {});
     }
     if (['vocal-upload-audio', 'vocal-upload-video', 'vocal-quote', 'vocal-prepare', 'vocal-submit', 'vocal-tests', 'vocal-task', 'vocal-session', 'vocal-message'].includes(action)) {

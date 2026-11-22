@@ -89,4 +89,8 @@ BLEA mendukung dua tool generasi vokal resmi dari Freebeat Remote MCP:
 - `GET /api/video/models` mengembalikan keduanya melalui `consumerFreebeatVideoConfigs` (tanpa panggilan upstream Freebeat saat pemuatan daftar model).
 - `POST /api/video/generate` merutekan `generate_singing_video` dan `generate_lip_sync_video` ke `consumerVocalGenerate`, yang memvalidasi batas kredit provider (`FREEBEAT_VOCAL_MAX_PROVIDER_CREDITS` / `FREEBEAT_DANCE_MAX_PROVIDER_CREDITS`), saldo pool minimum (`FREEBEAT_VOCAL_MIN_CREDITS`), melakukan `upload_video` dan `upload_audio` sebelum memotong kredit BLEA (`spend_credits`), dan otomatis melakukan refund penuh lewat `pollVideoGenerationRow` bila job berstatus `failed`, `cancelled`, atau `expired`.
 
+## Inspeksi skema 7 tool Freebeat lainnya (baca-saja)
+
+Bagian **Inspeksi skema 7 tool Freebeat lainnya** (`FreebeatRemainingSchemaDiagnostic`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-schemas` untuk mengambil `inputSchema` resmi dari `tools/list` bagi 7 tool Freebeat MCP yang belum terintegrasi (`list_music_models`, `generate_music`, `generate_music_video`, `generate_lyric_video`, `list_effects`, `generate_effect`, `generate_text`) beserta `quote_generation`, tanpa memakai kredit dan tanpa menjalankan `tools/call`. Mode bawaan hanya mengembalikan struktur tipe, properti, dan enumerasi aman (`SAFE_REMAINING_SCHEMA_ENUMS`); mode lengkap (`acknowledge: true`, disertai `referrer-policy: no-referrer`) menambahkan deskripsi, batas angka, nilai bawaan, serta daftar enum lengkap setelah penyamaran pola URL, email, dan kredensial, dan dikosongkan otomatis saat sesi diputus. Ke-7 tool tersebut belum memiliki integrasi `tools/call` maupun harga kredit di BLEA.
+
 
