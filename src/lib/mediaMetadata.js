@@ -1501,13 +1501,13 @@ export function mergeAiScanFindings(binaryScan = {}, aiParsed = {}, aiMeta = {})
     };
   });
 
-  // Also append any newly spotted metadata/model-tag indicators reported by Cloudflare AI
-  // that did not match an existing entry key/value directly.
+  // Also append any newly spotted metadata/model-tag indicators reported by the AI
+  // inspector that did not match an existing entry key/value directly.
   for (const tag of aiTags) {
     const tagName = sanitizeText(tag?.tag || 'Tag AI', 120);
     const tagValue = sanitizeText(tag?.value || tag?.model_name || '', 300);
     const modelName = sanitizeText(tag?.model_name || '', 100);
-    const category = sanitizeText(tag?.category || 'Analisis Cloudflare AI', 60);
+    const category = sanitizeText(tag?.category || 'Analisis AI', 60);
     const reason = sanitizeText(tag?.reason || '', 240);
     const alreadyExists = mergedEntries.some((entry) => {
       const ek = String(entry.key || '').toLowerCase();
@@ -1521,7 +1521,7 @@ export function mergeAiScanFindings(binaryScan = {}, aiParsed = {}, aiMeta = {})
         group: category,
         key: tagName,
         value: tagValue || modelName,
-        location: isVisualOnly ? 'Deteksi Visual Cloudflare AI (bukan tag biner file)' : 'Metadata Tag (Terdeteksi Cloudflare AI)',
+        location: isVisualOnly ? 'Deteksi Visual AI (bukan tag biner file)' : 'Metadata Tag (Terdeteksi AI)',
         isAi: true,
         willRemove: !isVisualOnly,
         ...(modelName ? { modelName } : {}),
@@ -1565,15 +1565,30 @@ export function mergeAiScanFindings(binaryScan = {}, aiParsed = {}, aiMeta = {})
     removable: removableEntriesCount > 0,
     visualOnlyWarning: aiDetected && removableEntriesCount === 0,
     aiEngine: aiMeta?.model ? {
-      provider: 'cloudflare',
+      provider: aiMeta.provider || 'cloudflare',
       model: aiMeta.model,
       mode: aiMeta.mode || 'binding',
+      ...(aiMeta.fallback ? { fallback: true } : {}),
     } : null,
+    // true = semua model AI (Cloudflare + fallback) tidak tersedia / kuotanya
+    // habis, jadi pemindaian hanya memakai pembaca container biner lossless.
+    // Pembersihan metadata tetap berjalan tanpa AI.
+    ...(aiMeta?.skipped ? {
+      aiSkipped: true,
+      aiSkipReason: sanitizeText(aiMeta.skipReason || '', 300),
+    } : {}),
     confidence: sanitizeText(aiParsed?.confidence || (aiDetected ? 'tinggi' : 'rendah'), 32),
     visualAssessment: sanitizeText(aiParsed?.visual_assessment || '', 600),
     aiSummary: sanitizeText(aiParsed?.summary || '', 600),
     framesAnalyzed: Number(aiMeta?.framesAnalyzed || 0),
   };
+}
+
+// Hasil scan tanpa AI: dipakai saat kuota semua model AI habis atau tidak ada
+// provider vision yang aktif. Pembersihan metadata tetap lossless dan lengkap
+// karena seluruh tag/atom metadata dihapus oleh pembaca container biner.
+export function buildBinaryOnlyScan(binaryScan = {}, reason = '') {
+  return mergeAiScanFindings(binaryScan, {}, { skipped: true, skipReason: reason });
 }
 
 export function formatBytesCompact(bytes) {

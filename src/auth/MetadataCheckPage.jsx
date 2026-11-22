@@ -33,6 +33,7 @@ import {
   METADATA_SERVICE_COST,
   METADATA_STORAGE_UPLOAD_MAX_BYTES,
   METADATA_WORKER_PROCESS_MAX_BYTES,
+  buildBinaryOnlyScan,
   compactScanSummary,
   formatBytesCompact,
   scanMediaMetadata,
@@ -47,6 +48,25 @@ const ACCEPTED_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm';
 
 const DIRECT_UPLOAD_LIMIT = 12 * 1024 * 1024; // 12 MB via FormData; >12 MB via Storage
+
+const AI_ENGINE_LABELS = {
+  cloudflare: 'Cloudflare AI',
+  google: 'Google Gemini AI',
+  openai: 'OpenAI',
+  alibaba: 'Alibaba Qwen-VL',
+  unorouter: 'UnoRouter',
+  pekpik: 'PEKPIK',
+  custom: 'Custom Gateway',
+  ollama: 'Ollama Vision',
+  xai: 'xAI',
+  doubao: 'Doubao',
+};
+
+function aiEngineLabel(engine) {
+  if (!engine?.model) return '';
+  const base = AI_ENGINE_LABELS[String(engine.provider || '').toLowerCase()] || 'AI';
+  return engine.fallback ? `${base} (fallback)` : base;
+}
 
 function drawToJpegDataUrl(source, width, height, maxDim = 960) {
   if (typeof document === 'undefined' || !width || !height) return '';
@@ -173,6 +193,7 @@ export function MetadataCheckPage() {
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [aiWarning, setAiWarning] = useState('');
 
   useEffect(() => {
     return () => {
@@ -200,6 +221,7 @@ export function MetadataCheckPage() {
     setCleanResult(null);
     setError('');
     setNotice('');
+    setAiWarning('');
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
@@ -207,6 +229,7 @@ export function MetadataCheckPage() {
     if (!picked) return;
     setError('');
     setNotice('');
+    setAiWarning('');
     setScanResult(null);
     setCleanResult(null);
     if (localCleanUrl) {
@@ -237,14 +260,17 @@ export function MetadataCheckPage() {
     if (!file || phase === 'scanning' || phase === 'removing') return;
     setError('');
     setNotice('');
+    setAiWarning('');
     setPhase('scanning');
     setProgress(25);
     setProgressLabel('Membaca struktur biner & tag metadata file…');
 
+    let report = null;
+    let binarySummary = {};
     try {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
-      const report = await scanMediaMetadata(bytes, {
+      report = await scanMediaMetadata(bytes, {
         fileName: file.name,
         mimeType: file.type,
       });
@@ -257,41 +283,62 @@ export function MetadataCheckPage() {
         return;
       }
 
+      binarySummary = compactScanSummary(report);
+
       setProgress(55);
       setProgressLabel(
         report.mediaKind === 'video'
-          ? 'Mengekstrak frame video & mengirim ke model AI Cloudflare…'
-          : 'Mengirim gambar & daftar tag metadata ke model AI Cloudflare…',
+          ? 'Mengekstrak frame video & mengirim ke model AI (Cloudflare → fallback)…'
+          : 'Mengirim gambar & daftar tag metadata ke model AI (Cloudflare → fallback)…',
       );
 
       const frames = await extractVisualFrames(file, report.mediaKind);
       setProgress(75);
-      setProgressLabel('Cloudflare AI sedang membaca visual & memeriksa nama model AI di metadata…');
+      setProgressLabel('Model AI sedang membaca visual & memeriksa nama model AI di metadata…');
 
       const aiRes = await scanMetadataWithCloudflareAI({
         filename: file.name,
         mimeType: report.mimeType || file.type || '',
         mediaKind: report.mediaKind,
         fileSize: file.size,
-        binaryScan: compactScanSummary(report),
+        binaryScan: binarySummary,
         frames,
       });
 
-      if (!aiRes.ok || !aiRes.data?.scan) {
-        setPhase('ready');
-        setProgress(0);
+      const finalScan = aiRes?.data?.scan || null;
+      if (finalScan) {
+        setMediaKind(finalScan.mediaKind || report.mediaKind);
+        setScanResult(finalScan);
+        if (finalScan.aiSkipped || aiRes?.data?.ai_skipped) {
+          setAiWarning(finalScan.aiSkipReason || aiRes?.data?.ai_skip_reason || '');
+        }
+        setPhase('scanned');
+        setProgress(100);
         setProgressLabel('');
-        setError(aiRes.data?.error || 'Gagal memindai media dengan model AI Cloudflare.');
         return;
       }
 
-      const finalScan = aiRes.data.scan;
-      setMediaKind(finalScan.mediaKind || report.mediaKind);
-      setScanResult(finalScan);
+      // Endpoint AI gagal total → tetap lanjut dengan pemindai container biner
+      // (pembersihan metadata tidak butuh model AI).
+      const reason = aiRes?.data?.error || aiRes?.data?.message || '';
+      const fallbackScan = buildBinaryOnlyScan(binarySummary, reason);
+      setMediaKind(fallbackScan.mediaKind || report.mediaKind);
+      setScanResult(fallbackScan);
+      setAiWarning(reason || 'Model AI tidak dapat dihubungi.');
       setPhase('scanned');
       setProgress(100);
       setProgressLabel('');
     } catch (err) {
+      if (report && binarySummary) {
+        const fallbackScan = buildBinaryOnlyScan(binarySummary, String(err?.message || err));
+        setMediaKind(fallbackScan.mediaKind || report.mediaKind);
+        setScanResult(fallbackScan);
+        setAiWarning(String(err?.message || err));
+        setPhase('scanned');
+        setProgress(100);
+        setProgressLabel('');
+        return;
+      }
       setPhase('ready');
       setProgress(0);
       setProgressLabel('');
@@ -541,7 +588,7 @@ export function MetadataCheckPage() {
   return (
     <DropXLayout
       title="Cek Metadata AI"
-      description="Pindai gambar atau video menggunakan model AI Cloudflare untuk membaca visual media & seluruh tag metadata nama model AI, lalu bersihkan secara lossless."
+      description="Pindai gambar atau video dengan model AI (Cloudflare lebih dulu, lalu fallback ke model vision provider lain) untuk membaca visual media & seluruh tag metadata nama model AI, lalu bersihkan secara lossless. Bila semua kuota model habis, pembersihan metadata tetap berjalan tanpa AI."
     >
       <div className="meta-page">
         <section className="meta-hero">
@@ -549,7 +596,7 @@ export function MetadataCheckPage() {
             <div className="meta-hero-badges">
               <span className="meta-chip is-brand">
                 <Bot size={13} aria-hidden="true" />
-                Cloudflare AI Multimodal Inspector
+                AI Multimodal Inspector · Cloudflare + Fallback
               </span>
               <span className="meta-chip is-cost">
                 <Coins size={13} aria-hidden="true" />
@@ -558,9 +605,11 @@ export function MetadataCheckPage() {
             </div>
             <p className="meta-hero-desc">
               Unggah gambar (<strong>PNG, JPG, WebP, GIF</strong>) atau video (<strong>MP4, MOV, WebM</strong>) maksimal{' '}
-              <strong>{Math.round(METADATA_MAX_FILE_BYTES / (1024 * 1024))} MB</strong>. Model vision Cloudflare AI memeriksa visual gambar/frame video
-              serta seluruh tag metadata (EXIF, XMP, C2PA, nama model AI), menampilkan daftar tag yang akan dihapus, lalu membersihkan secara lossless
-              dan tercatat di <Link to="/live">Proses Live</Link> serta <Link to="/history">History</Link>.
+              <strong>{Math.round(METADATA_MAX_FILE_BYTES / (1024 * 1024))} MB</strong>. Model vision AI (Cloudflare lebih dulu, otomatis dialihkan ke model
+              vision provider lain saat kuota habis) memeriksa visual gambar/frame video serta seluruh tag metadata (EXIF, XMP, C2PA, nama model AI),
+              menampilkan daftar tag yang akan dihapus, lalu membersihkan secara lossless dan tercatat di <Link to="/live">Proses Live</Link> serta{' '}
+              <Link to="/history">History</Link>. Jika semua kuota model AI habis, pemindaian visual dilewati dan metadata tetap dibersihkan oleh
+              pemindai container biner.
             </p>
           </div>
           <div className="meta-hero-side">
@@ -602,6 +651,15 @@ export function MetadataCheckPage() {
                   <Link to="/credits">Buka halaman Kredit</Link>
                 </>
               )}
+            </div>
+          </div>
+        )}
+
+        {aiWarning && (
+          <div className="meta-alert is-warn" role="status">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <div>
+              <strong>Pemindaian AI dilewati:</strong> {aiWarning} Metadata biner tetap dibaca &amp; siap dibersihkan tanpa model AI.
             </div>
           </div>
         )}
@@ -847,7 +905,7 @@ export function MetadataCheckPage() {
                     <div className="meta-cf-engine-top">
                       <span className="meta-cf-engine-badge">
                         <Bot size={13} aria-hidden="true" />
-                        Dipindai dengan Cloudflare AI
+                        Dipindai dengan {aiEngineLabel(scanResult.aiEngine)}
                       </span>
                       <code className="meta-cf-model-id">{scanResult.aiEngine.model}</code>
                       {scanResult.framesAnalyzed > 0 && (
@@ -877,7 +935,7 @@ export function MetadataCheckPage() {
                         <p>
                           {scanResult.visualOnlyWarning ? (
                             <>
-                              Analisis visual Cloudflare AI mengindikasikan konten ini berpotensi buatan AI, namun <strong>tidak ditemukan tag metadata biner</strong> di dalam file untuk dihapus.
+                              Analisis visual AI mengindikasikan konten ini berpotensi buatan AI, namun <strong>tidak ditemukan tag metadata biner</strong> di dalam file untuk dihapus.
                             </>
                           ) : (
                             <>
@@ -918,7 +976,11 @@ export function MetadataCheckPage() {
                     <ShieldCheck size={18} aria-hidden="true" />
                     <div>
                       <strong>File sudah bersih</strong>
-                      <p>Cloudflare AI dan pemindai container tidak menemukan metadata AI, nama model, C2PA, EXIF, maupun tag tersembunyi.</p>
+                      <p>
+                        {scanResult.aiSkipped
+                          ? 'Pemindai container tidak menemukan metadata AI, nama model, C2PA, EXIF, maupun tag tersembunyi.'
+                          : 'AI dan pemindai container tidak menemukan metadata AI, nama model, C2PA, EXIF, maupun tag tersembunyi.'}
+                      </p>
                     </div>
                   </div>
                 )}
