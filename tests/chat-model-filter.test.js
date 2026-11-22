@@ -111,3 +111,27 @@ test('/api/enabled-models tetap berfungsi bila tabel credit_model_prices tidak d
     globalThis.fetch = realFetch;
   }
 });
+
+test('/api/enabled-models memakai metadata katalog Alibaba: hanya blea "chat" yang tampil', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = mockBackend({
+    models: [
+      { provider: 'alibaba', model: 'qwen3.8-max', active: true },          // blea: chat
+      { provider: 'alibaba', model: 'qwen3-livetranslate-flash', active: true }, // blea: chat
+      { provider: 'alibaba', model: 'gui-plus', active: true },             // blea: null
+      { provider: 'alibaba', model: 'qwen3-vl-plus', active: true },        // blea: null
+      { provider: 'alibaba', model: 'model-baru-tanpa-metadata', active: true },
+    ],
+    prices: [],
+  });
+  try {
+    const res = await worker.fetch(apiRequest('/api/enabled-models'), createEnv());
+    const data = await res.json();
+    assert.deepEqual(
+      [...data.models].sort(),
+      ['model-baru-tanpa-metadata', 'qwen3-livetranslate-flash', 'qwen3.8-max'].sort(),
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

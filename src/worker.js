@@ -681,6 +681,18 @@ function isChatCapableModelId(modelId) {
 // Provider yang seluruh katalognya gambar/video — tidak pernah untuk Chat.
 const NON_CHAT_PROVIDERS = new Set(['freebeat']);
 
+// Katalog free quota Alibaba menandai kemampuan tiap model lewat `blea`:
+// 'chat' = bisa dipakai di AI Studio, 'image'/'video' = adapter Generate,
+// null = katalog saja. Model Alibaba yang tercatat tanpa blea 'chat' tidak
+// boleh muncul di pemilih model Chat.
+const ALIBABA_CATALOG_BY_ID = new Map(ALIBABA_FREE_QUOTA_MODELS.map((m) => [String(m.id).trim(), m]));
+
+function isAlibabaChatCatalogModel(modelId) {
+  const row = ALIBABA_CATALOG_BY_ID.get(String(modelId || '').trim());
+  if (!row) return true; // tidak ada metadata resmi → jangan menebak
+  return row.blea === 'chat';
+}
+
 // Modality harga yang menandakan model bukan teks/chat.
 const NON_CHAT_MODALITIES = new Set(['image', 'image_edit', 'image_edit_2k', 'video', 'speech', 'embedding']);
 
@@ -3175,6 +3187,7 @@ async function handleApi(request, url, env) {
       let chatRows = (rows ?? []).filter((m) => {
         const provider = String(m?.provider || 'unorouter').toLowerCase().trim();
         if (NON_CHAT_PROVIDERS.has(provider)) return false;
+        if (provider === 'alibaba' && !isAlibabaChatCatalogModel(m.model)) return false;
         if (!isChatCapableModelId(m.model)) return false;
         return !pricedNonChat.has(`${provider}::${String(m.model || '').trim()}`);
       });
