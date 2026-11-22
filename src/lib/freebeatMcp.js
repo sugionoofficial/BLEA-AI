@@ -1,6 +1,7 @@
 // Admin-only Freebeat MCP diagnostics and explicitly approved generation tests.
 import { boundedJson } from './boundedJson.js';
 import { FREEBEAT_VIDEO_TEST, FREEBEAT_GEMINI_DIAGNOSTIC, FREEBEAT_VIDEO_MAX_IMAGES, videoHeadroom } from './freebeatVideoTestSettings.js';
+import { UPSTREAM_MEDIA_USER_AGENT } from './safeUrl.js';
 const ENDPOINT = 'https://freebeat.ai/api/mcp';
 const READ_SCOPE = 'freebeat:read';
 const IMAGE_SCOPE = 'freebeat:generate';
@@ -73,7 +74,7 @@ async function resolveFreebeatOAuthIdentity(tokens) {
   const userinfoCandidates = new Set();
   for (const metaUrl of ['https://freebeat.ai/.well-known/oauth-authorization-server', 'https://freebeat.ai/.well-known/openid-configuration']) {
     try {
-      const res = await fetch(metaUrl, { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(3000) });
+      const res = await fetch(metaUrl, { headers: { accept: 'application/json', 'user-agent': UPSTREAM_MEDIA_USER_AGENT }, redirect: 'error', signal: AbortSignal.timeout(3000) });
       if (res.ok) {
         const meta = await res.json().catch(() => null);
         if (typeof meta?.userinfo_endpoint === 'string') {
@@ -91,7 +92,7 @@ async function resolveFreebeatOAuthIdentity(tokens) {
   for (const endpoint of userinfoCandidates) {
     try {
       const res = await fetch(endpoint, {
-        headers: { authorization: `Bearer ${tokens.access_token}`, accept: 'application/json' },
+        headers: { authorization: `Bearer ${tokens.access_token}`, accept: 'application/json', 'user-agent': UPSTREAM_MEDIA_USER_AGENT },
         redirect: 'error',
         signal: AbortSignal.timeout(4000),
       });
@@ -336,7 +337,18 @@ async function jsonFetch(url, options, stage) {
 // (it reflects the most current state) so the real OAuth code is still
 // visible to the user and in the logs either way.
 async function registerFreebeatClient(redirect, requestedScope) {
-  const headers = { 'content-type': 'application/json', accept: 'application/json' };
+  // Cloudflare Workers' fetch() sends NO User-Agent by default (unlike
+  // Node/browser fetch or curl). This was already found to matter for
+  // Freebeat's media CDN, which rejects empty-UA requests with a 403 (see
+  // UPSTREAM_MEDIA_USER_AGENT in safeUrl.js). All 3 registration attempts
+  // below previously failed identically with OAuth code `server_error`
+  // regardless of grant_types -- a result fully consistent with something
+  // constant across every attempt (like a missing User-Agent, possibly
+  // blocked/mishandled by a WAF or bot-protection layer in front of
+  // Freebeat's OAuth endpoint) being the actual blocker, not the payload
+  // shape. Identify every Freebeat OAuth request the same way the media
+  // proxy already does.
+  const headers = { 'content-type': 'application/json', accept: 'application/json', 'user-agent': UPSTREAM_MEDIA_USER_AGENT };
   const base = { client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', response_types: ['code'], scope: requestedScope };
   const fullGrants = ['authorization_code', 'refresh_token'];
   const noRefreshGrants = ['authorization_code'];
@@ -411,7 +423,7 @@ export async function freebeatCallback(request, env) {
     const code = url.searchParams.get('code');
     if (!code || code.length > 4000) return finish('invalid');
     const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: pending.clientId, code, redirect_uri: pending.redirect, code_verifier: pending.verifier, resource: ENDPOINT });
-    const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: body.toString() }, 'token');
+    const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', 'user-agent': UPSTREAM_MEDIA_USER_AGENT }, body: body.toString() }, 'token');
     if (typeof tokens.access_token !== 'string' || !tokens.access_token || tokens.access_token.length > 2000 || (tokens.token_type && tokens.token_type.toLowerCase() !== 'bearer')) return finish('failed');
     // RFC 6749: omitted scope means the granted scope matches what was requested.
     const grantedScope = tokens.scope === undefined ? requestedScope : tokens.scope;
@@ -478,7 +490,7 @@ function sessionMaxAgeMs(env) {
 const sessionCookies = new WeakMap();
 async function renewSession(session, env) {
   const body = new URLSearchParams({ grant_type: 'refresh_token', client_id: session.clientId, refresh_token: session.refreshToken, resource: ENDPOINT });
-  const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: body.toString() }, 'token');
+  const tokens = await jsonFetch(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', 'user-agent': UPSTREAM_MEDIA_USER_AGENT }, body: body.toString() }, 'token');
   if (typeof tokens.access_token !== 'string' || !tokens.access_token || tokens.access_token.length > 2000 || (tokens.token_type && tokens.token_type.toLowerCase() !== 'bearer')) return null;
   const lifetime = Math.min(86400, Number(tokens.expires_in) || 300);
   if (lifetime < 1) return null;
@@ -716,7 +728,7 @@ async function rpc(accessToken, body, stage, extraHeaders = {}, maxBytes = 65536
   let res;
   try {
     // Manual mode permits diagnosing redirects without forwarding credentials to their destination.
-    res = await fetch(ENDPOINT, { method: 'POST', redirect: 'manual', signal, headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...extraHeaders }, body: JSON.stringify(body) });
+    res = await fetch(ENDPOINT, { method: 'POST', redirect: 'manual', signal, headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'user-agent': UPSTREAM_MEDIA_USER_AGENT, ...extraHeaders }, body: JSON.stringify(body) });
   } catch (error) { throw mcpFailure(stage, signal.aborted || ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'network'); }
   if (res.status >= 300 && res.status < 400) {
     try { await res.body?.cancel(); } catch { /* no provider data is exposed */ }
@@ -3686,7 +3698,7 @@ async function dispatchFreebeat(request, url, env, user) {
       const unsealed = target.sealed_session ? await unseal(target.sealed_session, env, 'session', 3800) : null;
       if (unsealed?.accessToken && unsealed?.clientId) {
         try {
-          const res = await fetch(REVOKE, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: unsealed.accessToken, client_id: unsealed.clientId }).toString() });
+          const res = await fetch(REVOKE, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': UPSTREAM_MEDIA_USER_AGENT }, body: new URLSearchParams({ token: unsealed.accessToken, client_id: unsealed.clientId }).toString() });
           revoked = res.ok;
         } catch { /* lanjut hapus lokal */ }
       }
@@ -3985,7 +3997,7 @@ async function dispatchFreebeat(request, url, env, user) {
       const session = await readSession(request, env, user.id);
       let revoked = false;
       if (session) {
-        try { const res = await fetch(REVOKE, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: session.accessToken, client_id: session.clientId }).toString() }); revoked = res.ok; } catch { /* local session is still removed */ }
+        try { const res = await fetch(REVOKE, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': UPSTREAM_MEDIA_USER_AGENT }, body: new URLSearchParams({ token: session.accessToken, client_id: session.clientId }).toString() }); revoked = res.ok; } catch { /* local session is still removed */ }
       }
       // Hapus salinan sisi server agar generate gambar konsumen ikut berhenti.
       await clearProviderSession(env, user.id);
