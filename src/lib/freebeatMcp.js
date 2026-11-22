@@ -6636,6 +6636,10 @@ export async function consumerMusicConfig(env) {
         name: meta.name,
         credits,
         ready: catalogState.poolReady && usableUpstream,
+        supports_duration: meta.supports_duration === true,
+        supports_lyrics: meta.supports_lyrics,
+        supports_instrumental: meta.supports_instrumental,
+        requires_lyrics: meta.requires_lyrics === true,
         params: {
           supports_duration: meta.supports_duration === true,
           supports_lyrics: meta.supports_lyrics,

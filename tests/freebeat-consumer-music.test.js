@@ -405,13 +405,16 @@ test('Worker filters music modality out of Chat, classifies Music in /api/catalo
     assert.equal(m129?.category, 'Music');
     assert.equal(m194?.category, 'Music');
 
-    // Consumer /api/music/config omits unpriced #130 and hides freebeat_unpriced
+    // Consumer /api/music/config omits unpriced #130, hides freebeat_unpriced, and exposes capability flags at top-level & params
     const userCfgRes = await worker.fetch(apiRequest('/api/music/config', { method: 'GET', token: 'user-jwt' }), h.env);
     assert.equal(userCfgRes.status, 200);
     const userCfg = await userCfgRes.json();
     assert.equal(userCfg.provider_ready, true);
     assert.deepEqual(userCfg.models.map((m) => m.model), ['129']);
     assert.equal(userCfg.models[0].credits, 1000);
+    assert.equal(userCfg.models[0].supports_duration, false);
+    assert.equal(userCfg.models[0].requires_lyrics, false);
+    assert.equal(userCfg.models[0].params.supports_duration, false);
     assert.equal(userCfg.freebeat_unpriced, undefined);
 
     // Admin /api/music/config reveals freebeat_unpriced warning for #130
@@ -761,7 +764,19 @@ test('UI renders Generate musik tab, GenerateMusicPanel player, HistoryPage Musi
         return Response.json({
           ok: true,
           provider_ready: true,
-          models: [{ provider: 'freebeat', model: '129', name: 'Lyria 3 Pro', credits: 1000, ready: true, supports_duration: false, supports_lyrics: true, supports_instrumental: true, requires_lyrics: false }],
+          models: [{
+            provider: 'freebeat',
+            model: '129',
+            name: 'Lyria 3 Pro',
+            credits: 1000,
+            ready: true,
+            params: {
+              supports_duration: true,
+              supports_lyrics: true,
+              supports_instrumental: false,
+              requires_lyrics: true,
+            },
+          }],
         });
       }
       if (url.includes('/api/music/history')) return Response.json({ ok: true, generations: [musicItem] });
@@ -816,6 +831,9 @@ test('UI renders Generate musik tab, GenerateMusicPanel player, HistoryPage Musi
     await React.act(async () => { await new Promise((r) => setTimeout(r, 60)); });
 
     assert.match(document.body.textContent, /Lyria 3 Pro/);
+    assert.match(document.body.textContent, /Target durasi \(opsional, 10–300 detik\)/);
+    assert.match(document.body.textContent, /Lirik lagu \(wajib\)/);
+    assert.equal(document.body.textContent.includes('Instrumental (tanpa vokal)'), false);
     assert.equal(document.querySelectorAll('audio').length, 1);
     assert.match(document.body.textContent, /Neon Road/);
     await React.act(async () => { root.unmount(); });

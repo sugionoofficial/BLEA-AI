@@ -95,23 +95,27 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
     || models.find((m) => m.ready)
     || models[0]
     || null;
+  const supportsDuration = (active?.supports_duration ?? active?.params?.supports_duration) === true;
+  const supportsLyrics = active?.supports_lyrics ?? active?.params?.supports_lyrics ?? null;
+  const supportsInstrumental = active?.supports_instrumental ?? active?.params?.supports_instrumental ?? null;
+  const requiresLyrics = (active?.requires_lyrics ?? active?.params?.requires_lyrics) === true;
 
   useEffect(() => {
     if (!active) return;
     if (selected !== `${active.provider}:${active.model}`) {
       setSelected(`${active.provider}:${active.model}`);
     }
-    if (active.supports_instrumental === false && instrumental) {
+    if ((supportsInstrumental === false || requiresLyrics) && instrumental) {
       setInstrumental(false);
     }
-    if (active.supports_lyrics === false && lyrics) {
+    if (supportsLyrics === false && lyrics) {
       setLyrics('');
     }
-    if (!active.supports_duration && durationSeconds !== '') {
+    if (!supportsDuration && durationSeconds !== '') {
       setDurationSeconds('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.provider, active?.model]);
+  }, [active?.provider, active?.model, supportsDuration, supportsLyrics, supportsInstrumental, requiresLyrics]);
 
   useEffect(() => {
     const pending = items.filter((item) => isPending(item) && item.canPoll).slice(0, 4);
@@ -141,12 +145,12 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
       setError('Nonaktifkan mode instrumental jika ingin mengisi lirik lagu.');
       return;
     }
-    if (active.requires_lyrics && !cleanLyrics) {
+    if (requiresLyrics && !cleanLyrics) {
       setError(`Model ${active.name || active.model} mewajibkan lirik lagu.`);
       return;
     }
     let cleanDuration;
-    if (active.supports_duration && String(durationSeconds).trim() !== '') {
+    if (supportsDuration && String(durationSeconds).trim() !== '') {
       const parsed = Number(String(durationSeconds).trim());
       if (!Number.isFinite(parsed) || parsed < 10 || parsed > 300) {
         setError('Durasi lagu harus antara 10 hingga 300 detik.');
@@ -193,7 +197,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
   const price = active && Number.isSafeInteger(active.credits) ? active.credits : null;
   const ready = active?.ready === true && price !== null;
   const insufficient = price !== null && balance !== null && balance < price;
-  const missingRequiredLyrics = Boolean(active?.requires_lyrics && !lyrics.trim());
+  const missingRequiredLyrics = Boolean(requiresLyrics && !lyrics.trim());
 
   return (
     <div className="generate-card">
@@ -304,12 +308,12 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
           />
         </label>
 
-        {active?.supports_instrumental !== false && (
+        {supportsInstrumental !== false && !requiresLyrics && (
           <label className="generate-toggle" style={{ marginTop: 6 }}>
             <input
               type="checkbox"
               checked={instrumental}
-              disabled={busy || active?.requires_lyrics}
+              disabled={busy}
               onChange={(event) => {
                 const checked = event.target.checked;
                 setInstrumental(checked);
@@ -322,11 +326,11 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
           </label>
         )}
 
-        {active?.supports_lyrics !== false && (
+        {supportsLyrics !== false && (
           <label className="generate-field" style={{ marginTop: 10 }}>
             <div className="generate-label-row">
               <span className="generate-label">
-                Lirik lagu {active?.requires_lyrics ? '(wajib)' : '(opsional)'}
+                Lirik lagu {requiresLyrics ? '(wajib)' : '(opsional)'}
               </span>
               <span className="generate-hint">
                 {instrumental ? 'Nonaktif saat mode instrumental' : `${lyrics.trim().length}/12000`}
@@ -344,7 +348,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
           </label>
         )}
 
-        {active?.supports_duration && (
+        {supportsDuration && (
           <label className="generate-field" style={{ marginTop: 10 }}>
             <div className="generate-label-row">
               <span className="generate-label">Target durasi (opsional, 10–300 detik)</span>
