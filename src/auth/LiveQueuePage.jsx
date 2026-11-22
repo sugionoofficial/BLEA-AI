@@ -11,6 +11,7 @@ import {
   Film,
   Flag,
   Image as ImageIcon,
+  Music,
   RefreshCw,
   ShieldAlert,
   Trophy,
@@ -53,7 +54,7 @@ export function LiveQueuePage() {
   const isAdmin = user?.app_metadata?.role === 'admin';
   const { refresh: refreshBalance } = useCredits(user?.id);
   const [rawItems, setRawItems] = useState([]);
-  const [counts, setCounts] = useState({ total: 0, video: 0, image: 0, metadata: 0, completed: 0, own: 0, stalled: 0 });
+  const [counts, setCounts] = useState({ total: 0, video: 0, image: 0, music: 0, metadata: 0, completed: 0, own: 0, stalled: 0 });
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
@@ -112,6 +113,7 @@ export function LiveQueuePage() {
         total: activeOnly.length,
         video: activeOnly.filter((item) => item.kind === 'video').length,
         image: activeOnly.filter((item) => item.kind === 'image').length,
+        music: activeOnly.filter((item) => item.kind === 'music').length,
         metadata: activeOnly.filter((item) => item.kind === 'metadata').length,
         completed: nextItems.filter((item) => item.status === 'completed').length,
         own: nextItems.filter((item) => item.is_own).length,
@@ -210,6 +212,7 @@ export function LiveQueuePage() {
       if (filter === 'own') return item.is_own;
       if (filter === 'video') return item.kind === 'video';
       if (filter === 'image') return item.kind === 'image';
+      if (filter === 'music') return item.kind === 'music';
       if (filter === 'metadata') return item.kind === 'metadata';
       if (filter === 'stalled') return item.stalled;
       return true;
@@ -344,6 +347,15 @@ export function LiveQueuePage() {
               <ImageIcon size={18} />
             </span>
           </div>
+          <div className="live-stat-card is-music">
+            <div className="live-stat-meta">
+              <span className="live-stat-label">Musik Aktif</span>
+              <span className="live-stat-value">{counts.music || 0}</span>
+            </div>
+            <span className="live-stat-icon" aria-hidden="true">
+              <Music size={18} />
+            </span>
+          </div>
           <div className={`live-stat-card ${counts.stalled > 0 ? 'is-warn' : ''}`}>
             <div className="live-stat-meta">
               <span className="live-stat-label">Perlu Perhatian</span>
@@ -368,6 +380,9 @@ export function LiveQueuePage() {
             </button>
             <button type="button" className={`live-filter-tab ${filter === 'image' ? 'is-active' : ''}`} onClick={() => setFilter('image')}>
               Gambar ({counts.image})
+            </button>
+            <button type="button" className={`live-filter-tab ${filter === 'music' ? 'is-active' : ''}`} onClick={() => setFilter('music')}>
+              Musik ({counts.music || 0})
             </button>
             <button type="button" className={`live-filter-tab ${filter === 'metadata' ? 'is-active' : ''}`} onClick={() => setFilter('metadata')}>
               Metadata ({counts.metadata || 0})
@@ -477,10 +492,12 @@ export function LiveQueuePage() {
                             <span className="live-pill">
                               {item.kind === 'video'
                                 ? <Film size={11} aria-hidden="true" />
-                                : item.kind === 'metadata'
-                                  ? <FileSearch2 size={11} aria-hidden="true" />
-                                  : <ImageIcon size={11} aria-hidden="true" />}
-                              {item.kind === 'video' ? 'Video' : item.kind === 'metadata' ? 'Metadata' : 'Gambar'}
+                                : item.kind === 'music'
+                                  ? <Music size={11} aria-hidden="true" />
+                                  : item.kind === 'metadata'
+                                    ? <FileSearch2 size={11} aria-hidden="true" />
+                                    : <ImageIcon size={11} aria-hidden="true" />}
+                              {item.kind === 'video' ? 'Video' : item.kind === 'music' ? 'Musik' : item.kind === 'metadata' ? 'Metadata' : 'Gambar'}
                             </span>
                             <span className="live-pill">{providerLabel}</span>
                             {isCompleted ? (

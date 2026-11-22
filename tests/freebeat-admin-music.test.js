@@ -47,12 +47,16 @@ function fixture() {
   let taskStatus = { status: 'completed', message: 'Selesai https://internal.secret/?token=abc' };
   let taskResult = {
     status: 'completed',
+    message: 'Task result ready. Next step: check audio output.',
     result: {
       music_id: 88991122,
+      title: 'Sunset Anthem',
+      duration_ms: 145000,
       audio_url: 'https://cdn.example/music-out.mp3',
       cover_url: 'https://cdn.example/music-cover.jpg',
     },
     billing: { charged: 73, refunded: 0, net: 73 },
+    billing_message: 'Settled 73 credits.',
   };
   let catalogModels = [
     { model_id: 129, name: 'Lyria 3 Pro', available: true, pricing: { status: 'quoted', credits: 42 }, supports_duration: false, supports_lyrics: null, supports_instrumental: null, requires_lyrics: null },
@@ -287,10 +291,14 @@ test('music-quote, music-prepare, music-submit, music-tests, and music-task enfo
     assert.equal(pollText.includes('internal.secret'), false);
     const pollBody = JSON.parse(pollText);
     assert.equal(pollBody.task.status, 'completed');
+    assert.equal(pollBody.task.failure, null);
     assert.equal(pollBody.task.music_id, 88991122);
+    assert.equal(pollBody.task.title, 'Sunset Anthem');
+    assert.equal(pollBody.task.duration_ms, 145000);
     assert.deepEqual(pollBody.task.audios, ['https://cdn.example/music-out.mp3']);
     assert.equal(pollBody.task.cover_url, 'https://cdn.example/music-cover.jpg');
     assert.equal(pollBody.task.billing.charged, 73);
+    assert.equal(pollBody.task.billing_message, 'Settled 73 credits.');
     assert.equal(pollBody.task.private_structure.result.music_id, 88991122);
 
     // New Freebeat session disables canPoll unless acknowledge: true is sent
@@ -390,9 +398,13 @@ test('FreebeatMusicDiagnostic JSDOM loads music models, quotes, prepares, submit
           task: {
             status: 'completed',
             music_id: 99887766,
+            title: 'Live Track',
+            duration_ms: 120000,
             audios: ['https://cdn.example/final-track.mp3'],
             cover_url: 'https://cdn.example/final-cover.jpg',
             billing: { charged: 42, refunded: 0, net: 42 },
+            billing_message: 'Settled 42 credits',
+            failure: null,
           },
         };
       }
@@ -432,6 +444,9 @@ test('FreebeatMusicDiagnostic JSDOM loads music models, quotes, prepares, submit
     assert.ok(pollBtn);
     await React.act(async () => { pollBtn.click(); });
     assert.match(document.body.textContent, /99887766/);
+    assert.match(document.body.textContent, /Live Track/);
+    assert.match(document.body.textContent, /120 dtk/);
+    assert.match(document.body.textContent, /Settled 42 credits/);
     assert.equal(document.querySelectorAll('audio, img').length, 0);
     const links = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href'));
     assert.ok(links.includes('https://cdn.example/final-track.mp3'));

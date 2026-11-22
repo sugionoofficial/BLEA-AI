@@ -7,3 +7,9 @@
 
 .history-card.is-highlighted{outline:3px solid var(--primary);outline-offset:2px;animation:history-pulse 1.6s ease-in-out 2}@keyframes history-pulse{0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,.0)}50%{box-shadow:0 0 0 8px rgba(59,130,246,.18)}}
 .history-filters .page-size{margin-left:4px}
+.history-preview.is-music-cover{background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 55%,#312e81 100%);color:#a5b4fc}
+.history-music-title{font-size:14.5px;margin:8px 0 4px;line-height:1.35;color:var(--foreground);overflow-wrap:anywhere}
+.history-music-players{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.history-music-track{display:flex;flex-direction:column;gap:8px}
+.history-music-track audio{width:100%;height:38px;border-radius:8px}
+

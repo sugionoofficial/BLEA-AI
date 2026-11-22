@@ -45,7 +45,8 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
     }
     return null;
   }
-  if (kind === 'image') {
+  if (kind === 'image' || kind === 'music') {
+    const label = kind === 'music' ? 'musik' : 'gambar';
     if (row?.status === 'unknown') {
       return 'Status pengiriman tidak pasti (timeout/respons provider kosong). Admin dapat membatalkan & refund jika tidak selesai.';
     }
@@ -53,7 +54,7 @@ export function diagnosePendingGeneration(kind, row, nowMs = Date.now()) {
       return 'Task ID upstream belum tersimpan (gagal sinkronisasi awal); proses ini menggantung dan tidak bisa polling otomatis.';
     }
     if (ageMs > 3 * 60_000) {
-      return 'Proses gambar berlangsung lebih lama dari estimasi normal (>3 menit).';
+      return `Proses ${label} berlangsung lebih lama dari estimasi normal (>3 menit).`;
     }
     return null;
   }
@@ -221,7 +222,7 @@ export function formatLiveQueueItem(
   const diagnostic = diagnosePendingGeneration(kind, row, nowMs);
   const canPoll = !isCompleted && (kind === 'metadata'
     ? false
-    : kind === 'image'
+    : (kind === 'image' || kind === 'music')
       ? Boolean(row?.external_job_id && ['queued', 'processing'].includes(row?.status))
       : Boolean(
           ['queued', 'in_progress'].includes(row?.status)
@@ -250,7 +251,7 @@ export function formatLiveQueueItem(
     provider: isMetadata ? 'blea-metadata' : row.provider,
     model: isMetadata
       ? (row.media_kind === 'video' ? 'Bersihkan Metadata Video' : 'Bersihkan Metadata Gambar')
-      : row.model,
+      : (kind === 'music' && row?.model_name ? row.model_name : row.model),
     ...(isMetadata ? { media_kind: row.media_kind } : {}),
     status: row.status,
     progress: isCompleted ? 100 : (kind === 'video' || isMetadata ? Number(row.progress || 0) : null),

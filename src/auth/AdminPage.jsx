@@ -168,12 +168,13 @@ function isWithinDays(value, days) {
 
 const ADMIN_TABS = new Set(['overview', 'users', 'videos', 'conversations', 'waitlist', 'api-keys', 'alibaba', 'freebeat-oauth']);
 const API_KEY_SUBS = new Set(['providers', 'catalog', 'add-provider']);
-const CATALOG_CATEGORIES = ['All', 'Video', 'Text', 'Image', 'Embedding', 'Speech', 'Other'];
+const CATALOG_CATEGORIES = ['All', 'Video', 'Text', 'Image', 'Music', 'Embedding', 'Speech', 'Other'];
 const CATALOG_MODALITIES = [
   { id: 'video', label: 'Video' },
   { id: 'image', label: 'Gambar (Image)' },
   { id: 'image_edit', label: 'Edit Gambar' },
   { id: 'image_edit_2k', label: 'Edit Gambar 2K' },
+  { id: 'music', label: 'Musik (Music)' },
   { id: 'text', label: 'Teks / Chat' },
   { id: 'speech', label: 'Speech / Audio' },
   { id: 'embedding', label: 'Embedding' },
@@ -184,6 +185,7 @@ function defaultModalityForModel(model) {
   const cat = String(model?.category || '').toLowerCase();
   if (cat === 'video') return 'video';
   if (cat === 'image') return 'image';
+  if (cat === 'music') return 'music';
   if (cat === 'speech') return 'speech';
   if (cat === 'embedding') return 'embedding';
   if (cat === 'text') return 'text';

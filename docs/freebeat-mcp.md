@@ -113,4 +113,17 @@ Memerlukan migrasi `20261204000000_freebeat_admin_music_tests.sql` (tabel servic
 - `POST /api/freebeat/music-prepare` & `POST /api/freebeat/music-submit` dengan persetujuan HMAC 5 menit (`music-approval`, `max_credits` tepat sebesar quote numerik — tidak pernah memakai `accept_unknown_cost`) dan pencatatan lock `dispatching` → `submitted`/`unknown`.
 - `GET /api/freebeat/music-tests` & `POST /api/freebeat/music-task` (`get_task_status` + `get_task_result`) untuk memantau status, biaya aktual, `music_id`, tautan audio/cover HTTPS eksplisit, serta opsi privat `private_result` (disamarkan, tidak disimpan) guna memverifikasi struktur keluaran Freebeat.
 
+## Generate Musik untuk konsumen (`/generate` & `/history` & `/live`)
+
+Memerlukan migrasi `20261205000000_freebeat_consumer_music.sql` (`credit_model_prices_modality_check` mencakup `'music'`, tabel `public.music_generations` dengan RLS `SELECT` pemilik/admin, dan seed model `#129` `Lyria 3 Pro` aktif bertarif `1000` kredit BLEA).
+
+- **Katalog & Harga Admin (`/admin` → API Key → Katalog Model)**: Model musik (`129`, `194`, `130`, `185`, serta model dari `list_music_models` live) tampil di kategori `Music` dengan modalitas tarif `'music'`. Model baru tampil ke konsumen hanya setelah **keduanya** aktif: `provider_models.active = true` dan `credit_model_prices.active = true` (`modality = 'music'`, `credits > 0`). Admin juga dapat memantau model musik yang sudah aktif namun belum bertarif melalui banner peringatan di `/generate`.
+- **Chat Isolation**: Modalitas `'music'` dimasukkan ke `NON_CHAT_MODALITIES` pada `/api/enabled-models` agar tidak bocor ke daftar model Chat AI.
+- **Consumer API (`/api/music/*`)**:
+  - `GET /api/music/config`: Mengembalikan status koneksi pool Freebeat OAuth dan daftar model musik aktif + bertarif.
+  - `POST /api/music/generate`: Memvalidasi prompt (`1–2000`), lirik (`1–12000`), eksklusivitas `instrumental`, dan dukungan `duration_seconds`, mengecek quote provider terhadap batas `FREEBEAT_MUSIC_MAX_PROVIDER_CREDITS` (default `250`) serta saldo minimum `FREEBEAT_MUSIC_MIN_MARGIN`, memotong kredit BLEA via `spend_credits(p_generation_id)`, dan menjalankan failover round-robin pool Freebeat OAuth dengan refund otomatis apabila seluruh akun gagal.
+  - `POST /api/music/status` & `GET /api/music/history`: Memantau tugas via `pollFreebeatMusicRow` (dengan klaim refund atomik `credits_refunded=eq.0` saat status `failed`/`cancelled`/`expired`) dan mengembalikan hanya URL proxy bertanda tangan HMAC.
+  - `GET/HEAD /api/music/content/:id`: Memproksi streaming audio (`Range`/206), unduhan lampiran (`blea-music-...`), serta cover artwork tanpa membocorkan URL upstream mentah; melakukan penyegaran URL satu kali via `get_task_result` bila upstream CDN mengembalikan `403`/`404`/`410`.
+- **Live Queue & Admin Cancel**: `/api/generations/live` dan `/api/admin/generations/cancel` (`kind: 'music'`) mendukung pemantauan dan pembatalan + refund atomik generasi musik.
+
 
