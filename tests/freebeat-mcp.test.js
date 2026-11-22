@@ -342,6 +342,38 @@ test('registration failure surfaces a request-tracing header (cf-ray etc.) as a 
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
 
+test('every Freebeat OAuth request (register, token exchange, revoke) identifies itself with a User-Agent', async () => {
+  // Cloudflare Workers' fetch() sends NO User-Agent by default. Freebeat's
+  // own media CDN was already found to reject empty-UA requests with a 403
+  // (UPSTREAM_MEDIA_USER_AGENT in safeUrl.js); all 3 OAuth registration
+  // escalation attempts previously failed identically with `server_error`
+  // regardless of grant_types, consistent with something constant across
+  // every attempt -- like a missing User-Agent -- being the real blocker.
+  // Every Freebeat-bound OAuth request must identify itself the same way.
+  const { UPSTREAM_MEDIA_USER_AGENT } = await import('../src/lib/safeUrl.js');
+  const { startFreebeat, freebeatCallback } = await import('../src/lib/freebeatMcp.js');
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  const seenUserAgents = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      const target = String(url);
+      seenUserAgents.push([target, init?.headers?.['user-agent']]);
+      if (target === 'https://freebeat.ai/oauth/register') return Response.json({ client_id: 'client-ua-check' });
+      if (target === 'https://freebeat.ai/oauth/token') return Response.json({ access_token: 'tok', token_type: 'Bearer', expires_in: 3600 });
+      throw new Error(`unexpected fetch: ${target}`);
+    };
+    const start = await startFreebeat(env, 'admin');
+    assert.equal(start.status, 200);
+    const cookie = start.headers.get('set-cookie').split(';')[0];
+    const state = new URL((await start.json()).url).searchParams.get('state');
+    await freebeatCallback(new Request(`https://blea-ai.blea-ai.workers.dev/api/freebeat/callback?code=c&state=${state}`, { headers: { cookie } }), env);
+    assert.ok(seenUserAgents.length >= 2);
+    for (const [target, ua] of seenUserAgents) assert.equal(ua, UPSTREAM_MEDIA_USER_AGENT, `missing/incorrect User-Agent for ${target}`);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
 test('token exchange failures also surface a safe OAuth error code when present', async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
