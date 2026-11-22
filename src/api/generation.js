@@ -49,6 +49,26 @@ export async function fetchImageHistory() {
   return edgeRequest('/image/history', {});
 }
 
+// Generate Musik (Freebeat) — konfigurasi model & harga kredit BLEA.
+export async function fetchMusicConfig() {
+  return edgeRequest('/music/config', {});
+}
+
+// Generate Musik — kirim satu generasi musik; kredit BLEA dipotong di server.
+export async function generateMusic(payload) {
+  return edgeRequest('/music/generate', payload);
+}
+
+// Generate Musik — periksa status tugas & hasil.
+export async function fetchMusicStatus(id) {
+  return edgeRequest('/music/status', { id });
+}
+
+// Generate Musik — riwayat milik pengguna.
+export async function fetchMusicHistory() {
+  return edgeRequest('/music/history', {});
+}
+
 // Proses Live — daftar generasi aktif di platform (user biasa: milik lain disamarkan, admin: lengkap).
 export async function fetchLiveGenerations({ poll = false } = {}) {
   return edgeRequest('/generations/live', { poll: Boolean(poll) });
@@ -151,7 +171,7 @@ export async function fetchMetadataStatus(id) {
 
 export function withDownloadParam(url) {
   if (typeof url !== 'string' || !url) return '';
-  if (/^\/api\/(?:video|image|metadata)\/content\//.test(url)) {
+  if (/^\/api\/(?:video|image|music|metadata)\/content\//.test(url)) {
     return /[?&]download=1(?:&|$)/.test(url) ? url : `${url}${url.includes('?') ? '&' : '?'}download=1`;
   }
   return url;
@@ -169,6 +189,26 @@ export function inferImageExtension(url) {
   return 'png';
 }
 
+export function inferAudioExtension(url, mimeType = '') {
+  const mime = String(mimeType || '').split(';')[0].trim().toLowerCase();
+  if (mime === 'audio/wav' || mime === 'audio/wave' || mime === 'audio/x-wav') return 'wav';
+  if (mime === 'audio/ogg') return 'ogg';
+  if (mime === 'audio/flac') return 'flac';
+  if (mime === 'audio/mp4' || mime === 'audio/m4a' || mime === 'audio/x-m4a') return 'm4a';
+  if (mime === 'audio/aac') return 'aac';
+  if (typeof url === 'string' && url) {
+    try {
+      const pathname = new URL(url, 'https://blea.local').pathname.toLowerCase();
+      if (pathname.endsWith('.wav')) return 'wav';
+      if (pathname.endsWith('.ogg')) return 'ogg';
+      if (pathname.endsWith('.flac')) return 'flac';
+      if (pathname.endsWith('.m4a')) return 'm4a';
+      if (pathname.endsWith('.aac')) return 'aac';
+    } catch { /* fallback to mp3 */ }
+  }
+  return 'mp3';
+}
+
 export function buildDownloadFilename({ kind = 'image', id = '', index = 0, total = 1, url = '', filename = '', mimeType = '' } = {}) {
   const shortId = String(id || 'hasil').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'hasil';
   if (kind === 'metadata') {
@@ -184,6 +224,13 @@ export function buildDownloadFilename({ kind = 'image', id = '', index = 0, tota
     return `clean-blea-${shortId}.${ext}`;
   }
   if (kind === 'video') return `blea-video-${shortId}.mp4`;
+  if (kind === 'music') {
+    const suffix = total > 1 ? `-${index + 1}` : '';
+    return `blea-music-${shortId}${suffix}.${inferAudioExtension(url, mimeType)}`;
+  }
+  if (kind === 'music_cover') {
+    return `blea-cover-${shortId}.${inferImageExtension(url)}`;
+  }
   const suffix = total > 1 ? `-${index + 1}` : '';
   return `blea-image-${shortId}${suffix}.${inferImageExtension(url)}`;
 }

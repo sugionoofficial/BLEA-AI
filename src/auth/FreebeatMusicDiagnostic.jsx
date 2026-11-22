@@ -513,13 +513,23 @@ export function FreebeatMusicDiagnostic({ connected, imageAccess, loading, reque
                     {taskResults[test.id].music_id !== null && taskResults[test.id].music_id !== undefined
                       ? <> · <code>music_id</code>: <strong>{String(taskResults[test.id].music_id)}</strong></>
                       : null}
+                    {taskResults[test.id].title ? <> · Judul: <strong>{taskResults[test.id].title}</strong></> : null}
+                    {typeof taskResults[test.id].duration_ms === 'number' && taskResults[test.id].duration_ms > 0
+                      ? <> · Durasi: <strong>{Math.round(taskResults[test.id].duration_ms / 1000)} dtk</strong></>
+                      : null}
                   </p>
+                  {taskResults[test.id].billing_message && (
+                    <p>Catatan billing: <span>{taskResults[test.id].billing_message}</span></p>
+                  )}
                   <FreebeatCopyResult
                     title="Ringkasan hasil generate_music"
                     value={{
                       status: taskResults[test.id].status,
                       music_id: taskResults[test.id].music_id ?? null,
+                      title: taskResults[test.id].title ?? null,
+                      duration_ms: taskResults[test.id].duration_ms ?? null,
                       billing: taskResults[test.id].billing || null,
+                      billing_message: taskResults[test.id].billing_message ?? null,
                       failure: taskResults[test.id].failure || null,
                       audio_count: taskResults[test.id].audios?.length || 0,
                       has_cover: Boolean(taskResults[test.id].cover_url),

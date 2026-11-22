@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Download, History, RefreshCw } from 'lucide-react';
+import { Disc3, Download, History, RefreshCw } from 'lucide-react';
 import {
   buildDownloadFilename,
   fetchImageHistory,
   fetchImageStatus,
   fetchMetadataHistory,
   fetchMetadataStatus,
+  fetchMusicHistory,
+  fetchMusicStatus,
   fetchVideoHistory,
   fetchVideoStatus,
   withDownloadParam,
@@ -19,7 +21,15 @@ import './history.css';
 const labels = { queued: 'Dalam antrean', in_progress: 'Sedang diproses', processing: 'Sedang diproses', completed: 'Selesai', failed: 'Gagal', cancelled: 'Dibatalkan', expired: 'Kedaluwarsa', unknown: 'Hasil tidak pasti' };
 const isVideoPending = (item) => item.status === 'queued' || item.status === 'in_progress';
 const isImagePending = (item) => item.status === 'queued' || item.status === 'processing';
+const isMusicPending = (item) => item.status === 'queued' || item.status === 'processing';
 const isMetadataPending = (item) => item.status === 'queued' || item.status === 'processing';
+
+function formatMusicDuration(ms) {
+  const num = Number(ms);
+  if (!Number.isFinite(num) || num <= 0) return '';
+  const totalSec = Math.round(num / 1000);
+  return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
+}
 
 export function HistoryPage() {
   const [items, setItems] = useState([]);
@@ -36,9 +46,10 @@ export function HistoryPage() {
     setLoading(true);
     setError('');
     try {
-      const [videoRes, imageRes, metadataRes] = await Promise.all([
+      const [videoRes, imageRes, musicRes, metadataRes] = await Promise.all([
         fetchVideoHistory({ offset }),
         offset === 0 ? fetchImageHistory() : Promise.resolve({ ok: true, data: { generations: [] } }),
+        offset === 0 ? fetchMusicHistory() : Promise.resolve({ ok: true, data: { generations: [] } }),
         offset === 0 ? fetchMetadataHistory({ offset: 0 }) : Promise.resolve({ ok: true, data: { jobs: [] } }),
       ]);
       if (!videoRes.ok || !Array.isArray(videoRes.data?.generations)) {
@@ -47,12 +58,15 @@ export function HistoryPage() {
       }
       const videos = videoRes.data.generations.map((item) => ({ ...item, kind: 'video' }));
       const images = (imageRes.ok && Array.isArray(imageRes.data?.generations) ? imageRes.data.generations : []).map((item) => ({ ...item, kind: 'image' }));
+      const musics = (musicRes.ok && Array.isArray(musicRes.data?.generations) ? musicRes.data.generations : []).map((item) => ({ ...item, kind: 'music' }));
       const metadataItems = (metadataRes.ok && Array.isArray(metadataRes.data?.jobs) ? metadataRes.data.jobs : []).map((item) => ({ ...item, kind: 'metadata' }));
       setItems((previous) => {
-        const base = offset === 0 ? previous.filter((item) => item.kind === 'image' || item.kind === 'metadata') : previous;
-        const incomingIds = new Set([...videos, ...images, ...metadataItems].map((x) => x.id));
+        const base = offset === 0
+          ? previous.filter((item) => item.kind === 'image' || item.kind === 'music' || item.kind === 'metadata')
+          : previous;
+        const incomingIds = new Set([...videos, ...images, ...musics, ...metadataItems].map((x) => x.id));
         const keptOld = base.filter((item) => !incomingIds.has(item.id));
-        const merged = [...keptOld, ...videos, ...images, ...metadataItems];
+        const merged = [...keptOld, ...videos, ...images, ...musics, ...metadataItems];
         return merged.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
       });
       setHasMore(Boolean(videoRes.data.hasMore));
@@ -90,6 +104,11 @@ export function HistoryPage() {
         setItems((previous) => [{ ...image.data.generation, kind: 'image' }, ...previous.filter((item) => item.id !== highlight)]);
         return;
       }
+      const music = await fetchMusicStatus(highlight);
+      if (active && music.ok && music.data?.generation) {
+        setItems((previous) => [{ ...music.data.generation, kind: 'music' }, ...previous.filter((item) => item.id !== highlight)]);
+        return;
+      }
       const meta = await fetchMetadataStatus(highlight);
       if (active && meta.ok && meta.data?.job) {
         setItems((previous) => [{ ...meta.data.job, kind: 'metadata' }, ...previous.filter((item) => item.id !== highlight)]);
@@ -109,19 +128,22 @@ export function HistoryPage() {
   useEffect(() => {
     const pendingVideos = items.filter((item) => item.kind === 'video' && isVideoPending(item)).slice(0, 4);
     const pendingImages = items.filter((item) => item.kind === 'image' && isImagePending(item) && item.canPoll).slice(0, 4);
+    const pendingMusics = items.filter((item) => item.kind === 'music' && isMusicPending(item) && item.canPoll).slice(0, 4);
     const pendingMetadata = items.filter((item) => item.kind === 'metadata' && isMetadataPending(item)).slice(0, 4);
-    if (!pendingVideos.length && !pendingImages.length && !pendingMetadata.length) return undefined;
+    if (!pendingVideos.length && !pendingImages.length && !pendingMusics.length && !pendingMetadata.length) return undefined;
     let active = true;
     const timer = setInterval(async () => {
-      const [videoResults, imageResults, metaResults] = await Promise.all([
+      const [videoResults, imageResults, musicResults, metaResults] = await Promise.all([
         Promise.all(pendingVideos.map((item) => fetchVideoStatus(item.id))),
         Promise.all(pendingImages.map((item) => fetchImageStatus(item.id))),
+        Promise.all(pendingMusics.map((item) => fetchMusicStatus(item.id))),
         Promise.all(pendingMetadata.map((item) => fetchMetadataStatus(item.id))),
       ]);
       if (!active) return;
       const updates = new Map([
         ...videoResults.filter((result) => result.ok && result.data?.generation).map((result) => [result.data.generation.id, { ...result.data.generation, kind: 'video' }]),
         ...imageResults.filter((result) => result.ok && result.data?.generation).map((result) => [result.data.generation.id, { ...result.data.generation, kind: 'image' }]),
+        ...musicResults.filter((result) => result.ok && result.data?.generation).map((result) => [result.data.generation.id, { ...result.data.generation, kind: 'music' }]),
         ...metaResults.filter((result) => result.ok && result.data?.job).map((result) => [result.data.job.id, { ...result.data.job, kind: 'metadata' }]),
       ]);
       if (updates.size) setItems((current) => current.map((item) => updates.get(item.id) || item));
@@ -133,9 +155,11 @@ export function HistoryPage() {
   const hasPendingItems = items.some((item) => (
     item.kind === 'image'
       ? isImagePending(item)
-      : item.kind === 'metadata'
-        ? isMetadataPending(item)
-        : isVideoPending(item)
+      : item.kind === 'music'
+        ? isMusicPending(item)
+        : item.kind === 'metadata'
+          ? isMetadataPending(item)
+          : isVideoPending(item)
   ));
   const liveNowMs = useNowTick(hasPendingItems, 1000);
   const { perPage, setPerPage, page, setPage, pageCount, slice, total } = usePagedList(filtered);
@@ -147,11 +171,12 @@ export function HistoryPage() {
     <DropXLayout title="History" description="Riwayat generasi milik Anda.">
       <div className="history-page">
         <div className="history-toolbar">
-          <p>Video dan gambar yang Anda buat ditampilkan di sini. Status yang sedang diproses diperbarui otomatis.</p>
+          <p>Video, musik, dan gambar yang Anda buat ditampilkan di sini. Status yang sedang diproses diperbarui otomatis.</p>
           <div className="history-filters" role="group" aria-label="Saring riwayat">
             <button type="button" className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>Semua</button>
             <button type="button" className={filter === 'video' ? 'is-active' : ''} onClick={() => setFilter('video')}>Video</button>
             <button type="button" className={filter === 'image' ? 'is-active' : ''} onClick={() => setFilter('image')}>Gambar</button>
+            <button type="button" className={filter === 'music' ? 'is-active' : ''} onClick={() => setFilter('music')}>Musik</button>
             <button type="button" className={filter === 'metadata' ? 'is-active' : ''} onClick={() => setFilter('metadata')}>Metadata</button>
             <PerPageSelect id="history-per-page" value={perPage} onChange={setPerPage} options={[10, 50, 100]} />
             <button type="button" onClick={() => load()} disabled={loading}><RefreshCw size={15} /> Perbarui</button>
@@ -159,7 +184,7 @@ export function HistoryPage() {
         </div>
         {error && <div className="history-error" role="alert">{error}</div>}
         {loading && !visible.length ? <p role="status">Memuat riwayat…</p> : !visible.length && !error ? (
-          <div className="history-empty"><History size={28} /><h2>Belum ada riwayat</h2><p>Video dan gambar yang dibuat akan muncul di sini.</p><Link to="/generate">Buat generasi</Link></div>
+          <div className="history-empty"><History size={28} /><h2>Belum ada riwayat</h2><p>Video, musik, dan gambar yang dibuat akan muncul di sini.</p><Link to="/generate">Buat generasi</Link></div>
         ) : (
           <div className="history-grid">
             {visible.map((item) => {
@@ -168,11 +193,23 @@ export function HistoryPage() {
                   ? item.image_urls
                   : (item.image_url ? [item.image_url] : []))
                 : [];
+              const audioStreams = item.kind === 'music'
+                ? (Array.isArray(item.audio_stream_urls) && item.audio_stream_urls.length > 0
+                  ? item.audio_stream_urls
+                  : (item.audio_stream_url ? [item.audio_stream_url] : []))
+                : [];
+              const audioDownloads = item.kind === 'music'
+                ? (Array.isArray(item.download_urls) && item.download_urls.length > 0
+                  ? item.download_urls
+                  : (item.download_url ? [item.download_url] : audioStreams))
+                : [];
               const pending = item.kind === 'image'
                 ? isImagePending(item)
-                : item.kind === 'metadata'
-                  ? isMetadataPending(item)
-                  : isVideoPending(item);
+                : item.kind === 'music'
+                  ? isMusicPending(item)
+                  : item.kind === 'metadata'
+                    ? isMetadataPending(item)
+                    : isVideoPending(item);
               const metaTools = item.kind === 'metadata' && Array.isArray(item.detected_tools)
                 ? item.detected_tools.filter(Boolean).join(', ')
                 : '';
@@ -185,6 +222,7 @@ export function HistoryPage() {
                     Number(item.removed_count || 0) > 0 ? `${item.removed_count} metadata dibersihkan` : null,
                   ].filter(Boolean).join(' · ')
                 : '';
+              const musicDuration = item.kind === 'music' ? formatMusicDuration(item.duration_ms) : '';
               return (
               <article className={`history-card${highlight === item.id ? ' is-highlighted' : ''}`} id={`history-item-${item.id}`} key={`${item.kind}-${item.id}`}>
                 {item.kind === 'metadata'
@@ -198,6 +236,14 @@ export function HistoryPage() {
                   : item.kind === 'image'
                   ? (item.status === 'completed' && imageUrls[0]
                     ? <img src={imageUrls[0]} alt={item.prompt || 'Hasil generasi gambar'} loading="lazy" />
+                    : pending
+                      ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status} · {formatElapsedRuntime(item.created_at, liveNowMs)}</span></div>
+                      : <div className="history-preview">{labels[item.status] || item.status}</div>)
+                  : item.kind === 'music'
+                  ? (item.status === 'completed'
+                    ? (item.cover_stream_url
+                      ? <img src={item.cover_stream_url} alt={item.title || item.prompt || 'Cover musik'} loading="lazy" />
+                      : <div className="history-preview is-music-cover" aria-hidden="true"><Disc3 size={34} /></div>)
                     : pending
                       ? <div className="history-preview generate-img-loader" role="status"><div className="generate-aurora is-subtle" aria-hidden="true" /><span className="generate-img-orbit" aria-hidden="true" /><span className="generate-loader-badge"><span className="generate-pulse-dot" aria-hidden="true" />{labels[item.status] || item.status} · {formatElapsedRuntime(item.created_at, liveNowMs)}</span></div>
                       : <div className="history-preview">{labels[item.status] || item.status}</div>)
@@ -216,13 +262,18 @@ export function HistoryPage() {
                       ? `Cek Metadata · ${item.media_kind === 'video' ? 'Video' : 'Gambar'}`
                       : item.kind === 'image'
                         ? `Gambar · ${item.model || '—'}`
-                        : (item.model || 'Video')}
+                        : item.kind === 'music'
+                          ? (item.title || `Musik · ${item.model_name || item.model || '—'}`)
+                          : (item.model || 'Video')}
                   </h2>
                   <p className="history-prompt">
                     {item.kind === 'metadata' ? metaSummary : (item.prompt || 'Tanpa prompt')}
                   </p>
                   <p className="history-meta">
                     {item.created_at ? new Date(item.created_at).toLocaleString('id-ID') : '—'} · {item.kind === 'metadata' ? 'Metadata Cleaner' : item.provider}
+                    {item.kind === 'music' && item.model_name ? ` · ${item.model_name}` : ''}
+                    {musicDuration ? ` · ${musicDuration}` : ''}
+                    {item.kind === 'music' && item.instrumental ? ' · Instrumental' : ''}
                     {item.credits_charged ? ` · ${item.credits_charged} kredit${item.credits_refunded > 0 ? ` · ${item.credits_refunded} dikembalikan` : ''}` : ''}
                   </p>
                   {item.error_message && <p className="history-error-text">{item.error_message}</p>}
@@ -271,6 +322,39 @@ export function HistoryPage() {
                       })}
                     </div>
                   )}
+                  {item.kind === 'music' && item.status === 'completed' && audioStreams.length > 0 && (
+                    <div className="history-music-players">
+                      {audioStreams.map((streamUrl, idx) => {
+                        const downloadHref = withDownloadParam(audioDownloads[idx] || streamUrl);
+                        return (
+                          <div className="history-music-track" key={`${item.id}-track-${idx}`}>
+                            <audio controls preload="metadata" src={streamUrl} aria-label={item.title || `Audio ${idx + 1}`} />
+                            <div className="history-card-actions">
+                              <a
+                                className="history-download-btn"
+                                href={downloadHref}
+                                download={buildDownloadFilename({ kind: 'music', id: item.id, index: idx, total: audioStreams.length, url: downloadHref })}
+                              >
+                                <Download size={14} aria-hidden="true" />
+                                {audioStreams.length > 1 ? `Unduh audio #${idx + 1}` : 'Unduh audio'}
+                              </a>
+                              <a href={streamUrl} target="_blank" rel="noopener noreferrer">
+                                {audioStreams.length > 1 ? `Buka audio #${idx + 1}` : 'Buka audio'}
+                              </a>
+                              {idx === 0 && item.cover_download_url && (
+                                <a
+                                  href={withDownloadParam(item.cover_download_url)}
+                                  download={buildDownloadFilename({ kind: 'music_cover', id: item.id, url: item.cover_download_url })}
+                                >
+                                  Unduh cover
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {item.kind === 'video' && item.status === 'completed' && item.result_url && (
                     <div className="history-card-actions">
                       <a
@@ -291,7 +375,7 @@ export function HistoryPage() {
           </div>
         )}
         <Pager page={page} pageCount={pageCount} total={total} onPage={setPage} />
-        {hasMore && filter !== 'image' && <button className="history-more" type="button" onClick={() => load(nextOffset)} disabled={loading}>{loading ? 'Memuat…' : 'Muat lebih banyak'}</button>}
+        {hasMore && filter !== 'image' && filter !== 'music' && filter !== 'metadata' && <button className="history-more" type="button" onClick={() => load(nextOffset)} disabled={loading}>{loading ? 'Memuat…' : 'Muat lebih banyak'}</button>}
       </div>
     </DropXLayout>
   );

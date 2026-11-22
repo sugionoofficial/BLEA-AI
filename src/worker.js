@@ -54,12 +54,19 @@ import {
   consumerImageGenerate,
   consumerImageHistory,
   consumerImageStatus,
+  consumerMusicConfig,
+  consumerMusicGenerate,
+  consumerMusicHistory,
+  consumerMusicStatus,
   consumerVocalGenerate,
   fetchFreebeatCatalogModels,
   freebeatCallback,
   handleFreebeat,
   pollFreebeatImageRow,
+  pollFreebeatMusicRow,
+  refreshMusicRowUrls,
   sanitizeImageRow,
+  sanitizeMusicRow,
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
@@ -694,7 +701,7 @@ function isAlibabaChatCatalogModel(modelId) {
 }
 
 // Modality harga yang menandakan model bukan teks/chat.
-const NON_CHAT_MODALITIES = new Set(['image', 'image_edit', 'image_edit_2k', 'video', 'speech', 'embedding']);
+const NON_CHAT_MODALITIES = new Set(['image', 'image_edit', 'image_edit_2k', 'video', 'music', 'speech', 'embedding']);
 
 // Model yang punya harga eksplisit non-teks di credit_model_prices tidak boleh
 // muncul di daftar Chat, walau namanya tidak cocok dengan pola di atas.
@@ -1414,6 +1421,12 @@ function contentAttachmentFilename(prefix, id, contentType, fallbackExt, suffix 
   else if (mime === 'image/jpeg' || mime === 'image/jpg') ext = 'jpg';
   else if (mime === 'image/webp') ext = 'webp';
   else if (mime === 'image/gif') ext = 'gif';
+  else if (mime === 'audio/mpeg' || mime === 'audio/mp3') ext = 'mp3';
+  else if (mime === 'audio/wav' || mime === 'audio/x-wav') ext = 'wav';
+  else if (mime === 'audio/ogg') ext = 'ogg';
+  else if (mime === 'audio/mp4' || mime === 'audio/m4a' || mime === 'audio/x-m4a') ext = 'm4a';
+  else if (mime === 'audio/aac') ext = 'aac';
+  else if (mime === 'audio/flac') ext = 'flac';
   return `${prefix}-${safeId}${suffix}.${ext}`;
 }
 
@@ -1475,6 +1488,57 @@ async function attachImageDownloadUrls(generation, env) {
 async function attachImageHistoryDownloads(result, env) {
   if (!result || !Array.isArray(result.generations)) return result;
   const generations = await Promise.all(result.generations.map((item) => attachImageDownloadUrls(item, env)));
+  return { ...result, generations };
+}
+
+async function signMusicContentUrl(id, kind, index, env, { download = false, ttlMs = 2 * 60 * 60 * 1000 } = {}) {
+  const exp = String(Date.now() + ttlMs);
+  const msg = new TextEncoder().encode(`mus:${id}:${kind}:${index}:${exp}`);
+  const sigBytes = new Uint8Array(await crypto.subtle.sign('HMAC', await videoMediaKey(env), msg));
+  const sig = base64url(sigBytes);
+  return `/api/music/content/${encodeURIComponent(id)}?kind=${encodeURIComponent(kind)}&index=${index}&exp=${encodeURIComponent(exp)}&sig=${encodeURIComponent(sig)}${download ? '&download=1' : ''}`;
+}
+
+async function verifyMusicContentSig(id, kind, index, exp, sig, env) {
+  try {
+    if (!id || (kind !== 'audio' && kind !== 'cover') || !exp || !sig || !Number.isInteger(index) || index < 0 || index >= 10) return false;
+    const expNum = Number(exp);
+    if (!Number.isFinite(expNum) || Date.now() > expNum) return false;
+    const msg = new TextEncoder().encode(`mus:${id}:${kind}:${index}:${exp}`);
+    return await crypto.subtle.verify('HMAC', await videoMediaKey(env), unbase64url(sig), msg);
+  } catch {
+    return false;
+  }
+}
+
+async function attachMusicMediaUrls(generation, env) {
+  if (!generation || generation.status !== 'completed' || !generation.id) return generation;
+  const audioCount = Math.max(0, Number(generation.audio_count || (generation.has_audio ? 1 : 0)));
+  const audioStreamUrls = audioCount > 0
+    ? await Promise.all(Array.from({ length: Math.min(audioCount, 10) }, (_, idx) => signMusicContentUrl(generation.id, 'audio', idx, env, { download: false })))
+    : [];
+  const audioDownloadUrls = audioCount > 0
+    ? await Promise.all(Array.from({ length: Math.min(audioCount, 10) }, (_, idx) => signMusicContentUrl(generation.id, 'audio', idx, env, { download: true })))
+    : [];
+  const coverUrl = generation.has_cover
+    ? await signMusicContentUrl(generation.id, 'cover', 0, env, { download: false })
+    : null;
+  const coverDownloadUrl = generation.has_cover
+    ? await signMusicContentUrl(generation.id, 'cover', 0, env, { download: true })
+    : null;
+  return {
+    ...generation,
+    audio_stream_url: audioStreamUrls[0] || null,
+    download_url: audioDownloadUrls[0] || null,
+    ...(audioStreamUrls.length > 1 ? { audio_stream_urls: audioStreamUrls, download_urls: audioDownloadUrls } : {}),
+    cover_stream_url: coverUrl,
+    cover_download_url: coverDownloadUrl,
+  };
+}
+
+async function attachMusicHistoryMedia(result, env) {
+  if (!result || !Array.isArray(result.generations)) return result;
+  const generations = await Promise.all(result.generations.map((item) => attachMusicMediaUrls(item, env)));
   return { ...result, generations };
 }
 
@@ -2997,6 +3061,138 @@ async function handleApi(request, url, env) {
       });
     }
 
+    // ---- GET/HEAD /api/music/content/:id: signed or authorized audio/cover stream proxy ----
+    if (path.startsWith('music/content/') && (method === 'GET' || method === 'HEAD')) {
+      const id = decodeURIComponent(path.slice('music/content/'.length));
+      if (!id) return jsonResponse({ error: 'Missing generation id' }, 400);
+
+      const rawKind = (url.searchParams.get('kind') || 'audio').trim().toLowerCase();
+      const kind = rawKind === 'cover' ? 'cover' : (rawKind === 'audio' ? 'audio' : null);
+      if (!kind) return jsonResponse({ error: 'Invalid media kind' }, 400);
+
+      const rawIndex = url.searchParams.get('index');
+      const index = rawIndex === null || rawIndex === '' ? 0 : Number(rawIndex);
+      if (!Number.isInteger(index) || index < 0 || index >= 10) {
+        return jsonResponse({ error: 'Invalid media index' }, 400);
+      }
+
+      const exp = url.searchParams.get('exp');
+      const sig = url.searchParams.get('sig');
+      const sigOk = await verifyMusicContentSig(id, kind, index, exp, sig, env);
+      let user = null;
+      if (!sigOk) {
+        const bearer = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+        user = bearer ? await getUser(env, bearer) : null;
+        if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      const rowRes = await servicePostgrest(
+        env,
+        `/music_generations?select=id,user_id,audio_url,cover_url,external_job_id,metadata,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+      );
+      const rows = await rowRes.json().catch(() => []);
+      const row = rows?.[0];
+      if (!row) return jsonResponse({ error: 'Music not found' }, 404);
+      if (!sigOk && row.user_id !== user.id && user?.app_metadata?.role !== 'admin') {
+        return jsonResponse({ error: 'Forbidden' }, 403);
+      }
+
+      const resolveMusicTarget = (srcRow) => {
+        if (kind === 'cover') return typeof srcRow?.cover_url === 'string' && srcRow.cover_url.trim() ? srcRow.cover_url.trim() : null;
+        const candidates = [];
+        for (const cand of [srcRow?.audio_url, ...(Array.isArray(srcRow?.metadata?.audios) ? srcRow.metadata.audios : [])]) {
+          if (typeof cand !== 'string') continue;
+          const trimmed = cand.trim();
+          if (trimmed && !candidates.includes(trimmed)) candidates.push(trimmed);
+        }
+        return candidates[index] || null;
+      };
+
+      let targetUrl = resolveMusicTarget(row);
+      if (!targetUrl && row.external_job_id) {
+        const refreshed = await refreshMusicRowUrls(env, row).catch(() => null);
+        if (refreshed) targetUrl = resolveMusicTarget({ ...row, ...refreshed });
+      }
+      if (!targetUrl) return jsonResponse({ error: 'Music content URL unavailable' }, 404);
+
+      const wantDownload = url.searchParams.get('download') === '1';
+      const range = request.headers.get('range');
+      const fetchSafeUpstream = async (startUrl) => {
+        if (!isSafeRemoteMediaUrl(startUrl)) return { rejected: true, status: 400 };
+        let currentUrl = startUrl;
+        let res = null;
+        for (let hop = 0; hop <= 3; hop += 1) {
+          res = await fetch(currentUrl, {
+            method,
+            headers: range && !wantDownload && kind === 'audio' ? { range } : {},
+            redirect: 'manual',
+            signal: AbortSignal.timeout(45_000),
+          });
+          if (res.status >= 300 && res.status < 400) {
+            const location = res.headers.get('location');
+            if (!location || hop === 3) return { res, finalUrl: currentUrl, redirectFailed: true };
+            const resolved = new URL(location, currentUrl).toString();
+            if (!isSafeRemoteMediaUrl(resolved)) return { rejected: true, status: 400 };
+            currentUrl = resolved;
+            continue;
+          }
+          break;
+        }
+        return { res, finalUrl: currentUrl };
+      };
+
+      let fetched = await fetchSafeUpstream(targetUrl);
+      if (!fetched.rejected && fetched.res && [403, 404, 410].includes(fetched.res.status) && row.external_job_id) {
+        const refreshed = await refreshMusicRowUrls(env, row).catch(() => null);
+        const refreshedUrl = refreshed ? resolveMusicTarget({ ...row, ...refreshed }) : null;
+        if (refreshedUrl && refreshedUrl !== targetUrl) {
+          targetUrl = refreshedUrl;
+          fetched = await fetchSafeUpstream(refreshedUrl);
+        }
+      }
+      if (fetched.rejected) {
+        return jsonResponse({ error: 'Music content URL rejected' }, 400);
+      }
+      const upstream = fetched.res;
+      if (fetched.redirectFailed || !upstream || (!upstream.ok && upstream.status !== 206)) {
+        const text = upstream ? await upstream.text().catch(() => '') : '';
+        return jsonResponse({ error: 'Failed to stream upstream music media', status: upstream?.status || 502, detail: text.slice(0, 300) }, 502);
+      }
+
+      const rawType = (upstream.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (kind === 'cover' && rawType === 'image/svg+xml') {
+        return jsonResponse({ error: 'Unsupported cover content type' }, 502);
+      }
+      let contentType = rawType;
+      if (!contentType || contentType === 'application/octet-stream') {
+        const pathLower = new URL(fetched.finalUrl || targetUrl).pathname.toLowerCase();
+        if (kind === 'cover') {
+          contentType = pathLower.endsWith('.png') ? 'image/png' : pathLower.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+        } else {
+          contentType = pathLower.endsWith('.wav') ? 'audio/wav' : pathLower.endsWith('.ogg') ? 'audio/ogg' : pathLower.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg';
+        }
+      }
+
+      const respHeaders = new Headers();
+      for (const h of ['content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+        const v = upstream.headers.get(h);
+        if (v) respHeaders.set(h, v);
+      }
+      respHeaders.set('content-type', contentType);
+      respHeaders.set('cache-control', 'private, no-store');
+      respHeaders.set('x-content-type-options', 'nosniff');
+      if (wantDownload) {
+        respHeaders.set(
+          'content-disposition',
+          `attachment; filename="${contentAttachmentFilename(kind === 'cover' ? 'blea-cover' : 'blea-music', id, contentType, kind === 'cover' ? 'jpg' : 'mp3')}"`,
+        );
+      }
+      return new Response(method === 'HEAD' ? null : upstream.body, {
+        status: upstream.status,
+        headers: respHeaders,
+      });
+    }
+
     // ---- /status: configured providers & readiness ----
     if (path === 'status' && (method === 'GET' || method === 'POST')) {
       const res = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url,label');
@@ -3328,7 +3524,7 @@ async function handleApi(request, url, env) {
         for (const r of [...(Array.isArray(pmRows) ? pmRows : []), ...(Array.isArray(priceRows) ? priceRows : [])]) {
           const id = String(r?.model || '').trim();
           if (!id || byId.has(id)) continue;
-          const cat = r?.modality === 'video' || /video/i.test(id) ? 'Video' : 'Image';
+          const cat = r?.modality === 'video' || /video/i.test(id) ? 'Video' : r?.modality === 'music' ? 'Music' : 'Image';
           const entry = {
             id,
             name: id,
@@ -3754,6 +3950,73 @@ async function handleApi(request, url, env) {
         return jsonResponse({ ok: true, ...(await attachImageHistoryDownloads(await consumerImageHistory(env, user), env)) });
       } catch (err) {
         return jsonResponse({ error: err?.message || 'Riwayat gambar tidak tersedia' }, err?.status || 500);
+      }
+    }
+
+    // ---- /music/*: generate musik Freebeat untuk semua user (kredit BLEA) ----
+    if (path === 'music/config' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        const config = await consumerMusicConfig(env);
+        const isCallerAdmin = user?.app_metadata?.role === 'admin';
+        return jsonResponse({
+          ok: true,
+          provider_ready: config.provider_ready,
+          models: config.models,
+          ceiling: config.ceiling,
+          min_margin: config.min_margin,
+          ...(isCallerAdmin && config.unpriced?.length > 0 ? { freebeat_unpriced: config.unpriced } : {}),
+        });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Konfigurasi musik tidak tersedia' }, err?.status || 500);
+      }
+    }
+
+    if (path === 'music/generate' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        const result = await consumerMusicGenerate(env, request, user);
+        return jsonResponse({
+          ok: true,
+          ...result,
+          ...(result?.generation ? { generation: await attachMusicMediaUrls(result.generation, env) } : {}),
+        });
+      } catch (err) {
+        return jsonResponse({
+          error: err?.message || 'Generasi musik gagal',
+          ...(err?.code ? { code: err.code } : {}),
+        }, err?.status || 500);
+      }
+    }
+
+    if (path === 'music/status' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        const result = await consumerMusicStatus(env, request, user);
+        return jsonResponse({
+          ok: true,
+          ...result,
+          ...(result?.generation ? { generation: await attachMusicMediaUrls(result.generation, env) } : {}),
+        });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Status musik tidak tersedia' }, err?.status || 500);
+      }
+    }
+
+    if (path === 'music/history' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Missing or invalid token' }, 401);
+      try {
+        return jsonResponse({ ok: true, ...(await attachMusicHistoryMedia(await consumerMusicHistory(env, user), env)) });
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Riwayat musik tidak tersedia' }, err?.status || 500);
       }
     }
 
@@ -4298,28 +4561,33 @@ async function handleApi(request, url, env) {
         const now = Date.now();
         const recentCutoffMs = now - LIVE_RECENT_COMPLETED_MS;
         const recentCutoffIso = new Date(recentCutoffMs).toISOString();
-        const [vidActiveRes, imgActiveRes, vidDoneRes, imgDoneRes, metaActiveRes, metaDoneRes] = await Promise.all([
+        const [vidActiveRes, imgActiveRes, musActiveRes, vidDoneRes, imgDoneRes, musDoneRes, metaActiveRes, metaDoneRes] = await Promise.all([
           servicePostgrest(env, '/video_generations?select=*&status=in.(queued,in_progress)&order=created_at.desc,id.desc&limit=100'),
           servicePostgrest(env, '/image_generations?select=*&status=in.(queued,processing,unknown)&order=created_at.desc,id.desc&limit=100'),
+          servicePostgrest(env, '/music_generations?select=*&status=in.(queued,processing,unknown)&order=created_at.desc,id.desc&limit=100').catch(() => null),
           servicePostgrest(env, `/video_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`),
           servicePostgrest(env, `/image_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`),
+          servicePostgrest(env, `/music_generations?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`).catch(() => null),
           servicePostgrest(env, '/metadata_jobs?select=*&status=in.(queued,processing)&order=created_at.desc,id.desc&limit=100').catch(() => null),
           servicePostgrest(env, `/metadata_jobs?select=*&status=eq.completed&updated_at=gte.${encodeURIComponent(recentCutoffIso)}&order=updated_at.desc,id.desc&limit=20`).catch(() => null),
         ]);
         const activeVideos = vidActiveRes?.ok ? await vidActiveRes.json().catch(() => []) : [];
         const activeImages = imgActiveRes?.ok ? await imgActiveRes.json().catch(() => []) : [];
+        const activeMusic = musActiveRes?.ok ? await musActiveRes.json().catch(() => []) : [];
         const doneVideos = vidDoneRes?.ok ? await vidDoneRes.json().catch(() => []) : [];
         const doneImages = imgDoneRes?.ok ? await imgDoneRes.json().catch(() => []) : [];
+        const doneMusic = musDoneRes?.ok ? await musDoneRes.json().catch(() => []) : [];
         const activeMeta = metaActiveRes?.ok ? await metaActiveRes.json().catch(() => []) : [];
         const doneMeta = metaDoneRes?.ok ? await metaDoneRes.json().catch(() => []) : [];
         return {
           videos: mergeUniqueById(Array.isArray(activeVideos) ? activeVideos : [], Array.isArray(doneVideos) ? doneVideos : [], recentCutoffMs),
           images: mergeUniqueById(Array.isArray(activeImages) ? activeImages : [], Array.isArray(doneImages) ? doneImages : [], recentCutoffMs),
+          musicJobs: mergeUniqueById(Array.isArray(activeMusic) ? activeMusic : [], Array.isArray(doneMusic) ? doneMusic : [], recentCutoffMs),
           metadataJobs: mergeUniqueById(Array.isArray(activeMeta) ? activeMeta : [], Array.isArray(doneMeta) ? doneMeta : [], recentCutoffMs),
         };
       };
 
-      let { videos, images, metadataJobs } = await fetchLiveRows();
+      let { videos, images, musicJobs, metadataJobs } = await fetchLiveRows();
       if (shouldPoll) {
         const now = Date.now();
         const staleCandidates = [
@@ -4329,6 +4597,9 @@ async function handleApi(request, url, env) {
           ...images
             .filter((row) => ['queued', 'processing'].includes(row.status) && row.external_job_id)
             .map((row) => ({ kind: 'image', row, ts: Date.parse(row.updated_at || row.created_at || '') || 0 })),
+          ...musicJobs
+            .filter((row) => ['queued', 'processing'].includes(row.status) && row.external_job_id)
+            .map((row) => ({ kind: 'music', row, ts: Date.parse(row.updated_at || row.created_at || '') || 0 })),
         ]
           .filter((entry) => now - entry.ts >= 2500)
           .sort((a, b) => a.ts - b.ts)
@@ -4337,16 +4608,17 @@ async function handleApi(request, url, env) {
         if (staleCandidates.length > 0) {
           await Promise.allSettled(staleCandidates.map((entry) => {
             if (entry.kind === 'video') return pollVideoGenerationRow(env, entry.row);
+            if (entry.kind === 'music') return pollFreebeatMusicRow(env, entry.row);
             if (entry.row.provider === 'freebeat') return pollFreebeatImageRow(env, entry.row);
             return alibabaImageStatus(env, { id: entry.row.user_id }, entry.row);
           }));
-          ({ videos, images, metadataJobs } = await fetchLiveRows());
+          ({ videos, images, musicJobs, metadataJobs } = await fetchLiveRows());
         }
       }
 
       const profileMap = new Map();
       const userIds = Array.from(new Set(
-        [...videos, ...images, ...metadataJobs]
+        [...videos, ...images, ...musicJobs, ...metadataJobs]
           .map((row) => String(row?.user_id || '').trim())
           .filter((id) => LIVE_UUID_RE.test(id)),
       ));
@@ -4371,6 +4643,7 @@ async function handleApi(request, url, env) {
       const items = [
         ...videos.map((row) => formatLiveQueueItem(row, 'video', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
         ...images.map((row) => formatLiveQueueItem(row, 'image', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
+        ...musicJobs.map((row) => formatLiveQueueItem(row, 'music', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
         ...metadataJobs.map((row) => formatLiveQueueItem(row, 'metadata', { isAdmin, viewerId: user.id, viewerName, profileMap, nowMs })),
       ].sort((a, b) => compareRaceItems(a, b, nowMs));
 
@@ -4385,6 +4658,7 @@ async function handleApi(request, url, env) {
           total: activeItems.length,
           video: activeItems.filter((item) => item.kind === 'video').length,
           image: activeItems.filter((item) => item.kind === 'image').length,
+          music: activeItems.filter((item) => item.kind === 'music').length,
           metadata: activeItems.filter((item) => item.kind === 'metadata').length,
           completed: completedItems.length,
           own: items.filter((item) => item.is_own).length,
@@ -4412,9 +4686,17 @@ async function handleApi(request, url, env) {
       const kind = String(body?.kind || '').trim().toLowerCase();
       const reason = String(body?.reason || '').trim().slice(0, 200);
       if (!LIVE_UUID_RE.test(id)) return jsonResponse({ error: 'ID generasi tidak valid.' }, 400);
-      if (kind !== 'video' && kind !== 'image' && kind !== 'metadata') return jsonResponse({ error: 'Jenis generasi harus video, image, atau metadata.' }, 400);
+      if (kind !== 'video' && kind !== 'image' && kind !== 'music' && kind !== 'metadata') {
+        return jsonResponse({ error: 'Jenis generasi harus video, image, music, atau metadata.' }, 400);
+      }
 
-      const table = kind === 'video' ? 'video_generations' : kind === 'metadata' ? 'metadata_jobs' : 'image_generations';
+      const table = kind === 'video'
+        ? 'video_generations'
+        : kind === 'music'
+          ? 'music_generations'
+          : kind === 'metadata'
+            ? 'metadata_jobs'
+            : 'image_generations';
       const activeStatuses = kind === 'video'
         ? 'queued,in_progress'
         : kind === 'metadata'
@@ -4462,7 +4744,7 @@ async function handleApi(request, url, env) {
           : `Refund: proses ${kind} ${row.provider} (${row.model}) dibatalkan oleh admin`;
         const refunded = kind === 'video'
           ? await refundVideoCredits(env, row.user_id, charged, row.id, desc)
-          : kind === 'metadata'
+          : (kind === 'metadata' || kind === 'music')
             ? await creditRpc(env, 'refund_credits', { p_user_id: row.user_id, p_amount: charged, p_description: desc, p_generation_id: row.id })
             : await refundImageCredits(env, row.user_id, charged, row.id, desc);
         if (refunded) {
@@ -4483,9 +4765,11 @@ async function handleApi(request, url, env) {
         refunded: refundedAmount,
         generation: kind === 'video'
           ? await sanitizeGenerationRow(patched[0], env)
-          : kind === 'metadata'
-            ? await sanitizeMetadataJobRow(patched[0], env)
-            : sanitizeImageRow(patched[0]),
+          : kind === 'music'
+            ? sanitizeMusicRow(patched[0])
+            : kind === 'metadata'
+              ? await sanitizeMetadataJobRow(patched[0], env)
+              : sanitizeImageRow(patched[0]),
       });
     }
 

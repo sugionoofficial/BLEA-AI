@@ -23,6 +23,7 @@ import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../l
 import { formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
 import { probeMediaDurationMs } from '../lib/freebeatVideoUpload';
 import { GenerateImagePanel } from './GenerateImagePanel';
+import { GenerateMusicPanel } from './GenerateMusicPanel';
 import { ModelSelect } from './ModelSelect';
 import './generate.css';
 
@@ -120,7 +121,11 @@ export function GeneratePage() {
   const { balance, refresh: refreshBalance } = useCredits(user?.id);
   const [searchParams] = useSearchParams();
 
-  const [mode, setMode] = useState(() => searchParams.get('mode') === 'image' ? 'image' : 'video');
+  const [mode, setMode] = useState(() => {
+    const raw = searchParams.get('mode');
+    if (raw === 'image' || raw === 'music') return raw;
+    return 'video';
+  });
   const [models, setModels] = useState([]);
   const [selectedModelKey, setSelectedModelKey] = useState('');
   const [workerMode, setWorkerMode] = useState('checking'); // 'ready' | 'unavailable' | 'checking'
@@ -718,14 +723,19 @@ export function GeneratePage() {
   return (
     <DropXLayout
       title="Generate"
-      description="Studio gambar & video AI"
+      description="Studio gambar, musik & video AI"
     >
       <div className="generate-page">
         <div className="generate-mode-tabs" role="tablist" aria-label="Jenis generasi">
           <button type="button" role="tab" aria-selected={mode === 'image'} onClick={() => setMode('image')}>Generate gambar</button>
+          <button type="button" role="tab" aria-selected={mode === 'music'} onClick={() => setMode('music')}>Generate musik</button>
           <button type="button" role="tab" aria-selected={mode === 'video'} onClick={() => setMode('video')}>Generate video</button>
         </div>
-        {mode === 'image' ? <GenerateImagePanel initialPrompt={searchParams.get('prompt') || ''} /> : <>
+        {mode === 'image' ? (
+          <GenerateImagePanel initialPrompt={searchParams.get('prompt') || ''} />
+        ) : mode === 'music' ? (
+          <GenerateMusicPanel initialPrompt={searchParams.get('prompt') || ''} />
+        ) : <>
         {workerMode === 'unavailable' && (
           <div className="generate-banner" role="status">
             <span>Katalog video sedang tidak dapat dimuat.</span>

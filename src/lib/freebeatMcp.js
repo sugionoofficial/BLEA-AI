@@ -3444,6 +3444,17 @@ function extractMusicAudioUrls(source) {
   return audios;
 }
 
+function extractMusicCoverUrl(source) {
+  return safeImageUrl(
+    source?.result?.cover_url
+    || source?.cover_url
+    || source?.result?.image_url
+    || source?.image_url
+    || source?.items?.[0]?.cover_url
+    || source?.result?.items?.[0]?.cover_url,
+  );
+}
+
 async function pollMusic(env, user, session, request) {
   const input = await imageJson(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !['id', 'acknowledge', 'private_result'].includes(k)) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
@@ -3495,22 +3506,23 @@ async function pollMusic(env, user, session, request) {
   if (billingSummary.net === null && summary.billing.net !== null) {
     billingSummary.net = summary.billing.net;
   }
-  const cover_url = safeImageUrl(
-    source?.result?.cover_url
-    || source?.cover_url
-    || source?.result?.image_url
-    || source?.image_url
-    || source?.items?.[0]?.cover_url
-    || source?.result?.items?.[0]?.cover_url,
-  );
+  const cover_url = extractMusicCoverUrl(source);
+  const isFailureStatus = ['failed', 'partial_failed', 'cancelled', 'expired', 'action_required'].includes(summary.status);
+  const rawTitle = source?.result?.title ?? source?.title;
+  const title = typeof rawTitle === 'string' && rawTitle.trim() ? privateFailureReason(rawTitle.trim())?.slice(0, 200) : null;
+  const rawDurationMs = source?.result?.duration_ms ?? source?.duration_ms;
+  const duration_ms = typeof rawDurationMs === 'number' && Number.isFinite(rawDurationMs) && rawDurationMs >= 0 ? Math.round(rawDurationMs) : null;
   return {
     status: summary.status,
     message: privateFailureReason(statusContent.message || source?.message || ''),
     billing: billingSummary,
+    billing_message: privateFailureReason(source?.billing_message || source?.billing?.message || ''),
     music_id: extractResultMusicId(source),
+    title,
+    duration_ms,
     audios: extractMusicAudioUrls(source),
     cover_url,
-    failure: safeVideoFailure(source?.failure || statusContent?.failure) || safeOpenRpcFailure(source) || safeOpenRpcFailure(statusContent),
+    failure: safeVideoFailure(source?.failure || statusContent?.failure) || (isFailureStatus ? (safeOpenRpcFailure(source) || safeOpenRpcFailure(statusContent)) : null),
     ...(input.private_result === true ? { private_structure: privateModelHelp(source).help } : {}),
   };
 }
@@ -4617,6 +4629,13 @@ export function sanitizeImageRow(row) {
     canPoll: ['queued', 'processing'].includes(row.status) && typeof row.external_job_id === 'string' && TASK_ID.test(row.external_job_id),
   };
 }
+const FREEBEAT_BUILTIN_MUSIC_MODELS = [
+  { model_id: 129, name: 'Lyria 3 Pro', supports_duration: false, supports_lyrics: null, supports_instrumental: null, requires_lyrics: false },
+  { model_id: 194, name: 'Suno v6', supports_duration: false, supports_lyrics: null, supports_instrumental: null, requires_lyrics: false },
+  { model_id: 130, name: 'MiniMax Music 3', supports_duration: false, supports_lyrics: null, supports_instrumental: null, requires_lyrics: false },
+  { model_id: 185, name: 'Mureka V9.5', supports_duration: false, supports_lyrics: null, supports_instrumental: null, requires_lyrics: false },
+];
+
 async function consumerImagePrice(env, modelId, modality = 'image') {
   const rows = await dbJson(env, `/credit_model_prices?provider=eq.freebeat&model=eq.${encodeURIComponent(String(modelId))}&modality=eq.${encodeURIComponent(modality)}&active=eq.true&select=credits&limit=1`);
   const credits = Number(Array.isArray(rows) ? rows[0]?.credits : null);
@@ -4707,6 +4726,19 @@ export async function fetchFreebeatCatalogModels(env) {
     online: true,
     priceLabel: 'Kredit BLEA',
   });
+  for (const seedMusic of FREEBEAT_BUILTIN_MUSIC_MODELS) {
+    put({
+      id: String(seedMusic.model_id),
+      name: seedMusic.name,
+      provider: 'freebeat',
+      category: 'Music',
+      tags: ['Music', 'Freebeat'],
+      description: `${seedMusic.name} — generate_music Freebeat MCP.`,
+      isFree: false,
+      online: true,
+      priceLabel: 'Kredit BLEA',
+    });
+  }
   try {
     const pool = await loadFreebeatAccountPool(env);
     for (const rawEntry of pool.slice(0, 3)) {
@@ -4714,10 +4746,11 @@ export async function fetchFreebeatCatalogModels(env) {
       const accessToken = usable?.session?.accessToken;
       if (!accessToken) continue;
       const headers = await openMcp(accessToken);
-      const [imgRes, editRes, vidRes] = await Promise.allSettled([
+      const [imgRes, editRes, vidRes, musRes] = await Promise.allSettled([
         getModels(accessToken, 'image', headers),
         getModels(accessToken, 'image_edit', headers),
         getModels(accessToken, 'video', headers),
+        fetchRawMusicModels(accessToken, headers),
       ]);
       for (const [category, res, extraTag] of [
         ['Image', imgRes, null],
@@ -4737,6 +4770,28 @@ export async function fetchFreebeatCatalogModels(env) {
             isFree: false,
             online: m.available !== false,
             priceLabel: m.member_only ? 'Member Only' : 'Freebeat MCP',
+          });
+        }
+      }
+      if (musRes.status === 'fulfilled' && Array.isArray(musRes.value)) {
+        for (const m of musRes.value) {
+          const id = String(m.model_id);
+          const available = m.available !== false && m.pricing_status !== 'unavailable';
+          put({
+            id,
+            name: m.name,
+            provider: 'freebeat',
+            category: 'Music',
+            tags: [
+              'Music',
+              'Freebeat MCP',
+              ...(m.requires_lyrics ? ['Wajib Lirik'] : []),
+              ...(m.supports_duration ? ['Durasi Kustom'] : []),
+            ],
+            description: `${m.name}${m.credits !== null ? ` (~${m.credits} kredit Freebeat)` : ''}`,
+            isFree: false,
+            online: available,
+            priceLabel: m.credits !== null ? `${m.credits} FB` : 'Freebeat MCP',
           });
         }
       }
@@ -6465,3 +6520,590 @@ export async function consumerDanceStatus(env, row) {
     ...(nextMeta ? { metadata: nextMeta } : {}),
   };
 }
+
+// ===================== Generasi Freebeat Music (konsumen) =====================
+function consumerMusicCeiling(env) {
+  const n = Number(env?.FREEBEAT_MUSIC_MAX_PROVIDER_CREDITS);
+  return Number.isSafeInteger(n) && n >= 10 && n <= 100000 ? n : 250;
+}
+function consumerMusicMinMargin(env) {
+  const n = Number(env?.FREEBEAT_MUSIC_MIN_MARGIN);
+  return Number.isFinite(n) && n >= 1 && n <= 20 ? n : 1;
+}
+
+export function sanitizeMusicRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {};
+  const audioList = Array.isArray(meta.audios) ? meta.audios.filter((u) => typeof u === 'string' && u.trim()) : [];
+  if (row.audio_url && !audioList.includes(row.audio_url)) audioList.unshift(row.audio_url);
+  return {
+    id: row.id,
+    provider: row.provider || 'freebeat',
+    model: row.model,
+    model_name: row.model_name || null,
+    prompt: row.prompt || '',
+    lyrics: row.lyrics || null,
+    instrumental: row.instrumental === true,
+    duration_seconds: row.duration_seconds !== null && row.duration_seconds !== undefined ? Number(row.duration_seconds) : null,
+    credits_charged: Number(row.credits_charged || 0),
+    credits_refunded: Number(row.credits_refunded || 0),
+    status: row.status,
+    title: row.title || null,
+    music_id: row.music_id || null,
+    duration_ms: row.duration_ms !== null && row.duration_ms !== undefined ? Number(row.duration_ms) : null,
+    audio_count: audioList.length,
+    has_audio: audioList.length > 0,
+    has_cover: Boolean(row.cover_url),
+    error_message: row.error_message || null,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || row.created_at || null,
+    canPoll: ['queued', 'processing'].includes(row.status) && typeof row.external_job_id === 'string' && TASK_ID.test(row.external_job_id),
+  };
+}
+
+async function fetchLiveMusicCatalogFromPool(env) {
+  const pool = await loadFreebeatAccountPool(env);
+  if (!pool.length) return { poolReady: false, liveModels: null };
+  let anyUsable = false;
+  for (const rawAccount of pool.slice(0, 3)) {
+    const usable = await ensureUsablePoolAccount(env, rawAccount).catch(() => null);
+    if (!usable?.session?.accessToken) continue;
+    anyUsable = true;
+    try {
+      const opened = await openMcpSessionForAccount(env, usable);
+      const list = await fetchRawMusicModels(opened.session.accessToken, opened.headers);
+      if (Array.isArray(list)) return { poolReady: true, liveModels: list };
+    } catch { /* try next usable account */ }
+  }
+  return { poolReady: anyUsable, liveModels: null };
+}
+
+export async function consumerMusicConfig(env) {
+  const [activeRes, pricesRes, catalogState] = await Promise.all([
+    dbJson(env, '/provider_models?select=model&provider=eq.freebeat&active=eq.true&limit=500').catch(() => []),
+    dbJson(env, '/credit_model_prices?select=model,credits&provider=eq.freebeat&modality=eq.music&active=eq.true&limit=500').catch(() => []),
+    fetchLiveMusicCatalogFromPool(env).catch(() => ({ poolReady: false, liveModels: null })),
+  ]);
+  const activeSet = new Set((Array.isArray(activeRes) ? activeRes : []).map((r) => String(r?.model || '').trim()).filter(Boolean));
+  const priceMap = new Map();
+  for (const r of Array.isArray(pricesRes) ? pricesRes : []) {
+    const id = String(r?.model || '').trim();
+    const credits = Number(r?.credits);
+    if (id && Number.isSafeInteger(credits) && credits > 0 && credits <= 1000000) priceMap.set(id, credits);
+  }
+  const metaById = new Map();
+  for (const seed of FREEBEAT_BUILTIN_MUSIC_MODELS) {
+    metaById.set(String(seed.model_id), {
+      model_id: seed.model_id,
+      name: seed.name,
+      available: true,
+      pricing_status: 'quoted',
+      supports_duration: seed.supports_duration,
+      supports_lyrics: seed.supports_lyrics,
+      supports_instrumental: seed.supports_instrumental,
+      requires_lyrics: seed.requires_lyrics,
+    });
+  }
+  if (Array.isArray(catalogState.liveModels)) {
+    for (const m of catalogState.liveModels) {
+      metaById.set(String(m.model_id), m);
+    }
+  }
+
+  const allMusicIds = new Set([...metaById.keys(), ...priceMap.keys()]);
+  const models = [];
+  const unpriced = [];
+  for (const id of allMusicIds) {
+    if (!/^\d{1,9}$/.test(id)) continue;
+    const isActive = activeSet.has(id);
+    const credits = priceMap.get(id) ?? null;
+    const meta = metaById.get(id) || {
+      model_id: Number(id),
+      name: `Freebeat Music #${id}`,
+      available: true,
+      pricing_status: 'quoted',
+      supports_duration: false,
+      supports_lyrics: null,
+      supports_instrumental: null,
+      requires_lyrics: false,
+    };
+    const usableUpstream = meta.available !== false && meta.pricing_status !== 'unavailable';
+    if (isActive && credits !== null && usableUpstream) {
+      models.push({
+        provider: 'freebeat',
+        model: id,
+        model_id: Number(id),
+        name: meta.name,
+        credits,
+        ready: catalogState.poolReady && usableUpstream,
+        params: {
+          supports_duration: meta.supports_duration === true,
+          supports_lyrics: meta.supports_lyrics,
+          supports_instrumental: meta.supports_instrumental,
+          requires_lyrics: meta.requires_lyrics === true,
+          maxPromptChars: 2000,
+          maxLyricsChars: 12000,
+        },
+      });
+    } else if (isActive && credits === null && usableUpstream) {
+      unpriced.push({ model: id, name: meta.name });
+    }
+  }
+  models.sort((a, b) => a.model_id - b.model_id);
+  return {
+    provider_ready: catalogState.poolReady,
+    models,
+    unpriced,
+    ceiling: consumerMusicCeiling(env),
+    min_margin: consumerMusicMinMargin(env),
+  };
+}
+
+function validateConsumerMusicPayload(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw fail('Parameter generasi musik tidak valid.', 400);
+  }
+  const allowedKeys = new Set(['provider', 'model', 'model_id', 'prompt', 'instrumental', 'lyrics', 'duration_seconds']);
+  if (Object.keys(input).some((k) => !allowedKeys.has(k))) {
+    throw fail('Parameter musik tidak dikenali.', 400);
+  }
+  if (input.provider !== undefined && String(input.provider).trim().toLowerCase() !== 'freebeat') {
+    throw fail('Provider musik tidak dikenal.', 400);
+  }
+  const rawModel = input.model_id ?? input.model;
+  const parsedModel = typeof rawModel === 'number' ? rawModel : Number(String(rawModel ?? '').trim());
+  if (!Number.isSafeInteger(parsedModel) || parsedModel < 1 || parsedModel > 999999999) {
+    throw fail('Pilih model musik yang valid.', 400);
+  }
+  const validated = validateMusicRequest({
+    model_id: parsedModel,
+    prompt: input.prompt,
+    ...(input.instrumental !== undefined ? { instrumental: input.instrumental } : {}),
+    ...(input.lyrics !== undefined ? { lyrics: input.lyrics } : {}),
+    ...(input.duration_seconds !== undefined ? { duration_seconds: input.duration_seconds } : {}),
+  }, null);
+  return { modelId: parsedModel, parameters: validated.parameters };
+}
+
+export async function consumerMusicGenerate(env, request, user) {
+  await assertAccountActive(env, user.id);
+  const input = await imageJson(request, MUSIC_BODY_MAX_BYTES);
+  const { modelId, parameters } = validateConsumerMusicPayload(input);
+  const modelStr = String(modelId);
+
+  const [pmRows, price] = await Promise.all([
+    dbJson(env, `/provider_models?provider=eq.freebeat&model=eq.${encodeURIComponent(modelStr)}&active=eq.true&select=model&limit=1`),
+    consumerImagePrice(env, modelStr, 'music'),
+  ]);
+  if (!Array.isArray(pmRows) || pmRows.length === 0) {
+    throw fail(`Model musik #${modelStr} belum diaktifkan admin di Katalog Model.`, 409);
+  }
+  if (price === null) {
+    throw fail(`Harga kredit untuk model musik #${modelStr} belum diatur admin; generasi tidak dikirim.`, 409);
+  }
+
+  const pool = await loadFreebeatAccountPool(env);
+  if (!pool.length) {
+    throw fail('Provider musik belum siap (admin belum menghubungkan Freebeat dengan izin generasi). Coba lagi nanti.', 503);
+  }
+
+  const ceiling = consumerMusicCeiling(env);
+  const minMargin = consumerMusicMinMargin(env);
+  const retryDelayMs = poolRetryDelayMs(env);
+  let spentState = null;
+  let sawBalanceExhausted = false;
+  let lastFailoverError = null;
+
+  const refundMusicSpend = async (reason, errorMessage) => {
+    if (!spentState) return;
+    const refunded = await dbRpc(env, 'refund_credits', {
+      p_user_id: user.id,
+      p_amount: price,
+      p_description: reason,
+      p_generation_id: spentState.rowId,
+    }).catch(() => false);
+    await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(spentState.rowId)}`, {
+      method: 'PATCH',
+      body: {
+        status: 'failed',
+        error_message: errorMessage,
+        ...(refunded ? { credits_refunded: price } : {}),
+        updated_at: new Date().toISOString(),
+      },
+    }).catch(() => {});
+  };
+
+  for (let cycle = 1; cycle <= FREEBEAT_POOL_MAX_CYCLES; cycle += 1) {
+    if (cycle > 1) await sleepCycleDelay(retryDelayMs);
+    for (const rawAccount of pool) {
+      const account = await ensureUsablePoolAccount(env, rawAccount);
+      if (!account) {
+        await recordPoolAccountOutcome(env, rawAccount, { success: false, error: 'Token OAuth kedaluwarsa atau belum memiliki izin generasi' });
+        lastFailoverError = fail('Token OAuth Freebeat kedaluwarsa.', 401);
+        continue;
+      }
+
+      let opened;
+      let quoteContent;
+      let matchedModel = null;
+      let exactParams = parameters;
+      try {
+        opened = await openMcpSessionForAccount(env, account);
+        const catalogModels = await fetchRawMusicModels(opened.session.accessToken, opened.headers);
+        const validated = validateMusicRequest(parameters, catalogModels);
+        matchedModel = validated.model;
+        exactParams = validated.parameters;
+        quoteContent = await musicQuote(opened.session.accessToken, exactParams, true, opened.headers);
+      } catch (err) {
+        if (isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis' : (err?.message || 'Koneksi akun gagal'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        await refundMusicSpend('Refund: gagal memeriksa quote musik Freebeat', err?.message || 'Generasi musik gagal.');
+        throw err;
+      }
+
+      if (isFreebeatBalanceExhausted(quoteContent)) {
+        sawBalanceExhausted = true;
+        await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis (quote musik)' });
+        lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+        continue;
+      }
+
+      const quote = quotedCredits(quoteContent);
+      if (quote === null) {
+        const masked = safeQuote(quoteContent);
+        const hint = masked && typeof masked === 'object' && typeof masked.status === 'string' ? ` Status provider: ${masked.status}.` : '';
+        const err = fail(`Provider tidak memberikan quote biaya yang dapat dipakai untuk model musik #${modelStr}; generasi tidak dikirim dan kredit tidak dipotong.${hint}`, 409);
+        await refundMusicSpend('Refund: quote musik Freebeat tidak tersedia', err.message);
+        throw err;
+      }
+      if (quote > ceiling) {
+        const err = fail(`Biaya provider ${quote} kredit Freebeat melebihi plafon musik ${ceiling}; generasi tidak dikirim.`, 409);
+        await refundMusicSpend('Refund: biaya musik provider melebihi plafon', err.message);
+        throw err;
+      }
+      if (price < quote * minMargin) {
+        const err = fail(`Harga ${price} kredit BLEA lebih rendah dari biaya provider (${quote} kredit Freebeat x ${minMargin}). Admin perlu menaikkan harga model ini; generasi tidak dikirim dan kredit tidak dipotong.`, 409);
+        await refundMusicSpend('Refund: margin harga model musik belum mencukupi', err.message);
+        throw err;
+      }
+
+      const modelName = matchedModel?.name || FREEBEAT_BUILTIN_MUSIC_MODELS.find((m) => m.model_id === modelId)?.name || `Model #${modelStr}`;
+      if (!spentState) {
+        const rowId = crypto.randomUUID();
+        const spent = await dbRpc(env, 'spend_credits', {
+          p_user_id: user.id,
+          p_amount: price,
+          p_description: `Generasi musik Freebeat ${modelName}`,
+          p_generation_id: rowId,
+        });
+        if (!spent) throw fail('Kredit BLEA tidak cukup untuk generasi musik ini.', 402);
+        const metadata = {
+          provider_quote: quote,
+          max_credits: quote,
+          catalog: 'music',
+          ...(account.id ? { freebeat_account_id: account.id } : {}),
+          ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+        };
+        let inserted = null;
+        try {
+          inserted = await dbJson(env, '/music_generations', {
+            method: 'POST',
+            prefer: 'return=representation',
+            body: {
+              id: rowId,
+              user_id: user.id,
+              provider: 'freebeat',
+              model: modelStr,
+              model_name: modelName,
+              prompt: exactParams.prompt,
+              lyrics: exactParams.lyrics || null,
+              instrumental: exactParams.instrumental === true,
+              duration_seconds: exactParams.duration_seconds ?? null,
+              credits_charged: price,
+              status: 'processing',
+              metadata,
+            },
+          });
+        } catch { inserted = null; }
+        if (!Array.isArray(inserted) || inserted.length !== 1) {
+          try { await dbRpc(env, 'refund_credits', { p_user_id: user.id, p_amount: price, p_description: 'Refund: riwayat generasi musik tidak tersimpan', p_generation_id: rowId }); } catch { /* manual */ }
+          throw fail('Riwayat generasi musik tidak dapat disimpan; kredit BLEA dikembalikan. Silakan coba lagi.', 503);
+        }
+        spentState = { rowId, insertedRow: inserted[0], metadata };
+      }
+
+      try {
+        const { result } = await rpc(
+          opened.session.accessToken,
+          {
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: 'generate_music', arguments: { ...exactParams, max_credits: quote } },
+          },
+          'generate',
+          opened.headers,
+          262144,
+          true,
+        );
+        if (result?.isError || isFreebeatBalanceExhausted(result)) {
+          if (isFreebeatBalanceExhausted(result)) {
+            sawBalanceExhausted = true;
+            await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat generate musik' });
+            lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+            continue;
+          }
+          const err = fail('Provider menolak permintaan generasi musik.', 502);
+          await refundMusicSpend('Refund: permintaan musik ditolak Freebeat', err.message);
+          throw err;
+        }
+        const content = modelContent(result);
+        if (content && isFreebeatBalanceExhausted(content) && !content.task_id && !content.batch_id) {
+          sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, { success: false, error: 'Saldo Freebeat habis saat generate musik' });
+          lastFailoverError = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+          continue;
+        }
+        const rawTaskId = typeof content?.task_id === 'string' && TASK_ID.test(content.task_id)
+          ? content.task_id
+          : (typeof content?.batch_id === 'string' && TASK_ID.test(content.batch_id) ? content.batch_id : null);
+        if (!rawTaskId) {
+          throw new Error('unrecognized');
+        }
+        const nextMeta = {
+          ...spentState.metadata,
+          provider_quote: quote,
+          max_credits: quote,
+          ...(account.id ? { freebeat_account_id: account.id } : {}),
+          ...(account.account_email ? { freebeat_account_email: account.account_email } : {}),
+        };
+        await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(spentState.rowId)}`, {
+          method: 'PATCH',
+          body: { external_job_id: rawTaskId, status: 'processing', metadata: nextMeta, updated_at: new Date().toISOString() },
+        });
+        await recordPoolAccountOutcome(env, account, { success: true });
+        return {
+          status: 'submitted',
+          credits: price,
+          generation: sanitizeMusicRow({ ...spentState.insertedRow, external_job_id: rawTaskId, metadata: nextMeta }),
+        };
+      } catch (err) {
+        if (err?.status && spentState && err.message?.includes('Provider menolak permintaan')) throw err;
+        if (isAccountFailoverError(err)) {
+          if (isFreebeatBalanceExhausted(err)) sawBalanceExhausted = true;
+          await recordPoolAccountOutcome(env, account, {
+            success: false,
+            error: isFreebeatBalanceExhausted(err) ? 'Saldo Freebeat habis saat generate musik' : (err?.message || 'Gagal generate musik'),
+          });
+          lastFailoverError = err;
+          continue;
+        }
+        try {
+          await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(spentState.rowId)}`, {
+            method: 'PATCH',
+            body: { status: 'unknown', error_message: 'Hasil pengiriman tidak pasti; periksa status sebelum mengulang.', updated_at: new Date().toISOString() },
+          });
+        } catch { /* retain processing */ }
+        return {
+          status: 'unknown',
+          credits: price,
+          generation: sanitizeMusicRow({ ...spentState.insertedRow, status: 'unknown' }),
+        };
+      }
+    }
+  }
+
+  await refundMusicSpend(
+    sawBalanceExhausted ? 'Refund: saldo gateway Freebeat habis setelah 3 putaran' : 'Refund: semua akun Freebeat gagal memproses musik',
+    sawBalanceExhausted ? FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE : (lastFailoverError?.message || 'Generasi musik gagal pada semua akun Freebeat.'),
+  );
+  if (sawBalanceExhausted) {
+    const err = fail(FREEBEAT_GATEWAY_EXHAUSTED_MESSAGE, 503);
+    err.code = 'gateway_balance_exhausted';
+    throw err;
+  }
+  throw lastFailoverError || fail('Semua akun Freebeat tidak dapat memproses permintaan musik saat ini.', 503);
+}
+
+export async function pollFreebeatMusicRow(env, row) {
+  if (!row || !['queued', 'processing'].includes(row.status) || typeof row.external_job_id !== 'string' || !TASK_ID.test(row.external_job_id)) {
+    return { generation: sanitizeMusicRow(row || {}), task: null };
+  }
+  const preferredAccountId = row.metadata?.freebeat_account_id || null;
+  const usable = await loadPreferredAccountSession(env, preferredAccountId);
+  const session = usable?.session || null;
+  if (!session?.imageAccess) throw fail('Provider musik belum siap; status tidak dapat diperiksa sekarang.', 503);
+  const opened = await openMcpSessionForAccount(env, usable);
+  const { result: statusRes } = await rpc(opened.session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_task_status', arguments: { task_id: row.external_job_id } },
+  }, 'task', opened.headers, 262144);
+  const statusContent = modelContent(statusRes);
+  if (!statusContent || typeof statusContent !== 'object' || Array.isArray(statusContent)) throw mcpFailure('task', 'response');
+  const task = safeTask(statusContent);
+
+  let resultContent = null;
+  if (['completed', 'failed', 'partial_failed', 'cancelled', 'expired'].includes(task.status)) {
+    try {
+      const { result: finalRes } = await rpc(opened.session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_task_result', arguments: { task_id: row.external_job_id } },
+      }, 'task', opened.headers, 262144);
+      const parsed = modelContent(finalRes);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
+    } catch { /* fallback to statusContent */ }
+  }
+
+  const source = resultContent || statusContent;
+  const baseMeta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {};
+  const sourceBilling = safeTask(source).billing;
+  const billingSummary = {
+    charged: sourceBilling.charged ?? task.billing.charged,
+    refunded: sourceBilling.refunded ?? task.billing.refunded,
+    net: sourceBilling.net ?? task.billing.net,
+    refund_state: sourceBilling.refund_state ?? task.billing.refund_state,
+  };
+  let metaPatch = { ...baseMeta, provider_billing: billingSummary };
+  let patch = null;
+  let needRefund = false;
+  let refundStatusLabel = 'failed';
+
+  if (task.status === 'completed') {
+    const audios = extractMusicAudioUrls(source);
+    const coverUrl = extractMusicCoverUrl(source);
+    const rawMusicId = extractResultMusicId(source);
+    const rawTitle = source?.result?.title ?? source?.title;
+    const title = typeof rawTitle === 'string' && rawTitle.trim() ? privateFailureReason(rawTitle.trim())?.slice(0, 200) : null;
+    const rawDurationMs = source?.result?.duration_ms ?? source?.duration_ms;
+    const durationMs = typeof rawDurationMs === 'number' && Number.isFinite(rawDurationMs) && rawDurationMs >= 0 ? Math.round(rawDurationMs) : null;
+    metaPatch = { ...metaPatch, audios };
+    patch = {
+      status: 'completed',
+      audio_url: audios[0] || null,
+      cover_url: coverUrl || null,
+      music_id: rawMusicId !== null ? String(rawMusicId) : null,
+      title,
+      duration_ms: durationMs,
+      error_message: null,
+      metadata: metaPatch,
+      updated_at: new Date().toISOString(),
+    };
+  } else if (['failed', 'partial_failed', 'cancelled', 'expired'].includes(task.status)) {
+    const failureSource = resultContent || statusContent;
+    const reasons = imageFailureReasons(failureSource);
+    const detail = reasons.length
+      ? reasons.join(', ')
+      : (imageFailureFields(failureSource).some((value) => typeof value === 'string' && value.trim()) ? 'lainnya (lihat pemeriksaan admin)' : null);
+    const nextStatus = task.status === 'cancelled' ? 'cancelled' : 'failed';
+    refundStatusLabel = nextStatus;
+    const errText = task.status === 'cancelled'
+      ? 'Provider membatalkan generasi musik.'
+      : task.status === 'expired'
+        ? 'Tugas generasi musik kedaluwarsa di provider.'
+        : (detail ? `Provider melaporkan generasi musik gagal: ${detail}.` : 'Provider melaporkan generasi musik gagal.');
+    metaPatch = { ...metaPatch, failure_reasons: reasons, failure_detail_hidden: detail === 'lainnya (lihat pemeriksaan admin)' };
+    patch = {
+      status: nextStatus,
+      error_message: errText,
+      metadata: metaPatch,
+      updated_at: new Date().toISOString(),
+    };
+    needRefund = Number(row.credits_charged) > 0 && Number(row.credits_refunded) === 0;
+  } else if (['pending', 'queued', 'processing', 'running'].includes(task.status)) {
+    patch = { status: 'processing', updated_at: new Date().toISOString() };
+  }
+
+  if (patch) {
+    if (needRefund) {
+      const charged = Number(row.credits_charged);
+      const claimRes = await dbJson(
+        env,
+        `/music_generations?id=eq.${encodeURIComponent(row.id)}&credits_refunded=eq.0`,
+        { method: 'PATCH', prefer: 'return=representation', body: { ...patch, credits_refunded: charged } },
+      ).catch(() => null);
+      if (Array.isArray(claimRes) && claimRes.length === 1) {
+        let refunded = false;
+        try {
+          refunded = await dbRpc(env, 'refund_credits', {
+            p_user_id: row.user_id,
+            p_amount: charged,
+            p_description: refundStatusLabel === 'cancelled' ? 'Refund: generasi musik dibatalkan provider' : 'Refund: generasi musik gagal',
+            p_generation_id: row.id,
+          });
+        } catch { refunded = false; }
+        if (refunded) {
+          row.credits_refunded = charged;
+        } else {
+          await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(row.id)}`, {
+            method: 'PATCH',
+            body: { credits_refunded: 0, updated_at: new Date().toISOString() },
+          }).catch(() => {});
+        }
+      } else {
+        await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch }).catch(() => {});
+      }
+    } else {
+      await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch }).catch(() => {});
+    }
+  }
+  return { generation: sanitizeMusicRow({ ...row, ...(patch || {}) }), task: { status: task.status, billing: billingSummary } };
+}
+
+export async function refreshMusicRowUrls(env, row) {
+  if (!row || typeof row.external_job_id !== 'string' || !TASK_ID.test(row.external_job_id)) return null;
+  const preferredAccountId = row.metadata?.freebeat_account_id || null;
+  const usable = await loadPreferredAccountSession(env, preferredAccountId).catch(() => null);
+  if (!usable?.session?.imageAccess) return null;
+  const opened = await openMcpSessionForAccount(env, usable);
+  const { result: finalRes } = await rpc(opened.session.accessToken, {
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'get_task_result', arguments: { task_id: row.external_job_id } },
+  }, 'task', opened.headers, 262144);
+  const parsed = modelContent(finalRes);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const audios = extractMusicAudioUrls(parsed);
+  const coverUrl = extractMusicCoverUrl(parsed);
+  if (!audios.length && !coverUrl) return null;
+  const meta = {
+    ...(row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {}),
+    ...(audios.length ? { audios } : {}),
+  };
+  const patch = {
+    ...(audios[0] ? { audio_url: audios[0] } : {}),
+    ...(coverUrl ? { cover_url: coverUrl } : {}),
+    metadata: meta,
+    updated_at: new Date().toISOString(),
+  };
+  await dbFetch(env, `/music_generations?id=eq.${encodeURIComponent(row.id)}`, { method: 'PATCH', body: patch }).catch(() => {});
+  return { audio_url: audios[0] || row.audio_url || null, cover_url: coverUrl || row.cover_url || null, metadata: meta };
+}
+
+export async function consumerMusicStatus(env, request, user) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => k !== 'id') || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
+    throw fail('ID generasi musik tidak valid.', 400);
+  }
+  const rows = await dbJson(env, `/music_generations?id=eq.${encodeURIComponent(input.id)}&user_id=eq.${encodeURIComponent(user.id)}&select=*&limit=1`);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) throw fail('Riwayat generasi musik tidak ditemukan.', 404);
+  return await pollFreebeatMusicRow(env, row);
+}
+
+export async function consumerMusicHistory(env, user) {
+  const rows = await dbJson(env, `/music_generations?user_id=eq.${encodeURIComponent(user.id)}&select=*&order=created_at.desc,id.desc&limit=40`);
+  return { generations: (Array.isArray(rows) ? rows : []).map(sanitizeMusicRow) };
+}
+
