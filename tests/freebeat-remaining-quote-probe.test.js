@@ -103,7 +103,17 @@ test('remaining-quote-probe enforces auth, input bounds, and queries only quote_
       return Response.json({
         jsonrpc: '2.0',
         id: body.id,
-        result: { content: [{ type: 'text', text: JSON.stringify({ status: 'unavailable' }) }] },
+        result: {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              status: 'unavailable',
+              source: 'quote_engine_v2 https://internal.secret/pricing',
+              message: 'Dynamic token pricing unsupported; contact billing@secret.example Bearer SECRET-JWT',
+              reason: 'token_stream_unknown',
+            }),
+          }],
+        },
       });
     }
     throw new Error(`Unexpected tool quote: ${tool}`);
@@ -119,8 +129,9 @@ test('remaining-quote-probe enforces auth, input bounds, and queries only quote_
     assert.equal((await api('remaining-quote-probe', { cookie, data: { group: 'invalid' } })).status, 400);
     assert.equal((await api('remaining-quote-probe', { cookie, data: { unknown_key: 1 } })).status, 400);
     assert.equal((await api('remaining-quote-probe', { cookie, data: { effect_image_url: 'http://insecure.example/a.png' } })).status, 400);
+    assert.equal((await api('remaining-quote-probe', { cookie, data: { private_diagnostics: 'yes' } })).status, 400);
 
-    // 1. All groups summary (10 probes)
+    // 1. All groups summary (10 probes) without private_diagnostics
     const allRes = await api('remaining-quote-probe', { cookie, data: { group: 'all' } });
     assert.equal(allRes.status, 200);
     assert.equal(allRes.headers.get('referrer-policy'), 'no-referrer');
@@ -128,29 +139,46 @@ test('remaining-quote-probe enforces auth, input bounds, and queries only quote_
     assert.equal(allBody.group, 'all');
     assert.equal(allBody.total_probed, 10);
     assert.equal(allBody.usable.length, 8);
+    assert.equal(allBody.private_diagnostics, undefined);
     assert.equal(allBody.results.filter((r) => r.group === 'text').every((r) => r.usable === false && r.status === 'unavailable'), true);
+    assert.equal(allBody.results.find((r) => r.group === 'text').quote.message, '[teks disembunyikan]');
 
     // 2. Music group specifically exercises lyrics vs prompt-only and redacts rpc_error URL
     const musicRes = await api('remaining-quote-probe', { cookie, data: { group: 'music', music_model_id: 193 } });
     assert.equal(musicRes.status, 200);
     const musicBody = await musicRes.json();
     assert.equal(musicBody.group, 'music');
+    assert.equal(musicBody.total_probed, 8);
+    assert.ok(musicBody.results.some((r) => r.label.includes('instrumental: true') && r.tool === 'generate_music'));
     const rpcErr = musicBody.results.find((r) => r.status === 'rpc_error');
     assert.ok(rpcErr);
     assert.equal(rpcErr.usable, false);
     assert.equal(rpcErr.error.includes('internal.secret'), false);
     assert.match(rpcErr.error, /\[URL disembunyikan\]/);
 
+    // 3. Opt-in private_diagnostics reveals redacted source/message/reason without modifying safe quote
+    const privRes = await api('remaining-quote-probe', { cookie, data: { group: 'text', private_diagnostics: true } });
+    assert.equal(privRes.status, 200);
+    const privText = await privRes.text();
+    const privBody = JSON.parse(privText);
+    assert.equal(privBody.results[0].quote.message, '[teks disembunyikan]');
+    assert.ok(Array.isArray(privBody.private_diagnostics) && privBody.private_diagnostics.length === 3);
+    assert.match(privBody.private_diagnostics[0].source, /\[URL disembunyikan\]/);
+    assert.match(privBody.private_diagnostics[0].message, /\[email disembunyikan\]/);
+    assert.match(privBody.private_diagnostics[0].message, /Bearer \[disembunyikan\]/);
+    assert.equal(privBody.private_diagnostics[0].reason, 'token_stream_unknown');
+    assert.doesNotMatch(privText, /internal\.secret|billing@secret\.example|SECRET-JWT/);
+
     // Verify ONLY quote_generation was called (zero generation calls)
     const calledTools = mcpCalls.filter((c) => c.method === 'tools/call').map((c) => c.params.name);
     assert.equal(calledTools.every((name) => name === 'quote_generation'), true);
-    assert.equal(calledTools.length, 17);
+    assert.equal(calledTools.length, 21);
   } finally {
     globalThis.fetch = realFetch;
   }
 });
 
-test('FreebeatRemainingQuoteProbe JSDOM submits probe, renders results, and clears on disconnect', async () => {
+test('FreebeatRemainingQuoteProbe JSDOM submits probe, renders results, toggles private details, and clears on disconnect', async () => {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/admin/freebeat' });
   const prevWindow = globalThis.window;
   const prevDocument = globalThis.document;
@@ -175,6 +203,9 @@ test('FreebeatRemainingQuoteProbe JSDOM submits probe, renders results, and clea
         total_probed: 10,
         usable: [{ group: 'effect', label: 'generate_effect #459', tool: 'generate_effect', credits: 110 }],
         results: [{ group: 'effect', label: 'generate_effect #459', tool: 'generate_effect', usable: true, credits: 110, status: 'quoted' }],
+        ...(payload.private_diagnostics
+          ? { private_diagnostics: [{ group: 'text', label: 'generate_text gemini-3.5-flash', status: 'unavailable', message: 'Quote unsupported for text tool' }] }
+          : {}),
       };
     };
 
@@ -193,12 +224,33 @@ test('FreebeatRemainingQuoteProbe JSDOM submits probe, renders results, and clea
     assert.equal(calls[0].payload.music_model_id, 129);
     assert.equal(calls[0].payload.music_id, 1076592);
     assert.equal(calls[0].payload.effect_id, 459);
+    assert.equal(calls[0].payload.private_diagnostics, undefined);
     assert.match(document.body.textContent, /Hasil quote_generation 5 tool baru/);
     assert.match(document.body.textContent, /generate_effect #459/);
+    assert.equal(document.body.textContent.includes('Detail pesan quote privat'), false);
 
-    // Disconnect clears results
+    // Enable private diagnostics checkbox and re-run
+    const privBox = document.querySelector('input[type="checkbox"]');
+    assert.ok(privBox);
+    await React.act(async () => { privBox.click(); });
+    await React.act(async () => { submitBtn.click(); });
+    assert.equal(calls[1].payload.private_diagnostics, true);
+    assert.match(document.body.textContent, /Detail pesan quote privat/);
+    assert.match(document.body.textContent, /Quote unsupported for text tool/);
+
+    // Hide private panel without clearing main quote summary
+    const hideBtn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Sembunyikan detail privat'));
+    assert.ok(hideBtn);
+    await React.act(async () => { hideBtn.click(); });
+    assert.equal(document.body.textContent.includes('Quote unsupported for text tool'), false);
+    assert.match(document.body.textContent, /Hasil quote_generation 5 tool baru/);
+
+    // Re-submit with private_diagnostics then disconnect clears everything
+    await React.act(async () => { submitBtn.click(); });
+    assert.match(document.body.textContent, /Quote unsupported for text tool/);
     await renderView(false);
     assert.equal(document.body.textContent.includes('Hasil quote_generation 5 tool baru'), false);
+    assert.equal(document.body.textContent.includes('Quote unsupported for text tool'), false);
   } finally {
     if (root) await React.act(async () => { root.unmount(); });
     await vite.close();

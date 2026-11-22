@@ -18,9 +18,11 @@ export function FreebeatRemainingQuoteProbe({ connected, loading, request }) {
   const [effectImageUrl, setEffectImageUrl] = useState('https://static.freebeatfit.com/effects_display/baby_arrived/1/459.png');
   const [textModel, setTextModel] = useState('gemini-3.5-flash');
   const [prompt, setPrompt] = useState('Upbeat synthwave sunset anthem with clean beat');
+  const [privateDiagnostics, setPrivateDiagnostics] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [probeResult, setProbeResult] = useState(null);
+  const [privateDetails, setPrivateDetails] = useState(null);
   const requestVersion = useRef(0);
 
   useEffect(() => {
@@ -29,6 +31,7 @@ export function FreebeatRemainingQuoteProbe({ connected, loading, request }) {
       setBusy(false);
       setError('');
       setProbeResult(null);
+      setPrivateDetails(null);
     }
     return () => { requestVersion.current += 1; };
   }, [connected]);
@@ -79,15 +82,22 @@ export function FreebeatRemainingQuoteProbe({ connected, loading, request }) {
       }
       payload.prompt = prompt.trim();
     }
+    if (privateDiagnostics) {
+      payload.private_diagnostics = true;
+    }
 
     const version = requestVersion.current;
     setBusy(true);
     setError('');
     setProbeResult(null);
+    setPrivateDetails(null);
     try {
       const data = await request('remaining-quote-probe', 'POST', payload);
       if (version !== requestVersion.current) return;
       setProbeResult(data);
+      if (privateDiagnostics && Array.isArray(data?.private_diagnostics)) {
+        setPrivateDetails(data.private_diagnostics);
+      }
     } catch (err) {
       if (version !== requestVersion.current) return;
       setError(err?.message || 'Gagal menjalankan probe quote 5 tool baru.');
@@ -149,6 +159,16 @@ export function FreebeatRemainingQuoteProbe({ connected, loading, request }) {
           <input type="text" maxLength={500} value={prompt} disabled={loading || !connected || busy} onChange={(event) => setPrompt(event.target.value)} />
         </label>
 
+        <label className="freebeat-confirm">
+          <input
+            type="checkbox"
+            checked={privateDiagnostics}
+            disabled={loading || !connected || busy}
+            onChange={(event) => setPrivateDiagnostics(event.target.checked)}
+          />
+          {' '}Opsional: tampilkan <code>source</code>, <code>message</code> &amp; detail quote secara privat (disamarkan; tidak disimpan dan tidak ikut blok salin). Jangan bagikan teks mentah bila masih ada data pribadi/URL.
+        </label>
+
         <div className="freebeat-actions">
           <button type="submit" disabled={loading || !connected || busy}>
             {busy ? 'Memeriksa quote…' : 'Jalankan probe quote (0 kredit)'}
@@ -169,6 +189,19 @@ export function FreebeatRemainingQuoteProbe({ connected, loading, request }) {
           }}
           description={`Berhasil memeriksa ${probeResult.total_probed || 0} variasi parameter (0 kredit terpakai); ${(probeResult.usable || []).length} variasi menghasilkan quote numerik.`}
         />
+      )}
+
+      {privateDetails && (
+        <div className="freebeat-result" aria-label="Detail pesan quote privat">
+          <h3>Detail pesan quote privat (hanya tampil sementara)</h3>
+          <p>Hanya untuk Anda; tidak disimpan di database dan hilang saat halaman ditutup atau sesi diputus. Jangan bagikan teks mentah jika berisi rahasia; sampaikan intinya saja.</p>
+          <div className="freebeat-actions">
+            <button type="button" className="is-secondary" onClick={() => setPrivateDetails(null)}>
+              Sembunyikan detail privat
+            </button>
+          </div>
+          <pre>{JSON.stringify(privateDetails, null, 2)}</pre>
+        </div>
       )}
     </section>
   );

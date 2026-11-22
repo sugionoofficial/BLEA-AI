@@ -880,12 +880,14 @@ async function inspectMcpToolSchemas(accessToken, { allowedTools, primaryTools, 
         availableTools.push(tool.name);
       }
       if (allowedTools.has(tool.name) && !tools.has(tool.name)) {
-        tools.set(
-          tool.name,
-          acknowledge
-            ? detailedToolSchema(tool.inputSchema, 0)
-            : imageSchema(tool.inputSchema, 0, safeEnums),
-        );
+        if (acknowledge) {
+          const schemaObj = detailedToolSchema(tool.inputSchema, 0);
+          const desc = typeof tool.description === 'string' ? privateFailureReason(tool.description) : null;
+          if (desc) schemaObj.tool_description = desc.slice(0, 1000);
+          tools.set(tool.name, schemaObj);
+        } else {
+          tools.set(tool.name, imageSchema(tool.inputSchema, 0, safeEnums));
+        }
       }
     }
     if (!result.nextCursor) break;
@@ -3533,10 +3535,14 @@ async function remainingQuoteProbe(accessToken, request) {
   if (contentType || (contentLength && contentLength !== '0')) {
     rawBody = await imageJson(request);
   }
-  const allowedKeys = new Set(['group', 'music_model_id', 'music_id', 'effect_id', 'effect_image_url', 'text_model', 'prompt']);
+  const allowedKeys = new Set(['group', 'music_model_id', 'music_id', 'effect_id', 'effect_image_url', 'text_model', 'prompt', 'private_diagnostics']);
   if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody) || Object.keys(rawBody).some((k) => !allowedKeys.has(k))) {
     throw fail('Parameter probe quote tidak valid.', 400);
   }
+  if (rawBody.private_diagnostics !== undefined && typeof rawBody.private_diagnostics !== 'boolean') {
+    throw fail('private_diagnostics harus berupa boolean.', 400);
+  }
+  const privateDiagnostics = rawBody.private_diagnostics === true;
   const group = typeof rawBody.group === 'string' ? rawBody.group.trim() : 'all';
   if (!REMAINING_QUOTE_GROUPS.has(group)) {
     throw fail('Grup probe quote tidak didukung.', 400);
@@ -3594,6 +3600,7 @@ async function remainingQuoteProbe(accessToken, request) {
         { group: 'music', label: `generate_music #${musicModelId} (instrumental: true)`, tool: 'generate_music', parameters: { model_id: musicModelId, prompt, instrumental: true } },
         { group: 'music', label: `generate_music #${musicModelId} (dengan lyrics)`, tool: 'generate_music', parameters: { model_id: musicModelId, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
         { group: 'music', label: 'generate_music #194 Suno v6 (prompt saja)', tool: 'generate_music', parameters: { model_id: 194, prompt } },
+        { group: 'music', label: 'generate_music #194 Suno v6 (instrumental: true)', tool: 'generate_music', parameters: { model_id: 194, prompt, instrumental: true } },
         { group: 'music', label: 'generate_music #130 MiniMax Music 3 (dengan lyrics)', tool: 'generate_music', parameters: { model_id: 130, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
         { group: 'music', label: 'generate_music #185 Mureka V9.5 (dengan lyrics)', tool: 'generate_music', parameters: { model_id: 185, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
       );
@@ -3644,6 +3651,7 @@ async function remainingQuoteProbe(accessToken, request) {
 
   const headers = await openMcp(accessToken);
   const results = [];
+  const privateDetails = [];
   let rpcId = 2;
   for (const variant of variants) {
     const keys = Object.keys(variant.parameters);
@@ -3657,6 +3665,7 @@ async function remainingQuoteProbe(accessToken, request) {
 
       if (result?.isError || result?.error) {
         const msgs = initialVideoMessages(result).slice(0, 5);
+        const errMsg = msgs.length ? msgs.join(' | ') : 'MCP mengembalikan isError';
         results.push({
           group: variant.group,
           label: variant.label,
@@ -3665,13 +3674,24 @@ async function remainingQuoteProbe(accessToken, request) {
           usable: false,
           credits: null,
           status: 'rpc_error',
-          error: msgs.length ? msgs.join(' | ') : 'MCP mengembalikan isError',
+          error: errMsg,
         });
+        if (privateDiagnostics) {
+          privateDetails.push({
+            group: variant.group,
+            label: variant.label,
+            tool: variant.tool,
+            status: 'rpc_error',
+            error: errMsg,
+            messages: msgs,
+          });
+        }
         continue;
       }
       const content = modelContent(result);
       if (!content || typeof content !== 'object' || Array.isArray(content)) {
         const msgs = initialVideoMessages(result).slice(0, 3);
+        const errMsg = msgs.length ? msgs.join(' | ') : 'respons quote tidak dikenali';
         results.push({
           group: variant.group,
           label: variant.label,
@@ -3680,11 +3700,22 @@ async function remainingQuoteProbe(accessToken, request) {
           usable: false,
           credits: null,
           status: null,
-          error: msgs.length ? msgs.join(' | ') : 'respons quote tidak dikenali',
+          error: errMsg,
         });
+        if (privateDiagnostics) {
+          privateDetails.push({
+            group: variant.group,
+            label: variant.label,
+            tool: variant.tool,
+            status: null,
+            error: errMsg,
+            messages: msgs,
+          });
+        }
         continue;
       }
       const credits = quotedCredits(content);
+      const statusStr = typeof content.status === 'string' ? content.status : null;
       results.push({
         group: variant.group,
         label: variant.label,
@@ -3692,10 +3723,26 @@ async function remainingQuoteProbe(accessToken, request) {
         keys,
         usable: credits !== null,
         credits,
-        status: typeof content.status === 'string' ? content.status : null,
+        status: statusStr,
         quote: safeQuote(content),
       });
+      if (privateDiagnostics) {
+        const { help } = privateModelHelp(content);
+        privateDetails.push({
+          group: variant.group,
+          label: variant.label,
+          tool: variant.tool,
+          status: statusStr,
+          credits,
+          source: typeof content.source === 'string' ? (privateFailureReason(content.source)?.slice(0, 500) ?? null) : null,
+          message: typeof content.message === 'string' ? (privateFailureReason(content.message)?.slice(0, 500) ?? null) : null,
+          reason: typeof content.reason === 'string' ? (privateFailureReason(content.reason)?.slice(0, 500) ?? null) : null,
+          detail: typeof content.detail === 'string' ? (privateFailureReason(content.detail)?.slice(0, 500) ?? null) : null,
+          fields: help,
+        });
+      }
     } catch (err) {
+      const errMsg = privateFailureReason(err?.message)?.slice(0, 200) || 'permintaan gagal';
       results.push({
         group: variant.group,
         label: variant.label,
@@ -3704,8 +3751,17 @@ async function remainingQuoteProbe(accessToken, request) {
         usable: false,
         credits: null,
         status: null,
-        error: privateFailureReason(err?.message)?.slice(0, 200) || 'permintaan gagal',
+        error: errMsg,
       });
+      if (privateDiagnostics) {
+        privateDetails.push({
+          group: variant.group,
+          label: variant.label,
+          tool: variant.tool,
+          status: null,
+          error: errMsg,
+        });
+      }
     }
   }
 
@@ -3719,6 +3775,7 @@ async function remainingQuoteProbe(accessToken, request) {
       credits: item.credits,
     })),
     results,
+    ...(privateDiagnostics ? { private_diagnostics: privateDetails } : {}),
   };
 }
 function consumerImageModel(env) {
