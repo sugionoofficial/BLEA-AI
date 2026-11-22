@@ -214,7 +214,9 @@ function cookie(name, value, age) { return `${name}=${value}; Path=/; Max-Age=${
 function response(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers } });
 }
-// Expose only fixed diagnostic codes; never expose provider bodies, OAuth codes or tokens.
+// Expose only fixed diagnostic codes and, when present, a short safe-shaped
+// OAuth error code (see registrationErrorDetails); never expose raw provider
+// bodies, free-text descriptions or tokens.
 function oauthFailure(stage, kind, status, registrationError = null) {
   const tag = `[FB-${stage.toUpperCase()}-${kind.toUpperCase()}]`;
   const message = kind === 'timeout' ? 'Freebeat tidak merespons dalam 15 detik.'
@@ -227,9 +229,21 @@ function oauthFailure(stage, kind, status, registrationError = null) {
   return Object.assign(fail(`${message} ${tag}${details}`), { freebeatKind: kind });
 }
 
-// Read a small registration error body only; never return or log its raw contents.
+// Read a small registration error body only; never return or log its raw
+// contents (error_description free text is used only to detect a loopback
+// hint, never surfaced itself). Previously this required the `error` field
+// to match a fixed allow-list of RFC 7591 codes we had already seen in a
+// live test; that silently hid the real code (and even the server-side log)
+// whenever Freebeat used a code outside that list, making "Freebeat menolak
+// permintaan (HTTP 400)" the only thing anyone ever saw. The code itself is
+// a short lowercase enum-like identifier per RFC 7591/6749, not sensitive,
+// so any value matching that shape is now shown/logged, not just a
+// pre-approved subset. Also stop requiring `content-type: ...json...`:
+// some error responses are served as text/plain or application/problem+json
+// with a perfectly valid JSON body.
+const SAFE_OAUTH_CODE_RE = /^[a-z][a-z0-9_]{0,63}$/;
 async function registrationErrorDetails(res) {
-  if (!res.body || !(res.headers.get('content-type') || '').toLowerCase().includes('json')) return null;
+  if (!res.body) return null;
   const maxBytes = 16384;
   const length = Number(res.headers.get('content-length'));
   if (Number.isFinite(length) && length > maxBytes) return null;
@@ -246,8 +260,7 @@ async function registrationErrorDetails(res) {
     }
     const text = chunks.map((part) => new TextDecoder().decode(part)).join('');
     const data = JSON.parse(text);
-    const allowed = ['invalid_redirect_uri', 'invalid_client_metadata', 'invalid_scope', 'invalid_request', 'unauthorized_client', 'access_denied', 'unsupported_grant_type', 'registration_not_supported'];
-    if (!data || typeof data !== 'object' || !allowed.includes(data.error)) return null;
+    if (!data || typeof data !== 'object' || typeof data.error !== 'string' || !SAFE_OAUTH_CODE_RE.test(data.error)) return null;
     const description = typeof data.error_description === 'string' ? data.error_description.slice(0, 1000) : '';
     return { code: data.error, loopback: data.error === 'invalid_redirect_uri' && /localhost|loopback|127\.0\.0\.1|\[::1\]/i.test(description) };
   } catch { return null; }
@@ -268,7 +281,11 @@ async function jsonFetch(url, options, stage) {
     target = next.toString();
   }
   if (!res.ok) {
-    const details = stage === 'register' && res.status === 400 ? await registrationErrorDetails(res) : null;
+    // RFC 7591 (register) and RFC 6749 §5.2 (token) both define a small JSON
+    // {error, error_description} body on failure; try to read it on either
+    // stage so a token-refresh rejection (e.g. invalid_grant on an existing
+    // connected account) is just as diagnosable as a registration rejection.
+    const details = (stage === 'register' || stage === 'token') && [400, 401].includes(res.status) ? await registrationErrorDetails(res) : null;
     throw oauthFailure(stage, 'http', res.status, details);
   }
   let data;

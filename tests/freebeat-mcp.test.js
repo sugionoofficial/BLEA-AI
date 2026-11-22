@@ -238,6 +238,44 @@ test('registration surfaces only safe allowlisted OAuth errors, never provider d
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
 
+test('registration surfaces any well-shaped OAuth error code, not just a fixed pre-approved subset', async () => {
+  // Regression test: a prior hardcoded allowlist of RFC 7591 error codes
+  // silently swallowed any valid-looking code Freebeat returned that wasn't
+  // already on the list (e.g. a code the provider started using later),
+  // leaving users with only "Freebeat menolak permintaan (HTTP 400)" and no
+  // way to diagnose the real rejection reason. A short lowercase/underscore
+  // code is not sensitive, so any value in that shape should be shown.
+  const { startFreebeat } = await import('../src/lib/freebeatMcp.js');
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    globalThis.fetch = async () => Response.json({ error: 'unsupported_response_type', error_description: 'secret-token-do-not-share' }, { status: 400 });
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => /FB-REGISTER-HTTP/.test(err.message) && /unsupported_response_type/.test(err.message) && !err.message.includes('secret-token-do-not-share'));
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
+test('token exchange failures also surface a safe OAuth error code when present', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'admin', app_metadata: { role: 'admin' } });
+    if (url === 'https://freebeat.ai/oauth/register') return Response.json({ client_id: 'client' });
+    if (url === 'https://freebeat.ai/oauth/token') return Response.json({ error: 'invalid_grant', error_description: 'secret-token-do-not-share' }, { status: 400 });
+    throw new Error('unexpected');
+  };
+  try {
+    const start = await call('/api/freebeat/start', { token: 'admin-token', method: 'POST' });
+    const cookie = start.headers.get('set-cookie').split(';')[0];
+    const state = new URL((await start.json()).url).searchParams.get('state');
+    const result = await call(`/api/freebeat/callback?code=very-secret-code&state=${state}`, { cookie });
+    assert.match(result.headers.get('location'), /freebeat=failed-http/);
+    assert.doesNotMatch(result.headers.get('location'), /secret-token-do-not-share|very-secret-code/);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
 // Simulate the complete OAuth handshake so tests exercise the same admin endpoint as the UI.
 async function connectFixture() {
   const start = await call('/api/freebeat/start', { token: 'admin-token', method: 'POST' });
