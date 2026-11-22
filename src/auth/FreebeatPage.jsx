@@ -11,6 +11,7 @@ import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
 import { FreebeatVocalSchemaDiagnostic } from './FreebeatVocalSchemaDiagnostic';
 import { FreebeatRemainingSchemaDiagnostic } from './FreebeatRemainingSchemaDiagnostic';
 import { FreebeatCatalogInspector } from './FreebeatCatalogInspector';
+import { FreebeatRemainingQuoteProbe } from './FreebeatRemainingQuoteProbe';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 import { freebeatRequest as request } from '../api/freebeat';
@@ -394,6 +395,7 @@ export function FreebeatPage() {
       <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
       <FreebeatRemainingSchemaDiagnostic key={`remaining-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
       <FreebeatCatalogInspector key={`catalog-inspector-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
+      <FreebeatRemainingQuoteProbe key={`remaining-quote-probe-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
     </div>
   </DropXLayout>;
 }
