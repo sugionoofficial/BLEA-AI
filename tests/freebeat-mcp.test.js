@@ -323,6 +323,25 @@ test('registration falls back to dropping the refresh_token grant when server_er
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
 
+test('registration failure surfaces a request-tracing header (cf-ray etc.) as a safe "Ref:" suffix for provider support', async () => {
+  // When every escalation step still fails, a tracing ID is the one thing
+  // that actually helps Freebeat's own support team find the request in
+  // their logs. It is a short opaque token, not sensitive, unlike the raw
+  // response body or error_description which must stay hidden.
+  const { startFreebeat } = await import('../src/lib/freebeatMcp.js');
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    globalThis.fetch = async () => Response.json({ error: 'invalid_scope', error_description: 'secret-token-do-not-share' }, { status: 400, headers: { 'cf-ray': '8f3a9c2b1d4e5f60-SIN' } });
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => /FB-REGISTER-HTTP/.test(err.message) && /Ref: 8f3a9c2b1d4e5f60-SIN\./.test(err.message) && !err.message.includes('secret-token-do-not-share'));
+
+    // An unrecognized/oversized header value must never be trusted verbatim.
+    globalThis.fetch = async () => Response.json({ error: 'invalid_scope' }, { status: 400, headers: { 'cf-ray': 'not valid; has spaces and <tags>' } });
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => !/Ref:/.test(err.message));
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
 test('token exchange failures also surface a safe OAuth error code when present', async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
