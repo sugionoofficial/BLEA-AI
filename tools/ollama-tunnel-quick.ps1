@@ -1,4 +1,8 @@
-# tools/ollama-tunnel-quick.ps1
+﻿# tools/ollama-tunnel-quick.ps1
+#
+# Simpan berkas ini sebagai ASCII murni (UTF-8 dengan BOM). PowerShell 5.1
+# membaca berkas tanpa BOM memakai codepage Windows, sehingga tanda pisah
+# atau tanda kutip 'pintar' berubah menjadi kutip yang memutus string.
 #
 # Menjalankan Cloudflare quick tunnel untuk Ollama lokal, lalu (opsional)
 # memperbarui base_url provider "ollama" di Supabase secara otomatis.
@@ -30,6 +34,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 kadang masih memakai TLS 1.0; trycloudflare butuh TLS 1.2.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 $httpHeader = "127.0.0.1:$Port"
 
 function Write-Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
@@ -149,7 +155,7 @@ if ($needsUpdate -and $SupabaseUrl -and $ServiceRoleKey) {
     $needsUpdate = $false  # supaya SQL tetap dicetak
   }
 } elseif ($needsUpdate) {
-  Write-Warn2 "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY belum diset — lewati pembaruan otomatis."
+  Write-Warn2 "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY belum diset - lewati pembaruan otomatis."
   $needsUpdate = $false
 }
 
