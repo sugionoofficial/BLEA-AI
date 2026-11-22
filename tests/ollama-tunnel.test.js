@@ -209,3 +209,83 @@ test('OLLAMA_MAX_TOKENS memberi cap terpusat hanya bila operator menyetelnya', a
     globalThis.fetch = realFetch;
   }
 });
+
+test('/api/chat mengubah kegagalan koneksi Ollama menjadi 502 yang bisa di-fallback, bukan error mentah', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'ollama', api_key: 'ollama-local', base_url: TUNNEL, label: 'Ollama' }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json([]);
+    // Laptop mati / tunnel putus: fetch melempar TypeError, bukan respons HTTP.
+    if (url === `${TUNNEL}/v1/chat/completions`) throw new TypeError('fetch failed');
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-ollama-down',
+        provider: 'ollama',
+        model: 'huihui_ai/qwen2.5-abliterate:3b',
+        messages: [{ role: 'user', content: 'Halo' }],
+        autoFallback: false,
+      },
+    }), createEnv());
+    assert.equal(res.status, 502);
+    const data = await res.json();
+    assert.equal(data.ok, false);
+    assert.match(data.detail || data.error, /Tidak dapat terhubung ke provider "ollama"/);
+    assert.equal(data.code, 'http_502');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('/api/chat beralih ke model lain saat Ollama mati dan autoFallback aktif', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'ollama', api_key: 'ollama-local', base_url: TUNNEL, label: 'Ollama' },
+        { provider: 'unorouter', api_key: 'uno-key', base_url: null, label: 'UnoRouter' },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([
+        { provider: 'ollama', model: 'huihui_ai/qwen2.5-abliterate:3b', active: true },
+        { provider: 'unorouter', model: 'gpt-oss-120b:free', active: true },
+      ]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'msg-fb-1' }]);
+    if (url === `${TUNNEL}/v1/chat/completions`) throw new TypeError('fetch failed');
+    if (url === 'https://api.unorouter.com/v1/chat/completions') {
+      const payload = JSON.parse(init.body || '{}');
+      assert.equal(payload.model, 'gpt-oss-120b:free');
+      return Response.json({ choices: [{ message: { content: 'Jawaban cadangan dari model lain.' } }] });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-ollama-fallback',
+        provider: 'ollama',
+        model: 'huihui_ai/qwen2.5-abliterate:3b',
+        messages: [{ role: 'user', content: 'Halo' }],
+        autoFallback: true,
+      },
+    }), createEnv());
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.reply, 'Jawaban cadangan dari model lain.');
+    assert.equal(data.model, 'gpt-oss-120b:free');
+    assert.equal(data.fallbackFrom, 'huihui_ai/qwen2.5-abliterate:3b');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
