@@ -167,6 +167,18 @@ function fixture() {
         data = quote;
       } else if (name === 'generate_singing_video' || name === 'generate_lip_sync_video') {
         if (generateMode === 'lost') throw new Error('NETWORK-LOST');
+        if (generateMode === 'isError') {
+          return Response.json({
+            id: body.id,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: 'photo mode requires static.freebeat.ai url https://internal.secret/x?token=abc', code: 400 }) }],
+            },
+          });
+        }
+        if (generateMode === 'http400') {
+          return new Response('Bad Request', { status: 400 });
+        }
         if (generateMode === 'preparing') {
           data = { success: true, status: 'preparing', music_id: 998877, retry_after_seconds: 10 };
         } else {
@@ -414,7 +426,11 @@ test('FreebeatSingingLipSyncDiagnostic JSDOM submits, polls, and resets state on
         };
       }
       if (action === 'vocal-submit') {
-        return { id: 'vocal-row-1', tool_name: 'generate_singing_video', status: 'submitted', task_id: 'task-1' };
+        return {
+          id: 'vocal-row-diag',
+          status: 'unknown',
+          initial_diagnostics: { received: true, messages: ['status: error', 'root_keys: code, detail'] },
+        };
       }
       if (action === 'vocal-tests') {
         return { tests: [{ id: 'vocal-row-1', tool_name: 'generate_singing_video', status: 'submitted', task_id: 'task-1', canPoll: true, created_at: new Date().toISOString() }] };
@@ -469,6 +485,36 @@ test('FreebeatSingingLipSyncDiagnostic JSDOM submits, polls, and resets state on
       resolveSlowQuote({ credits: 500, quote: { status: 'quoted', credits: 500 } });
     });
     assert.equal(document.body.textContent.includes('"credits": 500'), false, 'Stale quote must not render after disconnect');
+
+    // Reconnect and verify private_diagnostics checkbox + private diagnostic panel
+    await renderComponent(true, 3);
+    const prepBtn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Siapkan persetujuan vokal'));
+    assert.ok(prepBtn && !prepBtn.disabled);
+    await React.act(async () => { prepBtn.click(); });
+
+    const confirmCbs = Array.from(document.querySelectorAll('.freebeat-confirm input[type="checkbox"]'));
+    assert.ok(confirmCbs.length >= 2);
+    const submitApproveCb = confirmCbs.find((cb) => cb.closest('label')?.textContent.includes('Saya menyetujui pengiriman satu kali'));
+    const privDiagCb = confirmCbs.find((cb) => cb.closest('label')?.textContent.includes('tampilkan pesan respons awal secara privat'));
+    assert.ok(submitApproveCb && privDiagCb);
+    await React.act(async () => {
+      submitApproveCb.click();
+      privDiagCb.click();
+    });
+
+    const sendBtn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Setujui dan kirim video'));
+    assert.ok(sendBtn && !sendBtn.disabled);
+    await React.act(async () => { sendBtn.click(); });
+
+    const submitCall = calls.find(([a]) => a === 'vocal-submit');
+    assert.equal(submitCall[1].private_diagnostics, true);
+    assert.match(document.body.textContent, /Pesan respons awal privat/);
+    assert.match(document.body.textContent, /root_keys: code, detail/);
+
+    const hideBtn = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Sembunyikan respons awal'));
+    assert.ok(hideBtn);
+    await React.act(async () => { hideBtn.click(); });
+    assert.equal(document.body.textContent.includes('Pesan respons awal privat'), false);
   } finally {
     if (root) await React.act(async () => { root.unmount(); });
     await vite.close();
@@ -477,5 +523,67 @@ test('FreebeatSingingLipSyncDiagnostic JSDOM submits, polls, and resets state on
     globalThis.document = prevDocument;
     globalThis.HTMLElement = prevHTMLElement;
     globalThis.IS_REACT_ACT_ENVIRONMENT = prevActEnv;
+  }
+});
+
+test('vocal-submit private_diagnostics captures redacted isError and HTTP 400 failure details', async () => {
+  const f = fixture();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = f.fetch.bind(f);
+  try {
+    const cookie = await connect();
+
+    // Non-boolean private_diagnostics rejected
+    const badRes = await api('vocal-submit', {
+      cookie,
+      method: 'POST',
+      data: { approval: 'abc', confirm: true, private_diagnostics: 'yes' },
+    });
+    assert.equal(badRes.status, 400);
+
+    // 1) isError payload captured and sanitized when private_diagnostics: true
+    f.setGenerateMode('isError');
+    const prep1 = await api('vocal-prepare', {
+      cookie,
+      method: 'POST',
+      data: { tool: 'generate_singing_video', mode: 'solo', image_urls: ['https://cdn.example/s1.png'], duration_seconds: 15, audio_url: 'https://cdn.example/song.mp3' },
+    });
+    assert.equal(prep1.status, 200);
+    const prep1Body = await prep1.json();
+    const sub1 = await api('vocal-submit', {
+      cookie,
+      method: 'POST',
+      data: { approval: prep1Body.approval, confirm: true, private_diagnostics: true },
+    });
+    assert.equal(sub1.status, 200);
+    const sub1Body = await sub1.json();
+    assert.equal(sub1Body.status, 'unknown');
+    assert.equal(sub1Body.initial_diagnostics.received, true);
+    assert.ok(sub1Body.initial_diagnostics.messages.some((m) => m.includes('[URL disembunyikan]') && m.includes('static.freebeat.ai')));
+    assert.equal(sub1Body.initial_diagnostics.messages.join(' ').includes('internal.secret'), false);
+
+    // Unlock row in test fixture for second diagnostic scenario
+    f.rows.get(sub1Body.id).status = 'reviewed';
+
+    // 2) HTTP 400 captured in initial_diagnostics with received: false
+    f.setGenerateMode('http400');
+    const prep2 = await api('vocal-prepare', {
+      cookie,
+      method: 'POST',
+      data: { tool: 'generate_singing_video', mode: 'solo', image_urls: ['https://cdn.example/s1.png'], duration_seconds: 15, audio_url: 'https://cdn.example/song.mp3' },
+    });
+    assert.equal(prep2.status, 200);
+    const sub2 = await api('vocal-submit', {
+      cookie,
+      method: 'POST',
+      data: { approval: (await prep2.json()).approval, confirm: true, private_diagnostics: true },
+    });
+    assert.equal(sub2.status, 200);
+    const sub2Body = await sub2.json();
+    assert.equal(sub2Body.status, 'unknown');
+    assert.equal(sub2Body.initial_diagnostics.received, false);
+    assert.match(sub2Body.initial_diagnostics.messages.join(' '), /HTTP 400.*FB-MCP-GENERATE-HTTP/);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

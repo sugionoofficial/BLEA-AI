@@ -10,6 +10,7 @@ import { FreebeatSingingLipSyncDiagnostic } from './FreebeatSingingLipSyncDiagno
 import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
 import { FreebeatVocalSchemaDiagnostic } from './FreebeatVocalSchemaDiagnostic';
 import { FreebeatRemainingSchemaDiagnostic } from './FreebeatRemainingSchemaDiagnostic';
+import { FreebeatCatalogInspector } from './FreebeatCatalogInspector';
 import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 import { freebeatRequest as request } from '../api/freebeat';
@@ -392,6 +393,7 @@ export function FreebeatPage() {
       <FreebeatSingingLipSyncDiagnostic key={`vocal-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
       <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
       <FreebeatRemainingSchemaDiagnostic key={`remaining-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
+      <FreebeatCatalogInspector key={`catalog-inspector-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
     </div>
   </DropXLayout>;
 }

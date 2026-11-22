@@ -57,6 +57,8 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
   const [approval, setApproval] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
   const [unknownCostConfirmed, setUnknownCostConfirmed] = useState(false);
+  const [initialConsent, setInitialConsent] = useState(false);
+  const [initialDiagnostics, setInitialDiagnostics] = useState(null);
   const [notice, setNotice] = useState('');
 
   const [tests, setTests] = useState([]);
@@ -78,6 +80,8 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
       setApproval(null);
       setConfirmed(false);
       setUnknownCostConfirmed(false);
+      setInitialConsent(false);
+      setInitialDiagnostics(null);
     }
   }, [connected]);
 
@@ -85,6 +89,7 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
     setApproval(null);
     setConfirmed(false);
     setUnknownCostConfirmed(false);
+    setInitialConsent(false);
   }
 
   function clearQuoteAndApproval() {
@@ -464,15 +469,18 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
   async function submitVocal() {
     if (!approval?.approval || !confirmed) return;
     if (approval.accept_unknown_cost && !unknownCostConfirmed) return;
+    const capture = initialConsent;
     const version = ++requestVersionRef.current;
-    setBusy(true); setError(''); setNotice('');
+    setBusy(true); setError(''); setNotice(''); setInitialDiagnostics(null);
     try {
       const data = await request('vocal-submit', 'POST', {
         approval: approval.approval,
         confirm: true,
         ...(approval.accept_unknown_cost ? { confirm_unknown_cost: true } : {}),
+        ...(capture ? { private_diagnostics: true } : {}),
       });
       if (requestVersionRef.current !== version) return;
+      if (capture) setInitialDiagnostics(data.initial_diagnostics || { received: false, messages: [] });
       clearApproval();
       if (data.status === 'preparing') {
         if (data.music_id && /^\d{1,15}$/.test(String(data.music_id))) setMusicId(String(data.music_id));
@@ -485,6 +493,7 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
       await refreshTests();
     } catch (err) {
       if (requestVersionRef.current === version) {
+        if (capture) setInitialDiagnostics({ received: false, messages: err?.message ? [err.message] : [] });
         setError(err.message || 'Gagal mengirim uji vokal/lip-sync.');
       }
     } finally {
@@ -760,6 +769,7 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
           {approval.accept_unknown_cost && (
             <label className="freebeat-confirm"><input type="checkbox" checked={unknownCostConfirmed} disabled={allBusy} onChange={(event) => setUnknownCostConfirmed(event.target.checked)} /> Saya memahami total biaya di muka tidak tersedia dan menyetujui pengiriman dengan <code>accept_unknown_cost: true</code>.</label>
           )}
+          <label className="freebeat-confirm"><input type="checkbox" checked={initialConsent} disabled={allBusy} onChange={(event) => setInitialConsent(event.target.checked)} /> Opsional: tampilkan pesan respons awal secara privat setelah pengiriman ini. Pesan mungkin mengandung data sensitif; penyamaran tidak dijamin lengkap. Jangan bagikan pesan mentah, URL atau kredensial.</label>
           <div className="freebeat-actions">
             <button type="button" disabled={!confirmed || (approval.accept_unknown_cost && !unknownCostConfirmed) || allBusy || !connected || !imageAccess} onClick={submitVocal}>Setujui dan kirim video</button>
           </div>
@@ -767,6 +777,26 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
       )}
 
       {notice && <div className="freebeat-alert" role="status">{notice}</div>}
+
+      {initialDiagnostics && (
+        <div className="freebeat-result" aria-label="Diagnostik respons awal privat vokal">
+          <h3>Pesan respons awal privat</h3>
+          <p>Hanya untuk Anda. Jangan bagikan pesan mentah; jelaskan dengan kata sendiri tanpa URL, token atau data pribadi. Pesan ini tidak disimpan dan hilang saat halaman ditutup. Pesan bukan kepastian biaya atau hasil tugas.</p>
+          <div className="freebeat-actions">
+            <button type="button" className="is-secondary" onClick={() => setInitialDiagnostics(null)}>Sembunyikan respons awal</button>
+          </div>
+          {!initialDiagnostics.received ? (
+            <>
+              <p>Respons awal tidak tersedia atau ditolak oleh provider. Jangan ulangi sebelum memeriksa catatan dan aktivitas Freebeat.</p>
+              {initialDiagnostics.messages?.map((message, index) => <pre key={index}>{message}</pre>)}
+            </>
+          ) : initialDiagnostics.messages?.length ? (
+            initialDiagnostics.messages.map((message, index) => <pre key={index}>{message}</pre>)
+          ) : (
+            <p>Tidak ada pesan awal dalam field yang dapat ditampilkan.</p>
+          )}
+        </div>
+      )}
 
       {tests.length > 0 && (
         <div className="freebeat-result">

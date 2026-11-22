@@ -265,6 +265,10 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Periksa skema Singing &amp; Lip-Sync'));
   assert.ok(html.includes('Inspeksi skema 7 tool Freebeat lainnya'));
   assert.ok(html.includes('Periksa skema 7 tool baru'));
+  assert.ok(html.includes('Inspeksi katalog musik, efek &amp; teks'));
+  assert.ok(html.includes('Periksa model musik'));
+  assert.ok(html.includes('Periksa daftar efek'));
+  assert.ok(html.includes('Periksa model teks'));
   assert.ok(html.includes('Uji Singing &amp; Lip-Sync Video'));
   assert.ok(html.includes('Periksa quote vokal'));
 });
