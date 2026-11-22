@@ -672,7 +672,42 @@ function hasCloudflareRestConfig(keyRow) {
 function isChatCapableModelId(modelId) {
   const id = String(modelId || '').trim();
   if (!id || isVideoModelId(id)) return false;
-  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-|qwen-image|qwen3-asr|asr-flash)/i.test(id);
+  // ID numerik murni adalah katalog gambar/video Freebeat (122, 209, ...),
+  // bukan model chat.
+  if (/^\d+$/.test(id)) return false;
+  return !/(^|\/|-)(embedding|embed|rerank|whisper|tts|speech|dall-e|imagen|flux|stable-diffusion|midjourney|moderation|bge-|melo|aura|nova-|qwen-image|qwen-mt-image|z-image|image|t2i|i2i|dance|vocal|lip-?sync|asr|music|suno)/i.test(id);
+}
+
+// Provider yang seluruh katalognya gambar/video — tidak pernah untuk Chat.
+const NON_CHAT_PROVIDERS = new Set(['freebeat']);
+
+// Katalog free quota Alibaba menandai kemampuan tiap model lewat `blea`:
+// 'chat' = bisa dipakai di AI Studio, 'image'/'video' = adapter Generate,
+// null = katalog saja. Model Alibaba yang tercatat tanpa blea 'chat' tidak
+// boleh muncul di pemilih model Chat.
+const ALIBABA_CATALOG_BY_ID = new Map(ALIBABA_FREE_QUOTA_MODELS.map((m) => [String(m.id).trim(), m]));
+
+function isAlibabaChatCatalogModel(modelId) {
+  const row = ALIBABA_CATALOG_BY_ID.get(String(modelId || '').trim());
+  if (!row) return true; // tidak ada metadata resmi → jangan menebak
+  return row.blea === 'chat';
+}
+
+// Modality harga yang menandakan model bukan teks/chat.
+const NON_CHAT_MODALITIES = new Set(['image', 'image_edit', 'image_edit_2k', 'video', 'speech', 'embedding']);
+
+// Model yang punya harga eksplisit non-teks di credit_model_prices tidak boleh
+// muncul di daftar Chat, walau namanya tidak cocok dengan pola di atas.
+function collectPricedNonChatModels(priceRows) {
+  const keys = new Set();
+  for (const row of priceRows || []) {
+    const modality = String(row?.modality || '').toLowerCase().trim();
+    if (!NON_CHAT_MODALITIES.has(modality)) continue;
+    const provider = String(row?.provider || '').toLowerCase().trim();
+    const model = String(row?.model || '').trim();
+    if (provider && model) keys.add(`${provider}::${model}`);
+  }
+  return keys;
 }
 
 function scoreFallbackModel(modelId) {
@@ -960,6 +995,8 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
   const chatUrl = provider === 'alibaba'
     ? `${resolvedBase}/compatible-mode/v1/chat/completions`
     : `${resolvedBase}/chat/completions`;
+  const envMaxTokens = Number(env?.OLLAMA_MAX_TOKENS);
+  const ollamaMaxTokens = Number.isFinite(envMaxTokens) && envMaxTokens > 0 ? Math.trunc(envMaxTokens) : 0;
   const upstream = await fetch(chatUrl, {
     method: 'POST',
     headers: {
@@ -974,6 +1011,11 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
         temperature: Number.isFinite(payload.temperature) ? payload.temperature : 0.35,
         max_tokens: Number.isFinite(payload.max_tokens) ? payload.max_tokens : 4096,
       } : {}),
+      // Batas panjang keluaran Ollama TIDAK dipaksa di sini: nilai dari request
+      // akan menimpa PARAMETER num_predict pada Modelfile, sehingga operator
+      // kehilangan kendali. Pakai OLLAMA_MAX_TOKENS bila ingin cap terpusat,
+      // atau setel num_predict di Modelfile modelnya.
+      ...(provider === 'ollama' && !Number.isFinite(payload.max_tokens) && ollamaMaxTokens ? { max_tokens: ollamaMaxTokens } : {}),
       model,
       stream: Boolean(stream),
     }),
@@ -990,6 +1032,16 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
   }
   const data = await upstream.json().catch(() => ({}));
   return { ok: true, status: upstream.status, data };
+}
+
+// Model self-host (Ollama) berjalan di CPU pengguna sendiri: memuat bobot 3-4 GB
+// ke RAM dan menghasilkan token pertama bisa jauh lebih lambat daripada API cloud.
+// Timeout 120 detik bawaan terlalu pendek untuk kondisi itu.
+function chatUpstreamTimeoutMs(provider, stream = false) {
+  if (String(provider || '').trim().toLowerCase() === 'ollama') {
+    return stream ? 300_000 : 480_000;
+  }
+  return 120_000;
 }
 
 function extractSseEventsFromLines(lines) {
@@ -3143,7 +3195,19 @@ async function handleApi(request, url, env) {
       const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
-      let chatRows = (rows ?? []).filter((m) => isChatCapableModelId(m.model));
+      const priceRes = await servicePostgrest(
+        env,
+        '/credit_model_prices?select=provider,model,modality&active=eq.true&limit=1000',
+      ).catch(() => null);
+      const priceRows = priceRes?.ok ? await priceRes.json().catch(() => []) : [];
+      const pricedNonChat = collectPricedNonChatModels(priceRows);
+      let chatRows = (rows ?? []).filter((m) => {
+        const provider = String(m?.provider || 'unorouter').toLowerCase().trim();
+        if (NON_CHAT_PROVIDERS.has(provider)) return false;
+        if (provider === 'alibaba' && !isAlibabaChatCatalogModel(m.model)) return false;
+        if (!isChatCapableModelId(m.model)) return false;
+        return !pricedNonChat.has(`${provider}::${String(m.model || '').trim()}`);
+      });
       const workersAiBound = hasWorkersAiBinding(env);
 
       if (chatRows.some((m) => String(m.provider || '').toLowerCase() === 'cloudflare') && !workersAiBound) {
@@ -3873,12 +3937,13 @@ async function handleApi(request, url, env) {
         return a.name.localeCompare(b.name);
       });
 
-      const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
+      // 'ollama' chat-only: jangan pernah ditampilkan sebagai provider video.
+      const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat', 'ollama'].includes(p.id));
       if (hasAnyFreebeatVideo) {
         providers.push({ id: 'freebeat', label: 'Freebeat', configured: anyFreebeatVideoReady, hasBaseUrl: false });
       }
       for (const preset of Object.values(PROVIDER_PRESETS)) {
-        if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;
+        if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter' || preset.id === 'ollama') continue;
         if (!configuredByProvider.has(preset.id)) {
           providers.push({ id: preset.id, label: preset.label, configured: false, hasBaseUrl: false });
         }
@@ -4548,7 +4613,7 @@ async function handleApi(request, url, env) {
               apiKey: activeApiKey,
               baseUrl: activeBaseUrl,
               payload: fetchBody,
-              timeoutMs: 120_000,
+              timeoutMs: chatUpstreamTimeoutMs(activeProvider, true),
               env,
               stream: true,
             });
@@ -4627,7 +4692,7 @@ async function handleApi(request, url, env) {
                   const researched = await sendChatCompletionRequest({
                     provider: activeProvider, model: activeModel, apiKey: activeApiKey,
                     baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
-                    timeoutMs: 60_000, env,
+                    timeoutMs: chatUpstreamTimeoutMs(activeProvider), env,
                   });
                   if (researched.ok) {
                     const researchedReply = extractAssistantReply(researched.data);
@@ -4689,7 +4754,7 @@ async function handleApi(request, url, env) {
             apiKey: activeApiKey,
             baseUrl: activeBaseUrl,
             payload: fetchBody,
-            timeoutMs: 120_000,
+            timeoutMs: chatUpstreamTimeoutMs(activeProvider),
             env,
           });
         if (alibabaPrimaryCand2) { activeApiKey = alibabaPrimaryCand2.api_key; activeBaseUrl = alibabaPrimaryCand2.base_url; }
@@ -4770,7 +4835,7 @@ async function handleApi(request, url, env) {
                 const researched = await sendChatCompletionRequest({
                   provider: activeProvider, model: activeModel, apiKey: activeApiKey,
                   baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
-                  timeoutMs: 60_000, env,
+                  timeoutMs: chatUpstreamTimeoutMs(activeProvider), env,
                 });
                 if (researched.ok) {
                   const researchedReply = extractAssistantReply(researched.data);
@@ -4834,7 +4899,7 @@ async function handleApi(request, url, env) {
               apiKey: activeApiKey,
               baseUrl: activeBaseUrl,
               payload: { ...fetchBody, messages: roundMessages },
-              timeoutMs: 60_000,
+              timeoutMs: chatUpstreamTimeoutMs(activeProvider),
               env,
             });
             if (!roundRes.ok && [429, 503, 502].includes(roundRes.status) && body.autoFallback !== false) {

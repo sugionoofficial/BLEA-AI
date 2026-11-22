@@ -9,6 +9,7 @@ const CANONICAL_PROVIDER_BADGES = {
   hailuo: 'Hailuo',
   pekpik: 'PEKPIK',
   cloudflare: 'Cloudflare',
+  ollama: 'Ollama',
   'blea-metadata': 'Metadata Cleaner',
 };
 

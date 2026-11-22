@@ -134,6 +134,7 @@ const NAV_GROUPS = [
 
 const QUICK_PROVIDER_PRESETS = [
   PROVIDER_PRESETS.cloudflare,
+  PROVIDER_PRESETS.ollama,
   PROVIDER_PRESETS.pekpik,
   PROVIDER_PRESETS.unorouter,
   PROVIDER_PRESETS.xai,
@@ -652,6 +653,19 @@ export function AdminPage({ initialTab = null } = {}) {
       setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Masukkan API key terlebih dahulu.' } }));
       return;
     }
+    // Tabel provider_api_keys membatasi api_key: kosong, atau 8-2048 karakter.
+    // Tanpa pesan khusus, pelanggaran constraint ini tampil sebagai error generik.
+    if (apiKey && apiKey !== 'binding:AI' && apiKey.length < 8) {
+      setKeyNotices((current) => ({
+        ...current,
+        [provider]: { type: 'error', text: `API key minimal 8 karakter (batasan tabel provider_api_keys). Untuk provider tanpa autentikasi seperti Ollama, isi string apa pun ≥ 8 karakter, mis. ${provider}-local.` },
+      }));
+      return;
+    }
+    if (apiKey && apiKey.length > 2048) {
+      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'API key maksimal 2048 karakter.' } }));
+      return;
+    }
 
     setKeyBusy(`save-${provider}`);
     const payload = {
@@ -668,7 +682,16 @@ export function AdminPage({ initialTab = null } = {}) {
 
     if (error) {
       console.error('Save provider key failed:', error);
-      setKeyNotices((current) => ({ ...current, [provider]: { type: 'error', text: 'Penyimpanan gagal. Cek permission admin.' } }));
+      const detail = String(error.message || error.details || '').slice(0, 160);
+      setKeyNotices((current) => ({
+        ...current,
+        [provider]: {
+          type: 'error',
+          text: detail
+            ? `Penyimpanan gagal: ${detail}`
+            : 'Penyimpanan gagal. Cek permission admin.',
+        },
+      }));
     } else {
       setKeyNotices((current) => ({
         ...current,
@@ -1318,11 +1341,18 @@ export function AdminPage({ initialTab = null } = {}) {
                                 ? 'Opsional untuk REST API: https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1'
                                 : provider.provider === 'alibaba'
                                   ? 'Wajib: https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com'
-                                  : (PROVIDER_PRESETS[provider.provider]?.baseUrl || 'https://api.provider.com/v1')
+                                  : provider.provider === 'ollama'
+                                    ? 'Wajib: https://xxxx.trycloudflare.com (URL Cloudflare Tunnel ke Ollama)'
+                                    : (PROVIDER_PRESETS[provider.provider]?.baseUrl || 'https://api.provider.com/v1')
                             }
                             aria-label={`Base URL ${provider.provider}`}
                           />
                         </div>
+                        {provider.provider === 'ollama' && (
+                          <p className="admin-api-help" role="note">
+                            Jalankan <code>cloudflared tunnel --url http://localhost:11434</code> di komputer yang menjalankan Ollama, lalu isi Base URL dengan URL <code>https://….trycloudflare.com</code> dan API key berupa string apa pun <b>minimal 8 karakter</b> (mis. <code>ollama-local</code>) — Ollama tidak memvalidasi key, tapi tabel menolak key di bawah 8 karakter. Worker edge tidak bisa memanggil <code>localhost</code>. URL quick tunnel berubah setiap restart. Panduan lengkap: <code>docs/ollama-tunnel.md</code>.
+                          </p>
+                        )}
                         {provider.provider === 'alibaba' && (
                           <p className="admin-api-help" role="note">
                             Base URL wajib diisi: <code>https://{'{WorkspaceId}'}.ap-southeast-1.maas.aliyuncs.com</code> (Model Studio → Workspace, region ap-southeast-1 / Singapura). API key dibuat di Model Studio → API Key. Model: <b>wan3.0-video</b>. Video hasil Wan berlaku 24 jam di server Alibaba.
