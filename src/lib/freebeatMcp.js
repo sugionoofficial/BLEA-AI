@@ -3220,6 +3220,13 @@ async function dispatchFreebeat(request, url, env, user) {
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       return response({ ok: true, ...(await imageQuoteProbe(session.accessToken, env, request)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
+    if (action === 'remaining-quote-probe' && request.method === 'POST') {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      const origin = request.headers.get('origin');
+      if (origin && origin !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
+      return response({ ok: true, ...(await remainingQuoteProbe(session.accessToken, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+    }
     if (['balance', 'image-schemas', 'image-models', 'image-edit-models', 'image-quote', 'video-schemas', 'video-models'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
@@ -3514,6 +3521,205 @@ async function imageQuoteProbe(accessToken, env, request) {
     }
   }
   return { model_id: modelId, control_model_id: control, image_used: Boolean(imageUrl), results, usable: results.filter((item) => item.usable).map((item) => ({ label: item.label, credits: item.credits })) };
+}
+
+const REMAINING_QUOTE_GROUPS = new Set(['all', 'music', 'music_video', 'lyric_video', 'effect', 'text']);
+const REMAINING_PROBE_LYRICS_SAMPLE = '[Verse]\nSoft neon rain across the glass\n[Chorus]\nStay until the midnight passes';
+const REMAINING_PROBE_EFFECT_IMAGE_DEFAULT = 'https://static.freebeatfit.com/effects_display/baby_arrived/1/459.png';
+async function remainingQuoteProbe(accessToken, request) {
+  let rawBody = {};
+  const contentType = request.headers.get('content-type') || '';
+  const contentLength = request.headers.get('content-length');
+  if (contentType || (contentLength && contentLength !== '0')) {
+    rawBody = await imageJson(request);
+  }
+  const allowedKeys = new Set(['group', 'music_model_id', 'music_id', 'effect_id', 'effect_image_url', 'text_model', 'prompt']);
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody) || Object.keys(rawBody).some((k) => !allowedKeys.has(k))) {
+    throw fail('Parameter probe quote tidak valid.', 400);
+  }
+  const group = typeof rawBody.group === 'string' ? rawBody.group.trim() : 'all';
+  if (!REMAINING_QUOTE_GROUPS.has(group)) {
+    throw fail('Grup probe quote tidak didukung.', 400);
+  }
+  let musicModelId = 129;
+  if (rawBody.music_model_id !== undefined && rawBody.music_model_id !== null && rawBody.music_model_id !== '') {
+    if (!Number.isSafeInteger(rawBody.music_model_id) || rawBody.music_model_id < 1 || rawBody.music_model_id > 999999999) {
+      throw fail('music_model_id harus bilangan bulat positif.', 400);
+    }
+    musicModelId = rawBody.music_model_id;
+  }
+  let musicId = 1076592;
+  if (rawBody.music_id !== undefined && rawBody.music_id !== null && rawBody.music_id !== '') {
+    if (!Number.isSafeInteger(rawBody.music_id) || rawBody.music_id < 1 || rawBody.music_id > 9999999999) {
+      throw fail('music_id harus bilangan bulat positif.', 400);
+    }
+    musicId = rawBody.music_id;
+  }
+  let effectId = 459;
+  if (rawBody.effect_id !== undefined && rawBody.effect_id !== null && rawBody.effect_id !== '') {
+    if (!Number.isSafeInteger(rawBody.effect_id) || rawBody.effect_id < 1 || rawBody.effect_id > 9999999999) {
+      throw fail('effect_id harus bilangan bulat positif.', 400);
+    }
+    effectId = rawBody.effect_id;
+  }
+  let effectImageUrl = REMAINING_PROBE_EFFECT_IMAGE_DEFAULT;
+  if (rawBody.effect_image_url !== undefined && rawBody.effect_image_url !== null && String(rawBody.effect_image_url).trim() !== '') {
+    const safeUrl = consumerImageUrl(typeof rawBody.effect_image_url === 'string' ? rawBody.effect_image_url : '');
+    if (!safeUrl) throw fail('effect_image_url harus berupa URL HTTPS publik yang valid.', 400);
+    effectImageUrl = safeUrl;
+  }
+  let textModel = 'gemini-3.5-flash';
+  if (rawBody.text_model !== undefined && rawBody.text_model !== null && String(rawBody.text_model).trim() !== '') {
+    if (typeof rawBody.text_model !== 'string' || !safeTextModelId(rawBody.text_model.trim())) {
+      throw fail('text_model tidak valid.', 400);
+    }
+    textModel = rawBody.text_model.trim();
+  }
+  let prompt = 'Upbeat synthwave sunset anthem with clean beat';
+  if (rawBody.prompt !== undefined && rawBody.prompt !== null && String(rawBody.prompt).trim() !== '') {
+    if (typeof rawBody.prompt !== 'string' || rawBody.prompt.trim().length > 500) {
+      throw fail('prompt maksimal 500 karakter.', 400);
+    }
+    prompt = rawBody.prompt.trim();
+  }
+
+  const variants = [];
+  if (group === 'all' || group === 'music') {
+    variants.push(
+      { group: 'music', label: `generate_music #${musicModelId} (prompt saja)`, tool: 'generate_music', parameters: { model_id: musicModelId, prompt } },
+      { group: 'music', label: 'generate_music #194 Suno v6 (dengan lyrics)', tool: 'generate_music', parameters: { model_id: 194, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
+    );
+    if (group === 'music') {
+      variants.push(
+        { group: 'music', label: `generate_music #${musicModelId} (instrumental: true)`, tool: 'generate_music', parameters: { model_id: musicModelId, prompt, instrumental: true } },
+        { group: 'music', label: `generate_music #${musicModelId} (dengan lyrics)`, tool: 'generate_music', parameters: { model_id: musicModelId, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
+        { group: 'music', label: 'generate_music #194 Suno v6 (prompt saja)', tool: 'generate_music', parameters: { model_id: 194, prompt } },
+        { group: 'music', label: 'generate_music #130 MiniMax Music 3 (dengan lyrics)', tool: 'generate_music', parameters: { model_id: 130, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
+        { group: 'music', label: 'generate_music #185 Mureka V9.5 (dengan lyrics)', tool: 'generate_music', parameters: { model_id: 185, prompt, lyrics: REMAINING_PROBE_LYRICS_SAMPLE, instrumental: false } },
+      );
+    }
+  }
+  if (group === 'all' || group === 'music_video') {
+    variants.push(
+      { group: 'music_video', label: `generate_music_video auto 720p 16:9 15s (music_id ${musicId})`, tool: 'generate_music_video', parameters: { auto_mode: true, music_id: musicId, prompt, start_ms: 0, end_ms: 15000, aspect_ratio: '16:9', resolution: '720p', remove_watermark: false } },
+      { group: 'music_video', label: `generate_music_video auto 1080p 9:16 15s (music_id ${musicId})`, tool: 'generate_music_video', parameters: { auto_mode: true, music_id: musicId, prompt, start_ms: 0, end_ms: 15000, aspect_ratio: '9:16', resolution: '1080p', remove_watermark: false } },
+    );
+    if (group === 'music_video') {
+      variants.push(
+        { group: 'music_video', label: `generate_music_video auto 720p 16:9 30s (music_id ${musicId})`, tool: 'generate_music_video', parameters: { auto_mode: true, music_id: musicId, prompt, start_ms: 0, end_ms: 30000, aspect_ratio: '16:9', resolution: '720p', remove_watermark: false } },
+        { group: 'music_video', label: `generate_music_video agent auto_mode=false 720p 15s (music_id ${musicId})`, tool: 'generate_music_video', parameters: { auto_mode: false, music_id: musicId, prompt, start_ms: 0, end_ms: 15000, aspect_ratio: '16:9', resolution: '720p', remove_watermark: false } },
+      );
+    }
+  }
+  if (group === 'all' || group === 'lyric_video') {
+    variants.push(
+      { group: 'lyric_video', label: `generate_lyric_video auto 768P 16:9 15s (music_id ${musicId})`, tool: 'generate_lyric_video', parameters: { auto_mode: true, music_id: musicId, prompt, start_ms: 0, end_ms: 15000, aspect_ratio: '16:9', resolution: '768P', remove_watermark: false } },
+      { group: 'lyric_video', label: `generate_lyric_video auto 2K 9:16 15s (music_id ${musicId})`, tool: 'generate_lyric_video', parameters: { auto_mode: true, music_id: musicId, prompt, start_ms: 0, end_ms: 15000, aspect_ratio: '9:16', resolution: '2K', remove_watermark: false } },
+    );
+    if (group === 'lyric_video') {
+      variants.push(
+        { group: 'lyric_video', label: `generate_lyric_video auto 768P 16:9 30s (music_id ${musicId})`, tool: 'generate_lyric_video', parameters: { auto_mode: true, music_id: musicId, prompt, start_ms: 0, end_ms: 30000, aspect_ratio: '16:9', resolution: '768P', remove_watermark: false } },
+        { group: 'lyric_video', label: `generate_lyric_video agent auto_mode=false 768P 15s (music_id ${musicId})`, tool: 'generate_lyric_video', parameters: { auto_mode: false, music_id: musicId, prompt, start_ms: 0, end_ms: 15000, aspect_ratio: '16:9', resolution: '768P', remove_watermark: false } },
+      );
+    }
+  }
+  if (group === 'all' || group === 'effect') {
+    variants.push(
+      { group: 'effect', label: `generate_effect #${effectId} watermark=false (music_id ${musicId})`, tool: 'generate_effect', parameters: { effect_id: effectId, music_id: musicId, prompt, reference_image_urls: [effectImageUrl], watermark: false } },
+      { group: 'effect', label: `generate_effect #${effectId} watermark=true (music_id ${musicId})`, tool: 'generate_effect', parameters: { effect_id: effectId, music_id: musicId, prompt, reference_image_urls: [effectImageUrl], watermark: true } },
+    );
+  }
+  if (group === 'all' || group === 'text') {
+    const secondaryTextModel = textModel === 'claude-sonnet-5' ? 'gpt-6-astra' : 'claude-sonnet-5';
+    variants.push(
+      { group: 'text', label: `generate_text ${textModel} (max_tokens 128)`, tool: 'generate_text', parameters: { model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 128, temperature: 0.7 } },
+      { group: 'text', label: `generate_text ${secondaryTextModel} (max_tokens 128)`, tool: 'generate_text', parameters: { model: secondaryTextModel, messages: [{ role: 'user', content: prompt }], max_tokens: 128, temperature: 0.7 } },
+    );
+    if (group === 'text') {
+      variants.push(
+        { group: 'text', label: `generate_text ${textModel} (max_tokens 2048)`, tool: 'generate_text', parameters: { model: textModel, messages: [{ role: 'user', content: prompt }], max_tokens: 2048, temperature: 0.7 } },
+      );
+    }
+  }
+
+  const headers = await openMcp(accessToken);
+  const results = [];
+  let rpcId = 2;
+  for (const variant of variants) {
+    const keys = Object.keys(variant.parameters);
+    try {
+      const { result } = await rpc(accessToken, {
+        jsonrpc: '2.0',
+        id: rpcId++,
+        method: 'tools/call',
+        params: { name: 'quote_generation', arguments: { tool: variant.tool, parameters: variant.parameters } },
+      }, 'quote', headers, 262144, true);
+
+      if (result?.isError || result?.error) {
+        const msgs = initialVideoMessages(result).slice(0, 5);
+        results.push({
+          group: variant.group,
+          label: variant.label,
+          tool: variant.tool,
+          keys,
+          usable: false,
+          credits: null,
+          status: 'rpc_error',
+          error: msgs.length ? msgs.join(' | ') : 'MCP mengembalikan isError',
+        });
+        continue;
+      }
+      const content = modelContent(result);
+      if (!content || typeof content !== 'object' || Array.isArray(content)) {
+        const msgs = initialVideoMessages(result).slice(0, 3);
+        results.push({
+          group: variant.group,
+          label: variant.label,
+          tool: variant.tool,
+          keys,
+          usable: false,
+          credits: null,
+          status: null,
+          error: msgs.length ? msgs.join(' | ') : 'respons quote tidak dikenali',
+        });
+        continue;
+      }
+      const credits = quotedCredits(content);
+      results.push({
+        group: variant.group,
+        label: variant.label,
+        tool: variant.tool,
+        keys,
+        usable: credits !== null,
+        credits,
+        status: typeof content.status === 'string' ? content.status : null,
+        quote: safeQuote(content),
+      });
+    } catch (err) {
+      results.push({
+        group: variant.group,
+        label: variant.label,
+        tool: variant.tool,
+        keys,
+        usable: false,
+        credits: null,
+        status: null,
+        error: privateFailureReason(err?.message)?.slice(0, 200) || 'permintaan gagal',
+      });
+    }
+  }
+
+  return {
+    group,
+    total_probed: results.length,
+    usable: results.filter((item) => item.usable).map((item) => ({
+      group: item.group,
+      label: item.label,
+      tool: item.tool,
+      credits: item.credits,
+    })),
+    results,
+  };
 }
 function consumerImageModel(env) {
   const raw = String(env?.FREEBEAT_IMAGE_MODEL ?? CONSUMER_IMAGE_MODEL_DEFAULT).trim();

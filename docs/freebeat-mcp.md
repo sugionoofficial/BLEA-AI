@@ -101,4 +101,8 @@ Bagian **Inspeksi katalog musik, efek & teks** (`FreebeatCatalogInspector`) di `
 - `POST /api/freebeat/text-models`: memanggil `list_models(type=text)` untuk membaca model teks yang terdaftar.
 Helper backend `freebeatUploadImages` juga disiapkan untuk fase implementasi berikutnya agar URL gambar eksternal dapat diunggah terlebih dahulu melalui `upload_image`.
 
+## Probe quote 5 tool baru (0 kredit, baca-saja)
+
+Bagian **Uji quote_generation untuk 5 tool baru** (`FreebeatRemainingQuoteProbe`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-quote-probe`, yang menjalankan hanya `quote_generation` (tanpa generasi berbayar) untuk memetakan tarif kredit dan perilaku parameter pada `generate_music`, `generate_music_video`, `generate_lyric_video`, `generate_effect`, dan `generate_text`.
+
 
