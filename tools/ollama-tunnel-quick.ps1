@@ -116,18 +116,26 @@ Write-Ok "URL: $url"
 # ------------------------------------------------------------ 5. Verifikasi
 Write-Step "Verifikasi endpoint publik"
 $verified = $false
+$lastErr = $null
 for ($i = 1; $i -le 20; $i++) {
   try {
     $resp = Invoke-WebRequest -Uri "$url/v1/models" -UseBasicParsing -TimeoutSec 15
     if ($resp.StatusCode -eq 200) { $verified = $true; break }
+    $lastErr = "HTTP $($resp.StatusCode)"
   } catch {
+    $lastErr = $_.Exception.Message
+    $code = $null
+    if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+    if ($code) { $lastErr = "HTTP $code" }
     Start-Sleep -Seconds 2
   }
 }
 if ($verified) {
   Write-Ok "GET $url/v1/models -> 200"
 } else {
-  Write-Warn2 "Belum 200 (tunnel kadang butuh beberapa detik). Cek manual: $url/v1/models"
+  Write-Warn2 "Belum 200 setelah 40 detik. Pesan terakhir: $lastErr"
+  Write-Warn2 ('Cek manual: curl.exe -s -o NUL -w "%{http_code}" ' + $url + '/v1/models')
+  Write-Warn2 "403 berarti Host header ditolak Ollama; 502/530 berarti tunnel belum siap."
 }
 
 # ------------------------------------------------- 6. Perbarui base_url BLEA
