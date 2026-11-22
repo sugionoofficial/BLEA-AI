@@ -240,18 +240,20 @@ test('music-quote, music-prepare, music-submit, music-tests, and music-task enfo
     assert.equal((await api('music-quote', { cookie, method: 'POST', data: { model_id: 555, prompt: 'x' } })).status, 400);
     assert.equal((await api('music-quote', { cookie, method: 'POST', data: { model_id: 555, prompt: 'x', lyrics: 'la', instrumental: true } })).status, 400);
 
-    // 3. Large 12,000-character lyrics flows through quote -> prepare -> submit cleanly
-    const longLyrics = `[Verse]\n${'Neon rain falls soft tonight '.repeat(425)}`.slice(0, 12000);
-    const quoteRes = await api('music-quote', { cookie, method: 'POST', data: { model_id: 194, prompt: 'Synthwave ballad', lyrics: longLyrics } });
+    // 3. Large 12,000-character multi-byte + newline-heavy lyrics + 2,000-char prompt flows through quote -> prepare -> submit cleanly
+    const longPrompt = '夜の雨とシンセ'.repeat(286).slice(0, 2000);
+    const longLyrics = `[Verse]\n${'夜の雨\n'.repeat(2997)}夜の雨音`;
+    assert.equal(longLyrics.length, 12000);
+    const quoteRes = await api('music-quote', { cookie, method: 'POST', data: { model_id: 194, prompt: longPrompt, lyrics: longLyrics } });
     assert.equal(quoteRes.status, 200);
     assert.equal((await quoteRes.json()).credits, 73);
 
-    const prepRes = await api('music-prepare', { cookie, method: 'POST', data: { model_id: 194, prompt: 'Synthwave ballad', lyrics: longLyrics } });
+    const prepRes = await api('music-prepare', { cookie, method: 'POST', data: { model_id: 194, prompt: longPrompt, lyrics: longLyrics } });
     assert.equal(prepRes.status, 200);
     const prepBody = await prepRes.json();
     assert.equal(prepBody.credits, 73);
     assert.equal(prepBody.max_credits, 73);
-    assert.ok(prepBody.approval.length > 16000);
+    assert.ok(prepBody.approval.length > 24000);
 
     // Quote change between prepare and submit blocks with 409 without dispatching
     mock.setQuoteCredits(194, 85);

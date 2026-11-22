@@ -3069,7 +3069,9 @@ async function vocalMessage(env, user, session, request) {
 
 // --- Admin Music Generation Diagnostics (generate_music) --------------------
 
-const MUSIC_APPROVAL_MAX_LEN = 24000;
+const MUSIC_BODY_MAX_BYTES = 98304;
+const MUSIC_APPROVAL_MAX_LEN = 98304;
+const MUSIC_SUBMIT_MAX_BYTES = 114688;
 const musicDb = (env, path, options = {}) => imageDb(env, path, options, 'music');
 
 async function musicMark(env, uid, id, status, taskId = null) {
@@ -3246,7 +3248,7 @@ async function prepareMusic(env, user, session, input) {
 
 async function submitMusic(env, user, session, request) {
   await requireImageSession(session);
-  const input = await imageJson(request, 32768);
+  const input = await imageJson(request, MUSIC_SUBMIT_MAX_BYTES);
   const allowedKeys = new Set(['approval', 'confirm', 'private_diagnostics']);
   if (
     !input
@@ -3847,7 +3849,7 @@ async function dispatchFreebeat(request, url, env, user) {
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       if (action === 'music-tests' && request.method === 'GET') return response({ ok: true, tests: await musicTests(env, user, session) });
       if (action === 'music-quote' && request.method === 'POST') {
-        const input = await imageJson(request, 32768);
+        const input = await imageJson(request, MUSIC_BODY_MAX_BYTES);
         const headers = await openMcp(session.accessToken);
         const catalogModels = await fetchRawMusicModels(session.accessToken, headers);
         const { model, parameters } = validateMusicRequest(input, catalogModels);
@@ -3861,7 +3863,7 @@ async function dispatchFreebeat(request, url, env, user) {
           quote: safeQuote(rawQuote),
         });
       }
-      if (action === 'music-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareMusic(env, user, session, await imageJson(request, 32768))) });
+      if (action === 'music-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareMusic(env, user, session, await imageJson(request, MUSIC_BODY_MAX_BYTES))) });
       if (action === 'music-submit' && request.method === 'POST') return response({ ok: true, ...(await submitMusic(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'music-task' && request.method === 'POST') return response({ ok: true, task: await pollMusic(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
     }
