@@ -112,6 +112,12 @@ if (-not $url) {
   exit 1
 }
 Write-Ok "URL: $url"
+try {
+  Set-Clipboard -Value $url -ErrorAction Stop
+  Write-Ok "URL sudah disalin ke clipboard - tinggal Ctrl+V di Admin Panel."
+} catch {
+  Write-Warn2 "Tidak bisa menyalin ke clipboard otomatis; salin manual."
+}
 
 # ------------------------------------------------------------ 5. Verifikasi
 Write-Step "Verifikasi endpoint publik"
@@ -180,3 +186,11 @@ Write-Host "Tunnel aktif (PID $($proc.Id))." -ForegroundColor Cyan
 Write-Host "  Uji  : curl.exe -s $url/v1/models" -ForegroundColor Gray
 Write-Host "  Stop : Stop-Process -Id $($proc.Id)" -ForegroundColor Gray
 Write-Host "Catatan: menutup jendela ini TIDAK mematikan tunnel; laptop harus tetap menyala." -ForegroundColor Gray
+Write-Host ""
+Write-Host "Langkah terakhir di browser:" -ForegroundColor Cyan
+Write-Host "  1. Buka BLEA - Admin Panel - API Keys"
+Write-Host "  2. Cari provider Ollama (label: Ollama Laptop (tunnel))"
+Write-Host "  3. Tempel URL di field Base URL, lalu Save"
+Write-Host "  4. Buka Chat, pilih huihui_ai/qwen2.5-abliterate:3b, kirim satu pesan"
+Write-Host ""
+Write-Host "Panduan lengkap saat mulai ulang: docs/ollama-restart.md" -ForegroundColor Gray

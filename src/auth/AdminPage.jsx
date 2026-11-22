@@ -1350,7 +1350,7 @@ export function AdminPage({ initialTab = null } = {}) {
                         </div>
                         {provider.provider === 'ollama' && (
                           <p className="admin-api-help" role="note">
-                            Jalankan <code>cloudflared tunnel --url http://localhost:11434</code> di komputer yang menjalankan Ollama, lalu isi Base URL dengan URL <code>https://….trycloudflare.com</code> dan API key berupa string apa pun <b>minimal 8 karakter</b> (mis. <code>ollama-local</code>) — Ollama tidak memvalidasi key, tapi tabel menolak key di bawah 8 karakter. Worker edge tidak bisa memanggil <code>localhost</code>. URL quick tunnel berubah setiap restart. Panduan lengkap: <code>docs/ollama-tunnel.md</code>.
+                            Jalankan <code>cloudflared tunnel --url http://localhost:11434</code> di komputer yang menjalankan Ollama, lalu isi Base URL dengan URL <code>https://….trycloudflare.com</code> dan API key berupa string apa pun <b>minimal 8 karakter</b> (mis. <code>ollama-local</code>) — Ollama tidak memvalidasi key, tapi tabel menolak key di bawah 8 karakter. Worker edge tidak bisa memanggil <code>localhost</code>. URL quick tunnel berubah setiap restart, jadi tempel ulang Base URL setiap kali laptop menyala. Rutinitas langkah-demi-langkah: <code>docs/ollama-restart.md</code>.
                           </p>
                         )}
                         {provider.provider === 'alibaba' && (

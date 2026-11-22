@@ -14,6 +14,9 @@ Worker BLEA → https://ollama.contoh.com → cloudflared (service) → Ollama 1
 
 Tidak ada lagi langkah "jalankan tunnel, salin URL, perbarui Base URL di Admin Panel".
 
+> Tanpa domain? Rutinitas quick tunnel yang harus diulang setiap laptop menyala ada di
+> [`ollama-restart.md`](./ollama-restart.md).
+
 ## Prasyarat
 
 1. **Domain yang DNS-nya dikelola Cloudflare** (nameserver domain sudah diarahkan ke

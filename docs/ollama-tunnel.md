@@ -93,6 +93,12 @@ yang salah - jalankan `git pull` lalu ulangi. Berkas `.ps1` di repo ini wajib AS
 disimpan dengan BOM UTF-8; ada tes (`tests/powershell-encoding.test.js`) yang menjaga aturan
 itu.
 
+### 2c. Rutinitas setelah laptop restart
+
+Setiap kali laptop menyala, tunnel dan URL-nya hilang. Urutan yang harus diulang
+(2 menit) ada di `docs/ollama-restart.md` - mulai dari menyalakan tunnel, menyalin URL
+baru, sampai menempelkannya di Admin Panel.
+
 ## 3. Daftarkan provider di BLEA
 
 Provider key disimpan di tabel Supabase `provider_api_keys`.
