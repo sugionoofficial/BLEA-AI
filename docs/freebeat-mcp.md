@@ -91,7 +91,7 @@ BLEA mendukung dua tool generasi vokal resmi dari Freebeat Remote MCP:
 
 ## Inspeksi skema 7 tool Freebeat lainnya (baca-saja)
 
-Bagian **Inspeksi skema 7 tool Freebeat lainnya** (`FreebeatRemainingSchemaDiagnostic`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-schemas` untuk mengambil `inputSchema` resmi dari `tools/list` bagi 7 tool Freebeat MCP yang belum terintegrasi (`list_music_models`, `generate_music`, `generate_music_video`, `generate_lyric_video`, `list_effects`, `generate_effect`, `generate_text`) beserta `quote_generation`, tanpa memakai kredit dan tanpa menjalankan `tools/call`. Mode bawaan hanya mengembalikan struktur tipe, properti, dan enumerasi aman (`SAFE_REMAINING_SCHEMA_ENUMS`); mode lengkap (`acknowledge: true`, disertai `referrer-policy: no-referrer`) menambahkan deskripsi, batas angka, nilai bawaan, serta daftar enum lengkap setelah penyamaran pola URL, email, dan kredensial, dan dikosongkan otomatis saat sesi diputus. Ke-7 tool tersebut belum memiliki integrasi `tools/call` maupun harga kredit di BLEA.
+Bagian **Inspeksi skema 7 tool Freebeat lainnya** (`FreebeatRemainingSchemaDiagnostic`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-schemas` untuk mengambil `inputSchema` resmi dari `tools/list` bagi 7 tool Freebeat MCP yang belum terintegrasi (`list_music_models`, `generate_music`, `generate_music_video`, `generate_lyric_video`, `list_effects`, `generate_effect`, `generate_text`) beserta `quote_generation`, tanpa memakai kredit dan tanpa menjalankan `tools/call`. Mode bawaan hanya mengembalikan struktur tipe, properti, dan enumerasi aman (`SAFE_REMAINING_SCHEMA_ENUMS`); mode lengkap (`acknowledge: true`, disertai `referrer-policy: no-referrer`) menambahkan deskripsi tool (`tool_description`) dan parameter, batas angka, nilai bawaan, serta daftar enum lengkap setelah penyamaran pola URL, email, dan kredensial, dan dikosongkan otomatis saat sesi diputus. Ke-7 tool tersebut belum memiliki integrasi `tools/call` maupun harga kredit di BLEA.
 
 ## Inspeksi katalog musik, efek & teks (baca-saja)
 
@@ -103,6 +103,6 @@ Helper backend `freebeatUploadImages` juga disiapkan untuk fase implementasi ber
 
 ## Probe quote 5 tool baru (0 kredit, baca-saja)
 
-Bagian **Uji quote_generation untuk 5 tool baru** (`FreebeatRemainingQuoteProbe`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-quote-probe`, yang menjalankan hanya `quote_generation` (tanpa generasi berbayar) untuk memetakan tarif kredit dan perilaku parameter pada `generate_music`, `generate_music_video`, `generate_lyric_video`, `generate_effect`, dan `generate_text`.
+Bagian **Uji quote_generation untuk 5 tool baru** (`FreebeatRemainingQuoteProbe`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-quote-probe`, yang menjalankan hanya `quote_generation` (tanpa generasi berbayar) untuk memetakan tarif kredit dan perilaku parameter pada `generate_music`, `generate_music_video`, `generate_lyric_video`, `generate_effect`, dan `generate_text`. Secara bawaan, field teks `source` dan `message` pada respons quote disamarkan oleh `safeQuote`; opsi centang privat (`private_diagnostics: true`) menampilkan `source`, `message`, dan field quote yang disamarkan (URL/email/token disamarkan) secara sementara di browser tanpa disimpan atau dimasukkan ke blok salin.
 
 

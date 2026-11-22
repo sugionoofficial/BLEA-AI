@@ -79,6 +79,7 @@ test('remaining-schemas enforces admin, Freebeat session, read-only tools/list f
             },
             {
               name: 'generate_music',
+              description: 'Tool description https://internal.freebeat.local/music-doc token=SECRET-TOOL-TOK',
               inputSchema: {
                 type: 'object',
                 required: ['prompt'],
@@ -226,6 +227,7 @@ test('remaining-schemas enforces admin, Freebeat session, read-only tools/list f
     assert.equal(safeBody.tools.generate_music.properties.duration_seconds.minimum, undefined);
     assert.equal(safeBody.tools.generate_music.properties.instrumental.default, undefined);
     assert.equal(safeBody.tools.list_music_models.description, undefined);
+    assert.equal(safeBody.tools.generate_music.tool_description, undefined);
     assert.equal(safeBody.tools.generate_image, undefined);
     assert.ok(safeBody.available_tools.includes('generate_image'));
     assert.doesNotMatch(safeText, /SECRET|UNLISTED_CAT|SECRET_RATIO|PRIVATE_FMT|secret_internal_tool|api_key/);
@@ -237,6 +239,9 @@ test('remaining-schemas enforces admin, Freebeat session, read-only tools/list f
     const detailText = await detailRes.text();
     const detailBody = JSON.parse(detailText);
     assert.equal(detailBody.mode, 'detailed');
+    assert.match(detailBody.tools.generate_music.tool_description, /\[URL disembunyikan\]/);
+    assert.match(detailBody.tools.generate_music.tool_description, /token=\[disembunyikan\]/);
+    assert.doesNotMatch(detailBody.tools.generate_music.tool_description, /SECRET-TOOL-TOK/);
     assert.match(detailBody.tools.list_music_models.description, /\[URL disembunyikan\]/);
     assert.match(detailBody.tools.generate_music.properties.prompt.description, /Bearer \[disembunyikan\]/);
     assert.match(detailBody.tools.list_effects.properties.filter.description, /\[email disembunyikan\]/);
