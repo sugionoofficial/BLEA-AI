@@ -59,6 +59,31 @@ curl.exe -s https://kucing-biru-abc123.trycloudflare.com/v1/models
 
 Kalau keduanya mengembalikan JSON model, tunnel siap.
 
+### 2b. Otomatis: tanpa menyalin URL (skrip)
+
+Kalau langkah "salin URL → ganti Base URL di Admin Panel" terlalu sering diulang, pakai
+skrip yang sudah tersedia:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\ollama-tunnel-quick.ps1
+```
+
+Skrip akan: memeriksa Ollama, mencari `cloudflared`, menjalankan tunnel dengan
+`--http-host-header` (wajib, kalau tidak Ollama membalas 403), menangkap URL baru,
+memverifikasi `GET /v1/models` sampai `200`, lalu **memperbarui
+`provider_api_keys.ollama.base_url`** bila dua environment variable ini diisi:
+
+```powershell
+setx SUPABASE_URL "https://<project-ref>.supabase.co"
+setx SUPABASE_SERVICE_ROLE_KEY "<service-role-key>"
+```
+
+Tanpa kedua variable itu, skrip tetap berjalan dan hanya mencetak satu baris SQL untuk
+ditempel di Supabase SQL Editor.
+
+> **Keamanan:** service-role key memberi akses penuh ke database. Simpan hanya di komputer
+> pribadi. Jika ragu, jalankan dengan `-NoUpdate` dan tempel SQL manual.
+
 ## 3. Daftarkan provider di BLEA
 
 Provider key disimpan di tabel Supabase `provider_api_keys`.
