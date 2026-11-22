@@ -3873,12 +3873,13 @@ async function handleApi(request, url, env) {
         return a.name.localeCompare(b.name);
       });
 
-      const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat'].includes(p.id));
+      // 'ollama' chat-only: jangan pernah ditampilkan sebagai provider video.
+      const providers = Array.from(configuredByProvider.values()).filter((p) => !['cloudflare', 'unorouter', 'freebeat', 'ollama'].includes(p.id));
       if (hasAnyFreebeatVideo) {
         providers.push({ id: 'freebeat', label: 'Freebeat', configured: anyFreebeatVideoReady, hasBaseUrl: false });
       }
       for (const preset of Object.values(PROVIDER_PRESETS)) {
-        if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter') continue;
+        if (preset.id === 'custom' || preset.id === 'cloudflare' || preset.id === 'unorouter' || preset.id === 'ollama') continue;
         if (!configuredByProvider.has(preset.id)) {
           providers.push({ id: preset.id, label: preset.label, configured: false, hasBaseUrl: false });
         }

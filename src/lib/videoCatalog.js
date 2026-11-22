@@ -86,6 +86,18 @@ export const PROVIDER_PRESETS = {
     protocol: 'cloudflare_ai',
     description: 'Gratis 10.000 Neurons/hari via Workers AI Binding (env.AI) atau REST API Account ID.',
   },
+  // Chat-only: Ollama tidak punya endpoint video, jadi preset ini sengaja
+  // tidak pernah muncul di /api/video/models (lihat filter di worker.js).
+  ollama: {
+    id: 'ollama',
+    label: 'Ollama (self-host)',
+    // Tidak ada default: Worker di edge tidak bisa memanggil localhost pengguna,
+    // jadi base URL publik (Cloudflare Tunnel) wajib diisi admin.
+    defaultBaseUrl: '',
+    baseUrl: '',
+    protocol: 'openai_chat',
+    description: 'Server Ollama sendiri lewat Cloudflare Tunnel — OpenAI-compatible (/v1/chat/completions & /v1/models). Base URL wajib diisi, mis. https://xxxx.trycloudflare.com',
+  },
   custom: {
     id: 'custom',
     label: 'Custom Gateway',

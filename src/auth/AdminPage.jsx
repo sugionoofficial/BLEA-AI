@@ -134,6 +134,7 @@ const NAV_GROUPS = [
 
 const QUICK_PROVIDER_PRESETS = [
   PROVIDER_PRESETS.cloudflare,
+  PROVIDER_PRESETS.ollama,
   PROVIDER_PRESETS.pekpik,
   PROVIDER_PRESETS.unorouter,
   PROVIDER_PRESETS.xai,
@@ -1318,11 +1319,18 @@ export function AdminPage({ initialTab = null } = {}) {
                                 ? 'Opsional untuk REST API: https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1'
                                 : provider.provider === 'alibaba'
                                   ? 'Wajib: https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com'
-                                  : (PROVIDER_PRESETS[provider.provider]?.baseUrl || 'https://api.provider.com/v1')
+                                  : provider.provider === 'ollama'
+                                    ? 'Wajib: https://xxxx.trycloudflare.com (URL Cloudflare Tunnel ke Ollama)'
+                                    : (PROVIDER_PRESETS[provider.provider]?.baseUrl || 'https://api.provider.com/v1')
                             }
                             aria-label={`Base URL ${provider.provider}`}
                           />
                         </div>
+                        {provider.provider === 'ollama' && (
+                          <p className="admin-api-help" role="note">
+                            Jalankan <code>cloudflared tunnel --url http://localhost:11434</code> di komputer yang menjalankan Ollama, lalu isi Base URL dengan URL <code>https://….trycloudflare.com</code> dan API key apa pun (mis. <code>ollama</code>). Worker edge tidak bisa memanggil <code>localhost</code>. URL quick tunnel berubah setiap restart. Panduan lengkap: <code>docs/ollama-tunnel.md</code>.
+                          </p>
+                        )}
                         {provider.provider === 'alibaba' && (
                           <p className="admin-api-help" role="note">
                             Base URL wajib diisi: <code>https://{'{WorkspaceId}'}.ap-southeast-1.maas.aliyuncs.com</code> (Model Studio → Workspace, region ap-southeast-1 / Singapura). API key dibuat di Model Studio → API Key. Model: <b>wan3.0-video</b>. Video hasil Wan berlaku 24 jam di server Alibaba.
