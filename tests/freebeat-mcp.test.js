@@ -255,6 +255,42 @@ test('registration surfaces any well-shaped OAuth error code, not just a fixed p
   } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
 });
 
+test('registration retries once and succeeds after a transient server_error, without retrying other rejections', async () => {
+  // Live users saw registration rejected with OAuth code `server_error`
+  // (RFC 6749 §4.1.2.1: the authorization server hit an unexpected internal
+  // condition) -- a problem on Freebeat's backend, not our client metadata.
+  // Registration is side-effect-free to retry (each call just mints a new
+  // client), so a single automatic retry should recover from a transient hit.
+  const { startFreebeat } = await import('../src/lib/freebeatMcp.js');
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ error: 'server_error', error_description: 'secret-token-do-not-share' }, { status: 400 });
+      return Response.json({ client_id: 'registered-after-retry' });
+    };
+    const result = await startFreebeat(env, 'admin');
+    assert.equal(result.status, 200);
+    assert.equal(calls, 2);
+
+    // A non-server_error rejection must not trigger a retry (nothing about
+    // resending the identical payload would change the outcome).
+    calls = 0;
+    globalThis.fetch = async () => { calls += 1; return Response.json({ error: 'invalid_scope' }, { status: 400 }); };
+    await assert.rejects(startFreebeat(env, 'admin'), /FB-REGISTER-HTTP/);
+    assert.equal(calls, 1);
+
+    // Two consecutive server_error responses still fail, surfacing the code.
+    calls = 0;
+    globalThis.fetch = async () => { calls += 1; return Response.json({ error: 'server_error' }, { status: 400 }); };
+    await assert.rejects(startFreebeat(env, 'admin'), (err) => /FB-REGISTER-HTTP/.test(err.message) && /server_error/.test(err.message));
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; console.warn = originalWarn; }
+});
+
 test('token exchange failures also surface a safe OAuth error code when present', async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;

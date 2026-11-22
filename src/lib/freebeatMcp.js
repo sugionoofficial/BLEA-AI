@@ -226,7 +226,7 @@ function oauthFailure(stage, kind, status, registrationError = null) {
           : 'Freebeat mengirim respons yang bukan JSON yang valid.';
   const details = registrationError ? ` Kode OAuth: ${registrationError.code}.${registrationError.loopback ? ' Freebeat menyebut callback localhost/loopback.' : ''}` : '';
   console.warn('Freebeat OAuth request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}), ...(registrationError ? { oauthCode: registrationError.code, loopback: registrationError.loopback } : {}) });
-  return Object.assign(fail(`${message} ${tag}${details}`), { freebeatKind: kind });
+  return Object.assign(fail(`${message} ${tag}${details}`), { freebeatKind: kind, freebeatOauthCode: registrationError?.code || null });
 }
 
 // Read a small registration error body only; never return or log its raw
@@ -295,14 +295,34 @@ async function jsonFetch(url, options, stage) {
   return data;
 }
 
+// Register a new dynamic OAuth client with Freebeat. This has been observed
+// live to fail intermittently with the generic OAuth error code
+// `server_error` ("the authorization server encountered an unexpected
+// condition", RFC 6749 §4.1.2.1) -- a problem on Freebeat's own backend, not
+// a rejection of our client metadata (that combination of client_name,
+// redirect_uris, grant_types and scope was already accepted live before).
+// Registration has no single-use side effect (each call simply mints a new
+// client), so it is safe to retry once after a short delay in case the
+// failure is a transient backend hiccup rather than a persistent outage.
+async function registerFreebeatClient(redirect, requestedScope) {
+  const headers = { 'content-type': 'application/json', accept: 'application/json' };
+  const body = JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: requestedScope });
+  try {
+    return await jsonFetch(REGISTER, { method: 'POST', headers, body }, 'register');
+  } catch (err) {
+    if (err?.freebeatKind !== 'http' || err?.freebeatOauthCode !== 'server_error') throw err;
+    console.warn('Freebeat OAuth registration returned server_error, retrying once');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return jsonFetch(REGISTER, { method: 'POST', headers, body }, 'register');
+  }
+}
+
 export async function startFreebeat(env, userId, options = {}) {
   await key(env);
   const redirect = redirectUri(env);
   const opts = normalizeStartOptions(options);
   const requestedScope = `${READ_SCOPE} ${IMAGE_SCOPE}`;
-  // Freebeat accepted this combination in a live registration test. Requesting
-  // the refresh grant does not mean we retain or use any returned refresh token.
-  const registration = await jsonFetch(REGISTER, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ client_name: 'BLEA AI (uji MCP)', redirect_uris: [redirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: requestedScope }) }, 'register');
+  const registration = await registerFreebeatClient(redirect, requestedScope);
   if (typeof registration.client_id !== 'string' || !registration.client_id || registration.client_id.length > 500) throw fail('Registrasi klien Freebeat tidak mengembalikan client ID yang valid.');
   const state = random(), verifier = random();
   const challenge = b64(await crypto.subtle.digest('SHA-256', encoder.encode(verifier)));
