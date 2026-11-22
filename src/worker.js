@@ -37,6 +37,8 @@ import {
   resolveProviderApiBase,
 } from './lib/videoCatalog.js';
 import { ALIBABA_FREE_QUOTA_MODELS } from './lib/alibabaFreeQuota.js';
+import { isSafeRemoteMediaUrl, UPSTREAM_MEDIA_USER_AGENT } from './lib/safeUrl.js';
+import { handleMediaResolve, handleMediaProxy } from './lib/socialMediaResolver.js';
 import { handleAdminUserAction, handleAdminUserRoles } from './lib/adminUserControls.js';
 import { handleOrderReview, handlePurchaseToggle } from './lib/adminPurchases.js';
 import {
@@ -1430,34 +1432,6 @@ function contentAttachmentFilename(prefix, id, contentType, fallbackExt, suffix 
   return `${prefix}-${safeId}${suffix}.${ext}`;
 }
 
-// Cloudflare Workers' fetch() sends NO User-Agent by default (unlike Node/browser fetch or curl).
-// Freebeat's media CDN (fb-video-n3.freebeat.ai on CloudFront) rejects empty-UA requests with a
-// 403 "Request blocked" HTML page, which previously surfaced to users as
-// "Failed to stream upstream music media" (502) even though the generation itself had succeeded.
-// Every subrequest that proxies third-party media must identify itself.
-const UPSTREAM_MEDIA_USER_AGENT = 'Mozilla/5.0 (compatible; BLEA-AI/1.0; +https://blea.ai)';
-
-function isSafeRemoteMediaUrl(raw) {
-  if (typeof raw !== 'string' || raw.length > 4096) return false;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
-    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false;
-    if (host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return false;
-    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-    if (ipv4) {
-      const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-      if (a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function signImageContentUrl(id, index, env, ttlMs = 2 * 60 * 60 * 1000) {
   const exp = String(Date.now() + ttlMs);
   const msg = new TextEncoder().encode(`img:${id}:${index}:${exp}`);
@@ -2842,6 +2816,24 @@ async function handleApi(request, url, env) {
 
     if (path === 'tempmail' && ['GET', 'POST'].includes(method)) {
       return handleTempmail(request, url, env);
+    }
+
+    // ---- POST /api/media/resolve: tautan Facebook/TikTok -> link siap pakai ----
+    // (dipakai field URL audio/video di /generate: getmyfb.com / ssstik.io scraping).
+    if (path === 'media/resolve' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      try {
+        return jsonResponse(await handleMediaResolve(request, env, user));
+      } catch (err) {
+        return jsonResponse({ error: err?.message || 'Gagal memproses tautan' }, err?.status || 502);
+      }
+    }
+
+    // ---- GET/HEAD /api/media/proxy: stream media Facebook/TikTok yang sudah di-resolve ----
+    // (bertanda tangan, bukan bearer, supaya elemen <video>/<audio> native bisa memuatnya).
+    if (path === 'media/proxy' && (method === 'GET' || method === 'HEAD')) {
+      return handleMediaProxy(request, url, env);
     }
 
     // ---- GET/HEAD /api/video/content/:id: signed or authorized video stream proxy ----
