@@ -51,6 +51,7 @@ test('/api/status, /api/catalog, dan /api/chat bekerja dengan provider ollama le
   const realFetch = globalThis.fetch;
   let capturedAuth = '';
   let capturedUrl = '';
+  let capturedPayload = null;
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input.url;
     if (url === 'https://supabase.example/auth/v1/user') {
@@ -65,6 +66,7 @@ test('/api/status, /api/catalog, dan /api/chat bekerja dengan provider ollama le
     if (url === `${TUNNEL}/v1/chat/completions`) {
       capturedUrl = url;
       capturedAuth = init.headers.authorization;
+      capturedPayload = JSON.parse(init.body || '{}');
       return Response.json({ choices: [{ message: { content: 'Halo dari Ollama lokal!' } }] });
     }
     if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
@@ -102,6 +104,9 @@ test('/api/status, /api/catalog, dan /api/chat bekerja dengan provider ollama le
     assert.equal(chatData.reply, 'Halo dari Ollama lokal!');
     assert.equal(capturedUrl, `${TUNNEL}/v1/chat/completions`);
     assert.equal(capturedAuth, 'Bearer ollama');
+    // Ollama tidak boleh dibiarkan menghasilkan keluaran tanpa batas di CPU lambat.
+    assert.equal(capturedPayload.max_tokens, 1024);
+    assert.equal(capturedPayload.stream, false);
   } finally {
     globalThis.fetch = realFetch;
   }

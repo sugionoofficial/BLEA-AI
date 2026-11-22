@@ -1009,6 +1009,9 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
         temperature: Number.isFinite(payload.temperature) ? payload.temperature : 0.35,
         max_tokens: Number.isFinite(payload.max_tokens) ? payload.max_tokens : 4096,
       } : {}),
+      // Ollama tanpa cap panjang keluaran bisa menghasilkan token tanpa henti
+      // (lambat di CPU) sampai Worker menyerah karena timeout.
+      ...(provider === 'ollama' && !Number.isFinite(payload.max_tokens) ? { max_tokens: 1024 } : {}),
       model,
       stream: Boolean(stream),
     }),
@@ -1025,6 +1028,16 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
   }
   const data = await upstream.json().catch(() => ({}));
   return { ok: true, status: upstream.status, data };
+}
+
+// Model self-host (Ollama) berjalan di CPU pengguna sendiri: memuat bobot 3-4 GB
+// ke RAM dan menghasilkan token pertama bisa jauh lebih lambat daripada API cloud.
+// Timeout 120 detik bawaan terlalu pendek untuk kondisi itu.
+function chatUpstreamTimeoutMs(provider, stream = false) {
+  if (String(provider || '').trim().toLowerCase() === 'ollama') {
+    return stream ? 300_000 : 480_000;
+  }
+  return 120_000;
 }
 
 function extractSseEventsFromLines(lines) {
@@ -4596,7 +4609,7 @@ async function handleApi(request, url, env) {
               apiKey: activeApiKey,
               baseUrl: activeBaseUrl,
               payload: fetchBody,
-              timeoutMs: 120_000,
+              timeoutMs: chatUpstreamTimeoutMs(activeProvider, true),
               env,
               stream: true,
             });
@@ -4675,7 +4688,7 @@ async function handleApi(request, url, env) {
                   const researched = await sendChatCompletionRequest({
                     provider: activeProvider, model: activeModel, apiKey: activeApiKey,
                     baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
-                    timeoutMs: 60_000, env,
+                    timeoutMs: chatUpstreamTimeoutMs(activeProvider), env,
                   });
                   if (researched.ok) {
                     const researchedReply = extractAssistantReply(researched.data);
@@ -4737,7 +4750,7 @@ async function handleApi(request, url, env) {
             apiKey: activeApiKey,
             baseUrl: activeBaseUrl,
             payload: fetchBody,
-            timeoutMs: 120_000,
+            timeoutMs: chatUpstreamTimeoutMs(activeProvider),
             env,
           });
         if (alibabaPrimaryCand2) { activeApiKey = alibabaPrimaryCand2.api_key; activeBaseUrl = alibabaPrimaryCand2.base_url; }
@@ -4818,7 +4831,7 @@ async function handleApi(request, url, env) {
                 const researched = await sendChatCompletionRequest({
                   provider: activeProvider, model: activeModel, apiKey: activeApiKey,
                   baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
-                  timeoutMs: 60_000, env,
+                  timeoutMs: chatUpstreamTimeoutMs(activeProvider), env,
                 });
                 if (researched.ok) {
                   const researchedReply = extractAssistantReply(researched.data);
@@ -4882,7 +4895,7 @@ async function handleApi(request, url, env) {
               apiKey: activeApiKey,
               baseUrl: activeBaseUrl,
               payload: { ...fetchBody, messages: roundMessages },
-              timeoutMs: 60_000,
+              timeoutMs: chatUpstreamTimeoutMs(activeProvider),
               env,
             });
             if (!roundRes.ok && [429, 503, 502].includes(roundRes.status) && body.autoFallback !== false) {

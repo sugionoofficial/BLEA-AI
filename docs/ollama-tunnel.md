@@ -144,7 +144,19 @@ di-`update` juga.
 - Laptop harus menyala, tidak sleep, dan Ollama berjalan. Kalau laptop mati, chat gagal
   (`502`/`530`) sampai tunnel hidup lagi.
 - Kecepatan = kecepatan laptop Anda, bukan Cloudflare. Token pertama lambat karena model
-  dimuat ke RAM (`OLLAMA_KEEP_ALIVE=30m` membantu).
+  dimuat ke RAM (`OLLAMA_KEEP_ALIVE=1h` sangat membantu).
+- Batasi panjang keluaran model lokal. Di CPU, model 4B bisa butuh >2 menit untuk 1000
+  token; tanpa batas, chat akan terasa timeout. Contoh Modelfile:
+
+  ```
+  FROM huihui_ai/qwen3-abliterated:4b
+  PARAMETER num_ctx 4096
+  PARAMETER num_predict 512
+  PARAMETER temperature 0.7
+  ```
+
+  lalu `ollama create ollama-chat -f Modelfile` dan daftarkan model `ollama-chat` di
+  Katalog Model.
 - Streaming didukung (`/v1/chat/completions` dengan `stream: true`), tapi throughput tetap
   dibatasi uplink rumah.
 - Vision/tools hanya berfungsi bila modelnya mendukung; BLEA mengirim payload chat biasa.
@@ -160,6 +172,7 @@ di-`update` juga.
 | `Penyimpanan gagal` di Admin Panel | `api_key` 1–7 karakter (constraint tabel) | Pakai minimal 8 karakter, mis. `ollama-local` |
 | `model not found` dari Ollama | Nama model beda tag | Samakan dengan `ollama list` |
 | Chat menggantung lalu timeout | Model terlalu besar untuk RAM laptop | Pakai 1B–4B, turunkan `num_ctx` |
+| `TimeoutError: The operation was aborted due to timeout` | Worker menyerah menunggu Ollama (bawaan 120 detik). Penyebab umum: model belum termuat (cold start) dan/atau model `thinking` menghasilkan penalaran panjang di CPU | Panaskan model lebih dulu (`ollama run <model>`), set `OLLAMA_KEEP_ALIVE=1h`, lalu batasi keluaran lewat Modelfile (`num_predict 512`, `num_ctx 4096`). Worker kini memberi provider `ollama` timeout 300 detik (stream) / 480 detik (non-stream) dan `max_tokens` 1024 bila klien tidak mengirimnya |
 | Katalog kosong | `/v1/models` gagal | Uji `curl.exe {base_url}/v1/models`; pastikan tidak ada `/api` di URL |
 | URL berubah tiap restart | Quick tunnel | Pakai named tunnel (bagian 5) |
 
