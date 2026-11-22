@@ -68,19 +68,22 @@ klik chip **Ollama (self-host)**, lalu:
 
 1. isi *Base URL* dengan URL tunnel, mis. `https://kucing-biru-abc123.trycloudflare.com`;
 2. simpan, lalu buka baris provider **Ollama (self-host)**;
-3. pada kolom API key isi `ollama` (string apa saja, tidak divalidasi Ollama) → simpan.
+3. pada kolom API key isi `ollama-local` (string apa saja, **minimal 8 karakter**) → simpan.
 
 **Cara 2 — SQL Editor Supabase** (kalau tidak mau lewat UI):
 
 ```sql
 insert into provider_api_keys (provider, label, api_key, base_url)
-values ('ollama', 'Ollama Laptop (tunnel)', 'ollama', 'https://kucing-biru-abc123.trycloudflare.com')
+values ('ollama', 'Ollama Laptop (tunnel)', 'ollama-local', 'https://kucing-biru-abc123.trycloudflare.com')
 on conflict (provider) do update
   set label = excluded.label, api_key = excluded.api_key, base_url = excluded.base_url;
 ```
 
-- `api_key` diisi apa saja yang tidak kosong (`ollama`), karena Ollama tidak memvalidasi
-  key. Worker menolak provider tanpa key (`API key untuk provider "ollama" belum dikonfigurasi`).
+- `api_key` diisi string apa saja **minimal 8 karakter** (`ollama-local`), karena Ollama
+  tidak memvalidasi key. Worker menolak provider tanpa key
+  (`API key untuk provider "ollama" belum dikonfigurasi`), dan tabel `provider_api_keys`
+  punya constraint `char_length(api_key) = 0 or between 8 and 2048` — key 1–7 karakter
+  akan gagal disimpan dengan pesan "Penyimpanan gagal".
 - `base_url` boleh dengan atau tanpa akhiran `/v1`; `resolveProviderApiBase` menormalkannya
   menjadi `.../v1`.
 
@@ -153,7 +156,8 @@ di-`update` juga.
 | --- | --- | --- |
 | `502` / `530` dari Worker | Tunnel mati atau URL kedaluwarsa | Jalankan `cloudflared` lagi, `update provider_api_keys` dengan URL baru |
 | `Base URL untuk provider "ollama" tidak valid` | `base_url` kosong / bukan http(s) | Isi `base_url` dengan URL tunnel |
-| `API key untuk provider "ollama" belum dikonfigurasi` | `api_key` kosong | Isi dengan string apa pun, mis. `ollama` |
+| `API key untuk provider "ollama" belum dikonfigurasi` | `api_key` kosong | Isi dengan string ≥ 8 karakter, mis. `ollama-local` |
+| `Penyimpanan gagal` di Admin Panel | `api_key` 1–7 karakter (constraint tabel) | Pakai minimal 8 karakter, mis. `ollama-local` |
 | `model not found` dari Ollama | Nama model beda tag | Samakan dengan `ollama list` |
 | Chat menggantung lalu timeout | Model terlalu besar untuk RAM laptop | Pakai 1B–4B, turunkan `num_ctx` |
 | Katalog kosong | `/v1/models` gagal | Uji `curl.exe {base_url}/v1/models`; pastikan tidak ada `/api` di URL |
