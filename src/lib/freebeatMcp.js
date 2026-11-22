@@ -217,15 +217,32 @@ function response(data, status = 200, headers = {}) {
 // Expose only fixed diagnostic codes and, when present, a short safe-shaped
 // OAuth error code (see registrationErrorDetails); never expose raw provider
 // bodies, free-text descriptions or tokens.
-function oauthFailure(stage, kind, status, registrationError = null) {
+// A request-tracing identifier (e.g. Cloudflare's `cf-ray`, or a generic
+// `x-request-id`/`request-id`) is not sensitive -- it is a short opaque
+// token meant specifically to be handed to the origin's own support team to
+// look up what happened to one exact request. Surfacing it lets a user
+// escalate a persistent provider-side failure (like `server_error`) to
+// Freebeat support with something concrete to search their logs by,
+// instead of only a timestamp and a guess.
+const TRACE_HEADER_RE = /^[A-Za-z0-9][A-Za-z0-9:_.-]{0,127}$/;
+function safeTraceId(res) {
+  if (!res || typeof res.headers?.get !== 'function') return null;
+  for (const name of ['cf-ray', 'x-request-id', 'request-id', 'x-amzn-requestid']) {
+    const value = res.headers.get(name);
+    if (typeof value === 'string' && TRACE_HEADER_RE.test(value.trim())) return value.trim();
+  }
+  return null;
+}
+function oauthFailure(stage, kind, status, registrationError = null, traceId = null) {
   const tag = `[FB-${stage.toUpperCase()}-${kind.toUpperCase()}]`;
   const message = kind === 'timeout' ? 'Freebeat tidak merespons dalam 15 detik.'
     : kind === 'network' ? 'Worker tidak dapat terhubung ke Freebeat.'
       : kind === 'redirect' ? 'Freebeat mengirim pengalihan yang tidak didukung atau tidak aman.'
         : kind === 'http' ? `Freebeat menolak permintaan (HTTP ${status}).`
           : 'Freebeat mengirim respons yang bukan JSON yang valid.';
-  const details = registrationError ? ` Kode OAuth: ${registrationError.code}.${registrationError.loopback ? ' Freebeat menyebut callback localhost/loopback.' : ''}` : '';
-  console.warn('Freebeat OAuth request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}), ...(registrationError ? { oauthCode: registrationError.code, loopback: registrationError.loopback } : {}) });
+  const details = (registrationError ? ` Kode OAuth: ${registrationError.code}.${registrationError.loopback ? ' Freebeat menyebut callback localhost/loopback.' : ''}` : '')
+    + (traceId ? ` Ref: ${traceId}.` : '');
+  console.warn('Freebeat OAuth request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}), ...(registrationError ? { oauthCode: registrationError.code, loopback: registrationError.loopback } : {}), ...(traceId ? { traceId } : {}) });
   return Object.assign(fail(`${message} ${tag}${details}`), { freebeatKind: kind, freebeatOauthCode: registrationError?.code || null });
 }
 
@@ -275,9 +292,9 @@ async function jsonFetch(url, options, stage) {
     if (![301, 302, 303, 307, 308].includes(res.status)) break;
     // Preserve POST and credentials only on 307/308 to the same endpoint with an optional trailing slash.
     // Never forward OAuth tokens or codes to another origin, a different path or query string.
-    let next; try { next = new URL(res.headers.get('location'), target); } catch { throw oauthFailure(stage, 'redirect', res.status); }
+    let next; try { next = new URL(res.headers.get('location'), target); } catch { throw oauthFailure(stage, 'redirect', res.status, null, safeTraceId(res)); }
     const original = new URL(url);
-    if (redirects || ![307, 308].includes(res.status) || next.origin !== original.origin || next.pathname.replace(/\/$/, '') !== original.pathname.replace(/\/$/, '') || next.search || next.hash || next.username || next.password) throw oauthFailure(stage, 'redirect', res.status);
+    if (redirects || ![307, 308].includes(res.status) || next.origin !== original.origin || next.pathname.replace(/\/$/, '') !== original.pathname.replace(/\/$/, '') || next.search || next.hash || next.username || next.password) throw oauthFailure(stage, 'redirect', res.status, null, safeTraceId(res));
     target = next.toString();
   }
   if (!res.ok) {
@@ -286,12 +303,12 @@ async function jsonFetch(url, options, stage) {
     // stage so a token-refresh rejection (e.g. invalid_grant on an existing
     // connected account) is just as diagnosable as a registration rejection.
     const details = (stage === 'register' || stage === 'token') && [400, 401].includes(res.status) ? await registrationErrorDetails(res) : null;
-    throw oauthFailure(stage, 'http', res.status, details);
+    throw oauthFailure(stage, 'http', res.status, details, safeTraceId(res));
   }
   let data;
   try { data = await res.json(); }
-  catch (error) { throw oauthFailure(stage, ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'response', res.status); }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) throw oauthFailure(stage, 'response', res.status);
+  catch (error) { throw oauthFailure(stage, ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'response', res.status, null, safeTraceId(res)); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw oauthFailure(stage, 'response', res.status, null, safeTraceId(res));
   return data;
 }
 
