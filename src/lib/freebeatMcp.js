@@ -1633,20 +1633,22 @@ async function prepareImage(env, user, session, input) {
   if (approval.length > 12000) throw fail('Prompt terlalu besar untuk persetujuan uji ini.', 400);
   return { approval, model_id: input.model_id, prompt: input.prompt, credits, expiresAt: expires };
 }
-async function imageJson(request) {
+async function imageJson(request, maxBytes = 16384) {
   if (request.headers.get('origin') !== new URL(request.url).origin) throw fail('Permintaan harus berasal dari halaman BLEA ini.', 403);
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw fail('Format permintaan tidak valid.', 400);
-  try { return await boundedJson(request); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
+  try { return await boundedJson(request, maxBytes); } catch { throw fail('Permintaan tidak valid atau terlalu besar.', 400); }
 }
 async function imageDb(env, path, options = {}, kind = 'image') {
-  const label = kind === 'vocal' ? 'vokal' : kind === 'dance' ? 'dance' : kind === 'video' ? 'video' : 'gambar';
-  const table = kind === 'vocal'
-    ? 'freebeat_admin_vocal_tests'
-    : kind === 'dance'
-      ? 'freebeat_admin_dance_tests'
-      : kind === 'video'
-        ? 'freebeat_admin_video_tests'
-        : 'freebeat_admin_image_tests';
+  const label = kind === 'music' ? 'musik' : kind === 'vocal' ? 'vokal' : kind === 'dance' ? 'dance' : kind === 'video' ? 'video' : 'gambar';
+  const table = kind === 'music'
+    ? 'freebeat_admin_music_tests'
+    : kind === 'vocal'
+      ? 'freebeat_admin_vocal_tests'
+      : kind === 'dance'
+        ? 'freebeat_admin_dance_tests'
+        : kind === 'video'
+          ? 'freebeat_admin_video_tests'
+          : 'freebeat_admin_image_tests';
   if (!env.SUPABASE_SERVICE_ROLE_KEY || !env.SUPABASE_URL) throw fail(`Penyimpanan uji ${label} belum dikonfigurasi; tidak ada generasi yang dikirim.`, 503);
   const base = new URL(env.SUPABASE_URL);
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw fail(`Konfigurasi penyimpanan uji ${label} tidak valid.`, 503);
@@ -3065,6 +3067,454 @@ async function vocalMessage(env, user, session, request) {
   };
 }
 
+// --- Admin Music Generation Diagnostics (generate_music) --------------------
+
+const MUSIC_BODY_MAX_BYTES = 98304;
+const MUSIC_APPROVAL_MAX_LEN = 98304;
+const MUSIC_SUBMIT_MAX_BYTES = 114688;
+const musicDb = (env, path, options = {}) => imageDb(env, path, options, 'music');
+
+async function musicMark(env, uid, id, status, taskId = null) {
+  const rows = await musicDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(uid)}&status=eq.dispatching`, {
+    method: 'PATCH',
+    body: { status, task_id: taskId, updated_at: new Date().toISOString() },
+  });
+  if (rows.length !== 1) throw fail('Status penyimpanan uji musik tidak dapat dipastikan.', 503);
+}
+
+async function fetchRawMusicModels(accessToken, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'list_music_models', arguments: {} },
+  }, 'models', headers, 262144);
+  if (result?.isError || result?.error) throw mcpFailure('models', 'rpc');
+  const content = modelContent(result);
+  const list = extractCatalogList(content, 'models');
+  if (!Array.isArray(list)) throw mcpFailure('models', 'response');
+  return list.slice(0, 100).flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const model_id = item.model_id ?? item.modelId ?? item.id;
+    const rawName = item.display_name ?? item.displayName ?? item.name;
+    if (!Number.isSafeInteger(model_id) || model_id <= 0 || typeof rawName !== 'string' || !rawName.trim()) return [];
+    const name = privateFailureReason(rawName.trim())?.slice(0, 200) || `Model #${model_id}`;
+    const rawCredits = item.pricing?.credits ?? item.credits;
+    const credits = typeof rawCredits === 'number' && Number.isFinite(rawCredits) && rawCredits >= 0 ? rawCredits : null;
+    const pricing_status = typeof item.pricing?.status === 'string' ? item.pricing.status : null;
+    return [{
+      model_id,
+      name,
+      available: item.available !== false,
+      pricing_status,
+      credits,
+      supports_duration: item.supports_duration === true,
+      supports_lyrics: typeof item.supports_lyrics === 'boolean' ? item.supports_lyrics : null,
+      supports_instrumental: typeof item.supports_instrumental === 'boolean' ? item.supports_instrumental : null,
+      requires_lyrics: item.requires_lyrics === true,
+    }];
+  });
+}
+
+function validateMusicRequest(input, catalogModels = null) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw fail('Parameter uji musik tidak valid.', 400);
+  }
+  const allowed = new Set(['model_id', 'prompt', 'instrumental', 'lyrics', 'duration_seconds']);
+  if (Object.keys(input).some((k) => !allowed.has(k))) {
+    throw fail('Parameter uji musik tidak dikenali.', 400);
+  }
+  const modelId = input.model_id;
+  if (!Number.isSafeInteger(modelId) || modelId < 1 || modelId > 999999999) {
+    throw fail('model_id musik harus berupa bilangan bulat positif.', 400);
+  }
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  if (!prompt || prompt.length > 2000) {
+    throw fail('Prompt musik wajib diisi (1–2000 karakter).', 400);
+  }
+  let instrumental = false;
+  if (input.instrumental !== undefined) {
+    if (typeof input.instrumental !== 'boolean') {
+      throw fail('instrumental harus berupa boolean.', 400);
+    }
+    instrumental = input.instrumental;
+  }
+  let lyrics = null;
+  if (input.lyrics !== undefined && input.lyrics !== null) {
+    if (typeof input.lyrics !== 'string') {
+      throw fail('lyrics harus berupa teks.', 400);
+    }
+    const cleanLyrics = input.lyrics.trim();
+    if (cleanLyrics.length > 12000) {
+      throw fail('lyrics maksimal 12000 karakter.', 400);
+    }
+    if (cleanLyrics.length > 0) lyrics = cleanLyrics;
+  }
+  if (instrumental && lyrics) {
+    throw fail('Tidak dapat mengaktifkan instrumental=true sekaligus mengisi lyrics.', 400);
+  }
+  let durationSeconds = null;
+  if (input.duration_seconds !== undefined && input.duration_seconds !== null && input.duration_seconds !== '') {
+    if (typeof input.duration_seconds !== 'number' || !Number.isFinite(input.duration_seconds) || input.duration_seconds < 10 || input.duration_seconds > 300) {
+      throw fail('duration_seconds harus berupa angka 10–300 detik.', 400);
+    }
+    durationSeconds = input.duration_seconds;
+  }
+
+  let matchedModel = null;
+  if (Array.isArray(catalogModels)) {
+    matchedModel = catalogModels.find((item) => item.model_id === modelId) || null;
+    if (!matchedModel) {
+      throw fail('Model musik tidak ditemukan pada katalog list_music_models saat ini.', 400);
+    }
+    if (!matchedModel.available || matchedModel.pricing_status === 'unavailable') {
+      throw fail(`Model musik "${matchedModel.name}" sedang unavailable di Freebeat dan tidak dapat dikirim.`, 409);
+    }
+    if (matchedModel.requires_lyrics && !lyrics) {
+      throw fail(`Model musik "${matchedModel.name}" mewajibkan lyrics.`, 400);
+    }
+    if (matchedModel.supports_lyrics === false && lyrics) {
+      throw fail(`Model musik "${matchedModel.name}" tidak mendukung lyrics.`, 400);
+    }
+    if (matchedModel.supports_instrumental === false && instrumental) {
+      throw fail(`Model musik "${matchedModel.name}" tidak mendukung mode instrumental.`, 400);
+    }
+    if (durationSeconds !== null && !matchedModel.supports_duration) {
+      throw fail(`Model musik "${matchedModel.name}" tidak mendukung pengaturan duration_seconds.`, 400);
+    }
+  }
+
+  return {
+    model: matchedModel,
+    parameters: {
+      model_id: modelId,
+      prompt,
+      ...(instrumental ? { instrumental: true } : {}),
+      ...(lyrics ? { lyrics, instrumental: false } : {}),
+      ...(durationSeconds !== null ? { duration_seconds: durationSeconds } : {}),
+    },
+  };
+}
+
+async function musicQuote(accessToken, parameters, raw = false, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'quote_generation', arguments: { tool: 'generate_music', parameters } },
+  }, 'quote', headers, 262144);
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');
+  return raw ? content : safeQuote(content);
+}
+
+async function prepareMusic(env, user, session, input) {
+  await requireImageSession(session);
+  const headers = await openMcp(session.accessToken);
+  const catalogModels = await fetchRawMusicModels(session.accessToken, headers);
+  const { model, parameters } = validateMusicRequest(input, catalogModels);
+  const rawQuote = await musicQuote(session.accessToken, parameters, true, headers);
+  const credits = quotedCredits(rawQuote);
+  if (credits === null) {
+    throw fail('Freebeat tidak memberikan quote numerik untuk model musik ini. Generasi tidak disiapkan.', 409);
+  }
+  const expires = Date.now() + APPROVAL_LIFETIME;
+  const approval = await seal({
+    id: crypto.randomUUID(),
+    uid: user.id,
+    sessionHash: await sessionHash(session),
+    model_id: parameters.model_id,
+    model_name: model?.name || null,
+    parameters,
+    credits,
+    max_credits: credits,
+    expires,
+  }, env, 'music-approval');
+  if (approval.length > MUSIC_APPROVAL_MAX_LEN) {
+    throw fail('Input terlalu besar untuk persetujuan uji musik.', 400);
+  }
+  return {
+    approval,
+    model,
+    parameters,
+    credits,
+    max_credits: credits,
+    quote: safeQuote(rawQuote),
+    expiresAt: expires,
+  };
+}
+
+async function submitMusic(env, user, session, request) {
+  await requireImageSession(session);
+  const input = await imageJson(request, MUSIC_SUBMIT_MAX_BYTES);
+  const allowedKeys = new Set(['approval', 'confirm', 'private_diagnostics']);
+  if (
+    !input
+    || typeof input !== 'object'
+    || Array.isArray(input)
+    || Object.keys(input).some((k) => !allowedKeys.has(k))
+    || input.confirm !== true
+    || (input.private_diagnostics !== undefined && typeof input.private_diagnostics !== 'boolean')
+    || typeof input.approval !== 'string'
+    || input.approval.length > MUSIC_APPROVAL_MAX_LEN
+  ) {
+    throw fail('Persetujuan uji musik tidak valid.', 400);
+  }
+  const captureDiagnostics = input.private_diagnostics === true;
+  const ticket = await unseal(input.approval, env, 'music-approval', MUSIC_APPROVAL_MAX_LEN);
+  if (
+    !ticket
+    || ticket.uid !== user.id
+    || ticket.sessionHash !== await sessionHash(session)
+    || !TEST_ID.test(ticket.id || '')
+    || !Number.isFinite(ticket.expires)
+    || ticket.expires <= Date.now()
+    || ticket.expires > Date.now() + APPROVAL_LIFETIME
+    || typeof ticket.credits !== 'number'
+    || !Number.isFinite(ticket.credits)
+    || ticket.credits < 0
+    || ticket.credits > 1000000
+    || ticket.max_credits !== ticket.credits
+  ) {
+    throw fail('Persetujuan kedaluwarsa atau tidak cocok. Buat quote baru.', 400);
+  }
+  const { parameters } = validateMusicRequest(ticket.parameters, null);
+  const headers = await openMcp(session.accessToken);
+  const current = quotedCredits(await musicQuote(session.accessToken, parameters, true, headers));
+  if (current === null || current !== ticket.credits) {
+    throw fail('Quote berubah atau tidak tersedia. Tidak ada musik dikirim; buat quote baru.', 409);
+  }
+  if (ticket.expires <= Date.now()) {
+    throw fail('Persetujuan kedaluwarsa; tidak ada musik dikirim.', 400);
+  }
+  const rows = await musicDb(env, '', {
+    method: 'POST',
+    body: {
+      id: ticket.id,
+      admin_id: user.id,
+      session_hash: ticket.sessionHash,
+      model_id: parameters.model_id,
+      model_name: typeof ticket.model_name === 'string' && ticket.model_name.trim() ? ticket.model_name.trim().slice(0, 200) : null,
+      instrumental: parameters.instrumental === true,
+      has_lyrics: Boolean(parameters.lyrics),
+      duration_seconds: parameters.duration_seconds ?? null,
+      quote_credits: ticket.credits,
+      max_credits: ticket.max_credits,
+      status: 'dispatching',
+    },
+  });
+  if (rows.length !== 1 || rows[0]?.id !== ticket.id) {
+    throw fail('Pencatatan belum dapat dipastikan. Jangan ulangi sebelum memeriksa catatan.', 503);
+  }
+  if (ticket.expires <= Date.now()) {
+    try { await musicMark(env, user.id, ticket.id, 'reviewed', null); } catch { /* retain lock */ }
+    throw fail('Persetujuan kedaluwarsa sebelum pengiriman; tidak ada musik dikirim.', 409);
+  }
+  let content;
+  let initialDiagnostics = null;
+  try {
+    const { result } = await rpc(session.accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'generate_music', arguments: { ...parameters, max_credits: ticket.max_credits } },
+    }, 'generate', headers, 262144, captureDiagnostics);
+    if (captureDiagnostics) {
+      const messages = initialVideoMessages(result);
+      if (!messages.length && result && typeof result === 'object') {
+        const structured = modelContent(result);
+        const target = structured && typeof structured === 'object' && !Array.isArray(structured) ? structured : result;
+        const keys = Object.keys(target).filter((k) => !/secret|token|password|credential|key/i.test(k)).slice(0, 20);
+        if (keys.length) messages.push(`root_keys: ${keys.join(', ')}`);
+      }
+      initialDiagnostics = { received: true, messages: messages.slice(0, 50) };
+    }
+    if (result.isError) throw new Error('unrecognized');
+    content = modelContent(result);
+    if (!content || typeof content !== 'object') throw new Error('unrecognized');
+  } catch (err) {
+    try { await musicMark(env, user.id, ticket.id, 'unknown', null); } catch { /* retain lock */ }
+    return {
+      id: ticket.id,
+      status: 'unknown',
+      ...(captureDiagnostics
+        ? {
+            initial_diagnostics: initialDiagnostics || {
+              received: false,
+              messages: err?.message ? [privateFailureReason(err.message) || err.message] : [],
+            },
+          }
+        : {}),
+    };
+  }
+  const rawTaskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id)
+    ? content.task_id
+    : (typeof content.batch_id === 'string' && TASK_ID.test(content.batch_id) ? content.batch_id : null);
+  if (!rawTaskId) {
+    try { await musicMark(env, user.id, ticket.id, 'unknown', null); } catch { /* retain lock */ }
+    return {
+      id: ticket.id,
+      status: 'unknown',
+      ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
+    };
+  }
+  try {
+    await musicMark(env, user.id, ticket.id, 'submitted', rawTaskId);
+  } catch {
+    return {
+      id: ticket.id,
+      status: 'unknown',
+      recoveryTaskId: rawTaskId,
+      ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
+    };
+  }
+  return {
+    id: ticket.id,
+    status: 'submitted',
+    ...(initialDiagnostics ? { initial_diagnostics: initialDiagnostics } : {}),
+  };
+}
+
+async function musicTests(env, user, session) {
+  const rows = await musicDb(env, `?admin_id=eq.${encodeURIComponent(user.id)}&select=id,model_id,model_name,instrumental,has_lyrics,duration_seconds,quote_credits,max_credits,status,created_at,session_hash&order=created_at.desc&limit=20`);
+  const hash = await sessionHash(session);
+  return rows.map((row) => ({
+    id: row.id,
+    model_id: row.model_id,
+    model_name: row.model_name,
+    instrumental: row.instrumental === true,
+    has_lyrics: row.has_lyrics === true,
+    duration_seconds: row.duration_seconds,
+    quote_credits: row.quote_credits,
+    max_credits: row.max_credits,
+    status: row.status,
+    created_at: row.created_at,
+    canPoll: row.status === 'submitted' && row.session_hash === hash,
+  }));
+}
+
+function extractResultMusicId(source) {
+  const candidates = [
+    source?.result?.music_id,
+    source?.music_id,
+    source?.items?.[0]?.music_id,
+    source?.result?.items?.[0]?.music_id,
+    source?.audios?.[0]?.music_id,
+    source?.result?.audios?.[0]?.music_id,
+  ];
+  for (const cand of candidates) {
+    if (Number.isSafeInteger(cand) && cand > 0) return cand;
+    if (typeof cand === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/.test(cand.trim())) return cand.trim();
+  }
+  return null;
+}
+
+function extractMusicAudioUrls(source) {
+  const audios = [];
+  const push = (rawUrl) => {
+    const safe = safeImageUrl(rawUrl);
+    if (safe && !audios.includes(safe)) audios.push(safe);
+  };
+  for (const candidate of [
+    source?.result?.audio_url,
+    source?.result?.song_url,
+    source?.result?.mp3_url,
+    source?.result?.url,
+    source?.audio_url,
+    source?.song_url,
+    source?.mp3_url,
+  ]) {
+    push(candidate);
+  }
+  for (const list of [source?.result?.audios, source?.audios, source?.result?.items, source?.items]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list.slice(0, 10)) {
+      if (typeof item === 'string') {
+        push(item);
+      } else if (item && typeof item === 'object') {
+        push(item.audio_url);
+        push(item.song_url);
+        push(item.mp3_url);
+        push(item.url);
+      }
+    }
+  }
+  return audios;
+}
+
+async function pollMusic(env, user, session, request) {
+  const input = await imageJson(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((k) => !['id', 'acknowledge', 'private_result'].includes(k)) || typeof input.id !== 'string' || !TEST_ID.test(input.id)) {
+    throw fail('ID uji musik tidak valid.', 400);
+  }
+  if (input.acknowledge !== undefined && typeof input.acknowledge !== 'boolean') {
+    throw fail('acknowledge harus berupa boolean.', 400);
+  }
+  if (input.private_result !== undefined && typeof input.private_result !== 'boolean') {
+    throw fail('private_result harus berupa boolean.', 400);
+  }
+  const rows = await musicDb(env, `?id=eq.${encodeURIComponent(input.id)}&admin_id=eq.${encodeURIComponent(user.id)}&select=status,task_id,session_hash&limit=1`);
+  const row = rows[0];
+  const sameSession = Boolean(row) && row.session_hash === await sessionHash(session);
+  if (!row || row.status !== 'submitted' || typeof row.task_id !== 'string' || !TASK_ID.test(row.task_id) || (!sameSession && input.acknowledge !== true)) {
+    throw fail('Uji musik tidak tersedia pada sesi Freebeat ini.', 404);
+  }
+  const headers = await openMcp(session.accessToken);
+  const { result: statusRes } = await rpc(session.accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'get_task_status', arguments: { task_id: row.task_id } },
+  }, 'task', headers, 262144);
+  const statusContent = modelContent(statusRes);
+  if (!statusContent || typeof statusContent !== 'object' || Array.isArray(statusContent)) throw mcpFailure('task', 'response');
+  const summary = safeTask(statusContent);
+  let resultContent = null;
+  if (['completed', 'failed', 'partial_failed', 'action_required'].includes(summary.status)) {
+    try {
+      const { result: finalRes } = await rpc(session.accessToken, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_task_result', arguments: { task_id: row.task_id } },
+      }, 'task', headers, 262144);
+      const parsed = modelContent(finalRes);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) resultContent = parsed;
+    } catch { /* fallback to statusContent */ }
+  }
+  const source = resultContent || statusContent;
+  const billingSummary = safeTask(source).billing;
+  if (billingSummary.charged === null && summary.billing.charged !== null) {
+    billingSummary.charged = summary.billing.charged;
+  }
+  if (billingSummary.refunded === null && summary.billing.refunded !== null) {
+    billingSummary.refunded = summary.billing.refunded;
+  }
+  if (billingSummary.net === null && summary.billing.net !== null) {
+    billingSummary.net = summary.billing.net;
+  }
+  const cover_url = safeImageUrl(
+    source?.result?.cover_url
+    || source?.cover_url
+    || source?.result?.image_url
+    || source?.image_url
+    || source?.items?.[0]?.cover_url
+    || source?.result?.items?.[0]?.cover_url,
+  );
+  return {
+    status: summary.status,
+    message: privateFailureReason(statusContent.message || source?.message || ''),
+    billing: billingSummary,
+    music_id: extractResultMusicId(source),
+    audios: extractMusicAudioUrls(source),
+    cover_url,
+    failure: safeVideoFailure(source?.failure || statusContent?.failure) || safeOpenRpcFailure(source) || safeOpenRpcFailure(statusContent),
+    ...(input.private_result === true ? { private_structure: privateModelHelp(source).help } : {}),
+  };
+}
+
 async function optionalStartJson(request) {
   const length = request.headers.get('content-length');
   if (length === '0') return {};
@@ -3393,6 +3843,29 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'vocal-task' && request.method === 'POST') return response({ ok: true, task: await pollVocal(env, user, session, request) });
       if (action === 'vocal-session' && request.method === 'POST') return response({ ok: true, session: await vocalSession(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'vocal-message' && request.method === 'POST') return response({ ok: true, ...(await vocalMessage(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+    }
+    if (['music-quote', 'music-prepare', 'music-submit', 'music-tests', 'music-task'].includes(action)) {
+      const session = await readSession(request, env, user.id);
+      if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      if (action === 'music-tests' && request.method === 'GET') return response({ ok: true, tests: await musicTests(env, user, session) });
+      if (action === 'music-quote' && request.method === 'POST') {
+        const input = await imageJson(request, MUSIC_BODY_MAX_BYTES);
+        const headers = await openMcp(session.accessToken);
+        const catalogModels = await fetchRawMusicModels(session.accessToken, headers);
+        const { model, parameters } = validateMusicRequest(input, catalogModels);
+        const rawQuote = await musicQuote(session.accessToken, parameters, true, headers);
+        const credits = quotedCredits(rawQuote);
+        return response({
+          ok: true,
+          model,
+          parameters,
+          credits,
+          quote: safeQuote(rawQuote),
+        });
+      }
+      if (action === 'music-prepare' && request.method === 'POST') return response({ ok: true, ...(await prepareMusic(env, user, session, await imageJson(request, MUSIC_BODY_MAX_BYTES))) });
+      if (action === 'music-submit' && request.method === 'POST') return response({ ok: true, ...(await submitMusic(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (action === 'music-task' && request.method === 'POST') return response({ ok: true, task: await pollMusic(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-prepare', 'video-submit', 'video-tests', 'video-task', 'video-private-failure'].includes(action)) {
       const session = await readSession(request, env, user.id);

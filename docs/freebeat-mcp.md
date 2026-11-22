@@ -105,4 +105,12 @@ Helper backend `freebeatUploadImages` juga disiapkan untuk fase implementasi ber
 
 Bagian **Uji quote_generation untuk 5 tool baru** (`FreebeatRemainingQuoteProbe`) di `/admin/freebeat` memanggil `POST /api/freebeat/remaining-quote-probe`, yang menjalankan hanya `quote_generation` (tanpa generasi berbayar) untuk memetakan tarif kredit dan perilaku parameter pada `generate_music`, `generate_music_video`, `generate_lyric_video`, `generate_effect`, dan `generate_text`. Secara bawaan, field teks `source` dan `message` pada respons quote disamarkan oleh `safeQuote`; opsi centang privat (`private_diagnostics: true`) menampilkan `source`, `message`, dan field quote yang disamarkan (URL/email/token disamarkan) secara sementara di browser tanpa disimpan atau dimasukkan ke blok salin.
 
+## Uji Musik khusus admin (`generate_music`)
+
+Memerlukan migrasi `20261204000000_freebeat_admin_music_tests.sql` (tabel service-role-only `freebeat_admin_music_tests` dengan lock satu uji musik tak terselesaikan per admin `freebeat_one_unresolved_music_test_per_admin`). Bagian **Uji Musik (`generate_music`)** (`FreebeatMusicDiagnostic`) di `/admin/freebeat` menjalankan alur resmi:
+- `POST /api/freebeat/music-models` untuk membaca model musik aktif dari `list_music_models`.
+- `POST /api/freebeat/music-quote` (0 kredit) untuk memeriksa validasi parameter dan quote numerik `generate_music`.
+- `POST /api/freebeat/music-prepare` & `POST /api/freebeat/music-submit` dengan persetujuan HMAC 5 menit (`music-approval`, `max_credits` tepat sebesar quote numerik — tidak pernah memakai `accept_unknown_cost`) dan pencatatan lock `dispatching` → `submitted`/`unknown`.
+- `GET /api/freebeat/music-tests` & `POST /api/freebeat/music-task` (`get_task_status` + `get_task_result`) untuk memantau status, biaya aktual, `music_id`, tautan audio/cover HTTPS eksplisit, serta opsi privat `private_result` (disamarkan, tidak disimpan) guna memverifikasi struktur keluaran Freebeat.
+
 

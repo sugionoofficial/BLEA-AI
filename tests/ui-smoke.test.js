@@ -271,6 +271,8 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Periksa model teks'));
   assert.ok(html.includes('Uji quote_generation untuk 5 tool baru (gratis)'));
   assert.ok(html.includes('Jalankan probe quote (0 kredit)'));
+  assert.ok(html.includes('Uji Musik (generate_music)'));
+  assert.ok(html.includes('Siapkan persetujuan musik'));
   assert.ok(html.includes('Uji Singing &amp; Lip-Sync Video'));
   assert.ok(html.includes('Periksa quote vokal'));
 });
