@@ -995,6 +995,8 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
   const chatUrl = provider === 'alibaba'
     ? `${resolvedBase}/compatible-mode/v1/chat/completions`
     : `${resolvedBase}/chat/completions`;
+  const envMaxTokens = Number(env?.OLLAMA_MAX_TOKENS);
+  const ollamaMaxTokens = Number.isFinite(envMaxTokens) && envMaxTokens > 0 ? Math.trunc(envMaxTokens) : 0;
   const upstream = await fetch(chatUrl, {
     method: 'POST',
     headers: {
@@ -1009,9 +1011,11 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
         temperature: Number.isFinite(payload.temperature) ? payload.temperature : 0.35,
         max_tokens: Number.isFinite(payload.max_tokens) ? payload.max_tokens : 4096,
       } : {}),
-      // Ollama tanpa cap panjang keluaran bisa menghasilkan token tanpa henti
-      // (lambat di CPU) sampai Worker menyerah karena timeout.
-      ...(provider === 'ollama' && !Number.isFinite(payload.max_tokens) ? { max_tokens: 1024 } : {}),
+      // Batas panjang keluaran Ollama TIDAK dipaksa di sini: nilai dari request
+      // akan menimpa PARAMETER num_predict pada Modelfile, sehingga operator
+      // kehilangan kendali. Pakai OLLAMA_MAX_TOKENS bila ingin cap terpusat,
+      // atau setel num_predict di Modelfile modelnya.
+      ...(provider === 'ollama' && !Number.isFinite(payload.max_tokens) && ollamaMaxTokens ? { max_tokens: ollamaMaxTokens } : {}),
       model,
       stream: Boolean(stream),
     }),

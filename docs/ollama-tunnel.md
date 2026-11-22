@@ -145,8 +145,10 @@ di-`update` juga.
   (`502`/`530`) sampai tunnel hidup lagi.
 - Kecepatan = kecepatan laptop Anda, bukan Cloudflare. Token pertama lambat karena model
   dimuat ke RAM (`OLLAMA_KEEP_ALIVE=1h` sangat membantu).
-- Batasi panjang keluaran model lokal. Di CPU, model 4B bisa butuh >2 menit untuk 1000
-  token; tanpa batas, chat akan terasa timeout. Contoh Modelfile:
+- Batasi panjang keluaran model lokal. Ukur dulu kecepatan nyata: satu permintaan
+  `max_tokens: 64` lewat tunnel butuh ~40 detik di laptop 8 GB, artinya kecepatan efektif
+  hanya beberapa token per detik. Pada kecepatan itu 256 token ≈ 1,5–3 menit, jadi
+  `num_predict` harus kecil. Contoh Modelfile:
 
   ```
   FROM huihui_ai/qwen3-abliterated:4b
@@ -157,6 +159,13 @@ di-`update` juga.
 
   lalu `ollama create ollama-chat -f Modelfile` dan daftarkan model `ollama-chat` di
   Katalog Model.
+
+  Catatan penting: Worker **tidak** mengirim `max_tokens` untuk provider `ollama` secara
+  default, karena nilai dari request akan menimpa `num_predict` di Modelfile. Kalau ingin
+  cap terpusat lewat Worker, set env `OLLAMA_MAX_TOKENS` (mis. `384`) pada Worker/Wrangler.
+
+- Kalau CPU laptop memang lambat, model 1–3B memberi pengalaman yang jauh lebih baik
+  untuk chat harian; simpan model 4B abliterated untuk keperluan sesekali.
 - Streaming didukung (`/v1/chat/completions` dengan `stream: true`), tapi throughput tetap
   dibatasi uplink rumah.
 - Vision/tools hanya berfungsi bila modelnya mendukung; BLEA mengirim payload chat biasa.
@@ -172,7 +181,7 @@ di-`update` juga.
 | `Penyimpanan gagal` di Admin Panel | `api_key` 1–7 karakter (constraint tabel) | Pakai minimal 8 karakter, mis. `ollama-local` |
 | `model not found` dari Ollama | Nama model beda tag | Samakan dengan `ollama list` |
 | Chat menggantung lalu timeout | Model terlalu besar untuk RAM laptop | Pakai 1B–4B, turunkan `num_ctx` |
-| `TimeoutError: The operation was aborted due to timeout` | Worker menyerah menunggu Ollama (bawaan 120 detik). Penyebab umum: model belum termuat (cold start) dan/atau model `thinking` menghasilkan penalaran panjang di CPU | Panaskan model lebih dulu (`ollama run <model>`), set `OLLAMA_KEEP_ALIVE=1h`, lalu batasi keluaran lewat Modelfile (`num_predict 512`, `num_ctx 4096`). Worker kini memberi provider `ollama` timeout 300 detik (stream) / 480 detik (non-stream) dan `max_tokens` 1024 bila klien tidak mengirimnya |
+| `TimeoutError: The operation was aborted due to timeout` | Worker menyerah menunggu Ollama (bawaan 120 detik). Penyebab umum: model belum termuat (cold start) dan/atau model `thinking` menghasilkan penalaran panjang di CPU | Panaskan model lebih dulu (`ollama run <model>`), set `OLLAMA_KEEP_ALIVE=1h`, lalu batasi keluaran lewat Modelfile (`num_predict 512`, `num_ctx 4096`). Worker memberi provider `ollama` timeout 300 detik (stream) / 480 detik (non-stream); batas panjang keluaran diatur di sisi Ollama (`num_predict`) atau lewat env `OLLAMA_MAX_TOKENS` |
 | Katalog kosong | `/v1/models` gagal | Uji `curl.exe {base_url}/v1/models`; pastikan tidak ada `/api` di URL |
 | URL berubah tiap restart | Quick tunnel | Pakai named tunnel (bagian 5) |
 

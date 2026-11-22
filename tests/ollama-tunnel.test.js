@@ -104,8 +104,9 @@ test('/api/status, /api/catalog, dan /api/chat bekerja dengan provider ollama le
     assert.equal(chatData.reply, 'Halo dari Ollama lokal!');
     assert.equal(capturedUrl, `${TUNNEL}/v1/chat/completions`);
     assert.equal(capturedAuth, 'Bearer ollama');
-    // Ollama tidak boleh dibiarkan menghasilkan keluaran tanpa batas di CPU lambat.
-    assert.equal(capturedPayload.max_tokens, 1024);
+    // Tanpa OLLAMA_MAX_TOKENS, Worker tidak boleh memaksa max_tokens: nilai dari
+    // request akan menimpa num_predict di Modelfile model.
+    assert.equal('max_tokens' in capturedPayload, false);
     assert.equal(capturedPayload.stream, false);
   } finally {
     globalThis.fetch = realFetch;
@@ -171,6 +172,39 @@ test('/api/video/models tidak pernah menampilkan ollama sebagai provider video',
     const payload = await res.json();
     assert.equal(payload.providers.some((p) => p.id === 'ollama'), false);
     assert.equal(payload.models.some((m) => m.provider === 'ollama'), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('OLLAMA_MAX_TOKENS memberi cap terpusat hanya bila operator menyetelnya', async () => {
+  const realFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'ollama', api_key: 'ollama-local', base_url: TUNNEL, label: 'Ollama' }]);
+    }
+    if (url === `${TUNNEL}/v1/chat/completions`) {
+      captured = JSON.parse(init.body || '{}');
+      return Response.json({ choices: [{ message: { content: 'ok' } }] });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) return Response.json([{ id: 'msg-1' }]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const env = { ...createEnv(), OLLAMA_MAX_TOKENS: '384' };
+    const res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-ollama-max',
+        provider: 'ollama',
+        model: 'huihui_ai/qwen3-abliterated:4b',
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), env);
+    assert.equal(res.status, 200);
+    assert.equal(captured.max_tokens, 384);
   } finally {
     globalThis.fetch = realFetch;
   }
