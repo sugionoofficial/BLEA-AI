@@ -192,6 +192,12 @@
   color: var(--success);
 }
 
+.dropx-shell .meta-alert.is-warn {
+  border: 1px solid rgb(245 158 11 / 0.45);
+  background: rgb(245 158 11 / 0.1);
+  color: rgb(180 83 9);
+}
+
 .dropx-shell .meta-alert a {
   color: inherit;
   font-weight: 700;

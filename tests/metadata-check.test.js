@@ -233,8 +233,9 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   assert.deepEqual(concat(...webmCleanParts.cleanedChunks), webmClean.cleanedBytes);
 });
 
-test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + fallback model & mengembalikan 503 bila belum aktif', async () => {
+function installMetadataFetchMock({ keyRows = [], modelRows = [], chatHandler = null } = {}) {
   const realFetch = globalThis.fetch;
+  const chatCalls = [];
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === 'string' ? input : input.url);
     if (url.href === 'https://supabase.example/auth/v1/user') {
@@ -244,22 +245,73 @@ test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + 
       return Response.json([{ id: USER_ID, email: 'creator@example.com', status: 'active' }]);
     }
     if (url.pathname === '/rest/v1/provider_api_keys') {
-      return Response.json([]);
+      return Response.json(keyRows);
+    }
+    if (url.pathname === '/rest/v1/provider_models') {
+      return Response.json(modelRows);
+    }
+    if (/\/chat\/completions$/i.test(url.pathname) && chatHandler) {
+      chatCalls.push({ url: url.href, body: JSON.parse(String(init.body || '{}')), headers: init.headers });
+      return chatHandler({ url, init });
     }
     return realFetch(input, init);
   };
+  return { chatCalls, restore: () => { globalThis.fetch = realFetch; } };
+}
 
+const FALLBACK_SCAN_JSON = {
+  ai_detected: true,
+  confidence: 'tinggi',
+  visual_assessment: 'Frame video menampilkan gaya render sintetis khas generator AI.',
+  detected_models: ['Kling AI'],
+  metadata_tags_to_remove: [
+    { tag: 'WritingApp', value: 'Kling AI', category: 'MP4 Metadata', model_name: 'Kling AI', reason: 'Menandai aplikasi generator AI.' },
+  ],
+  summary: 'Terdeteksi jejak generator Kling AI pada video dan metadata container.',
+};
+
+const SAMPLE_SCAN_BODY = {
+  filename: 'kling.mp4',
+  mime_type: 'video/mp4',
+  media_kind: 'video',
+  file_size: 8192,
+  frames: ['data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/'],
+  binary_scan: {
+    format: 'mp4',
+    formatLabel: 'MP4 Video',
+    mediaKind: 'video',
+    mimeType: 'video/mp4',
+    aiDetected: false,
+    detectedTools: [],
+    aiSignals: [],
+    totalEntries: 1,
+    aiEntriesCount: 0,
+    entries: [{ group: 'MP4 Metadata', key: 'hdlr.name', value: 'VideoHandler', location: 'moov/trak/mdia/hdlr', isAi: false }],
+  },
+};
+
+test('Worker POST /api/metadata/scan tetap memindai metadata biner bila model AI belum aktif', async () => {
+  const mock = installMetadataFetchMock();
   try {
-    // 1. No env.AI binding and no REST key -> 503 cloudflare_ai_unavailable
-    const noAiEnv = createEnv();
-    const unavailRes = await worker.fetch(apiReq('/api/metadata/scan', {
-      body: { filename: 'x.png', mime_type: 'image/png', media_kind: 'image', file_size: 120, binary_scan: { entries: [] }, frames: [] },
-    }), noAiEnv);
-    assert.equal(unavailRes.status, 503);
-    const unavailData = await unavailRes.json();
-    assert.equal(unavailData.code, 'cloudflare_ai_unavailable');
+    const res = await worker.fetch(apiReq('/api/metadata/scan', { body: SAMPLE_SCAN_BODY }), createEnv());
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.ai_skipped, true);
+    assert.equal(data.scan.aiSkipped, true);
+    assert.match(data.scan.aiSkipReason, /Cloudflare Workers AI belum aktif/i);
+    assert.equal(data.scan.aiEngine, null);
+    assert.equal(data.scan.entries.length, 1);
+    assert.equal(data.scan.entries[0].willRemove, true);
+  } finally {
+    mock.restore();
+  }
+});
 
-    // 2. Primary env.AI Llama 4 Scout reads both visual frames & metadata tags
+test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + fallback model', async () => {
+  const mock = installMetadataFetchMock();
+  try {
+    // Primary env.AI Llama 4 Scout reads both visual frames & metadata tags
     const calledModels = [];
     const seenPayloads = [];
     const envWithAi = {
@@ -319,6 +371,7 @@ test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + 
     assert.equal(scanRes.status, 200);
     const scanBody = await scanRes.json();
     assert.ok(calledModels.includes('@cf/meta/llama-4-scout-17b-16e-instruct'));
+    assert.equal(scanBody.scan.aiEngine.provider, 'cloudflare');
     assert.equal(scanBody.scan.aiEngine.model, '@cf/google/gemma-3-12b-it');
     assert.equal(scanBody.scan.framesAnalyzed, 1);
     assert.ok(scanBody.scan.detectedTools.includes('Stable Diffusion XL'));
@@ -331,7 +384,90 @@ test('Worker POST /api/metadata/scan memakai Cloudflare Workers AI multimodal + 
     assert.ok(Array.isArray(userMsg.content));
     assert.equal(userMsg.content.find((p) => p.type === 'image_url').image_url.url, frameDataUrl);
   } finally {
-    globalThis.fetch = realFetch;
+    mock.restore();
+  }
+});
+
+test('Kuota Cloudflare habis → /api/metadata/scan dialihkan ke model vision provider lain', async () => {
+  const mock = installMetadataFetchMock({
+    keyRows: [{ provider: 'google', api_key: 'google-test-key', base_url: 'https://generativelanguage.googleapis.com' }],
+    modelRows: [{ provider: 'google', model: 'gemini-2.0-flash', active: true }],
+    chatHandler: () => Response.json({
+      choices: [{ message: { content: `\`\`\`json\n${JSON.stringify(FALLBACK_SCAN_JSON)}\n\`\`\`` } }],
+    }),
+  });
+  try {
+    const calledModels = [];
+    const envWithQuotaExhaustedAi = {
+      ...createEnv(),
+      AI: {
+        run: async (model) => {
+          calledModels.push(model);
+          throw new Error('429: You have used up your daily free allocation of 10,000 neurons');
+        },
+      },
+    };
+
+    const res = await worker.fetch(apiReq('/api/metadata/scan', { body: SAMPLE_SCAN_BODY }), envWithQuotaExhaustedAi);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.ai_skipped, false);
+    // Semua model Cloudflare sudah dicoba sebelum pindah provider
+    assert.deepEqual(calledModels, [
+      '@cf/meta/llama-4-scout-17b-16e-instruct',
+      '@cf/google/gemma-3-12b-it',
+      '@cf/meta/llama-3.2-11b-vision-instruct',
+    ]);
+    assert.equal(mock.chatCalls.length, 1);
+    assert.equal(mock.chatCalls[0].url, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    assert.equal(mock.chatCalls[0].body.model, 'gemini-2.0-flash');
+    assert.equal(data.scan.aiEngine.provider, 'google');
+    assert.equal(data.scan.aiEngine.model, 'gemini-2.0-flash');
+    assert.equal(data.scan.aiEngine.fallback, true);
+    assert.equal(data.scan.aiSkipped, undefined);
+    assert.ok(data.scan.detectedTools.includes('Kling AI'));
+    assert.equal(data.scan.entries[0].willRemove, true);
+    const aiEntry = data.scan.entries.find((entry) => entry.key === 'WritingApp');
+    assert.ok(aiEntry, 'AI provider fallback menambahkan tag temuan AI');
+    assert.equal(aiEntry.modelName, 'Kling AI');
+    assert.equal(aiEntry.isAi, true);
+    assert.match(data.scan.visualAssessment, /gaya render sintetis/);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('Semua model AI habis kuota → /api/metadata/scan tetap sukses tanpa AI', async () => {
+  const mock = installMetadataFetchMock({
+    keyRows: [{ provider: 'openai', api_key: 'openai-test-key', base_url: 'https://api.openai.com' }],
+    modelRows: [],
+    chatHandler: () => Response.json({ error: { message: 'quota exceeded' } }, { status: 429 }),
+  });
+  try {
+    const quotaAi = {
+      ...createEnv(),
+      AI: {
+        run: async () => {
+          throw new Error('quota exceeded: daily free allocation of neurons reached');
+        },
+      },
+    };
+
+    const res = await worker.fetch(apiReq('/api/metadata/scan', { body: SAMPLE_SCAN_BODY }), quotaAi);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.ai_skipped, true);
+    assert.equal(data.scan.aiSkipped, true);
+    assert.equal(data.scan.aiEngine, null);
+    assert.match(data.scan.aiSkipReason, /Kuota semua model AI habis/i);
+    assert.ok(Array.isArray(data.ai_attempts) && data.ai_attempts.length > 0);
+    // Metadata biner tetap terdaftar untuk dihapus tanpa model AI
+    assert.equal(data.scan.entries.length, 1);
+    assert.equal(data.scan.entries[0].willRemove, true);
+  } finally {
+    mock.restore();
   }
 });
 
@@ -855,6 +991,121 @@ test('UI MetadataCheckPage, HistoryPage & LiveQueuePage menjalankan alur upload 
     supabase.auth.getSession = oldGet;
     supabase.auth.onAuthStateChange = oldOn;
     globalThis.fetch = oldFetch;
+    await supabase.auth.dispose();
+    await vite.close();
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.localStorage;
+    delete globalThis.HTMLElement;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('UI MetadataCheckPage tetap bisa membersihkan metadata saat semua kuota model AI habis (tanpa AI)', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/metadata' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.localStorage = dom.window.localStorage;
+  globalThis.HTMLElement = dom.window.HTMLElement;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  if (!dom.window.URL.createObjectURL) dom.window.URL.createObjectURL = () => 'blob:mock-preview';
+  if (!dom.window.URL.revokeObjectURL) dom.window.URL.revokeObjectURL = () => {};
+
+  const session = {
+    access_token: 'mock-session',
+    user: { id: USER_ID, email: 'user@example.com', app_metadata: { role: 'user' }, user_metadata: {} },
+  };
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    logLevel: 'silent',
+    resolve: { alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }] },
+  });
+
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { MetadataCheckPage } = await vite.ssrLoadModule('/src/auth/MetadataCheckPage.jsx');
+  const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
+
+  supabase.auth.getSession = async () => ({ data: { session } });
+  supabase.auth.onAuthStateChange = () => ({ data: { subscription: { unsubscribe() {} } } });
+
+  const oldFetch = globalThis.fetch;
+  let scanCalls = 0;
+  globalThis.fetch = async (url) => {
+    const sUrl = String(url);
+    if (sUrl === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'user' });
+    if (sUrl.includes('/rest/v1/credit_wallets')) return Response.json({ balance: 300 });
+    if (sUrl === '/api/metadata/scan') {
+      scanCalls += 1;
+      return Response.json({
+        ok: true,
+        ai_skipped: true,
+        ai_skip_reason: 'Kuota semua model AI habis atau model tidak tersedia',
+        scan: {
+          ok: true,
+          supported: true,
+          format: 'png',
+          formatLabel: 'PNG Image',
+          mediaKind: 'image',
+          mimeType: 'image/png',
+          fileSize: 260,
+          aiDetected: true,
+          aiSkipped: true,
+          aiSkipReason: 'Kuota semua model AI habis atau model tidak tersedia',
+          aiEngine: null,
+          detectedTools: ['ComfyUI'],
+          aiSignals: ['Workflow node graph ComfyUI di metadata PNG'],
+          totalEntries: 3,
+          removableEntriesCount: 3,
+          aiEntriesCount: 2,
+          removable: true,
+          confidence: 'rendah',
+          entries: [
+            { group: 'PNG Text Chunk', key: 'parameters', value: 'Astronaut portrait', location: 'PNG Chunk #2', isAi: true, willRemove: true, modelName: 'Stable Diffusion' },
+            { group: 'PNG Text Chunk', key: 'workflow', value: '{"3":{"class_type":"KSampler"}}', location: 'PNG Chunk #3', isAi: true, willRemove: true, modelName: 'ComfyUI' },
+            { group: 'PNG Text Chunk', key: 'caBX', value: 'OpenAI DALL-E', location: 'PNG Chunk #4', isAi: false, willRemove: true },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${sUrl}`);
+  };
+
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await React.act(async () => root.render(
+      React.createElement(MemoryRouter, { initialEntries: ['/metadata'] },
+        React.createElement(AuthProvider, { initialSession: session }, React.createElement(MetadataCheckPage))),
+    ));
+
+    const aiBytes = buildAiPng();
+    const fakeFile = new File([aiBytes], 'ai-sample.png', { type: 'image/png' });
+    Object.defineProperty(fakeFile, 'arrayBuffer', { value: async () => aiBytes.buffer.slice(aiBytes.byteOffset, aiBytes.byteOffset + aiBytes.byteLength) });
+    const input = document.querySelector('input[type="file"]');
+    Object.defineProperty(input, 'files', { value: [fakeFile], configurable: true });
+    await React.act(async () => {
+      input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    });
+
+    const primaryBtn = () => document.querySelector('[data-testid="metadata-primary-action"]');
+    await React.act(async () => { primaryBtn().click(); });
+
+    assert.equal(scanCalls, 1);
+    // Tidak berhenti dengan error: scan biner tetap ditampilkan & bisa dibersihkan
+    assert.equal(document.querySelector('.meta-alert.is-error'), null);
+    assert.match(document.body.textContent, /Pemindaian AI dilewati/);
+    assert.match(document.body.textContent, /Kuota semua model AI habis/);
+    assert.match(document.body.textContent, /Metadata biner tetap dibaca/);
+    assert.match(document.body.textContent, /Tag & Metadata yang Akan Dihapus \(3\)/);
+    assert.match(document.body.textContent, /Akan Dihapus/);
+    assert.match(primaryBtn().textContent, /Remove Metadata \(100 Kredit\)/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    await React.act(async () => root.unmount());
     await supabase.auth.dispose();
     await vite.close();
     dom.window.close();

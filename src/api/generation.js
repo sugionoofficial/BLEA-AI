@@ -117,7 +117,10 @@ export async function processMetadataClean({
   });
 }
 
-// Cek & Bersihkan Metadata AI — scan multimodal (gambar/video + tag metadata) via Cloudflare Workers AI.
+// Cek & Bersihkan Metadata AI — scan multimodal (gambar/video + tag metadata).
+// Worker mencoba Cloudflare Workers AI lebih dulu, lalu fallback ke model vision
+// provider lain saat kuota habis; bila semua gagal, hasil scan biner tetap
+// dikembalikan (ai_skipped) sehingga pembersihan metadata tidak terblokir.
 export async function scanMetadataWithCloudflareAI({
   filename,
   mimeType = '',

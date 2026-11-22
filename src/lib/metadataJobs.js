@@ -2,12 +2,14 @@ import {
   METADATA_MAX_FILE_BYTES,
   METADATA_SERVICE_COST,
   METADATA_WORKER_PROCESS_MAX_BYTES,
+  buildBinaryOnlyScan,
   compactScanSummary,
   detectMediaFormat,
   mergeAiScanFindings,
   scanMediaMetadata,
   stripMediaMetadata,
 } from './mediaMetadata.js';
+import { resolveProviderApiBase } from './videoCatalog.js';
 
 const CLOUDFLARE_METADATA_VISION_MODELS = [
   '@cf/meta/llama-4-scout-17b-16e-instruct',
@@ -223,30 +225,159 @@ function hasValidCfRestBase(baseUrl) {
   }
 }
 
-async function runCloudflareVisionModel({ env, servicePostgrest, messages }) {
-  const hasBinding = Boolean(env?.AI && typeof env.AI.run === 'function');
-  let restKey = '';
-  let restBase = '';
+const METADATA_AI_SCAN_BUDGET_MS = 90_000; // total anggaran pindai AI multi-provider
+const CLOUDFLARE_VISION_TIMEOUT_MS = 30_000;
+const FALLBACK_VISION_TIMEOUT_MS = 25_000;
+const MAX_FALLBACK_VISION_CANDIDATES = 5;
+
+// Model vision cadangan di provider lain, dipakai setelah semua model
+// Cloudflare gagal / kuota hariannya habis. Model vision yang benar-benar
+// terdaftar di Admin Panel (provider_models) selalu dicoba lebih dulu.
+const PROVIDER_FALLBACK_VISION_MODELS = {
+  google: ['gemini-2.0-flash', 'gemini-2.5-flash'],
+  openai: ['gpt-4o-mini', 'gpt-4.1-mini'],
+  alibaba: ['qwen-vl-max-latest', 'qwen-vl-plus-latest'],
+  unorouter: ['google/gemini-2.0-flash-001', 'openai/gpt-4o-mini'],
+  pekpik: ['gpt-4o-mini', 'gemini-2.0-flash'],
+};
+const FALLBACK_PROVIDER_ORDER = [
+  'google', 'openai', 'alibaba', 'unorouter', 'pekpik',
+  'custom', 'ollama', 'xai', 'doubao', 'kling', 'hailuo',
+];
+const VISION_MODEL_RE = /(?:^|[/:_.-])(?:vl|vision|vlm|llava|internvl|pixtral|omni)(?:$|[/:_.-])|gemini|gpt-4o|gpt-4\.1|claude-(?:3|4)|glm-4\.?[0-9]?v|grok-[0-9.]*vision|qwen[0-9.]*-vl/i;
+const NON_VISION_MODEL_RE = /embed|rerank|whisper|\btts\b|speech|image|flux|stable-diffusion|midjourney|moderation|bge-|dance|music|video|sora|veo|kling|hailuo/i;
+
+// Kuota habis / rate limit / kapasitas penuh → model ini dilewati dan rantai
+// berpindah ke model berikutnya. Error lain (model tidak dikenal, key salah)
+// juga dilewati, tetapi dicatat sebagai kegagalan provider.
+function isQuotaOrCapacityError(status, detail) {
+  const msg = String(detail || '');
+  if (status === 402 || status === 429) return true;
+  if (!msg) return false;
+  return /quota|neuron|rate.?limit|too many requests|daily free allocation|exceeded|out of capacity|no capacity|capacity|insufficient|credit balance|billing/i.test(msg);
+}
+
+function buildVisionChatUrl(provider, baseUrl) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return '';
+  if (provider === 'google') {
+    const root = base.replace(/\/v1beta\/openai$/i, '').replace(/\/v1beta$/i, '').replace(/\/v1$/i, '');
+    return `${root}/v1beta/openai/chat/completions`;
+  }
+  if (provider === 'alibaba') {
+    const root = base.replace(/\/compatible-mode\/v1$/i, '').replace(/\/api\/v1$/i, '');
+    return `${root}/compatible-mode/v1/chat/completions`;
+  }
+  if (/\/v1(?:beta)?$/i.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
+}
+
+async function loadCloudflareVisionRest({ env, servicePostgrest }) {
   try {
     const keyRes = await servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url&provider=eq.cloudflare&limit=1');
     const rows = keyRes?.ok ? await keyRes.json().catch(() => []) : [];
     const row = rows?.[0];
     if (row?.api_key && row.api_key !== 'binding:AI' && hasValidCfRestBase(row.base_url)) {
-      restKey = String(row.api_key).trim();
-      restBase = String(row.base_url).trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
+      return {
+        key: String(row.api_key).trim(),
+        base: String(row.base_url).trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, ''),
+      };
     }
   } catch {
-    // ignore key table lookup errors when env.AI binding exists
+    // tabel key tidak terbaca → tetap boleh memakai binding env.AI
+  }
+  return { key: '', base: '' };
+}
+
+function buildFallbackVisionCandidates({ keyRows, modelRows }) {
+  const keyByProvider = new Map();
+  for (const row of Array.isArray(keyRows) ? keyRows : []) {
+    const provider = String(row?.provider || '').trim().toLowerCase();
+    if (!provider || provider === 'cloudflare' || provider === 'freebeat') continue;
+    if (!row?.api_key || row.api_key === 'binding:AI') continue;
+    keyByProvider.set(provider, row);
+  }
+  if (keyByProvider.size === 0) return [];
+
+  const visionModelsByProvider = new Map();
+  for (const row of Array.isArray(modelRows) ? modelRows : []) {
+    const provider = String(row?.provider || '').trim().toLowerCase();
+    const model = String(row?.model || '').trim();
+    if (!provider || !model) continue;
+    if (!VISION_MODEL_RE.test(model) || NON_VISION_MODEL_RE.test(model)) continue;
+    if (!visionModelsByProvider.has(provider)) visionModelsByProvider.set(provider, []);
+    const list = visionModelsByProvider.get(provider);
+    if (!list.includes(model) && list.length < 2) list.push(model);
   }
 
-  if (!hasBinding && !restKey) {
-    return {
-      ok: false,
-      status: 503,
-      code: 'cloudflare_ai_unavailable',
-      error: 'Model AI Cloudflare Workers AI belum aktif di environment ini. Pastikan binding [ai] env.AI aktif atau isi API Token & Account ID Cloudflare di Admin Panel.',
-    };
+  const ordered = [
+    ...FALLBACK_PROVIDER_ORDER.filter((provider) => keyByProvider.has(provider)),
+    ...[...keyByProvider.keys()].filter((provider) => !FALLBACK_PROVIDER_ORDER.includes(provider)),
+  ];
+
+  const candidates = [];
+  for (const provider of ordered) {
+    const keyRow = keyByProvider.get(provider);
+    const baseUrl = resolveProviderApiBase(provider, keyRow?.base_url) || '';
+    if (!baseUrl) continue;
+    const models = [
+      ...(visionModelsByProvider.get(provider) || []),
+      ...(PROVIDER_FALLBACK_VISION_MODELS[provider] || []),
+    ];
+    for (const model of [...new Set(models)].slice(0, 2)) {
+      candidates.push({ provider, model, apiKey: keyRow.api_key, baseUrl });
+    }
   }
+  return candidates.slice(0, MAX_FALLBACK_VISION_CANDIDATES);
+}
+
+async function loadFallbackVisionCandidates({ env, servicePostgrest }) {
+  try {
+    const [keysRes, modelsRes] = await Promise.all([
+      servicePostgrest(env, '/provider_api_keys?select=provider,api_key,base_url&order=provider'),
+      servicePostgrest(env, '/provider_models?select=provider,model,active&active=eq.true&limit=500').catch(() => null),
+    ]);
+    const keyRows = keysRes?.ok ? await keysRes.json().catch(() => []) : [];
+    const modelRows = modelsRes?.ok ? await modelsRes.json().catch(() => []) : [];
+    return buildFallbackVisionCandidates({ keyRows, modelRows });
+  } catch {
+    return [];
+  }
+}
+
+// Satu panggilan chat-completions OpenAI-compatible dengan lampiran frame visual.
+async function postVisionChat({ url, apiKey, model, messages, timeoutMs }) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: 1400 }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const rawText = await res.text().catch(() => '');
+  if (!res.ok) {
+    return { ok: false, status: res.status, detail: (rawText || `HTTP ${res.status}`).replace(/\s+/g, ' ').slice(0, 260) };
+  }
+  let data = {};
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    data = {};
+  }
+  const text = extractCloudflareText(data);
+  if (!text) return { ok: false, status: res.status, detail: 'Respons model kosong.' };
+  return { ok: true, text };
+}
+
+// Rantai pindai AI: model Cloudflare (REST/binding) → model vision provider
+// lain yang aktif → (jika semua gagal) pemindaian biner tanpa AI.
+async function runMetadataVisionScan({ env, servicePostgrest, messages }) {
+  const deadline = Date.now() + METADATA_AI_SCAN_BUDGET_MS;
+  const failures = [];
+  const hasBinding = Boolean(env?.AI && typeof env.AI.run === 'function');
+  const cfRest = await loadCloudflareVisionRest({ env, servicePostgrest });
 
   const singleFrameMessages = messages.map((msg) => {
     if (!Array.isArray(msg.content)) return msg;
@@ -254,60 +385,99 @@ async function runCloudflareVisionModel({ env, servicePostgrest, messages }) {
     const imgParts = msg.content.filter((p) => p?.type === 'image_url').slice(0, 1);
     return { ...msg, content: [...textParts, ...imgParts] };
   });
+  const messageVariants = messages === singleFrameMessages ? [messages] : [messages, singleFrameMessages];
 
-  const attempts = [];
-  for (const model of CLOUDFLARE_METADATA_VISION_MODELS) {
-    attempts.push({ model, msgList: messages });
-    if (messages !== singleFrameMessages) {
-      attempts.push({ model, msgList: singleFrameMessages });
+  if (!hasBinding && !cfRest.key) {
+    failures.push('Cloudflare Workers AI belum aktif (binding env.AI / REST API)');
+  } else {
+    for (const model of CLOUDFLARE_METADATA_VISION_MODELS) {
+      let quotaHit = false;
+      for (const msgList of messageVariants) {
+        if (Date.now() > deadline) break;
+        if (cfRest.key) {
+          try {
+            const attempt = await postVisionChat({
+              url: `${cfRest.base}/chat/completions`,
+              apiKey: cfRest.key,
+              model,
+              messages: msgList,
+              timeoutMs: CLOUDFLARE_VISION_TIMEOUT_MS,
+            });
+            if (attempt.ok) return { ok: true, provider: 'cloudflare', model, mode: 'rest', text: attempt.text, fallback: false };
+            failures.push(`Cloudflare REST ${model}: ${attempt.detail}`);
+            if (isQuotaOrCapacityError(attempt.status, attempt.detail)) quotaHit = true;
+          } catch (err) {
+            const message = String(err?.message || err).slice(0, 160);
+            failures.push(`Cloudflare REST ${model}: ${message}`);
+            if (isQuotaOrCapacityError(err?.status || err?.code, message)) quotaHit = true;
+          }
+        }
+        if (hasBinding) {
+          try {
+            const data = await env.AI.run(model, {
+              messages: msgList,
+              temperature: 0.1,
+              max_tokens: 1400,
+            });
+            const text = extractCloudflareText(data);
+            if (text) return { ok: true, provider: 'cloudflare', model, mode: 'binding', text, fallback: false };
+            failures.push(`Cloudflare ${model}: respons kosong`);
+          } catch (err) {
+            const message = String(err?.message || err).slice(0, 160);
+            failures.push(`Cloudflare ${model}: ${message}`);
+            if (isQuotaOrCapacityError(err?.status || err?.code, message)) quotaHit = true;
+          }
+        }
+        // Kuota model ini sudah habis → tidak perlu mengulang dengan frame
+        // lebih sedikit; langsung pindah ke model berikutnya.
+        if (quotaHit) break;
+      }
     }
   }
 
-  let lastError = 'Gagal menjalankan model AI Cloudflare.';
-  for (const { model, msgList } of attempts) {
-    try {
-      if (restKey) {
-        const res = await fetch(`${restBase}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${restKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: msgList,
-            temperature: 0.1,
-            max_tokens: 1400,
-          }),
-          signal: AbortSignal.timeout(45_000),
-        });
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          const text = extractCloudflareText(data);
-          if (text) return { ok: true, model, mode: 'rest', text };
-        } else {
-          lastError = `Cloudflare REST ${model} (HTTP ${res.status})`;
-        }
-      }
-      if (hasBinding) {
-        const data = await env.AI.run(model, {
+  const fallbackCandidates = await loadFallbackVisionCandidates({ env, servicePostgrest });
+  for (const cand of fallbackCandidates) {
+    if (Date.now() > deadline) break;
+    const url = buildVisionChatUrl(cand.provider, cand.baseUrl);
+    if (!url) continue;
+    for (const msgList of messageVariants) {
+      if (Date.now() > deadline) break;
+      try {
+        const attempt = await postVisionChat({
+          url,
+          apiKey: cand.apiKey,
+          model: cand.model,
           messages: msgList,
-          temperature: 0.1,
-          max_tokens: 1400,
+          timeoutMs: FALLBACK_VISION_TIMEOUT_MS,
         });
-        const text = extractCloudflareText(data);
-        if (text) return { ok: true, model, mode: 'binding', text };
+        if (attempt.ok) {
+          return {
+            ok: true,
+            provider: cand.provider,
+            model: cand.model,
+            mode: 'fallback',
+            text: attempt.text,
+            fallback: true,
+          };
+        }
+        failures.push(`${cand.provider} ${cand.model}: ${attempt.detail}`);
+        // Kuota/rate limit → coba model lain; error lain (model/endpoint salah)
+        // → langsung pindah ke provider berikutnya.
+        if (!isQuotaOrCapacityError(attempt.status, attempt.detail)) break;
+      } catch (err) {
+        failures.push(`${cand.provider} ${cand.model}: ${String(err?.message || err).slice(0, 160)}`);
+        break;
       }
-    } catch (err) {
-      lastError = String(err?.message || err || lastError);
     }
   }
 
   return {
     ok: false,
-    status: 502,
-    code: 'cloudflare_ai_failed',
-    error: `Model AI Cloudflare gagal memproses media: ${lastError.slice(0, 220)}`,
+    code: 'ai_scan_unavailable',
+    error: failures.length
+      ? `Kuota semua model AI habis atau model tidak tersedia (${failures.slice(-3).join(' · ')})`
+      : 'Tidak ada model AI vision yang aktif untuk memindai media.',
+    failures,
   };
 }
 
@@ -362,25 +532,43 @@ export async function handleMetadataScan({ request, env, user, jsonResponse, ser
   const messages = [
     {
       role: 'system',
-      content: 'Anda adalah sistem inspeksi visual & metadata AI berbasis Cloudflare Workers AI. Selalu keluarkan JSON valid.',
+      content: 'Anda adalah sistem inspeksi visual & metadata AI. Selalu keluarkan JSON valid.',
     },
     { role: 'user', content: userContent },
   ];
 
-  const aiResult = await runCloudflareVisionModel({ env, servicePostgrest, messages });
+  const aiResult = await runMetadataVisionScan({ env, servicePostgrest, messages });
   if (!aiResult.ok) {
-    return jsonResponse({ error: aiResult.error, code: aiResult.code }, aiResult.status || 502);
+    // Semua model AI gagal / kuota habis → jangan blokir pengguna. Pembersihan
+    // metadata tetap berjalan penuh lewat pemindai container biner lossless.
+    const binaryOnly = buildBinaryOnlyScan(binaryScan, aiResult.error);
+    return jsonResponse({
+      ok: true,
+      ai_skipped: true,
+      ai_skip_reason: aiResult.error,
+      ai_attempts: Array.isArray(aiResult.failures) ? aiResult.failures.slice(-5) : [],
+      scan: binaryOnly,
+    });
   }
 
   const parsed = parseAiScanJson(aiResult.text);
   const merged = mergeAiScanFindings(binaryScan, parsed, {
+    provider: aiResult.provider,
     model: aiResult.model,
     mode: aiResult.mode,
+    fallback: Boolean(aiResult.fallback),
     framesAnalyzed: validFrames.length,
   });
 
   return jsonResponse({
     ok: true,
+    ai_skipped: false,
+    ai: {
+      provider: aiResult.provider,
+      model: aiResult.model,
+      mode: aiResult.mode,
+      fallback: Boolean(aiResult.fallback),
+    },
     scan: merged,
   });
 }
