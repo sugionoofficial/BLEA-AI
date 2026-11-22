@@ -22,6 +22,7 @@ import { useCredits } from '../lib/useCredits';
 import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
 import { formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
 import { probeMediaDurationMs } from '../lib/freebeatVideoUpload';
+import MediaCutImporter, { ExistingMediaCutTool } from './MediaCutImporter';
 import { GenerateImagePanel } from './GenerateImagePanel';
 import { GenerateMusicPanel } from './GenerateMusicPanel';
 import { ModelSelect } from './ModelSelect';
@@ -144,6 +145,8 @@ export function GeneratePage() {
   const [audioMedia, setAudioMedia] = useState(null);
   const [audioUrlInput, setAudioUrlInput] = useState('');
   const [audioDurationMs, setAudioDurationMs] = useState(null);
+  const [showVideoCutTool, setShowVideoCutTool] = useState(false);
+  const [showAudioCutTool, setShowAudioCutTool] = useState(false);
   const [singingMode, setSingingMode] = useState('auto');
   const [audioStartSeconds, setAudioStartSeconds] = useState('');
   // Wan 3.0 multi-referensi (mode referensi): maks 10 foto, 5 video, 5 audio.
@@ -332,6 +335,27 @@ export function GeneratePage() {
       }
     } finally {
       setUploadingSlot('');
+    }
+  };
+
+  // Dipanggil oleh MediaCutImporter/ExistingMediaCutTool setelah media
+  // (utuh atau hasil potong) selesai diunggah ke Supabase Storage — hasilnya
+  // sudah berbentuk { url, name, size, localPreview } siap dipasang ke slot
+  // video/audio, sama seperti hasil upload file manual.
+  const handleImportedMedia = async (slot, media) => {
+    const probedDurationMs = await probeMediaDurationMs(media.localPreview || media.url, slot).catch(() => null);
+    const mediaObj = { ...media, ...(probedDurationMs ? { durationMs: probedDurationMs } : {}) };
+    if (slot === 'video') {
+      setVideoMedia(mediaObj);
+      if (probedDurationMs) setVideoDurationMs(probedDurationMs);
+      setVideoUrlInput('');
+      setShowVideoCutTool(false);
+    }
+    if (slot === 'audio') {
+      setAudioMedia(mediaObj);
+      if (probedDurationMs) setAudioDurationMs(probedDurationMs);
+      setAudioUrlInput('');
+      setShowAudioCutTool(false);
     }
   };
 
@@ -978,9 +1002,14 @@ export function GeneratePage() {
                       {isFreebeatLipSync ? 'Video Sumber (Wajib)' : !isAlibaba ? 'Upload Video' : alibabaSpec?.requiresVideo ? (aliMediaMode === 'animate' ? 'Video Penggerak (Wajib)' : 'Video Sumber (Wajib)') : 'Video Sumber (Opsional)'}
                     </span>
                     {videoMedia && (
-                      <button type="button" className="generate-clear-btn" onClick={() => clearMedia('video')}>
-                        Hapus
-                      </button>
+                      <span style={{ display: 'flex', gap: 6 }}>
+                        <button type="button" className="generate-cut-btn" onClick={() => setShowVideoCutTool((v) => !v)}>
+                          {showVideoCutTool ? 'Tutup Potong' : 'Potong'}
+                        </button>
+                        <button type="button" className="generate-clear-btn" onClick={() => { clearMedia('video'); setShowVideoCutTool(false); }}>
+                          Hapus
+                        </button>
+                      </span>
                     )}
                   </div>
                   <input
@@ -1017,14 +1046,33 @@ export function GeneratePage() {
                     {videoMedia?.size ? <span>{formatBytes(videoMedia.size)}</span> : null}
                   </div>
                   {isFreebeatLipSync && !videoMedia && (
-                    <input
-                      type="url"
-                      aria-label="URL Video HTTPS"
-                      className="generate-select"
-                      style={{ marginTop: 8 }}
-                      value={videoUrlInput}
-                      onChange={(e) => setVideoUrlInput(e.target.value)}
-                      placeholder="Atau tempel URL HTTPS video MP4/MOV..."
+                    <>
+                      <input
+                        type="url"
+                        aria-label="URL Video HTTPS"
+                        className="generate-select"
+                        style={{ marginTop: 8 }}
+                        value={videoUrlInput}
+                        onChange={(e) => setVideoUrlInput(e.target.value)}
+                        placeholder="Atau tempel URL HTTPS video MP4/MOV, Facebook, atau TikTok..."
+                      />
+                      <MediaCutImporter
+                        kind="video"
+                        pastedUrl={videoUrlInput}
+                        userId={user?.id}
+                        disabled={!selectedModel || Boolean(uploadingSlot)}
+                        onUseMedia={(media) => handleImportedMedia('video', media)}
+                      />
+                    </>
+                  )}
+                  {videoMedia && showVideoCutTool && (
+                    <ExistingMediaCutTool
+                      kind="video"
+                      sourceUrl={videoMedia.localPreview || videoMedia.url}
+                      userId={user?.id}
+                      disabled={Boolean(uploadingSlot)}
+                      onUseMedia={(media) => handleImportedMedia('video', media)}
+                      onClose={() => setShowVideoCutTool(false)}
                     />
                   )}
                   {isFreebeatLipSync && (
@@ -1058,9 +1106,14 @@ export function GeneratePage() {
                   <div className="generate-upload-top">
                     <span className="generate-upload-title">{isFreebeat ? 'Lagu / Audio (Wajib)' : !isAlibaba ? 'Upload Audio' : 'Audio Referensi (Opsional)'}</span>
                     {audioMedia && (
-                      <button type="button" className="generate-clear-btn" onClick={() => clearMedia('audio')}>
-                        Hapus
-                      </button>
+                      <span style={{ display: 'flex', gap: 6 }}>
+                        <button type="button" className="generate-cut-btn" onClick={() => setShowAudioCutTool((v) => !v)}>
+                          {showAudioCutTool ? 'Tutup Potong' : 'Potong'}
+                        </button>
+                        <button type="button" className="generate-clear-btn" onClick={() => { clearMedia('audio'); setShowAudioCutTool(false); }}>
+                          Hapus
+                        </button>
+                      </span>
                     )}
                   </div>
                   <input
@@ -1095,14 +1148,33 @@ export function GeneratePage() {
                     {audioMedia?.size ? <span>{formatBytes(audioMedia.size)}</span> : null}
                   </div>
                   {isFreebeat && !audioMedia && (
-                    <input
-                      type="url"
-                      aria-label="URL Lagu HTTPS"
-                      className="generate-select"
-                      style={{ marginTop: 8 }}
-                      value={audioUrlInput}
-                      onChange={(e) => setAudioUrlInput(e.target.value)}
-                      placeholder="Atau tempel URL HTTPS lagu / Suno / YouTube..."
+                    <>
+                      <input
+                        type="url"
+                        aria-label="URL Lagu HTTPS"
+                        className="generate-select"
+                        style={{ marginTop: 8 }}
+                        value={audioUrlInput}
+                        onChange={(e) => setAudioUrlInput(e.target.value)}
+                        placeholder="Atau tempel URL HTTPS lagu / Suno / YouTube / Facebook / TikTok..."
+                      />
+                      <MediaCutImporter
+                        kind="audio"
+                        pastedUrl={audioUrlInput}
+                        userId={user?.id}
+                        disabled={!selectedModel || Boolean(uploadingSlot)}
+                        onUseMedia={(media) => handleImportedMedia('audio', media)}
+                      />
+                    </>
+                  )}
+                  {audioMedia && showAudioCutTool && (
+                    <ExistingMediaCutTool
+                      kind="audio"
+                      sourceUrl={audioMedia.localPreview || audioMedia.url}
+                      userId={user?.id}
+                      disabled={Boolean(uploadingSlot)}
+                      onUseMedia={(media) => handleImportedMedia('audio', media)}
+                      onClose={() => setShowAudioCutTool(false)}
                     />
                   )}
                   {isFreebeatSinging && (

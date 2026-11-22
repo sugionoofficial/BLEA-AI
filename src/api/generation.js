@@ -20,6 +20,14 @@ export async function fetchVideoHistory({ offset = 0 } = {}) {
   return edgeRequest('/video/history', { offset });
 }
 
+// Resolve tautan Facebook/TikTok (getmyfb.com/ssstik.io) menjadi media siap
+// dipakai di field URL /generate manapun. Mengembalikan URL proxy
+// same-origin bertanda tangan (bukan link pihak ketiga mentah) supaya bisa
+// dipakai langsung di elemen <video>/<audio> untuk pratinjau & pemotongan.
+export async function resolveSocialMediaUrl(url) {
+  return edgeRequest('/media/resolve', { url });
+}
+
 // Generate Gambar (Freebeat) — konfigurasi model & harga kredit BLEA.
 export async function fetchImageConfig() {
   return edgeRequest('/image/config', {});
