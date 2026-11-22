@@ -17,23 +17,90 @@ import { ModelSelect } from './ModelSelect';
 import './generate.css';
 import './history.css';
 
-const MUSIC_PROMPT_CHIPS = [
-  {
-    label: 'Synthwave Sunset',
-    text: 'Upbeat synthwave sunset anthem with warm analog synths, punchy retro snare, and driving bassline.',
-  },
-  {
-    label: 'Akustik Indie',
-    text: 'Warm Indonesian indie folk acoustic guitar ballad with soft brushed drums, gentle strings, and heartfelt melody.',
-  },
-  {
-    label: 'Lo-Fi Chill',
-    text: 'Relaxing late-night lo-fi chillhop beat with dusty vinyl crackle, electric Rhodes chords, and mellow bass.',
-  },
-  {
-    label: 'Orkestra Epik',
-    text: 'Cinematic orchestral trailer score with soaring strings, brass swells, taiko drums, and dramatic choir.',
-  },
+// Large genre inspiration catalog grouped by category. Selecting an entry fills the prompt
+// textarea with `text`; `tagline` is a short one-line preview shown under the name in the
+// dropdown list (see ModelSelect `sub`).
+const MUSIC_GENRE_CATALOG = [
+  // Pop
+  { value: 'pop-modern', category: 'Pop', label: 'Pop Modern', tagline: 'Anthem pop ceria & catchy', text: 'Upbeat modern pop anthem with polished vocals, a catchy hook, bright synth layers, and a punchy drum groove.' },
+  { value: 'dance-pop', category: 'Pop', label: 'Dance Pop', tagline: 'Energik, ritme dansa', text: 'High-energy dance-pop track with a four-on-the-floor beat, shimmering synths, and an infectious sing-along chorus.' },
+  { value: 'synth-pop', category: 'Pop', label: 'Synth Pop', tagline: 'Retro synth berkilau', text: 'Retro-inspired synth-pop with glossy analog synth leads, tight electronic drums, and dreamy falsetto vocals.' },
+  { value: 'kpop-energetic', category: 'Pop', label: 'K-Pop Energetic', tagline: 'Beat trap-pop meledak', text: 'Vibrant K-pop energetic anthem with a sharp trap-pop beat, layered vocal harmonies, and an explosive chorus drop.' },
+  { value: 'pop-ballad', category: 'Pop', label: 'Pop Ballad', tagline: 'Balada emosional', text: 'Emotional pop ballad with soaring piano chords, gentle strings, and heartfelt vocal delivery.' },
+  { value: 'pop-punk', category: 'Pop', label: 'Pop Punk', tagline: 'Chord distorsi, teriak bareng', text: 'Energetic pop-punk anthem with distorted power chords, driving drums, and a shout-along chorus.' },
+  // Rock
+  { value: 'classic-rock', category: 'Rock', label: 'Classic Rock', tagline: 'Riff gitar klasik', text: 'Classic rock anthem with gritty electric guitar riffs, a driving bassline, and a powerful arena drum beat.' },
+  { value: 'alternative-rock', category: 'Rock', label: 'Alternative Rock', tagline: 'Distorsi berlapis, moody', text: 'Moody alternative rock track with layered distorted guitars, dynamic verses, and a cathartic chorus.' },
+  { value: 'indie-rock', category: 'Rock', label: 'Indie Rock', tagline: 'Gitar jangly santai', text: 'Jangly indie rock tune with bright guitar arpeggios, a relaxed groove, and understated vocal charm.' },
+  { value: 'hard-rock', category: 'Rock', label: 'Hard Rock', tagline: 'Riff berat, agresif', text: 'Aggressive hard rock track with heavy guitar riffs, thunderous drums, and raspy powerful vocals.' },
+  { value: 'pop-rock', category: 'Rock', label: 'Pop Rock', tagline: 'Hook gitar radio-friendly', text: 'Upbeat pop-rock track with catchy guitar hooks, a driving rhythm section, and a radio-friendly chorus.' },
+  { value: 'post-rock', category: 'Rock', label: 'Post-Rock Atmospheric', tagline: 'Instrumental, membangun klimaks', text: 'Sweeping atmospheric post-rock instrumental with slow-building guitar layers, reverb-soaked textures, and a cinematic crescendo.' },
+  // Elektronik / EDM
+  { value: 'synthwave-sunset', category: 'Elektronik', label: 'Synthwave Sunset', tagline: 'Analog synth hangat', text: 'Upbeat synthwave sunset anthem with warm analog synths, punchy retro snare, and driving bassline.' },
+  { value: 'deep-house', category: 'Elektronik', label: 'Deep House', tagline: 'Groovy, bass hangat', text: 'Groovy deep house track with warm sub-bass, soulful chord stabs, and a hypnotic four-on-the-floor beat.' },
+  { value: 'techno-driving', category: 'Elektronik', label: 'Techno Driving', tagline: 'Kick menghentak, gelap', text: 'Relentless driving techno with a pounding kick drum, dark pulsing bassline, and industrial textures.' },
+  { value: 'future-bass', category: 'Elektronik', label: 'Future Bass', tagline: 'Drop vokal chop berwarna', text: 'Colorful future bass drop with pitched vocal chops, lush supersaw synths, and a punchy trap-influenced beat.' },
+  { value: 'trance-uplifting', category: 'Elektronik', label: 'Trance Uplifting', tagline: 'Synth lead euforik', text: 'Euphoric uplifting trance with soaring synth leads, a rolling bassline, and an emotional breakdown build-up.' },
+  { value: 'drum-and-bass', category: 'Elektronik', label: 'Drum and Bass', tagline: 'Breakbeat cepat', text: 'Fast-paced drum and bass track with rapid breakbeats, a deep rolling bassline, and an energetic atmosphere.' },
+  { value: 'dubstep-heavy', category: 'Elektronik', label: 'Dubstep Heavy', tagline: 'Bass wobble berat', text: 'Heavy dubstep drop with wobbling bass growls, aggressive sound design, and a half-time rhythm.' },
+  { value: 'chillwave-dreamy', category: 'Elektronik', label: 'Chillwave Dreamy', tagline: 'Pad synth nostalgia', text: 'Dreamy chillwave soundscape with washed-out synth pads, a lo-fi drum machine groove, and hazy nostalgic vocals.' },
+  // Hip-Hop / Rap
+  { value: 'trap-modern', category: 'Hip-Hop', label: 'Trap Modern', tagline: '808 menggelegar', text: 'Modern trap beat with booming 808 bass, crisp hi-hat rolls, and a dark menacing melody.' },
+  { value: 'boom-bap', category: 'Hip-Hop', label: 'Boom Bap Old School', tagline: 'Sampel vinyl klasik', text: 'Classic boom bap hip-hop beat with dusty vinyl samples, a punchy snare, and a laid-back groove.' },
+  { value: 'lofi-hiphop', category: 'Hip-Hop', label: 'Lo-Fi Hip-Hop', tagline: 'Piano jazzy santai', text: 'Chill lo-fi hip-hop beat with a mellow jazzy piano loop, soft vinyl crackle, and relaxed boom-bap drums.' },
+  { value: 'drill-dark', category: 'Hip-Hop', label: 'Drill Dark', tagline: '808 meluncur, tegang', text: 'Dark UK drill beat with sliding 808 bass, a tense string melody, and an aggressive hi-hat pattern.' },
+  { value: 'conscious-rap', category: 'Hip-Hop', label: 'Conscious Rap', tagline: 'Sampel soulful, reflektif', text: 'Thoughtful conscious rap instrumental with a soulful sample loop, steady boom-bap drums, and an introspective mood.' },
+  // R&B / Soul
+  { value: 'smooth-rnb', category: 'R&B/Soul', label: 'Smooth R&B', tagline: 'Electric piano sutra', text: 'Smooth R&B groove with silky electric piano chords, a warm bassline, and a sultry vocal melody.' },
+  { value: 'neo-soul', category: 'R&B/Soul', label: 'Neo Soul', tagline: 'Chord jazzy, groove ketat', text: 'Laid-back neo-soul track with jazzy chord extensions, a tight groove, and soulful vocal ad-libs.' },
+  { value: 'funk-groove', category: 'R&B/Soul', label: 'Funk Groove', tagline: 'Slap bass, tiupan cerah', text: 'Funky groove with punchy slap bass, tight rhythm guitar, and bright horn section stabs.' },
+  { value: 'motown-retro', category: 'R&B/Soul', label: 'Motown Retro', tagline: 'Horn vintage, tamborin', text: 'Retro Motown-style soul track with vintage horns, a tambourine groove, and a heartfelt vocal performance.' },
+  // Jazz
+  { value: 'jazz-lounge', category: 'Jazz', label: 'Jazz Lounge', tagline: 'Saksofon santai', text: 'Relaxed jazz lounge track with a smooth saxophone melody, walking double bass, and brushed drums.' },
+  { value: 'bebop-energetic', category: 'Jazz', label: 'Bebop Energetic', tagline: 'Swing cepat, improvisasi', text: 'Energetic bebop jazz with a fast swinging rhythm, virtuosic piano runs, and lively horn improvisation.' },
+  { value: 'smooth-jazz', category: 'Jazz', label: 'Smooth Jazz', tagline: 'Saksofon lembut', text: 'Mellow smooth jazz with warm electric piano, a gentle saxophone lead, and a soft bass groove.' },
+  { value: 'jazz-fusion', category: 'Jazz', label: 'Jazz Fusion', tagline: 'Ritme kompleks, solo gitar', text: 'Dynamic jazz fusion track blending complex rhythms, electric guitar solos, and a funky bass groove.' },
+  // Klasik / Orkestra
+  { value: 'orkestra-epik', category: 'Klasik', label: 'Orkestra Epik', tagline: 'String & brass megah', text: 'Cinematic orchestral trailer score with soaring strings, brass swells, taiko drums, and dramatic choir.' },
+  { value: 'piano-solo', category: 'Klasik', label: 'Piano Solo Emotional', tagline: 'Melodi reflektif', text: 'Emotional solo piano piece with a delicate melody, expressive dynamics, and a reflective mood.' },
+  { value: 'string-quartet', category: 'Klasik', label: 'String Quartet Romantic', tagline: 'Violin & cello elegan', text: 'Romantic string quartet piece with a lush violin melody, warm cello harmony, and elegant phrasing.' },
+  { value: 'choir-sacred', category: 'Klasik', label: 'Choir Sacred', tagline: 'Paduan suara megah', text: 'Majestic sacred choir piece with soaring vocal harmonies, organ accompaniment, and a reverent atmosphere.' },
+  { value: 'baroque-harpsichord', category: 'Klasik', label: 'Baroque Harpsichord', tagline: 'Kontrapoin anggun', text: 'Intricate baroque composition with an ornate harpsichord melody, structured counterpoint, and an elegant string ensemble.' },
+  // Folk / Akustik
+  { value: 'akustik-indie', category: 'Folk', label: 'Akustik Indie', tagline: 'Gitar hangat, drum lembut', text: 'Warm Indonesian indie folk acoustic guitar ballad with soft brushed drums, gentle strings, and heartfelt melody.' },
+  { value: 'country-road', category: 'Folk', label: 'Country Road', tagline: 'Gitar twangy, cerita', text: 'Warm country road anthem with twangy acoustic guitar, a steady train-beat rhythm, and storytelling vocals.' },
+  { value: 'bluegrass-lively', category: 'Folk', label: 'Bluegrass Lively', tagline: 'Banjo cepat, biola', text: 'Lively bluegrass tune with fast banjo picking, a fiddle melody, and an upbeat acoustic rhythm.' },
+  { value: 'singer-songwriter', category: 'Folk', label: 'Singer-Songwriter Intimate', tagline: 'Fingerpicking, vokal jujur', text: 'Intimate singer-songwriter ballad with fingerpicked acoustic guitar and tender, honest vocal delivery.' },
+  { value: 'flamenco', category: 'Folk', label: 'Flamenco Spanish Guitar', tagline: 'Strumming cepat, tepuk tangan', text: 'Passionate flamenco with rapid Spanish guitar strumming, rhythmic hand claps, and fiery melodic runs.' },
+  // Musik Dunia / Nusantara
+  { value: 'dangdut-koplo', category: 'Dunia', label: 'Dangdut Koplo', tagline: 'Kendang riang', text: 'Energetic dangdut koplo with a bouncy kendang rhythm, playful gendang drum fills, and a catchy vocal melody.' },
+  { value: 'gamelan-tradisional', category: 'Dunia', label: 'Gamelan Tradisional', tagline: 'Metalofon meditatif', text: 'Traditional Javanese gamelan ensemble with shimmering metallophone melodies and meditative rhythmic cycles.' },
+  { value: 'keroncong-nostalgia', category: 'Dunia', label: 'Keroncong Nostalgia', tagline: 'Ukulele & selo lembut', text: 'Nostalgic keroncong ballad with gentle ukulele strumming, soft cello pizzicato, and a romantic vocal melody.' },
+  { value: 'reggae-pantai', category: 'Dunia', label: 'Reggae Pantai', tagline: 'Skank santai, vibe pantai', text: 'Laid-back reggae groove with off-beat guitar skank, a warm bassline, and a sunny island vibe.' },
+  { value: 'latin-salsa', category: 'Dunia', label: 'Latin Salsa', tagline: 'Horn & perkusi meriah', text: 'Vibrant salsa track with a lively horn section, syncopated percussion, and an infectious dance rhythm.' },
+  { value: 'bollywood-meriah', category: 'Dunia', label: 'Bollywood Meriah', tagline: 'Tabla & sitar perayaan', text: 'Festive Bollywood-style track with an energetic tabla rhythm, sitar melody, and celebratory orchestral swells.' },
+  // Lo-Fi / Santai
+  { value: 'lofi-chill', category: 'Lo-Fi', label: 'Lo-Fi Chill', tagline: 'Vinyl crackle, Rhodes', text: 'Relaxing late-night lo-fi chillhop beat with dusty vinyl crackle, electric Rhodes chords, and mellow bass.' },
+  { value: 'ambient-dreamscape', category: 'Lo-Fi', label: 'Ambient Dreamscape', tagline: 'Pad mengambang', text: 'Ethereal ambient soundscape with slow evolving pads, soft textures, and a tranquil atmosphere.' },
+  { value: 'study-beats', category: 'Lo-Fi', label: 'Study Beats Calm', tagline: 'Fokus, tenang', text: 'Calm study beats with a mellow piano loop, a soft kick pattern, and an unobtrusive relaxing mood.' },
+  { value: 'rainy-day', category: 'Lo-Fi', label: 'Rainy Day Mellow', tagline: 'Hujan & piano hangat', text: 'Mellow rainy-day track with soft rain ambience, warm lo-fi piano, and gentle vinyl crackle.' },
+  // Sinematik
+  { value: 'trailer-dramatis', category: 'Sinematik', label: 'Trailer Dramatis', tagline: 'Perkusi & brass menegangkan', text: 'Powerful cinematic trailer music with pounding percussion, rising brass hits, and dramatic orchestral tension.' },
+  { value: 'horor-mencekam', category: 'Sinematik', label: 'Horor Mencekam', tagline: 'String disonan, drone', text: 'Tense horror underscore with eerie strings, dissonant textures, and unsettling atmospheric drones.' },
+  { value: 'fantasi-petualangan', category: 'Sinematik', label: 'Petualangan Fantasi', tagline: 'Tema brass heroik', text: 'Adventurous fantasy score with heroic brass themes, sweeping strings, and magical woodwind flourishes.' },
+  { value: 'scifi-futuristik', category: 'Sinematik', label: 'Sci-Fi Futuristik', tagline: 'Arpeggio synth logam', text: 'Futuristic sci-fi soundscape with pulsing synth arpeggios, metallic textures, and a tense atmospheric buildup.' },
+  // Metal
+  { value: 'heavy-metal', category: 'Metal', label: 'Heavy Metal Agresif', tagline: 'Riff berat, scream', text: 'Aggressive heavy metal track with crushing guitar riffs, double bass drum blasts, and intense screamed vocals.' },
+  { value: 'symphonic-metal', category: 'Metal', label: 'Symphonic Metal', tagline: 'Orkestra & vokal operatik', text: 'Dramatic symphonic metal combining orchestral strings, operatic vocals, and powerful distorted guitars.' },
+  { value: 'metalcore', category: 'Metal', label: 'Metalcore Intens', tagline: 'Breakdown & chorus melodis', text: 'Intense metalcore track with breakdown-heavy riffs, aggressive screams, and a melodic clean chorus.' },
+  { value: 'doom-metal', category: 'Metal', label: 'Doom Metal Lambat', tagline: 'Tone sludgy, berat', text: 'Slow and heavy doom metal with a sludgy guitar tone, an ominous atmosphere, and a crushing low-end groove.' },
+  // Anak & Perayaan
+  { value: 'anak-ceria', category: 'Perayaan', label: 'Anak Ceria', tagline: 'Xilofon ceria', text: "Playful children's song with a bouncy melody, bright xylophone tones, and cheerful sing-along vocals." },
+  { value: 'natal-meriah', category: 'Perayaan', label: 'Natal Meriah', tagline: 'Lonceng & paduan suara', text: 'Festive Christmas song with jingling bells, warm strings, and joyful choir harmonies.' },
+  { value: 'ultah-gembira', category: 'Perayaan', label: 'Ulang Tahun Gembira', tagline: 'Tepuk tangan ceria', text: 'Cheerful birthday celebration tune with an upbeat clapping rhythm and a joyful festive melody.' },
+  // Spiritual
+  { value: 'gospel-membangkitkan', category: 'Spiritual', label: 'Gospel Membangkitkan', tagline: 'Paduan suara penuh semangat', text: 'Uplifting gospel anthem with powerful choir harmonies, driving piano chords, and a soulful lead vocal.' },
+  { value: 'nasheed-syahdu', category: 'Spiritual', label: 'Nasheed Syahdu', tagline: 'Vokal harmoni, perkusi lembut', text: 'Soulful acapella-style nasheed with gentle vocal harmonies, rhythmic percussion, and a reflective spiritual mood.' },
 ];
 
 const STATUS_LABEL = {
@@ -64,6 +131,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
   const { balance, refresh: refreshBalance } = useCredits(userId);
   const [config, setConfig] = useState(null);
   const [selected, setSelected] = useState('');
+  const [genreValue, setGenreValue] = useState('');
   const [prompt, setPrompt] = useState(initialPrompt);
   const [instrumental, setInstrumental] = useState(false);
   const [lyrics, setLyrics] = useState('');
@@ -277,20 +345,28 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
         <div className="generate-field">
           <div className="generate-label-row">
             <span className="generate-label">Inspirasi genre</span>
-            <span className="generate-hint">Klik untuk mengisi prompt</span>
+            <span className="generate-hint">{MUSIC_GENRE_CATALOG.length} genre &middot; pilih untuk mengisi prompt</span>
           </div>
-          <div className="generate-chips">
-            {MUSIC_PROMPT_CHIPS.map((chip) => (
-              <button
-                key={chip.label}
-                type="button"
-                className="generate-chip"
-                onClick={() => { setPrompt(chip.text); setNotice(''); }}
-              >
-                {chip.label}
-              </button>
-            ))}
-          </div>
+          <ModelSelect
+            ariaLabel="Inspirasi genre musik"
+            placeholder="Pilih genre inspirasi"
+            value={genreValue}
+            options={MUSIC_GENRE_CATALOG.map((genre) => ({
+              value: genre.value,
+              label: genre.label,
+              badge: genre.category,
+              sub: genre.tagline,
+              nativeLabel: `[${genre.category}] ${genre.label}`,
+            }))}
+            onChange={(nextValue) => {
+              const genre = MUSIC_GENRE_CATALOG.find((item) => item.value === nextValue);
+              if (!genre) return;
+              setGenreValue(nextValue);
+              setPrompt(genre.text);
+              setError('');
+              setNotice('');
+            }}
+          />
         </div>
 
         <label className="generate-field">
