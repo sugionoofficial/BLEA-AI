@@ -952,7 +952,7 @@ async function getModels(accessToken, type, existingHeaders = null) {
   return { models, truncated: list.length > 100 };
 }
 
-const CATALOG_MEDIA_URL_KEYS = new Set(['image_url', 'cover_url', 'thumbnail_url', 'preview_url', 'video_url', 'audio_url', 'url']);
+const CATALOG_MEDIA_URL_KEYS = new Set(['image_url', 'cover_url', 'thumbnail_url', 'preview_url', 'preview_video_url', 'video_url', 'audio_url', 'url']);
 const CATALOG_MEDIA_LIST_KEYS = new Set(['reference_image_urls', 'image_urls', 'images']);
 function sanitizeCatalogPayload(value, depth = 0, parentKey = '') {
   if (value === null || typeof value === 'boolean') return value;
@@ -996,6 +996,60 @@ function extractCatalogList(content, preferredKey = null) {
   }
   return null;
 }
+function safeTextModelId(id) {
+  return (Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^[A-Za-z0-9_.:\/-]{1,120}$/.test(id));
+}
+async function getTextModels(accessToken, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'list_models', arguments: { type: 'text' } },
+  }, 'models', headers, 262144);
+  if (result?.isError || result?.error) throw mcpFailure('models', 'rpc');
+  const content = modelContent(result);
+  if (content !== null) {
+    const safeData = sanitizeCatalogPayload(content);
+    const list = extractCatalogList(content, 'text_models');
+    const models = Array.isArray(list) ? list.slice(0, 100).flatMap((item) => {
+      if (typeof item === 'string' && safeTextModelId(item.trim()) && !/[\x00-\x1f\x7f]/.test(item)) {
+        const clean = item.trim();
+        return [{ model_id: clean, name: clean, member_only: false, available: true }];
+      }
+      if (!item || typeof item !== 'object') return [];
+      const id = item.model ?? item.model_id ?? item.modelId ?? item.id ?? item.name;
+      const name = item.display_name ?? item.displayName ?? item.name ?? item.model ?? (typeof id === 'string' ? id : undefined);
+      if (!safeTextModelId(id) || typeof name !== 'string' || !name.trim() || name.length > 200 || /[\x00-\x1f\x7f]/.test(name)) return [];
+      return [{ model_id: id, name: name.trim(), member_only: item.member_only === true, available: item.available !== false }];
+    }) : [];
+    let schema;
+    if (!models.length) {
+      try {
+        schema = (await getToolSchemas(accessToken, new Set(['list_models']), new Set(['image', 'image_edit', 'video', 'text', 'audio', 'music', 'effects', 'effect']))).tools?.list_models ?? null;
+      } catch { schema = null; }
+    }
+    return {
+      catalog: 'text',
+      models,
+      truncated: Array.isArray(list) && list.length > 100,
+      ...(models.length === 0 ? { data: safeData, ...(schema !== undefined ? { schema } : {}) } : {}),
+    };
+  }
+  const rawText = Array.isArray(result.content) ? result.content.find((item) => item?.type === 'text' && typeof item.text === 'string')?.text : null;
+  if (!rawText) throw mcpFailure('models', 'response');
+  let schema;
+  try {
+    schema = (await getToolSchemas(accessToken, new Set(['list_models']), new Set(['image', 'image_edit', 'video', 'text', 'audio', 'music', 'effects', 'effect']))).tools?.list_models ?? null;
+  } catch { schema = null; }
+  return {
+    catalog: 'text',
+    models: [],
+    truncated: false,
+    data: { text: privateFailureReason(rawText)?.slice(0, 2000) ?? '' },
+    ...(schema !== undefined ? { schema } : {}),
+  };
+}
 async function getMusicModels(accessToken, existingHeaders = null) {
   const headers = existingHeaders || await openMcp(accessToken);
   const { result } = await rpc(accessToken, {
@@ -1004,6 +1058,7 @@ async function getMusicModels(accessToken, existingHeaders = null) {
     method: 'tools/call',
     params: { name: 'list_music_models', arguments: {} },
   }, 'models', headers, 262144);
+  if (result?.isError || result?.error) throw mcpFailure('models', 'rpc');
   const content = modelContent(result);
   if (content !== null) {
     const safeData = sanitizeCatalogPayload(content);
@@ -1049,6 +1104,7 @@ async function getEffectsCatalog(accessToken, input = {}, existingHeaders = null
     method: 'tools/call',
     params: { name: 'list_effects', arguments: { page, page_size } },
   }, 'models', headers, 262144);
+  if (result?.isError || result?.error) throw mcpFailure('models', 'rpc');
   const content = modelContent(result);
   if (content !== null) {
     const safeData = sanitizeCatalogPayload(content);
@@ -3197,7 +3253,7 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'music-models') {
         return response({ ok: true, ...(await getMusicModels(session.accessToken)) }, 200, { 'referrer-policy': 'no-referrer' });
       }
-      return response({ ok: true, catalog: 'text', ...(await getModels(session.accessToken, 'text')) }, 200, { 'referrer-policy': 'no-referrer' });
+      return response({ ok: true, ...(await getTextModels(session.accessToken)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-upload-check', 'video-upload-image'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);

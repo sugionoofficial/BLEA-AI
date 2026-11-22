@@ -174,6 +174,8 @@ export function FreebeatCatalogInspector({ connected, loading, request }) {
           value={{
             catalog: textCatalog.catalog,
             models: textCatalog.models || [],
+            ...(textCatalog.data !== undefined ? { data: textCatalog.data } : {}),
+            ...(textCatalog.schema !== undefined ? { list_models_schema: textCatalog.schema } : {}),
             truncated: textCatalog.truncated === true,
           }}
           description={`Menampilkan model teks dari list_models(type=text).${textCatalog.truncated ? ' Daftar dibatasi hingga 100 item.' : ''}`}

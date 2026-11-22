@@ -40,6 +40,7 @@ async function connectFixture() {
 test('Read-only catalog endpoints enforce auth, origin, pagination bounds, secret stripping, and media URL preservation', async () => {
   const realFetch = globalThis.fetch;
   const mcpCalls = [];
+  let textMode = 'models';
 
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
@@ -56,6 +57,26 @@ test('Read-only catalog endpoints enforce auth, origin, pagination bounds, secre
     mcpCalls.push(body);
     if (body.method === 'initialize') return Response.json({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-03-26' } });
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    if (body.method === 'tools/list') {
+      return Response.json({
+        jsonrpc: '2.0',
+        id: body.id,
+        result: {
+          tools: [
+            {
+              name: 'list_models',
+              inputSchema: {
+                type: 'object',
+                required: ['type'],
+                properties: {
+                  type: { type: 'string', enum: ['image', 'image_edit', 'video'] },
+                },
+              },
+            },
+          ],
+        },
+      });
+    }
     assert.equal(body.method, 'tools/call');
     if (body.params.name === 'list_music_models') {
       return Response.json({
@@ -97,6 +118,7 @@ test('Read-only catalog endpoints enforce auth, origin, pagination bounds, secre
                   name: 'Neon Cyber',
                   default_music_id: 888999,
                   image_url: 'https://static.freebeat.ai/effects/77.jpg',
+                  preview_video_url: 'https://static.freebeatfit.com/effects/77.mp4',
                   reference_image_urls: ['https://static.freebeat.ai/effects/ref1.jpg', 'http://insecure.example/bad.jpg'],
                   description: 'See https://leak.example/secret for prompt info',
                   access_token: 'LEAK-TOKEN',
@@ -109,6 +131,18 @@ test('Read-only catalog endpoints enforce auth, origin, pagination bounds, secre
     }
     if (body.params.name === 'list_models') {
       assert.equal(body.params.arguments.type, 'text');
+      if (textMode === 'unsupported') {
+        return Response.json({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: false, message: 'Unsupported type text; check https://internal.secret/docs' }),
+            }],
+          },
+        });
+      }
       return Response.json({
         jsonrpc: '2.0',
         id: body.id,
@@ -117,8 +151,8 @@ test('Read-only catalog endpoints enforce auth, origin, pagination bounds, secre
             type: 'text',
             text: JSON.stringify({
               models: [
-                { model_id: 'gpt-4o-mini', display_name: 'GPT-4o Mini', available: true },
-                'claude-3-5-haiku',
+                { model: 'openai/gpt-4o-mini', display_name: 'GPT-4o Mini', available: true },
+                'anthropic/claude-3-5-haiku',
               ],
             }),
           }],
@@ -174,23 +208,34 @@ test('Read-only catalog endpoints enforce auth, origin, pagination bounds, secre
     assert.equal(eff.effect_id, 77);
     assert.equal(eff.default_music_id, 888999);
     assert.equal(eff.image_url, 'https://static.freebeat.ai/effects/77.jpg');
+    assert.equal(eff.preview_video_url, 'https://static.freebeatfit.com/effects/77.mp4');
     assert.deepEqual(eff.reference_image_urls, ['https://static.freebeat.ai/effects/ref1.jpg', null]);
     assert.equal('access_token' in eff, false);
     assert.equal(eff.description.includes('leak.example'), false);
 
-    // 5. Text models inspection
+    // 5. Text models inspection (supports slash IDs and `model` property)
     const textRes = await api('text-models', { cookie, data: {} });
     assert.equal(textRes.status, 200);
     const textBody = await textRes.json();
     assert.equal(textBody.catalog, 'text');
     assert.deepEqual(textBody.models, [
-      { model_id: 'gpt-4o-mini', name: 'GPT-4o Mini', member_only: false, available: true },
-      { model_id: 'claude-3-5-haiku', name: 'claude-3-5-haiku', member_only: false, available: true },
+      { model_id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', member_only: false, available: true },
+      { model_id: 'anthropic/claude-3-5-haiku', name: 'anthropic/claude-3-5-haiku', member_only: false, available: true },
     ]);
+
+    // 6. Text models fallback when provider returns non-list message: exposes redacted data + safe list_models schema
+    textMode = 'unsupported';
+    const textFallbackRes = await api('text-models', { cookie, data: {} });
+    assert.equal(textFallbackRes.status, 200);
+    const textFallbackBody = await textFallbackRes.json();
+    assert.deepEqual(textFallbackBody.models, []);
+    assert.equal(textFallbackBody.data.success, false);
+    assert.equal(textFallbackBody.data.message.includes('internal.secret'), false);
+    assert.deepEqual(textFallbackBody.schema.properties.type.known_enum_values, ['image', 'image_edit', 'video']);
 
     // Verify no generate_* tool calls were ever invoked
     const calledTools = mcpCalls.filter((c) => c.method === 'tools/call').map((c) => c.params.name);
-    assert.deepEqual(calledTools, ['list_music_models', 'list_effects', 'list_models']);
+    assert.deepEqual(calledTools, ['list_music_models', 'list_effects', 'list_models', 'list_models']);
   } finally {
     globalThis.fetch = realFetch;
   }
