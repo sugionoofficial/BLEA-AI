@@ -9,6 +9,7 @@ import {
   MailSearch,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Stethoscope,
   PlugZap,
   UserPlus,
@@ -467,6 +468,27 @@ export function ChatGptSignupPanel({ onVerified }) {
           <a href="/tempmail" target="_blank" rel="noreferrer">Buka halaman TempMail <ExternalLink size={12} /></a>
           <a href="https://chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup" target="_blank" rel="noreferrer">Formulir daftar OpenAI <ExternalLink size={12} /></a>
         </div>
+      </div>
+
+      {/* Langkah wajib saat permintaan kode verifikasi: tab OpenAI harus
+          TETAP terbuka. Kalau ditutup, tautan verifikasi/kode tidak bisa
+          ditempelkan dan tab yang dipulihkan dari riwayat berakhir di
+          "Session ended" (error_code: invalid_state). */}
+      <div className="oauth-manual">
+        <b><ShieldCheck size={13} /> Kalau OpenAI bilang “Session ended”</b>
+        <p>
+          Halaman OpenAI berjudul <b>Session ended</b> dengan{' '}
+          <code>error_code: invalid_state</code> berarti tab login itu sudah mati —
+          biasanya karena tab ditutup lalu dibuka lagi dari riwayat, atau formulirnya
+          dibuka dua kali (dua tab = dua sesi, hanya satu yang sah).
+        </p>
+        <ol className="cga-signup-session-steps">
+          <li>Tutup SEMUA tab <code>auth.openai.com</code> dan <code>chatgpt.com</code>.</li>
+          <li>Kembali ke panel ini, pastikan email TempMail masih terlihat.</li>
+          <li>Tekan <b>Siapkan &amp; buka daftar</b> SEKALI, lalu isi formulir di tab yang baru terbuka.</li>
+          <li>Biarkan tab itu terbuka sampai kode verifikasi ditempel — jangan ditutup atau dimuat ulang.</li>
+        </ol>
+        <small>URL halaman <code>email-verification?auth_page=…</code> tidak bisa dipakai ulang: penanda itu terikat ke sesi tab yang sudah hilang.</small>
       </div>
 
       {lastUrl && (

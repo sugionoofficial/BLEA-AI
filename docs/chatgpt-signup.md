@@ -346,3 +346,31 @@ Perubahan port: `resolveOAuthRedirectUri()` (`src/lib/chatgptSignup.js`)
 memakai port halaman **hanya** bila BLEA dibuka dari `127.0.0.1`; di domain
 publik dipilih port acak 1024–65535 dan callback diselesaikan dengan menempel
 URL. Ini tetap hipotesis, bukan bukti.
+
+## “Session ended” + `invalid_state` pada `/email-verification`
+
+Bukti dari lapangan (URL nyata yang dibuka pengguna):
+
+```
+https://auth.openai.com/email-verification?auth_page=YVXP3qYcCk42c3H0mcISDEgR3G4UGicJ
+→ judul "Session ended", diagnostics: error_code: invalid_state
+```
+
+Dua hal penting dari kejadian ini:
+
+1. **`invalid_state` di sini bukan `state` OAuth BLEA.** URL tersebut berasal
+   dari alur *daftar* (`chatgpt.com/auth/login_with…`), bukan dari
+   `auth.openai.com/api/accounts/authorize`. `auth_page=…` adalah penanda
+   sesi tab milik Auth0/OpenAI; ketika tabnya ditutup (atau dipulihkan dari
+   riwayat), penanda itu merujuk ke sesi yang sudah mati. BLEA tidak bisa
+   memperbaikinya dari sisi server — satu-satunya jalan adalah memulai sesi
+   baru di tab baru.
+2. **Analyzer dulu salah membaca URL ini.** Tidak ada kata `error` di path
+   maupun query, sehingga `analyzeReturnUrl` menyebutnya `verifikasi` (ok).
+   Sekarang statusnya `sesi_berakhir` bila path `/email-verification` atau
+   `/session-ended` tanpa `state=` dan tanpa email di URL. Panel juga memuat
+   blok panduan **“Kalau OpenAI bilang Session ended”**.
+
+Aturan operasional yang muncul dari sini: **satu percobaan = satu tab.** Jangan
+menutup tab OpenAI selama kode verifikasi belum ditempel, dan jangan menekan
+“Siapkan & buka daftar” dua kali (dua tab = dua sesi, hanya satu yang sah).

@@ -123,6 +123,16 @@ test('analyzeReturnUrl membedakan halaman error, host asing, dan email yang bena
   assert.equal(verification.ok, true);
   assert.equal(verification.status, 'verifikasi');
 
+  // Regresi dari laporan nyata: URL ini tampil di browser dengan judul
+  // "Session ended" + error_code: invalid_state, tetapi analyzer lama
+  // menganggapnya "verifikasi" karena tidak ada kata "error" di URL.
+  // `auth_page=…` menandai halaman milik sesi tab yang sudah mati dan tidak
+  // membawa `state`, jadi tidak bisa dipakai melanjutkan daftar.
+  const ended = analyzeReturnUrl('https://auth.openai.com/email-verification?auth_page=YVXP3qYcCk42c3H0mcISDEgR3G4UGicJ', email);
+  assert.equal(ended.ok, false);
+  assert.equal(ended.status, 'sesi_berakhir');
+  assert.match(ended.detail, /Session ended|sesi login/i);
+
   // Halaman awal (belum menekan Continue) tetap ditolak — baik halaman baru
   // (formulir Auth0) maupun halaman lama.
   for (const startUrl of [
