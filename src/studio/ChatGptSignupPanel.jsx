@@ -26,7 +26,7 @@ const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifi
 const DEFAULT_LIMITS = [
   'Yang dibuka adalah halaman /auth/login milik ChatGPT, bukan endpoint POST /api/auth/signin/openai — endpoint itu wajib csrfToken, kalau tidak hasilnya halaman "tidak dapat memproses upaya masuk".',
   'BLEA tidak mem-POST pendaftaran dari server: Worker diblokir ke domain OpenAI dan Turnstile tidak bisa dilewati.',
-  'Akun dibuat hanya bila formulir dikirim dari browser Anda dan email verifikasi diklik sendiri.',
+  'Akun dibuat hanya bila formulir dikirim dari browser Anda dan kode verifikasi ditempel sendiri di tab ChatGPT.',
   'Alamat +tag Gmail bisa ditolak formulir OpenAI; gunakan alias TempMail tanpa tanda + bila itu terjadi.',
 ];
 
