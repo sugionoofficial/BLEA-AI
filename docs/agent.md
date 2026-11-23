@@ -136,3 +136,35 @@ pindah model (`resolveAgentModel`).
 - **Belum ada rate limit per pengguna.** Yang membatasi hanya kuota provider
   dan saldo kredit. Batas per akun (mis. X giliran/menit) belum ada; tempatnya
   di `handleAgentTurn` sebelum panggilan model pertama.
+
+## Lampiran video, klip, dan subtitle
+
+Alur lengkapnya, semuanya di sisi klien kecuali transkripsi:
+
+1. **Analisis** (`src/lib/videoAnalysis.js`) — scene cut (selisih frame 64×36,
+   2 fps) dan energi audio per detik. Ini **bukan** transkrip.
+2. **Transkripsi** (`POST /api/agent/transcribe`) — browser men-decode audio
+   menjadi WAV mono 16 kHz per potongan 5 menit (`src/lib/audioExtract.js`),
+   lalu Worker memanggil `@cf/openai/whisper-large-v3-turbo` lewat binding
+   `env.AI`. Butuh binding `ai` di `wrangler.jsonc`; tanpa itu endpoint membalas
+   503 dengan pesan jelas. `language: 'auto'` membiarkan Whisper mendeteksi
+   bahasa; bahasa yang terdeteksi dikembalikan sebagai `language`.
+3. **Rencana klip** (`propose_clips` + `src/lib/clipPlanner.js`) — agen hanya
+   mengusulkan; tidak ada pemotongan tanpa klik pengguna.
+4. **Ekspor subtitle** (`src/lib/subtitles.js`) — SRT/VTT. SRT per klip memakai
+   `sliceTranscript` sehingga timestamp sudah relatif ke awal klip.
+5. **Burn-in** (`src/lib/subtitleBurnIn.js`) — opsional, dicentang di panel
+   klip. Canvas + `MediaRecorder`, realtime, dan audio diambil lewat Web Audio
+   (canvas tidak membawa audio). Tidak ada ffmpeg di Worker; ini satu-satunya
+   jalur tanpa server.
+
+### Batas yang harus diketahui
+
+- Burn-in **realtime**: klip 40 detik ≈ 40 detik render, tab harus terbuka.
+- Kualitas turun karena re-encode; lebar canvas dibatasi 1280 px.
+- Transkrip bisa diedit, tetapi edit memetakan baris secara berurutan — tidak
+  ada re-timing otomatis.
+- Batas 8 MB per potongan audio (base64 → ~10,7 MB body), 4 potongan per
+  permintaan, jadi satu permintaan menangani ~20 menit audio.
+- Kuota neuron Workers AI belum diukur; kalau habis, endpoint membalas error
+  dari Cloudflare apa adanya.

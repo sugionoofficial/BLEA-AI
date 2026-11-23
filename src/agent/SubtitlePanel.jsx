@@ -8,12 +8,36 @@ import { SUBTITLE_TEMPLATES, sliceTranscript, toPlainText, toSrt, toVtt } from '
  * Dua hal yang disengaja:
  *   1. Transkrip bisa diedit. Whisper salah pada slang Indonesia dan nama merek,
  *      dan kesalahan itu tidak boleh masuk ke subtitle final tanpa bisa dicek.
- *   2. Belum ada burn-in. Yang diekspor adalah SRT/VTT, yang bisa langsung
- *      diimpor CapCut/TikTok/YouTube. Encoder canvas realtime belum dibangun
- *      karena hasilnya lebih buruk dan akan diganti begitu provider server-side
- *      tersedia.
+ *   2. Burn-in TIDAK dijalankan di sini. Panel ini mengatur transkrip, bahasa,
+ *      template, dan posisi; pembakaran ke video terjadi di ClipPlanPanel saat
+ *      pengguna benar-benar memilih klip dan mencentang opsi burn-in. Alasannya:
+ *      burn-in butuh rentang waktu, bukan seluruh video.
  */
-export function SubtitlePanel({ source, transcript, onTranscript, status, progress, onTranscribe, template, onTemplate }) {
+const LANGUAGES = [
+  { id: 'auto', label: 'Deteksi otomatis' },
+  { id: 'id', label: 'Indonesia' },
+  { id: 'en', label: 'Inggris' },
+  { id: 'ms', label: 'Melayu' },
+  { id: 'zh', label: 'Mandarin' },
+  { id: 'ja', label: 'Jepang' },
+  { id: 'ko', label: 'Korea' },
+  { id: 'ar', label: 'Arab' },
+];
+
+export function SubtitlePanel({
+  source,
+  transcript,
+  onTranscript,
+  status,
+  progress,
+  onTranscribe,
+  template,
+  onTemplate,
+  position = 'bottom',
+  onPosition,
+  language = 'auto',
+  onLanguage,
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -76,6 +100,12 @@ export function SubtitlePanel({ source, transcript, onTranscript, status, progre
 
       {status === 'idle' && !segments.length && (
         <div className="agent-clip-actions">
+          <label className="agent-subtitle-select">
+            <span>Bahasa audio</span>
+            <select value={language} onChange={(event) => onLanguage?.(event.target.value)}>
+              {LANGUAGES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </select>
+          </label>
           <button type="button" className="agent-send" onClick={onTranscribe}>
             <span>Buat transkrip</span>
             <Subtitles size={13} />
@@ -108,8 +138,21 @@ export function SubtitlePanel({ source, transcript, onTranscript, status, progre
               </button>
             ))}
           </div>
+          <div className="agent-subtitle-templates agent-subtitle-positions">
+            {['bottom', 'middle', 'top'].map((value) => (
+              <button
+                type="button"
+                key={value}
+                className={`agent-subtitle-template ${position === value ? 'is-active' : ''}`}
+                onClick={() => onPosition?.(value)}
+              >
+                {value === 'bottom' ? 'Bawah' : value === 'middle' ? 'Tengah' : 'Atas'}
+              </button>
+            ))}
+          </div>
           <p className="agent-subtitle-hint">
             {SUBTITLE_TEMPLATES.find((item) => item.id === template)?.note || ''}
+            {transcript?.language ? ` Bahasa terdeteksi: ${transcript.language}.` : ''}
           </p>
 
           {editing ? (

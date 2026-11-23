@@ -174,6 +174,8 @@ export function AgentPage() {
   const [transcribeStatus, setTranscribeStatus] = useState('idle');
   const [transcribeProgress, setTranscribeProgress] = useState(0);
   const [subtitleTemplate, setSubtitleTemplate] = useState('boxed');
+  const [subtitlePosition, setSubtitlePosition] = useState('bottom');
+  const [subtitleLanguage, setSubtitleLanguage] = useState('auto');
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const endRef = useRef(null);
@@ -368,7 +370,7 @@ export function AgentPage() {
     setError('');
     try {
       const result = await transcribeMedia(attachedVideo.url, {
-        language: 'id',
+        language: subtitleLanguage,
         onProgress: setTranscribeProgress,
       });
       setTranscript({ ...result, url: attachedVideo.url, name: attachedVideo.name });
@@ -512,6 +514,8 @@ export function AgentPage() {
                     userId={user?.id}
                     videoName={message.clipPlan.sourceUrl?.split('/').pop()}
                     transcript={transcript && transcript.url === message.clipPlan.sourceUrl ? transcript.segments : []}
+                    subtitleTemplate={subtitleTemplate}
+                    subtitlePosition={subtitlePosition}
                   />
                 )}
                 {message.actions?.length > 0 && (
@@ -577,6 +581,10 @@ export function AgentPage() {
                   onTranscribe={transcribeAttachedVideo}
                   template={subtitleTemplate}
                   onTemplate={setSubtitleTemplate}
+                  position={subtitlePosition}
+                  onPosition={setSubtitlePosition}
+                  language={subtitleLanguage}
+                  onLanguage={setSubtitleLanguage}
                 />
               </div>
             )}

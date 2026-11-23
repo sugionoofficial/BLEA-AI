@@ -49,7 +49,10 @@ export async function handleTranscribe(request, env, { getUser } = {}) {
   if (!chunks.length) return json({ error: 'Tidak ada potongan audio.' }, 400);
   if (chunks.length > MAX_CHUNKS) return json({ error: `Maksimal ${MAX_CHUNKS} potongan per permintaan.` }, 400);
 
-  const language = String(body.language || 'id').slice(0, 8);
+  // 'auto' = biarkan Whisper mendeteksi bahasa sendiri.
+  const requested = String(body.language || 'id').toLowerCase();
+  const autoLanguage = requested === 'auto';
+  const language = autoLanguage ? '' : requested.slice(0, 8);
   const results = [];
   const failures = [];
 
@@ -71,6 +74,7 @@ export async function handleTranscribe(request, env, { getUser } = {}) {
       // eslint-disable-next-line no-await-in-loop
       const transcript = await transcribeChunk(env, bytes, {
         language,
+        autoLanguage,
         offsetSec: Number(chunk?.offsetSec) || 0,
       });
       results.push({ index: Number(chunk?.index) || results.length, transcript });
@@ -91,6 +95,7 @@ export async function handleTranscribe(request, env, { getUser } = {}) {
     ok: true,
     segments: merged.segments,
     text: merged.text,
+    language: merged.language || '',
     failures,
     durationSec: Number(body.durationSec) || null,
   });
