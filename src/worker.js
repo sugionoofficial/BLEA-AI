@@ -77,7 +77,9 @@ import { availableSkills, loadSkillSection } from './agent/skills/loadSkill.js';
 import {
   AGENT_TOOL_DEFINITIONS,
   AGENT_TOOL_NAMES,
+  buildAttachmentContent,
   findAgentTool,
+  normalizeAgentAttachments,
   parseAgentToolCall,
   stripAgentToolCalls,
 } from './agent/tools.js';
@@ -4864,6 +4866,8 @@ async function handleApi(request, url, env) {
         availableToolNames: AGENT_TOOL_NAMES,
         describeToolCall: (name, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.describe(args) || '',
         summarizeToolResult: (name, result, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.summarize(result, args) || '',
+        normalizeAgentAttachments,
+        buildAttachmentContent,
         // Harga giliran opsional (credit_model_prices, modality 'agent_turn').
         chargeCredits: (envRef, userId, amount, description, generationId) => creditRpc(envRef, 'spend_credits', {
           p_user_id: userId,

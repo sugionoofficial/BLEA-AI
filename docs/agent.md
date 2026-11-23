@@ -28,6 +28,25 @@ kode klien. `done.reply` adalah satu-satunya teks yang menjadi pesan asisten.
 | `read_url` | `{url}` | http(s) publik, host privat ditolak, 400 KB, 10 dtk, hasil 6.000 karakter |
 | `load_skill` | `{skill, resource?}` | hanya skill yang ada di manifest |
 
+## Lampiran (foto, video, audio, berkas)
+
+Halaman agen dan AI Studio menerima unggahan **maksimal 100MB per berkas**
+(6 lampiran per pesan di `/agent`), lewat bucket `ai-studio-uploads`.
+
+- Batas ada di satu tempat: `src/lib/uploads.js` (`MAX_UPLOAD_BYTES`). Jangan
+  menyalin angka itu ke komponen — versi sebelumnya punya 30MB di dua tempat.
+- Batas **juga** ditegakkan di bucket (`file_size_limit`, migrasi
+  `20261207000000_upload_limit_100mb.sql`), karena klien bisa dimanipulasi.
+- Gambar dikirim ke model sebagai `image_url`; video, audio, dan berkas lain
+  dikirim sebagai tautan berlabel (model tidak bisa "menonton" video).
+- `/api/agent` memvalidasi ulang setiap URL lampiran: harus path public bucket
+  `ai-studio-uploads` **dan** berada di prefiks `<user_id>/`, supaya agen tidak
+  bisa dipakai menyuruh provider mengambil URL sembarangan atau membaca
+  unggahan akun lain.
+- Video/audio berukuran besar memang bisa diunggah, tetapi **tidak** otomatis
+  menjadi input model video. Menghubungkannya ke `/api/video/generate`
+  (image-to-video, dance, lip-sync) adalah pekerjaan terpisah.
+
 Tidak ada eksekusi kode, shell, akses berkas, atau operasi tulis. Model diminta
 menyebut batas itu, bukan berpura-pura sudah melakukannya.
 

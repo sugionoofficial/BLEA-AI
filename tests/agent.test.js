@@ -5,8 +5,11 @@ import { SKILLS, findSkill } from '../src/agent/skills/manifest.js';
 import { availableSkills, loadSkillSection, matchSkills, readVerifiedSkillFile } from '../src/agent/skills/loadSkill.js';
 import { buildAgentSystemPrompt } from '../src/agent/prompts.js';
 import {
+  MAX_ATTACHMENTS,
+  buildAttachmentContent,
   findAgentTool,
   htmlToText,
+  normalizeAgentAttachments,
   isHttpUrl,
   isPrivateHost,
   parseAgentToolCall,
@@ -526,4 +529,146 @@ test('free (unpriced) models never touch the wallet', async () => {
   } finally {
     stub.restore();
   }
+});
+
+// ---------------------------------------------------------------- lampiran
+const BUCKET = 'https://supabase.example/storage/v1/object/public/ai-studio-uploads';
+
+test('upload limit is 100MB per file and oversized files are reported, not silently dropped', async () => {
+  const { MAX_UPLOAD_BYTES, partitionBySize, oversizeMessage, formatBytes, fileKind } = await import('../src/lib/uploads.js');
+  assert.equal(MAX_UPLOAD_BYTES, 100 * 1024 * 1024);
+  assert.equal(formatBytes(100 * 1024 * 1024), '100.0 MB');
+
+  const { accepted, rejected } = partitionBySize([
+    { name: 'kecil.png', size: 1024 },
+    { name: 'pas.mp4', size: 100 * 1024 * 1024 },
+    { name: 'besar.mov', size: 100 * 1024 * 1024 + 1 },
+  ]);
+  assert.deepEqual(accepted.map((file) => file.name), ['kecil.png', 'pas.mp4']);
+  assert.deepEqual(rejected.map((file) => file.name), ['besar.mov']);
+  assert.match(oversizeMessage(rejected), /besar\.mov \(100\.0 MB\) melebihi batas 100\.0 MB/);
+
+  assert.equal(fileKind('image/png'), 'image');
+  assert.equal(fileKind('video/mp4'), 'video');
+  assert.equal(fileKind('audio/mpeg'), 'audio');
+  assert.equal(fileKind('application/pdf'), 'file');
+  assert.equal(fileKind('', 'rekaman.WAV'), 'audio', 'jenis harus ditebak dari ekstensi bila MIME kosong');
+});
+
+test('attachment validator accepts only this user\'s BLEA bucket URLs', () => {
+  const ok = normalizeAgentAttachments([
+    { url: `${BUCKET}/user-1/agent/abc-foto.png`, name: 'foto.png', kind: 'image', type: 'image/png', size: 2048 },
+    { url: `${BUCKET}/user-1/agent/def-lagu.mp3`, name: 'lagu.mp3', kind: 'audio', size: 4096 },
+  ], 'user-1');
+  assert.equal(ok.error, undefined);
+  assert.equal(ok.items.length, 2);
+  assert.equal(ok.items[0].kind, 'image');
+
+  const foreign = normalizeAgentAttachments([{ url: `${BUCKET}/user-2/agent/x.png`, kind: 'image' }], 'user-1');
+  assert.match(foreign.error, /bukan milik akun ini/);
+
+  const external = normalizeAgentAttachments([{ url: 'https://evil.example/file.png', kind: 'image' }], 'user-1');
+  assert.match(external.error, /harus berkas yang diunggah lewat BLEA/);
+
+  const otherBucket = normalizeAgentAttachments([{ url: 'https://supabase.example/storage/v1/object/public/user-files/a.png', kind: 'image' }], 'user-1');
+  assert.match(otherBucket.error, /harus berkas yang diunggah lewat BLEA/);
+
+  const privateHost = normalizeAgentAttachments([{ url: 'http://127.0.0.1/x.png', kind: 'image' }], 'user-1');
+  assert.match(privateHost.error, /jaringan privat/);
+
+  const badScheme = normalizeAgentAttachments([{ url: 'javascript:alert(1)', kind: 'image' }], 'user-1');
+  assert.match(badScheme.error, /URL https yang sah/);
+
+  const tooMany = normalizeAgentAttachments(
+    Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, index) => ({ url: `${BUCKET}/user-1/a${index}.png`, kind: 'image' })),
+    'user-1',
+  );
+  assert.match(tooMany.error, new RegExp(`Maksimal ${MAX_ATTACHMENTS}`));
+  assert.deepEqual(normalizeAgentAttachments(undefined, 'user-1'), { items: [] });
+});
+
+test('images become image_url parts, other files become described links', () => {
+  const parts = buildAttachmentContent('Lihat ini', [
+    { url: `${BUCKET}/user-1/a.png`, kind: 'image', name: 'a.png', size: 2048 },
+    { url: `${BUCKET}/user-1/b.pdf`, kind: 'file', name: 'b.pdf', size: 2048 },
+  ]);
+  assert.equal(parts[0].type, 'text');
+  assert.equal(parts[1].type, 'image_url');
+  assert.equal(parts[1].image_url.url, `${BUCKET}/user-1/a.png`);
+  assert.equal(parts[2].type, 'text');
+  assert.match(parts[2].text, /\[Lampiran file: b\.pdf, 2 KB\]/);
+});
+
+test('/api/agent forwards a validated image attachment to the model', async () => {
+  const stub = stubUpstream({ chatReplies: ['Saya lihat gambarnya.'] });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: {
+        messages: [{ role: 'user', content: 'Apa isi gambar ini?' }],
+        model: 'gpt-oss-120b:free',
+        provider: 'unorouter',
+        attachments: [{ url: `${BUCKET}/user-1/agent/x.png`, name: 'x.png', kind: 'image', type: 'image/png', size: 1234 }],
+      },
+    }), createEnv());
+    const events = await readSse(res);
+    assert.equal(events.find((event) => event.type === 'meta').attachments.length, 1);
+    assert.equal(events.at(-1).reply, 'Saya lihat gambarnya.');
+
+    const sent = stub.state.chatBodies[0].messages.at(-1);
+    assert.equal(sent.role, 'user');
+    assert.equal(Array.isArray(sent.content), true, 'konten harus multimodal');
+    assert.equal(sent.content[0].type, 'text');
+    assert.equal(sent.content[1].type, 'image_url');
+    assert.equal(sent.content[1].image_url.url, `${BUCKET}/user-1/agent/x.png`);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('/api/agent rejects a forged attachment URL before calling the model', async () => {
+  const stub = stubUpstream({ chatReplies: ['tidak boleh dipanggil'] });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: {
+        messages: [{ role: 'user', content: 'lihat ini' }],
+        model: 'gpt-oss-120b:free',
+        provider: 'unorouter',
+        attachments: [{ url: 'https://evil.example/payload.png', kind: 'image' }],
+      },
+    }), createEnv());
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.match(data.error, /diunggah lewat BLEA/);
+    assert.equal(stub.state.chatBodies.length, 0, 'model tidak boleh dipanggil dengan lampiran palsu');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('/api/agent keeps plain text turns unchanged when there are no attachments', async () => {
+  const stub = stubUpstream({ chatReplies: ['teks biasa'] });
+  try {
+    await worker.fetch(apiRequest('/api/agent', {
+      body: { messages: [{ role: 'user', content: 'halo' }], model: 'gpt-oss-120b:free', provider: 'unorouter' },
+    }), createEnv());
+    const sent = stub.state.chatBodies[0].messages.at(-1);
+    assert.equal(typeof sent.content, 'string', 'tanpa lampiran konten tetap string, bukan array');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('AgentPage exposes the 100MB upload control and the shared limit', async () => {
+  const fs = await import('node:fs');
+  const source = fs.readFileSync(new URL('../src/agent/AgentPage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /from '\.\.\/lib\/uploads'/);
+  assert.equal(source.includes('30MB'), false, 'batas lama tidak boleh tersisa');
+  assert.match(source, /MAX_UPLOAD_LABEL/);
+  assert.match(source, /accept=\{UPLOAD_ACCEPT\}/);
+  assert.match(source, /onFilesPicked/);
+  assert.match(source, /agent-file-input/);
+
+  const studio = fs.readFileSync(new URL('../src/auth/AIStudio.jsx', import.meta.url), 'utf8');
+  assert.equal(/MAX_UPLOAD_BYTES = 30/.test(studio), false, 'Studio harus memakai batas bersama, bukan 30MB lokal');
+  assert.match(studio, /from '\.\.\/lib\/uploads'/);
 });

@@ -10,7 +10,7 @@
 // below; `done.reply` is the only text that becomes the assistant message.
 //
 // Events (consumed by src/agent/agentClient.js):
-//   {type:'meta',     model, provider, skills?, fallback?}
+//   {type:'meta',     model, provider, skills?, fallback?, credits?, attachments?}
 //   {type:'step',     index, label, status:'start'|'done'|'error', detail, progress?}
 //   {type:'skill',    id, resource, source}
 //   {type:'delta',    text}
@@ -38,7 +38,8 @@ function isRateLimited(attempt) {
  *   sendChatCompletionRequest, chatUpstreamTimeoutMs, buildFallbackCandidates,
  *   hasWorkersAiBinding, buildSystemPrompt, availableSkillIds,
  *   loadSkillSection, runTool, extractAssistantReply, parseAgentToolCall,
- *   findTool, availableToolNames, describeToolCall, summarizeToolResult.
+ *   findTool, availableToolNames, describeToolCall, summarizeToolResult,
+ *   normalizeAgentAttachments, buildAttachmentContent.
  */
 export async function handleAgentTurn(request, url, env, deps) {
   if (!sameOriginRequest(request, url)) {
@@ -56,6 +57,12 @@ export async function handleAgentTurn(request, url, env, deps) {
     .slice(-24)
     .map((message) => ({ role: message.role, content: message.content.slice(0, 12_000) }));
   if (!messages.length) return Response.json({ error: 'Pesan kosong' }, { status: 400 });
+
+  // Lampiran: klien sudah memvalidasi 100MB, tetapi klien bisa dimanipulasi.
+  // Yang diperiksa di sini hanya batas jumlah dan keaslian URL (bucket BLEA,
+  // milik user ini) — Worker tidak bisa memeriksa ukuran byte tanpa mengunduh.
+  const attachments = deps.normalizeAgentAttachments(body.attachments, user.id);
+  if (attachments.error) return Response.json({ error: attachments.error }, { status: 400 });
 
   const provider = String(body.provider || 'unorouter').trim().toLowerCase();
   const requestedModel = String(body.model || '').trim();
@@ -120,6 +127,16 @@ export async function handleAgentTurn(request, url, env, deps) {
     if (charged > 0) await deps.refundCredits(env, user.id, charged, chargeId, 'Refund agen: giliran gagal');
   };
 
+  // Lampiran hanya menempel pada pesan pengguna terakhir: mengulanginya di
+  // setiap giliran akan menggandakan biaya token untuk gambar yang sama.
+  const withAttachments = attachments.items.length
+    ? messages.map((message, index) => (
+      index === messages.length - 1 && message.role === 'user'
+        ? { role: 'user', content: deps.buildAttachmentContent(message.content, attachments.items) }
+        : message
+    ))
+    : messages;
+
   const turnMessages = [
     {
       role: 'system',
@@ -129,7 +146,7 @@ export async function handleAgentTurn(request, url, env, deps) {
         pinnedSection,
       }),
     },
-    ...messages,
+    ...withAttachments,
   ];
 
   let activeModel = requestedModel;
@@ -145,7 +162,13 @@ export async function handleAgentTurn(request, url, env, deps) {
       let stopReason = 'final';
 
       try {
-        emit({ type: 'meta', model: activeModel, provider: activeProvider, credits: charged });
+        emit({
+          type: 'meta',
+          model: activeModel,
+          provider: activeProvider,
+          credits: charged,
+          attachments: attachments.items.map((item) => ({ name: item.name, kind: item.kind })),
+        });
         if (pinnedSection) emit({ type: 'skill', id: pinnedSkill, resource: pinnedResource, source: 'anthropics/skills' });
 
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {

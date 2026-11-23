@@ -200,3 +200,68 @@ export function stripAgentToolCalls(text) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+// ---------------------------------------------------------------- lampiran
+//
+// Lampiran dari /agent dan /studio masuk ke prompt sebagai URL. Worker tidak
+// bisa menakar ukuran byte tanpa mengunduh berkasnya (mahal dan tanpa manfaat),
+// jadi yang divalidasi adalah hal-hal yang bisa dipalsukan dan berdampak:
+// jumlah, bentuk URL, dan kepemilikan path di bucket BLEA. Batas 100MB adalah
+// urusan klien saat mengunggah; lihat src/lib/uploads.js.
+export const MAX_ATTACHMENTS = 6;
+// Path public bucket BLEA. Tidak ada allowlist host: proyek bisa memakai domain
+// kustom atau lokal, dan batas keamanan yang sebenarnya adalah path bucket +
+// prefiks user di bawah ini, bukan nama host.
+const ATTACHMENT_BUCKET_PATH = '/storage/v1/object/public/ai-studio-uploads/';
+
+export function normalizeAgentAttachments(raw, userId = '') {
+  if (!Array.isArray(raw) || !raw.length) return { items: [] };
+  if (raw.length > MAX_ATTACHMENTS) {
+    return { error: `Maksimal ${MAX_ATTACHMENTS} lampiran per pesan.` };
+  }
+  const items = [];
+  for (const entry of raw) {
+    const url = String(entry?.url || '').trim();
+    if (!isHttpUrl(url)) return { error: 'Lampiran harus berupa URL https yang sah.' };
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { error: 'Lampiran harus berupa URL https yang sah.' };
+    }
+    if (isPrivateHost(parsed.hostname)) return { error: 'Lampiran tidak boleh menunjuk jaringan privat.' };
+    // Wajib berada di bucket unggahan BLEA: mencegah agen dijadikan proxy untuk
+    // menyuruh provider mengambil URL sembarangan.
+    if (!parsed.pathname.includes(ATTACHMENT_BUCKET_PATH)) {
+      return { error: 'Lampiran harus berkas yang diunggah lewat BLEA.' };
+    }
+    // Path per pengguna (migrasi 20261111000006): <user_id>/<...>. Path milik
+    // akun lain ditolak supaya tidak bisa dipakai membaca unggahan orang lain.
+    if (userId) {
+      const objectPath = decodeURIComponent(parsed.pathname.split(ATTACHMENT_BUCKET_PATH)[1] || '');
+      if (!objectPath.startsWith(`${userId}/`)) return { error: 'Lampiran bukan milik akun ini.' };
+    }
+    items.push({
+      name: String(entry?.name || 'lampiran').slice(0, 120),
+      kind: ['image', 'video', 'audio'].includes(entry?.kind) ? entry.kind : 'file',
+      type: String(entry?.type || '').slice(0, 120),
+      size: Number(entry?.size) || 0,
+      url,
+    });
+  }
+  return { items };
+}
+
+export function buildAttachmentContent(text, attachments = []) {
+  const parts = [{ type: 'text', text }];
+  for (const attachment of attachments) {
+    if (!attachment?.url) continue;
+    if (attachment.kind === 'image') {
+      parts.push({ type: 'image_url', image_url: { url: attachment.url } });
+    } else {
+      const size = attachment.size ? `, ${Math.round(attachment.size / 1024)} KB` : '';
+      parts.push({ type: 'text', text: `[Lampiran ${attachment.kind}: ${attachment.name}${size}](${attachment.url})` });
+    }
+  }
+  return parts;
+}
