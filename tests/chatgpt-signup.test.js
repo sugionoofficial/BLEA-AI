@@ -1080,3 +1080,42 @@ test('resolveOAuthRedirectUri mengikuti aturan loopback OpenAI', () => {
   assert.ok(!/localhost/.test(remote.redirect_uri));
   assert.ok(!/\/callback\?/.test(remote.redirect_uri));
 });
+
+// Deep link aplikasi: setelah kode verifikasi, OpenAI menawarkan "buka
+// aplikasi" dan halaman verifikasi berputar terus. Panduannya harus ada dan
+// harus jujur bahwa callback aplikasi (chatgpt://) tidak bisa diselesaikan
+// browser — bukan disuruh mencoba lagi.
+test('panduan handoff aplikasi menjelaskan halaman yang berputar', () => {
+  const { APP_HANDOFF_GUIDE, describeOAuthCallbackPath, summarizeAccessStorage } = globalThis.__signup;
+  assert.match(APP_HANDOFF_GUIDE.summary, /buka aplikasi/i);
+  assert.match(APP_HANDOFF_GUIDE.why, /chatgpt:\/\//);
+  assert.ok(APP_HANDOFF_GUIDE.steps.length >= 3);
+  assert.match(APP_HANDOFF_GUIDE.steps.join(' '), /Simpan aksesnya ke pool/);
+
+  // Callback otomatis hanya mungkin di 127.0.0.1; di domain publik langkahnya
+  // harus menyebut tempel URL, bukan "tunggu kembali sendiri".
+  const local = describeOAuthCallbackPath({ hostname: '127.0.0.1', port: '3000' });
+  assert.equal(local.automatic, true);
+  assert.match(local.steps.join(' '), /kembali sendiri/);
+
+  const remote = describeOAuthCallbackPath({ hostname: 'blea.ai', port: '' });
+  assert.equal(remote.automatic, false);
+  assert.match(remote.steps.join(' '), /tempel|Salin SELURUH/i);
+  assert.match(remote.redirect_uri, /^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/);
+
+  // Status penyimpanan tidak boleh mengklaim tersimpan tanpa akun tertaut.
+  assert.equal(summarizeAccessStorage({}).stored, false);
+  assert.equal(summarizeAccessStorage({ linkedCount: 2 }).stored, true);
+  assert.match(summarizeAccessStorage({ pendingCount: 1 }).text, /menunggu izin/i);
+});
+
+// OAuth harus dibuka di TAB BARU: kalau halaman BLEA digantikan, panel hilang
+// dan callback mendarat di 127.0.0.1 tanpa sesi login BLEA.
+test('beginChatGptSignIn membuka tab baru, bukan menggantikan halaman panel', async () => {
+  const { readFileSync } = await import('node:fs');
+  const client = readFileSync(new URL('../src/studio/chatgptOAuthClient.js', import.meta.url), 'utf8');
+  assert.ok(!/window\.location\.assign/.test(client), 'jangan menavigasi halaman panel ke OpenAI');
+  assert.match(client, /window\.open\(authorizeUrl, '_blank'\)/);
+  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  assert.match(panel, /beginChatGptSignIn\(\{ loginHint[^}]*tab: authTab/);
+});

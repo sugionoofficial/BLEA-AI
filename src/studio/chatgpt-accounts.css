@@ -520,3 +520,6 @@
 
 /* Langkah pemulihan saat OpenAI menampilkan "Session ended". */
 .cga-signup-session-steps { margin: 6px 0 0 18px; padding: 0; font-size: 11.5px; line-height: 1.6; }
+
+/* Panduan "buka aplikasi": penyebab halaman verifikasi berputar terus. */
+.cga-signup-apphandoff { border-color: rgba(230, 120, 110, .45); background: rgba(230, 120, 110, .07); }

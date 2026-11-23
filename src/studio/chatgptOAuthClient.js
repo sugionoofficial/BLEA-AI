@@ -108,7 +108,7 @@ export function clearPendingAttempt() {
  * Mulai login: daftarkan attempt (state/nonce/PKCE disimpan server), lalu buka
  * halaman izin OpenAI di tab yang sama. Return value hanya untuk UI.
  */
-export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '' } = {}) {
+export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '', tab = null } = {}) {
   // Port callback: pakai port halaman HANYA bila BLEA memang dibuka dari
   // 127.0.0.1 (di situ ada server yang mendengarkan, jadi callback mendarat
   // otomatis). Di domain publik tidak ada yang mendengarkan di perangkat
@@ -163,8 +163,29 @@ export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '' }
     ...(reauth ? {} : { agent_name_hint: AGENT_NAME_HINT }),
     ...(reauth && loginHint ? { login_hint: loginHint } : {}),
   });
-  window.location.assign(`${AUTHORIZE_ENDPOINT}?${params.toString()}`);
-  return { ok: true };
+  const authorizeUrl = `${AUTHORIZE_ENDPOINT}?${params.toString()}`;
+  // Dibuka di TAB BARU, bukan menggantikan halaman BLEA.
+  //
+  // Kalau `location.assign` dipakai, halaman admin hilang; callback lalu
+  // mendarat di 127.0.0.1:<port> yang tidak punya sesi login BLEA, dan
+  // pengguna tidak lagi punya panel untuk menempel URL callback. Dengan tab
+  // baru, halaman panel tetap hidup di belakang dan bisa dipakai menyelesaikan
+  // alur (terutama di domain publik, tempat callback tidak bisa otomatis).
+  // Tab yang sudah dibuka pemanggil (sebelum `await`) lebih dulu dipakai:
+  // `window.open` setelah await dianggap bukan bagian dari klik pengguna dan
+  // diblokir popup blocker.
+  let opened = tab || null;
+  if (!opened) {
+    try { opened = window.open(authorizeUrl, '_blank'); } catch { opened = null; }
+  } else {
+    try { opened.location.replace(authorizeUrl); } catch { opened = null; }
+  }
+  if (!opened) {
+    // Popup diblokir: beri URL-nya supaya bisa dibuka manual, jangan diam.
+    return { ok: true, authorize_url: authorizeUrl, opened: false };
+  }
+  try { opened.opener = null; } catch { /* lintas-origin: tidak apa-apa */ }
+  return { ok: true, authorize_url: authorizeUrl, opened: true };
 }
 
 // Host ID stabil per browser (bukan identitas pengguna): OpenAI memakainya untuk

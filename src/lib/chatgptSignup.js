@@ -668,3 +668,80 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
     email_matches: false,
   };
 }
+
+/**
+ * Kenapa alur daftar berakhir dengan "buka aplikasi" lalu halaman macet.
+ *
+ * Gejala nyata yang dilaporkan: kode verifikasi ditempel → OpenAI menampilkan
+ * tombol "buka aplikasi" (deep link `chatgpt://…`) dan tidak ada pilihan lain →
+ * diklik → kembali ke halaman verifikasi yang berputar tanpa hasil.
+ *
+ * Sebabnya struktural, bukan bug kecil: sesi yang dimulai dari
+ * `chatgpt.com/auth/login_with?callback_path=/` ditujukan untuk **aplikasi
+ * ChatGPT**, bukan untuk web. Begitu verifikasi selesai, OpenAI mengembalikan
+ * konteks ke callback itu — dan callback `chatgpt://` tidak ada yang menangani
+ * di browser, jadi halaman berhenti di keadaan "menunggu kembali dari aplikasi".
+ *
+ * Karena itu BLEA TIDAK boleh memakai jalur daftar itu untuk menyimpan akses.
+ * Yang benar: akun diverifikasi di web (`chatgpt.com`), lalu akses diambil
+ * lewat OAuth resmi "Continue with ChatGPT" yang memakai loopback
+ * `http://127.0.0.1:<port>/auth/callback` — callback itu bisa diselesaikan.
+ */
+export const APP_HANDOFF_GUIDE = {
+  summary: 'Jangan klik “buka aplikasi” — mulai lagi dari jalur web',
+  why: 'Sesi daftar dari chatgpt.com/auth/login_with memang ditujukan untuk aplikasi ChatGPT. '
+    + 'Setelah verifikasi, OpenAI mengembalikan konteks ke callback aplikasi (chatgpt://…), '
+    + 'dan browser tidak punya penangan untuk itu — karena itu halamannya berputar terus.',
+  steps: [
+    'Kode verifikasi Anda sudah diterima OpenAI; akunnya biasanya sudah jadi. Jangan ulangi pendaftaran dengan email yang sama.',
+    'Tutup tab OpenAI yang macet (yang menampilkan tombol “buka aplikasi”).',
+    'Buka chatgpt.com di tab BARU dan login dengan email itu — pakai kode baru bila diminta. Kode baru setelah login ulang itu normal.',
+    'Kalau sudah masuk ke chat (bukan halaman verifikasi), kembali ke panel ini dan tekan “Akun sudah masuk? Simpan aksesnya ke pool”.',
+  ],
+  note: 'Jalur yang menyimpan akses adalah OAuth “Continue with ChatGPT” dengan callback 127.0.0.1 — '
+    + 'bukan cookie sesi chatgpt.com dan bukan deep link aplikasi.',
+};
+
+/**
+ * Bisakah callback OAuth “Continue with ChatGPT” diselesaikan dari halaman ini?
+ *
+ * Kalau BLEA dibuka dari domain publik, browser pengguna tidak punya apa pun di
+ * `127.0.0.1:<port>`; URL callback harus ditempel. Panel memakai ini untuk
+ * menjelaskan langkahnya SEBELUM pengguna terlanjur menekan tombol.
+ */
+export function describeOAuthCallbackPath({ hostname = '', port = '' } = {}) {
+  const info = resolveOAuthRedirectUri({ hostname, port });
+  return {
+    redirect_uri: info.redirect_uri,
+    automatic: info.auto_callback,
+    steps: info.auto_callback
+      ? ['Setelah menekan tombol, ChatGPT membuka halaman izin. Setujui, lalu Anda kembali sendiri ke BLEA dan akunnya tersimpan.']
+      : [
+        'Setelah menekan tombol, ChatGPT membuka halaman izin. Setujui di sana.',
+        `Browser akan berhenti di ${info.redirect_uri}?code=…&state=… dan halaman itu biasanya “tidak bisa diakses” — itu normal.`,
+        'Salin SELURUH alamat itu dari bilah alamat, kembali ke panel, tempel di kolom “Sudah menyetujui di ChatGPT?”, lalu tekan Selesaikan.',
+      ],
+    note: 'Callback memakai 127.0.0.1 karena OpenAI mewajibkan itu untuk klien open-source; '
+      + 'halaman BLEA tetap tidak pernah menyimpan cookie atau token ChatGPT.',
+  };
+}
+
+/** Ringkas status penyimpanan akses supaya tidak diklaim berhasil tanpa bukti. */
+export function summarizeAccessStorage({ linkedCount = 0, pendingCount = 0 } = {}) {
+  if (linkedCount > 0) {
+    return {
+      stored: true,
+      text: `${linkedCount} akun sudah punya access token tersegel di server (refresh otomatis 60 detik sebelum kedaluwarsa).`,
+    };
+  }
+  if (pendingCount > 0) {
+    return {
+      stored: false,
+      text: 'Belum ada akses yang tersimpan: OAuth masih menunggu izin. Selesaikan di halaman ChatGPT, lalu tempel URL callback.',
+    };
+  }
+  return {
+    stored: false,
+    text: 'Belum ada akses yang tersimpan. Akun yang baru diverifikasi belum otomatis masuk pool — aksesnya diambil lewat OAuth “Continue with ChatGPT”.',
+  };
+}

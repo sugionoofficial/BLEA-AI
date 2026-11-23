@@ -5,6 +5,7 @@ import {
   ClipboardCopy,
   Download,
   ExternalLink,
+  Link2,
   Loader2,
   MailSearch,
   RefreshCw,
@@ -20,7 +21,13 @@ import {
   newLoggingId,
   SIGNUP_STEP_META,
 } from './chatgptSignupClient';
-import { buildAutofillBookmarklet, sessionCheckGuide } from '../lib/chatgptSignup';
+import {
+  APP_HANDOFF_GUIDE,
+  buildAutofillBookmarklet,
+  describeOAuthCallbackPath,
+  sessionCheckGuide,
+  summarizeAccessStorage,
+} from '../lib/chatgptSignup';
 import { beginChatGptSignIn } from './chatgptOAuthClient';
 
 const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi'];
@@ -78,6 +85,7 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [codeExpired, setCodeExpired] = useState(false);
   const [codeNote, setCodeNote] = useState('');
   const [codeUnverified, setCodeUnverified] = useState(false);
+  const [linkUrl, setLinkUrl] = useState('');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -157,14 +165,34 @@ export function ChatGptSignupPanel({ onVerified }) {
     setLinking(true);
     setError('');
     setNotice('');
-    const res = await beginChatGptSignIn({ loginHint: email.trim().toLowerCase() });
+    // Tab OAuth dibuka SEBELUM await (popup blocker), supaya halaman panel
+    // tetap hidup untuk menempel URL callback setelah OpenAI mengembalikan
+    // `code`. Tanpa ini halaman panel hilang dan callback mendarat di
+    // 127.0.0.1 yang tidak punya sesi login BLEA.
+    const authTab = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+    if (authTab) authTab.opener = null;
+    let res;
+    try {
+      res = await beginChatGptSignIn({ loginHint: email.trim().toLowerCase(), tab: authTab });
+    } catch (requestError) {
+      try { authTab?.close(); } catch { /* sudah tertutup */ }
+      setLinking(false);
+      setError(String(requestError?.message || 'Tidak bisa memulai OAuth ChatGPT.'));
+      return;
+    }
+    if (res.ok && res.opened === false) {
+      // Popup diblokir: tampilkan URL-nya sebagai tautan, bukan gagal diam-diam.
+      setLinkUrl(res.authorize_url || '');
+      setNotice('Browser memblokir tab baru. Buka tautan "Halaman izin ChatGPT" di bawah, setujui, lalu tempel URL callback-nya di panel ini.');
+    }
     if (!res.ok) {
       setLinking(false);
       setError(res.error || 'Tidak bisa memulai OAuth ChatGPT.');
       return;
     }
-    // Berhasil = halaman dialihkan ke OpenAI, jadi tidak ada state yang bisa
-    // diperbarui lagi dari sini.
+    // Berhasil: halaman izin terbuka di tab BARU, panel tetap hidup di sini.
+    // Karena penyelesaiannya lewat tempel-URL callback, tombol kembali aktif.
+    setLinking(false);
   }
 
   async function prepare() {
@@ -470,6 +498,23 @@ export function ChatGptSignupPanel({ onVerified }) {
         </div>
       </div>
 
+      {/* Deep link aplikasi: penyebab halaman verifikasi berputar terus.
+          Sesi pendaftaran dari `auth/login_with` ditujukan untuk aplikasi
+          ChatGPT; callback-nya `chatgpt://` dan browser tidak punya penangan
+          untuk itu. Dijelaskan di sini supaya tidak diulang. */}
+      <div className="oauth-manual cga-signup-apphandoff">
+        <b><ShieldAlert size={13} /> {APP_HANDOFF_GUIDE.summary}</b>
+        <p>{APP_HANDOFF_GUIDE.why}</p>
+        <ol className="cga-signup-session-steps">
+          {APP_HANDOFF_GUIDE.steps.map((line) => <li key={line}>{line}</li>)}
+        </ol>
+        <small>{APP_HANDOFF_GUIDE.note}</small>
+        <small>{summarizeAccessStorage({
+          linkedCount: signin?.retained_client ? 1 : 0,
+          pendingCount: 0,
+        }).text}</small>
+      </div>
+
       {/* Langkah wajib saat permintaan kode verifikasi: tab OpenAI harus
           TETAP terbuka. Kalau ditutup, tautan verifikasi/kode tidak bisa
           ditempelkan dan tab yang dipulihkan dari riwayat berakhir di
@@ -490,6 +535,14 @@ export function ChatGptSignupPanel({ onVerified }) {
         </ol>
         <small>URL halaman <code>email-verification?auth_page=…</code> tidak bisa dipakai ulang: penanda itu terikat ke sesi tab yang sudah hilang.</small>
       </div>
+
+      {linkUrl && (
+        <div className="oauth-manual">
+          <b><Link2 size={13} /> Halaman izin ChatGPT</b>
+          <p><code>{linkUrl}</code></p>
+          <a href={linkUrl} target="_blank" rel="noopener noreferrer">Buka halaman izin <ExternalLink size={12} /></a>
+        </div>
+      )}
 
       {lastUrl && (
         <div className="oauth-manual">
@@ -638,6 +691,14 @@ export function ChatGptSignupPanel({ onVerified }) {
                     browser. Access token berlaku 1 jam dan diperbarui otomatis lewat refresh
                     token; BLEA tidak pernah menyimpan cookie <code>chatgpt.com</code>.
                   </small>
+                  {/* Langkah penyelesaian dijelaskan SEBELUM tombol ditekan:
+                      di domain publik callback tidak bisa diterima otomatis. */}
+                  <ol className="cga-signup-session-steps">
+                    {describeOAuthCallbackPath({
+                      hostname: typeof window === 'undefined' ? '' : window.location.hostname,
+                      port: typeof window === 'undefined' ? '' : window.location.port,
+                    }).steps.map((line) => <li key={line}>{line}</li>)}
+                  </ol>
                 </div>
               )}
               {active.note && <small>{active.note}</small>}

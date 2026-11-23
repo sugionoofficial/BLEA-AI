@@ -374,3 +374,37 @@ Dua hal penting dari kejadian ini:
 Aturan operasional yang muncul dari sini: **satu percobaan = satu tab.** Jangan
 menutup tab OpenAI selama kode verifikasi belum ditempel, dan jangan menekan
 “Siapkan & buka daftar” dua kali (dua tab = dua sesi, hanya satu yang sah).
+
+## Setelah kode verifikasi: OpenAI menawarkan “buka aplikasi”, halaman berputar
+
+Gejala yang dilaporkan: kode verifikasi ditempel → OpenAI menampilkan tombol
+**buka aplikasi** (deep link `chatgpt://…`) → diklik karena tidak ada pilihan
+lain → kembali ke halaman verifikasi dan berputar tanpa hasil.
+
+**Sebabnya struktural.** Sesi daftar dimulai dari
+`chatgpt.com/auth/login_with?callback_path=/`, dan jalur itu dipakai tombol
+“Log in / Sign up” milik **aplikasi** ChatGPT. Setelah verifikasi selesai,
+OpenAI mengembalikan konteks ke callback aplikasi (`chatgpt://…`); browser
+tidak punya penangan untuk skema itu, jadi halaman menunggu selamanya pada
+“kembali dari aplikasi”. Tidak ada `code` OAuth yang diterbitkan di jalur ini —
+jadi halaman itu **tidak bisa** menyimpan akses, apa pun yang dilakukan BLEA.
+
+### Yang benar
+
+| Langkah | Di mana | Hasil |
+|---|---|---|
+| 1. Verifikasi email | tab OpenAI (dibuka panel) | akun ChatGPT jadi |
+| 2. Jangan klik deep link | — | tutup tab yang macet |
+| 3. Login ulang di web | `chatgpt.com` di tab baru | masuk ke chat, bukan halaman verifikasi |
+| 4. Simpan akses | panel → **Akun sudah masuk? Simpan aksesnya ke pool** | OAuth `Continue with ChatGPT` |
+
+Langkah 4 sekarang membuka halaman izin di **tab baru** (`window.open`), bukan
+menggantikan halaman panel. Sebelumnya `location.assign` membuat halaman admin
+hilang; callback lalu mendarat di `127.0.0.1:<port>` yang tidak punya sesi
+login BLEA, dan pengguna tidak punya panel untuk menempel URL-nya. Di domain
+publik, callback **selalu** diselesaikan dengan menempel URL — langkahnya
+ditampilkan di panel sebelum tombol ditekan (`describeOAuthCallbackPath`).
+
+Satu hal yang tidak berubah dan tetap penting: kode verifikasi 6 digit diulang
+setiap login email biasa. Itu normal. Kode baru setelah login ulang bukan tanda
+kegagalan.
