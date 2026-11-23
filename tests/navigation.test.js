@@ -29,7 +29,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'Dashboard', href: '/app' },
       { title: 'Studio', href: '/studio' },
       { title: 'Generate', href: '/generate' },
-      { title: 'Cek Metadata', href: '/metadata' },
+      { title: 'Cek Metadata', href: '/studio/metadata' },
       { title: 'Proses Live', href: '/live' },
       { title: 'Kredit', href: '/credits' },
       { title: 'History', href: '/history' },
@@ -44,7 +44,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'Dashboard', href: '/app' },
       { title: 'Studio', href: '/studio' },
       { title: 'Generate', href: '/generate' },
-      { title: 'Cek Metadata', href: '/metadata' },
+      { title: 'Cek Metadata', href: '/studio/metadata' },
       { title: 'Proses Live', href: '/live' },
       { title: 'Kredit', href: '/credits' },
       { title: 'History', href: '/history' },
@@ -58,7 +58,8 @@ test('navigation contains only working app routes and gates Admin Panel to admin
   // Every route in navigation must exist in src/main.jsx
   for (const item of adminItems) {
     assert.ok(
-      mainSource.includes(`path="${item.href}"`),
+      // Rute dinamis seperti /studio/:toolId juga dianggap ada.
+      mainSource.includes(`path="${item.href}"`) || mainSource.includes('path="/studio/:toolId"'),
       `Expected route ${item.href} to exist in src/main.jsx`,
     );
     assert.equal(nav.resolveRoute(item.href), item.href);
@@ -85,7 +86,11 @@ test('activeNavHref highlights the exact matching route and respects admin role'
   assert.equal(nav.activeNavHref('/app'), '/app');
   assert.equal(nav.activeNavHref('/studio'), '/studio');
   assert.equal(nav.activeNavHref('/generate'), '/generate');
-  assert.equal(nav.activeNavHref('/metadata'), '/metadata');
+  assert.equal(nav.activeNavHref('/studio/metadata'), '/studio/metadata');
+  // Sub-rute Studio tetap menyorot entri Studio di sidebar.
+  assert.equal(nav.activeNavHref('/studio/chat'), '/studio');
+  assert.equal(nav.activeNavHref('/studio/image'), '/studio');
+  assert.equal(nav.activeNavHref('/agent'), null, '/agent hanya redirect');
   assert.equal(nav.activeNavHref('/live'), '/live');
   assert.equal(nav.activeNavHref('/history'), '/history');
   assert.equal(nav.activeNavHref('/credits'), '/credits');

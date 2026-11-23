@@ -47,7 +47,7 @@ function NavLinkItem({ item, collapsed, activeHref, onNavigate }) {
   );
 }
 
-export function DropXLayout({ children, title, description, actions, footer = true }) {
+export function DropXLayout({ children, title, description, actions, footer = true, fill = false, header = true }) {
   const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -360,8 +360,8 @@ export function DropXLayout({ children, title, description, actions, footer = tr
           </div>
         </header>
 
-        <main className="dropx-content">
-          {(title || description) && (
+        <main className={`dropx-content${fill ? ' dropx-content-fill' : ''}`}>
+          {header && (title || description) && (
             <div className="dropx-page-header">
               <div>
                 <nav className="dropx-breadcrumb">

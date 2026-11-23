@@ -1,5 +1,4 @@
-import { Link, Navigate, useParams } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { Navigate, useParams } from 'react-router-dom';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { GenerateImagePanel } from '../auth/GenerateImagePanel';
 import { GenerateMusicPanel } from '../auth/GenerateMusicPanel';
@@ -7,22 +6,45 @@ import { MetadataCheckPage } from '../auth/MetadataCheckPage';
 import { AIStudio } from '../auth/AIStudio';
 import { AgentPage } from '../agent/AgentPage';
 import { findStudioTool } from './toolCatalog';
+import { StudioRoom } from './StudioRoom';
 import './studio-home.css';
 
 /**
- * Satu ruang kerja per tool. Komponen yang dipakai adalah komponen yang sudah
- * ada (bukan salinan), supaya perbaikan di Generate/Metadata/Agent otomatis ikut
- * di Studio dan tidak ada dua versi form yang harus dijaga sinkron.
+ * Satu ruang kerja per tool.
  *
- * Tool yang belum punya mesin (video saat provider putus) TIDAK dipalsukan:
- * halamannya menjelaskan status dan mengarahkan ke ruang yang berfungsi.
+ * Aturan yang berlaku untuk semua ruang:
+ *   1. TIDAK ada navigasi di dalam. Shell aplikasi (sidebar DropX) sudah
+ *      menyediakannya; menambah sidebar/breadcrumb kedua membuat halaman terasa
+ *      seperti aplikasi di dalam aplikasi. Yang tersisa hanya satu bilah judul
+ *      tipis dengan tautan kembali ke daftar alat.
+ *   2. Memakai komponen yang sudah ada (bukan salinan), supaya perbaikan di
+ *      Generate/Metadata/Agent otomatis ikut ke Studio.
+ *   3. Tool yang belum punya mesin tidak dipalsukan: halamannya menjelaskan
+ *      status dan mengarahkan ke ruang yang berfungsi.
  */
 const ROOMS = {
-  chat: { render: () => <AIStudio /> },
-  agent: { render: () => <AgentPage /> },
-  image: { render: () => <GenerateImagePanel />, note: 'Model gambar dikunci admin; biaya dipotong dari kredit BLEA.' },
-  music: { render: () => <GenerateMusicPanel />, note: 'Musik dan vokal bergantung pada provider yang terhubung.' },
-  metadata: { render: () => <MetadataCheckPage /> },
+  chat: {
+    render: () => <AIStudio />,
+    fill: true,
+    note: 'Percakapan, penulisan, dan riwayat. Model chat yang aktif dipakai di sini.',
+  },
+  agent: {
+    render: () => <AgentPage />,
+    fill: true,
+    note: 'Agen bertahap: riset web, baca URL, muat skill, dan usulkan klip.',
+  },
+  image: {
+    render: () => <GenerateImagePanel />,
+    note: 'Model gambar dikunci admin; biaya dipotong dari kredit BLEA.',
+  },
+  music: {
+    render: () => <GenerateMusicPanel />,
+    note: 'Musik dan vokal bergantung pada provider yang terhubung.',
+  },
+  metadata: {
+    render: () => <MetadataCheckPage />,
+    note: 'Pindai lalu bersihkan metadata buatan AI tanpa kehilangan kualitas gambar.',
+  },
 };
 
 export function StudioRoomPage() {
@@ -31,40 +53,33 @@ export function StudioRoomPage() {
   if (!tool) return <Navigate to="/studio" replace />;
 
   const room = ROOMS[tool.id];
-  if (!room) {
-    return (
-      <DropXLayout
-        title={tool.label}
-        description={tool.description}
-        actions={<Link className="studio-home-connection" to="/studio"><ArrowLeft size={13} /> Semua alat</Link>}
-      >
-        <div className="studio-home">
-          <section className="studio-home-hero">
-            <span className="studio-home-badge">{tool.group}</span>
-            <h1>{tool.label} belum bisa dijalankan dari Studio.</h1>
-            <p>
-              {tool.note || 'Alat ini belum punya mesin di server.'} Statusnya
-              {' '}<b>{tool.status === 'degraded' ? 'terbatas' : 'segera'}</b>, jadi halaman ini
-              sengaja tidak menampilkan form yang pasti gagal.
-            </p>
-            <p>
-              Yang sudah berfungsi dan bisa dipakai sekarang: buat gambar, chat, agen otonom,
-              klip + subtitle, dan pemindai metadata.
-            </p>
-            <Link className="studio-home-connection" to="/studio"><ArrowLeft size={13} /> Pilih alat lain</Link>
-          </section>
-        </div>
-      </DropXLayout>
-    );
-  }
 
+  // Shell aplikasi tetap dipakai untuk sidebar + header global, tetapi header
+  // halaman dari DropXLayout dimatikan (title kosong) karena StudioRoom punya
+  // bilah judulnya sendiri yang lebih ringkas.
   return (
-    <DropXLayout
-      title={tool.label}
-      description={room.note || tool.description}
-      actions={<Link className="studio-home-connection" to="/studio"><ArrowLeft size={13} /> Semua alat</Link>}
-    >
-      {room.render()}
+    <DropXLayout footer={false} header={false} fill={Boolean(room?.fill)}>
+      {room ? (
+        <StudioRoom tool={tool} note={room.note}>{room.render()}</StudioRoom>
+      ) : (
+        <StudioRoom tool={tool}>
+          <div className="studio-home">
+            <section className="studio-home-hero">
+              <span className="studio-home-badge">{tool.group}</span>
+              <h1>{tool.label} belum bisa dijalankan dari Studio.</h1>
+              <p>
+                {tool.note || 'Alat ini belum punya mesin di server.'} Statusnya
+                {' '}<b>{tool.status === 'degraded' ? 'terbatas' : 'segera'}</b>, jadi halaman ini
+                sengaja tidak menampilkan form yang pasti gagal.
+              </p>
+              <p>
+                Yang sudah berfungsi sekarang: buat gambar, chat, agen otonom, klip + subtitle,
+                dan pemindai metadata.
+              </p>
+            </section>
+          </div>
+        </StudioRoom>
+      )}
     </DropXLayout>
   );
 }

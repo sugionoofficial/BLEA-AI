@@ -5,7 +5,6 @@ import {
   Clapperboard, Globe, Image as ImageIcon, ListChecks, Loader2, Music, Paperclip, Send, Sparkles,
   Square, Trash2, Video, Wrench, X,
 } from 'lucide-react';
-import { DropXLayout } from '../dropx/DropXLayout';
 import { fetchEnabledModelItems } from '../api/unorouter';
 import { fetchAgentSkills, runAgentTurn } from '../agent/agentClient';
 import { resolveAgentModel } from '../agent/modelRouting';
@@ -439,22 +438,18 @@ export function AgentPage() {
     setPinnedSkill((current) => (current === skillId ? '' : skillId));
   }
 
+  // Tanpa DropXLayout: judul dan tombol aksi dipindah ke bilah alat sendiri.
   return (
-    <DropXLayout
-      title="Agen"
-      description="Satu agen untuk mengerjakan tugas: menulis, menganalisis, menelusuri sumber, dan memuat panduan skill."
-      actions={(
-        <div className="agent-head-actions">
-          <span className="agent-model-note">
-            <Cpu size={12} /> {activeModelMeta.model || 'belum ada model'}
-            {lastCredits > 0 && <em> · {lastCredits} kredit/giliran</em>}
-          </span>
-          <button type="button" className="agent-ghost-btn" onClick={clearThread} disabled={!messages.length && !running}>
-            <Trash2 size={13} /> Bersihkan
-          </button>
-        </div>
-      )}
-    >
+    <div className="agent-page">
+      <div className="agent-toolbar">
+        <span className="agent-model-note">
+          <Cpu size={12} /> {activeModelMeta.model || 'belum ada model'}
+          {lastCredits > 0 && <em> · {lastCredits} kredit/giliran</em>}
+        </span>
+        <button type="button" className="agent-ghost-btn" onClick={clearThread} disabled={!messages.length && !running}>
+          <Trash2 size={13} /> Bersihkan
+        </button>
+      </div>
       <div className="agent-layout">
         <main className="agent-panel">
           <div className="agent-thread">
@@ -693,6 +688,6 @@ export function AgentPage() {
           </section>
         </aside>
       </div>
-    </DropXLayout>
+    </div>
   );
 }

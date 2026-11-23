@@ -39,7 +39,7 @@ export const navigation = [
       },
       {
         title: 'Cek Metadata',
-        href: '/metadata',
+        href: '/studio/metadata',
         icon: FileSearch2,
         description: 'Pindai & bersihkan metadata buatan AI dari gambar/video',
         keywords: ['metadata', 'ai', 'exif', 'xmp', 'c2pa', 'clean', 'hapus', 'scan', 'gambar', 'video'],
@@ -133,12 +133,15 @@ export function resolveRoute(href) {
 }
 
 export function activeNavHref(pathname, { isAdmin = false } = {}) {
-  for (const group of getNavigation({ isAdmin })) {
-    for (const item of group.items) {
-      if (resolveRoute(item.href) === pathname) {
-        return item.href;
-      }
-    }
+  const items = getNavigation({ isAdmin }).flatMap((group) => group.items);
+  // Cocok persis dulu: /generate harus menyorot Generate, bukan Studio.
+  for (const item of items) {
+    if (resolveRoute(item.href) === pathname) return item.href;
+  }
+  // Lalu sub-rute: /studio/chat, /studio/metadata, /studio/image semuanya
+  // masih bagian dari Studio, jadi entri sidebar Studio tetap tersorot.
+  for (const item of items) {
+    if (pathname.startsWith(`${item.href}/`)) return item.href;
   }
   return null;
 }

@@ -26,7 +26,6 @@ import {
   startMetadataClean,
   withDownloadParam,
 } from '../api/generation';
-import { DropXLayout } from '../dropx/DropXLayout';
 import { formatCredits } from '../lib/formatCredits';
 import {
   METADATA_MAX_FILE_BYTES,
@@ -585,11 +584,9 @@ export function MetadataCheckPage() {
   const cleanedPreviewSrc = localCleanUrl || cleanResult?.job?.result_url || previewUrl;
   const showAiStamp = Boolean(scanResult?.aiDetected) && phase !== 'cleaned';
 
+  // Tanpa DropXLayout: navigasi sudah ada di shell aplikasi.
   return (
-    <DropXLayout
-      title="Cek Metadata AI"
-      description="Pindai gambar atau video dengan model AI (Cloudflare lebih dulu, lalu fallback ke model vision provider lain) untuk membaca visual media & seluruh tag metadata nama model AI, lalu bersihkan secara lossless. Bila semua kuota model habis, pembersihan metadata tetap berjalan tanpa AI."
-    >
+    <div className="meta-page-wrap">
       <div className="meta-page">
         <section className="meta-hero">
           <div className="meta-hero-main">
@@ -1026,7 +1023,7 @@ export function MetadataCheckPage() {
           </section>
         </div>
       </div>
-    </DropXLayout>
+    </div>
   );
 }
 
