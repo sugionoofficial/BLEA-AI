@@ -8,6 +8,18 @@ export const EDGE_BASE = '/api';
 // tengah sesi.
 export const ACCOUNT_BLOCKED_EVENT = 'blea:account-blocked';
 export const ACCOUNT_BLOCKED_CODES = ['account_suspended', 'account_banned'];
+// Header isolasi tool Studio. Dipisah ke fungsi kecil supaya tidak ada
+// ketergantungan melingkar ke src/studio.
+function studioToolHeader() {
+  if (typeof window === 'undefined') return {};
+  const match = /^\/studio\/([a-z0-9-]+)/i.exec(window.location.pathname || '');
+  if (!match) return {};
+  let id = match[1].toLowerCase();
+  if (id === 'chatgpt-accounts') return {};
+  if (id === 'connection') id = 'connect-ai';
+  return { 'x-blea-studio-tool': id };
+}
+
 export const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_0M0DMfjajnpk6weWldy0iQ_lrzyuXTz';
 
 export async function getAccessToken() {
@@ -33,6 +45,10 @@ export async function edgeRequest(path, body) {
         'content-type': 'application/json',
         apikey: PUBLISHABLE_KEY,
         Authorization: `Bearer ${token}`,
+        // Ruang Studio yang sedang dibuka. Worker memakai header ini untuk
+        // menolak panggilan lintas-tool (mis. ruang gambar memanggil /api/video).
+        // Kosong di luar /studio/*, jadi /generate dan /history tidak berubah.
+        ...studioToolHeader(),
       },
       body: JSON.stringify(body ?? {}),
     });

@@ -25,6 +25,8 @@ const TempMailPage = lazy(() => import('./auth/TempMailPage').then((module) => (
 const StudioPage = lazy(() => import('./studio/StudioPage').then((module) => ({ default: module.StudioPage })));
 const StudioRoomPage = lazy(() => import('./studio/StudioRoomPage').then((module) => ({ default: module.StudioRoomPage })));
 const ConnectionPage = lazy(() => import('./studio/ConnectionPage').then((module) => ({ default: module.ConnectionPage })));
+const LibraryPage = lazy(() => import('./studio/LibraryPage').then((module) => ({ default: module.LibraryPage })));
+const ChatGptAccountsPage = lazy(() => import('./studio/ChatGptAccountsPage').then((module) => ({ default: module.ChatGptAccountsPage })));
 import './dropx/dropx.css';
 import './auth/studio.css';
 import './agent/agent.css';
@@ -65,6 +67,7 @@ function App() {
                 dan /studio/agent adalah komponen lama, tidak disalin. */}
             <Route path="/studio" element={<StudioErrorBoundary><StudioPage /></StudioErrorBoundary>} />
             <Route path="/studio/connection" element={<StudioErrorBoundary><ConnectionPage /></StudioErrorBoundary>} />
+            <Route path="/studio/library" element={<StudioErrorBoundary><LibraryPage /></StudioErrorBoundary>} />
             <Route path="/studio/:toolId" element={<StudioErrorBoundary><StudioRoomPage /></StudioErrorBoundary>} />
             {/* URL lama tetap hidup supaya tautan/Bookmark tidak 404. Keduanya
                 diarahkan ke ruang Studio yang memakai shell navigasi yang sama. */}
@@ -76,6 +79,9 @@ function App() {
               <Route path="/admin/freebeat-oauth" element={<AdminPage initialTab="freebeat-oauth" />} />
               <Route path="/admin/freebeat" element={<FreebeatPage />} />
               <Route path="/tempmail" element={<TempMailPage />} />
+              {/* Pool akun ChatGPT manual: halaman admin sendiri, sejajar
+                  dengan Freebeat MCP dan TempMail. */}
+              <Route path="/studio/chatgpt-accounts" element={<StudioErrorBoundary><ChatGptAccountsPage /></StudioErrorBoundary>} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -49,7 +49,7 @@ test('katalog tool: id unik, tujuan di /studio, status sah, skill disebut', () =
 
 test('toolsByGroup menjaga urutan grup dan tidak menghilangkan tool', () => {
   const groups = toolsByGroup();
-  assert.deepEqual(groups.map((group) => group.group), ['Teks', 'Visual', 'Audio', 'Video', 'Utilitas', 'Koneksi']);
+  assert.deepEqual(groups.map((group) => group.group), ['Teks', 'Visual', 'Audio', 'Video', 'Utilitas', 'Koneksi', 'Hasil']);
   assert.equal(groups.reduce((sum, group) => sum + group.tools.length, 0), STUDIO_TOOLS.length);
   assert.equal(findStudioTool('image').label, 'Buat Gambar');
   assert.equal(findStudioTool('tidak-ada'), null);
@@ -122,4 +122,17 @@ test('ruang kerja tidak punya navigasi sendiri (tanpa shell kedua)', async () =>
     assert.equal(/<DropXLayout|import \{ DropXLayout \}/.test(source), false,
       `${file} tidak boleh membungkus dirinya dengan layout kedua`);
   }
+});
+
+test('beranda Studio menjelaskan alasan tool dipisah', async () => {
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { StudioPage } = await vite.ssrLoadModule('/src/studio/StudioPage.jsx');
+  const html = renderToStaticMarkup(
+    React.createElement(MemoryRouter, null,
+      React.createElement(AuthProvider, { initialSession: null }, React.createElement(StudioPage))),
+  );
+  assert.ok(html.includes('Kenapa satu alat = satu fungsi'));
+  assert.ok(html.includes('Biaya kredit berbeda per tool'));
+  assert.ok(html.includes('Tahan prompt injection'));
 });

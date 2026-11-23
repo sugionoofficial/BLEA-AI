@@ -103,3 +103,5 @@
   .studio-connection { padding: 18px 14px 30px; border-radius: 20px; }
   .studio-connection-item { flex-wrap: wrap; }
 }
+
+.studio-connection-links { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; }

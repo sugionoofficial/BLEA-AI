@@ -28,6 +28,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     [
       { title: 'Dashboard', href: '/app' },
       { title: 'Studio', href: '/studio' },
+      { title: 'Hasil', href: '/studio/library' },
       { title: 'Generate', href: '/generate' },
       { title: 'Cek Metadata', href: '/studio/metadata' },
       { title: 'Proses Live', href: '/live' },
@@ -43,6 +44,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     [
       { title: 'Dashboard', href: '/app' },
       { title: 'Studio', href: '/studio' },
+      { title: 'Hasil', href: '/studio/library' },
       { title: 'Generate', href: '/generate' },
       { title: 'Cek Metadata', href: '/studio/metadata' },
       { title: 'Proses Live', href: '/live' },
@@ -50,6 +52,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'History', href: '/history' },
       { title: 'Admin Panel', href: '/admin' },
       { title: 'Freebeat MCP', href: '/admin/freebeat' },
+      { title: 'Akun ChatGPT', href: '/studio/chatgpt-accounts' },
       { title: 'TempMail', href: '/tempmail' },
       { title: 'Setting', href: '/settings' },
     ],
