@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import {
   SIGNUP_CSRF_URL,
+  SIGNUP_ENTRY_PATH,
+  SIGNUP_FORM_ORIGIN,
   SIGNUP_FORM_URL,
   SIGNUP_PAGE_URL,
   SIGNUP_REQUEST_URL,
@@ -10,6 +12,7 @@ import {
   buildLegacySignupUrl,
   buildSigninBootstrap,
   buildSignupUrl,
+  checkSessionState,
   isPlusAddress,
   scoreVerificationMessage,
   signupConfig,
@@ -40,7 +43,7 @@ function request(path, { method = 'GET', body, token = 'admin-jwt' } = {}) {
   });
 }
 
-test('URL yang dibuka adalah formulir Auth0 OpenAI, bukan endpoint POST NextAuth', () => {
+test('URL yang dibuka memuat formulir daftar OpenAI, bukan endpoint POST NextAuth', () => {
   const url = new URL(buildSignupUrl('sugionoofficial88+1@gmail.com', { authSessionLoggingId: '3aa1b9d5-3741-4c50-abb1-498284787a85' }));
   // Regresi bug nyata: buildSignupUrl pernah menghasilkan
   // https://chatgpt.com/api/auth/signin/openai?... Endpoint itu POST NextAuth
@@ -50,9 +53,20 @@ test('URL yang dibuka adalah formulir Auth0 OpenAI, bukan endpoint POST NextAuth
   assert.ok(!url.pathname.includes('/api/auth/signin'), 'endpoint POST tidak boleh dibuka dengan GET');
   // Regresi kedua (laporan nyata): chatgpt.com/auth/login berakhir di error
   // "tidak dapat menyiapkan pemuatan ini" dan, setelah cookie dihapus, langsung
-  // melempar tab ke beranda tanpa formulir sama sekali.
-  assert.equal(`${url.origin}${url.pathname}`, SIGNUP_FORM_URL);
-  assert.equal(url.search, '', 'formulir Auth0 tidak boleh diberi parameter karangan');
+  // melempar tab ke beranda tanpa formulir.
+  // Regresi ketiga (kesalahan saya di #196): auth.openai.com/log-in tanpa
+  // cookie menampilkan "Sesi Anda telah berakhir", bukan formulir.
+  assert.equal(`${url.origin}${url.pathname}`, `${SIGNUP_FORM_ORIGIN}${SIGNUP_ENTRY_PATH}`);
+  assert.equal(`${url.origin}${url.pathname}`, 'https://chatgpt.com/auth/login_with');
+  // `callback_path=/` harus LITERAL: versi ter-encode (%2F) menghasilkan 500.
+  assert.ok(url.href.startsWith('https://chatgpt.com/auth/login_with?callback_path=/'), url.href);
+  assert.ok(!url.href.includes('%2F'), 'callback_path tidak boleh di-encode');
+  // `screen_hint=signup` yang memilih halaman "Create an account"; tanpa itu
+  // yang muncul "Welcome back" (login), bukan daftar.
+  assert.equal(url.searchParams.get('screen_hint'), 'signup');
+  // `prompt=...` di jalur ini menghasilkan HTTP 500 — jangan pernah ditambah.
+  assert.equal(url.searchParams.get('prompt'), null, 'prompt mematikan halaman ini (500)');
+  assert.equal(url.searchParams.get('login_hint'), null, 'login_hint tidak dijanjikan apa pun');
   assert.ok(!/password|csrfToken|cookie/i.test(url.toString()), 'URL tidak boleh membawa kredensial');
 
   // URL lama tetap bisa dibangun (dokumentasi/rujukan), tetapi bukan tombol utama.
@@ -64,6 +78,8 @@ test('URL yang dibuka adalah formulir Auth0 OpenAI, bukan endpoint POST NextAuth
   const config = signupConfig({});
   assert.equal(config.signup_url, SIGNUP_FORM_URL);
   assert.equal(config.legacy_login_url, SIGNUP_PAGE_URL);
+  // Halaman yang salah di #196 tidak boleh kembali jadi tombol utama.
+  assert.ok(!config.signup_url.includes('auth.openai.com'), 'auth.openai.com/log-in menampilkan "sesi berakhir"');
   // login_hint TIDAK dijanjikan lagi: formulir Auth0 tidak terbukti memakainya.
   assert.equal(config.supported.login_hint, false);
   assert.equal(config.csrf_url, SIGNUP_CSRF_URL);
@@ -969,4 +985,51 @@ test('panel tidak memakai chatgpt.com/auth/login sebagai tombol utama', async ()
   // UI memakai nama tombol yang benar-benar ada di formulir OpenAI.
   assert.ok(panel.includes('Continue'));
   assert.ok(!/tekan <b>Lanjutkan<\/b>/.test(panel), 'tombol "Lanjutkan" tidak ada di formulir Auth0');
+});
+
+// Endpoint sesi: 200 + data akun berarti perangkat masih login (halaman daftar
+// akan menolak), 401 berarti bersih. Tidak ada cookie yang dibaca/disimpan.
+test('checkSessionState membedakan sesi aktif dan sesi bersih', async () => {
+  const calls = [];
+  const loggedIn = await checkSessionState({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, credentials: init?.credentials });
+      return new Response(JSON.stringify({ email: 'lama@contoh.id', id: 'u1' }), { status: 200 });
+    },
+  });
+  assert.equal(loggedIn.logged_in, true);
+  assert.equal(loggedIn.reachable, true);
+  assert.match(loggedIn.detail, /masih login/i);
+  assert.match(loggedIn.advice, /Log out/i);
+  // Cookie ikut hanya ke domain chatgpt.com, tidak ke server BLEA.
+  assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/me');
+  assert.equal(calls[0].credentials, 'include');
+
+  const clean = await checkSessionState({ fetchImpl: async () => new Response('', { status: 401 }) });
+  assert.equal(clean.logged_in, false);
+  assert.equal(clean.status, 401);
+  assert.match(clean.detail, /Tidak ada sesi aktif/i);
+
+  // Server menjawab 200 tanpa data akun -> jangan diklaim login.
+  const empty = await checkSessionState({ fetchImpl: async () => new Response(JSON.stringify({}), { status: 200 }) });
+  assert.equal(empty.logged_in, false);
+
+  // Jaringan diblokir: jangan mengklaim apa pun.
+  const blocked = await checkSessionState({ fetchImpl: async () => { throw new Error('CORS'); } });
+  assert.equal(blocked.reachable, false);
+  assert.match(blocked.detail, /gagal/i);
+
+  // Tanpa fetch sama sekali (SSR/tests) tetap aman.
+  const none = await checkSessionState({ fetchImpl: null });
+  assert.equal(none.logged_in, false);
+});
+
+// Panel harus menyediakan tombol pemeriksa sesi: inilah yang membedakan
+// masalah sesi/perangkat dari masalah URL.
+test('panel menyediakan tombol Periksa sesi ChatGPT', async () => {
+  const { readFileSync } = await import('node:fs');
+  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  assert.match(panel, /checkSessionState/);
+  assert.match(panel, /Periksa sesi ChatGPT/);
+  assert.match(panel, /cga-signup-session/);
 });

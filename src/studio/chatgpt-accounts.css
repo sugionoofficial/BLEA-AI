@@ -494,3 +494,9 @@
   background: rgba(150, 170, 255, .07);
 }
 .cga-signup-code.is-unverified .cga-signup-code-value { color: #d6ddff; }
+
+/* Pemeriksa sesi: memisahkan masalah sesi/perangkat dari masalah URL. */
+.cga-signup-session { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.cga-signup-session small { font-size: 11.5px; line-height: 1.55; }
+.cga-signup-session small.is-ok { color: #8fe5b0; }
+.cga-signup-session small.is-bad { color: #f3c67e; }
