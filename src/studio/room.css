@@ -1,0 +1,69 @@
+/* Bingkai ruang kerja Studio. Sengaja tipis: tidak ada sidebar, tidak ada
+   navigasi kedua. Token mengikuti tema DropX supaya konsisten di mode gelap
+   dan terang tanpa set warna baru. */
+
+.room {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.room-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.room-head-text { min-width: 0; }
+
+.room-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+.room-back:hover { color: var(--primary); }
+
+.room-head h1 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+}
+
+.room-head p {
+  margin: 5px 0 0;
+  max-width: 78ch;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+
+.room-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.room-body { min-width: 0; }
+
+/* Halaman chat/agent mengatur tinggi sendiri. Di dalam .room mereka harus
+   menerima tinggi sisa dari .dropx-content-fill, bukan menghitung
+   `calc(100vh - 132px)` yang meleset saat ada bilah judul. */
+.room, .room-body { flex: 1; min-height: 0; }
+.room-body { display: flex; flex-direction: column; }
+.room-body > * { flex: 1; min-height: 0; min-width: 0; }
+
+@media (max-width: 640px) {
+  .room-head { padding: 12px; }
+  .room-head h1 { font-size: 18px; }
+}

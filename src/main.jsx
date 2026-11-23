@@ -15,7 +15,6 @@ const CreditsPage = lazy(() => import('./auth/CreditsPage').then((module) => ({ 
 const HistoryPage = lazy(() => import('./auth/HistoryPage').then((module) => ({ default: module.HistoryPage })));
 const CreditHistoryPage = lazy(() => import('./auth/CreditHistoryPage').then((module) => ({ default: module.CreditHistoryPage })));
 const GeneratePage = lazy(() => import('./auth/GeneratePage').then((module) => ({ default: module.GeneratePage })));
-const MetadataCheckPage = lazy(() => import('./auth/MetadataCheckPage').then((module) => ({ default: module.MetadataCheckPage })));
 const LiveQueuePage = lazy(() => import('./auth/LiveQueuePage').then((module) => ({ default: module.LiveQueuePage })));
 const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => ({ default: module.FreebeatPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
@@ -57,7 +56,6 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/app" element={<Dashboard />} />
             <Route path="/generate" element={<GeneratePage />} />
-            <Route path="/metadata" element={<MetadataCheckPage />} />
             <Route path="/live" element={<LiveQueuePage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/credits" element={<CreditsPage />} />
@@ -68,8 +66,10 @@ function App() {
             <Route path="/studio" element={<StudioErrorBoundary><StudioPage /></StudioErrorBoundary>} />
             <Route path="/studio/connection" element={<StudioErrorBoundary><ConnectionPage /></StudioErrorBoundary>} />
             <Route path="/studio/:toolId" element={<StudioErrorBoundary><StudioRoomPage /></StudioErrorBoundary>} />
-            {/* URL lama tetap hidup supaya tautan/Bookmark tidak 404. */}
+            {/* URL lama tetap hidup supaya tautan/Bookmark tidak 404. Keduanya
+                diarahkan ke ruang Studio yang memakai shell navigasi yang sama. */}
             <Route path="/agent" element={<Navigate to="/studio/agent" replace />} />
+            <Route path="/metadata" element={<Navigate to="/studio/metadata" replace />} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />

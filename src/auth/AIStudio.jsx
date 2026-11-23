@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, History, MessageSquarePlus, Network, Paperclip, Plus, RefreshCw, Send, Slack, Sparkles, Square, Trash2, WandSparkles, X } from 'lucide-react';
-import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
 import { chatCompletionStream, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus } from '../api/unorouter';
 import { splitThinkingContent, thinkingStageLabel } from '../lib/chatStream';
@@ -971,8 +970,10 @@ export function AIStudio() {
     return () => document.removeEventListener('mousedown', close);
   }, [modelOpen]);
 
+  // Ruang kerja Studio: navigasi utama sudah disediakan shell aplikasi, jadi
+  // komponen ini tidak membungkus dirinya dalam layout kedua.
   return (
-    <DropXLayout footer={false}>
+    <>
       <div className={`studio-shell studio-ready ${mobileHistoryOpen ? 'is-history-open' : ''}`}>
         <div className="studio-sidebar">
         <div className="studio-sidebar-head-mobile">
@@ -1128,6 +1129,6 @@ export function AIStudio() {
         <div><button className="studio-cancel-button" onClick={() => setConsentApp(null)}>Batal</button><button className="studio-consent-approve" onClick={() => approveConsent(consentApp)}>Setujui &amp; Hubungkan</button></div>
       </section></div>}
       </div>
-    </DropXLayout>
+    </>
   );
 }

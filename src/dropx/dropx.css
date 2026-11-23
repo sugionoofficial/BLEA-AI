@@ -745,6 +745,21 @@
   overflow-y: auto;
 }
 
+/* Mode isi penuh: dipakai halaman yang mengatur tinggi sendiri (Studio chat,
+   Agent, ruang klip). Tanpa ini halaman chat/agent harus menghitung
+   `calc(100vh - 132px)` dan hasilnya meleset di layar kecil. */
+.dropx-content-fill {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dropx-content-fill > * {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ---------- Footer ---------- */
 .dropx-footer {
   display: flex;

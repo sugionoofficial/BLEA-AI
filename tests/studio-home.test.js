@@ -105,3 +105,21 @@ test('tema Studio: kanvas hitam + blok abu-abu gelap, varian terang terpisah', a
   assert.ok(/--studio-block: #(141416|1b1b1f)/.test(css), 'blok abu-abu');
   assert.ok(css.includes(':root:not(.dark) .studio-home'), 'harus ada varian mode terang');
 });
+
+test('ruang kerja tidak punya navigasi sendiri (tanpa shell kedua)', async () => {
+  const fs = await import('node:fs/promises');
+  const room = await fs.readFile(new URL('../src/studio/StudioRoomPage.jsx', import.meta.url), 'utf8');
+  // Shell aplikasi tetap dipakai untuk sidebar global, tetapi header halaman
+  // dimatikan supaya tidak ada judul/breadcrumb ganda.
+  assert.match(room, /header=\{false\}/);
+  const frame = await fs.readFile(new URL('../src/studio/StudioRoom.jsx', import.meta.url), 'utf8');
+  assert.equal(/dropx-sidebar|dropx-header|dropx-nav/.test(frame), false, 'ruang kerja tidak boleh punya navigasi sendiri');
+  assert.match(frame, /to="\/studio"/, 'harus ada tautan kembali ke daftar alat');
+
+  for (const file of ['../src/auth/AIStudio.jsx', '../src/agent/AgentPage.jsx', '../src/auth/MetadataCheckPage.jsx']) {
+    const source = await fs.readFile(new URL(file, import.meta.url), 'utf8');
+    // Komentar boleh menyebut namanya; yang dilarang adalah memakainya.
+    assert.equal(/<DropXLayout|import \{ DropXLayout \}/.test(source), false,
+      `${file} tidak boleh membungkus dirinya dengan layout kedua`);
+  }
+});
