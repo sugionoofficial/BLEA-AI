@@ -8,6 +8,7 @@
 // masuk ke localStorage, cookie, atau state React.
 
 import { getAccessToken } from '../api/client';
+import { parseCallbackInput } from './oauthCallbackUrl';
 
 const AUTHORIZE_ENDPOINT = 'https://auth.openai.com/api/accounts/authorize';
 const SCOPES = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
@@ -166,16 +167,22 @@ function hostId() {
 export async function finishChatGptSignIn(search = '') {
   const params = new URLSearchParams(search || (typeof window !== 'undefined' ? window.location.search : ''));
   const pending = readPendingAttempt();
-  if (!pending) {
-    return { ok: false, error: 'Sesi login tidak ditemukan di browser ini. Mulai lagi dari tombol Continue with ChatGPT.' };
-  }
   const returnedState = params.get('state') || '';
-  if (returnedState !== pending.state) {
-    return { ok: false, error: 'state OAuth tidak cocok. Login dibatalkan demi keamanan; ulangi dari awal.' };
+  if (!returnedState) {
+    return { ok: false, error: 'URL callback tidak memuat parameter state. Salin ulang URL selengkapnya dari bilah alamat browser.' };
+  }
+  // `state` dicocokkan ke baris percobaan yang tersimpan di SERVER, bukan hanya
+  // ke localStorage. Alasannya: callback mendarat di 127.0.0.1 (port browser),
+  // dan pengguna sering menyelesaikannya dari tab/domain lain (blea.ai) yang
+  // localStorage-nya berbeda. Karena PKCE verifier juga disimpan server,
+  // penukaran kode tetap sah dari perangkat mana pun milik pengguna yang sama.
+  if (pending && pending.state !== returnedState) {
+    return { ok: false, error: 'state OAuth tidak cocok dengan sesi di browser ini. Mulai lagi dari tombol Continue with ChatGPT.' };
   }
   if (params.get('error')) {
     const res = await chatGptOAuthApi.complete({
-      attempt_id: pending.attemptId,
+      ...(pending ? { attempt_id: pending.attemptId } : {}),
+      state: returnedState,
       error: params.get('error'),
       error_description: params.get('error_description') || '',
     });
@@ -185,7 +192,8 @@ export async function finishChatGptSignIn(search = '') {
   if (!code) return { ok: false, error: 'Kode otorisasi tidak ada di URL callback.' };
 
   const res = await chatGptOAuthApi.complete({
-    attempt_id: pending.attemptId,
+    ...(pending ? { attempt_id: pending.attemptId } : {}),
+    state: returnedState,
     code,
     client_id: params.get('client_id') || '',
     scope: params.get('scope') || '',
@@ -206,14 +214,7 @@ export async function finishChatGptSignIn(search = '') {
  * tidak bisa menyelesaikan login.
  */
 export async function finishChatGptSignInFromUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return { ok: false, error: 'Tempel URL callback dari browser.' };
-  let parsed;
-  try { parsed = new URL(text.includes('?') ? text : `http://127.0.0.1/?${text}`); } catch {
-    return { ok: false, error: 'URL callback tidak valid.' };
-  }
-  if (parsed.pathname && !parsed.pathname.endsWith(CALLBACK_PATH)) {
-    return { ok: false, error: `URL harus berasal dari ${CALLBACK_PATH} (alamat setelah menyetujui di ChatGPT).` };
-  }
-  return finishChatGptSignIn(`?${parsed.searchParams.toString()}`);
+  const params = parseCallbackInput(rawUrl);
+  if (!params) return { ok: false, error: 'Tempel URL callback dari browser (alamat yang memuat ?code=…&state=…).' };
+  return finishChatGptSignIn(params);
 }

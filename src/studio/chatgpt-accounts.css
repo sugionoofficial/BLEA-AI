@@ -267,3 +267,30 @@
 }
 .oauth-manual button:disabled { opacity: .5; cursor: not-allowed; }
 .oauth-manual small { font-size: 11.5px; opacity: .65; }
+
+/* Konfirmasi setelah OAuth selesai: pengguna harus tahu loginnya berhasil
+   walaupun halaman callback 127.0.0.1 tertutup/tidak bisa dibuka. */
+.oauth-success {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 12px 14px; border-radius: 12px;
+  border: 1px solid rgba(126, 226, 168, .4);
+  background: rgba(126, 226, 168, .10);
+  color: #b9f5d2; font-size: 13px; line-height: 1.5;
+}
+.oauth-success div { display: flex; flex-direction: column; gap: 3px; }
+.oauth-success b { color: #7ee2a8; }
+.oauth-success small { font-size: 11.5px; opacity: .78; }
+
+/* Tempel URL callback langsung di kartu tautan yang kedaluwarsa. */
+.oauth-inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.oauth-inline-form input {
+  flex: 1 1 240px; min-width: 0; padding: 8px 10px; border-radius: 8px;
+  font: inherit; font-size: 12px; color: inherit;
+  background: var(--surface, #0f0f11); border: 1px solid var(--border, #26262b);
+}
+.oauth-inline-form button {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600; padding: 8px 12px; border-radius: 8px;
+  border: 0; color: #fff; background: var(--primary, #6a5cff);
+}
+.oauth-inline-form button:disabled { opacity: .5; cursor: not-allowed; }

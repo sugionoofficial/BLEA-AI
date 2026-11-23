@@ -137,7 +137,25 @@ export async function createOAuthAttempt(env, user, input = {}) {
  * `capabilities`, dan akun OAuth selalu {'chat','agent'}.
  */
 export async function completeOAuthAttempt(env, user, input = {}) {
-  const attemptId = cleanText(input.attempt_id, 60);
+  let attemptId = cleanText(input.attempt_id, 60);
+  const returnedState = cleanText(input.state, 200);
+
+  // Callback bisa tiba tanpa `attempt_id` (mis. pengguna menempel URL callback
+  // dari domain/tab lain yang localStorage-nya berbeda). Dalam hal itu baris
+  // percobaan dicari lewat `state`, yang hanya berlaku 30 menit. `attempt_id`
+  // dari klien tetap divalidasi milik pengguna yang login.
+  if (!attemptId) {
+    if (!returnedState) throw fail('Sesi login tidak ditemukan. Mulai lagi dari tombol Continue with ChatGPT.', 400);
+    const found = await dbJson(env, `${TABLE}?select=id,status,created_at&user_id=eq.${encodeURIComponent(user.id)}&state=eq.${encodeURIComponent(returnedState)}&status=eq.pending&order=created_at.desc&limit=1`);
+    const row = Array.isArray(found) ? found[0] : null;
+    if (!row) {
+      throw fail('Sesi login tidak ditemukan atau sudah dipakai (berlaku 30 menit). Mulai lagi dari tombol Continue with ChatGPT.', 404);
+    }
+    if (Date.now() - Date.parse(row.created_at || 0) > 30 * 60 * 1000) {
+      throw fail('Sesi login sudah kedaluwarsa (30 menit). Mulai lagi dari tombol Continue with ChatGPT.', 400);
+    }
+    attemptId = row.id;
+  }
   if (!isOAuthLinkId(attemptId)) throw fail('attempt_id tidak valid.', 400);
   if (cleanText(input.error, 200)) {
     await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(attemptId)}`, {
@@ -291,9 +309,18 @@ export async function refreshOAuthLink(env, id) {
 /** Daftar tautan ChatGPT milik satu pengguna (tanpa token). */
 export async function listOAuthLinks(env, user) {
   const rows = await dbJson(env, `${TABLE}?select=id,status,account_email,subject,scopes,plan_usage,issued_client_id,access_expires_at,error_message,created_at,updated_at&user_id=eq.${encodeURIComponent(user.id)}&order=created_at.desc&limit=50`).catch(() => []);
-  return (Array.isArray(rows) ? rows : []).map((row) => ({
+  const now = Date.now();
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    // Percobaan `pending` yang lewat 30 menit tidak bisa diselesaikan lagi
+    // (kode otorisasi maupun server menyimpannya sementara). Ditampilkan apa
+    // adanya sebagai `expired`, supaya UI tidak terus bilang "menunggu
+    // persetujuan" padahal tidak ada yang menunggu.
+    const createdAt = Date.parse(row.created_at || 0);
+    const stale = row.status === 'pending' && Number.isFinite(createdAt) && now - createdAt > 30 * 60 * 1000;
+    return {
     id: row.id,
-    status: row.status,
+    status: stale ? 'expired' : row.status,
+    stale,
     email: row.account_email || '',
     plan_usage: row.plan_usage === true,
     scopes: Array.isArray(row.scopes) ? row.scopes : [],
@@ -302,7 +329,8 @@ export async function listOAuthLinks(env, user) {
     error: row.error_message || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
-  }));
+  };
+  });
 }
 
 /** Putuskan tautan: revoke refresh token di OpenAI, lalu hapus baris. */

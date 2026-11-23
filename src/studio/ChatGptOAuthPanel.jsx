@@ -17,6 +17,7 @@ const STATUS_META = {
   linked_identity_only: { label: 'Tersambung (izin paket tidak dicentang)', tone: 'warn' },
   denied: { label: 'Ditolak', tone: 'muted' },
   failed: { label: 'Gagal', tone: 'bad' },
+  expired: { label: 'Kedaluwarsa — ulangi login', tone: 'warn' },
 };
 
 const PLAN_LIMITS = [
@@ -153,10 +154,11 @@ export function ChatGptOAuthPanel({ onLinked }) {
         <div className="oauth-manual">
           <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
           <p>
-            OpenAI mengirim hasil login ke <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>.
-            Di perangkat itu alamat tersebut mungkin tidak terbuka — salin seluruh alamat dari bilah
-            browser (yang memuat <code>?code=…&amp;state=…</code>) dan tempel di sini. Kode ditukar
-            di server dan tidak disimpan di browser.
+            OpenAI mengirim hasil login ke <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>, dan
+            alamat itu sering berakhir sebagai halaman “tidak bisa diakses”. Salin <b>seluruh</b> alamat
+            dari bilah browser (yang memuat <code>?code=…&amp;state=…</code>) dan tempel di sini — kalau
+            tersalin sebagai <code>&amp;amp;</code>, tetap terbaca. Kode ditukar di server, tidak disimpan
+            di browser.
           </p>
           <form onSubmit={completeFromUrl}>
             <input
@@ -208,7 +210,15 @@ export function ChatGptOAuthPanel({ onLinked }) {
       </ul>
 
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
-      {notice && <p className="oauth-ok"><CircleCheck size={14} /> {notice}</p>}
+      {notice && (
+        <div className="oauth-success" role="status">
+          <CircleCheck size={16} />
+          <div>
+            <b>Tersambung.</b> {notice}
+            <small>Akun ini sekarang ikut pool untuk chat &amp; agen. Muat ulang halaman ini bila daftar akun di bawah belum berubah.</small>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="oauth-note"><Loader2 size={14} className="agent-spin" /> Memuat tautan…</p>
@@ -233,6 +243,20 @@ export function ChatGptOAuthPanel({ onLinked }) {
                   {link.access_expires_at ? ` · akses s/d ${new Date(link.access_expires_at).toLocaleString('id-ID')}` : ''}
                 </small>
                 {link.error && <small className="oauth-link-error">{link.error}</small>}
+                {link.status === 'expired' && (
+                  <form className="oauth-inline-form" onSubmit={completeFromUrl}>
+                    <input
+                      type="url"
+                      value={pasteUrl}
+                      onChange={(event) => setPasteUrl(event.target.value)}
+                      placeholder="Tempel URL callback (…?code=…&state=…)"
+                      aria-label="URL callback ChatGPT"
+                    />
+                    <button type="submit" disabled={pasteBusy || !pasteUrl.trim()}>
+                      {pasteBusy ? <Loader2 size={12} className="agent-spin" /> : <CircleCheck size={12} />} Selesaikan
+                    </button>
+                  </form>
+                )}
                 <div className="oauth-link-actions">
                   <button type="button" onClick={() => refreshLink(link.id)} disabled={busy === `refresh:${link.id}` || !link.plan_usage}>
                     {busy === `refresh:${link.id}` ? <Loader2 size={12} className="agent-spin" /> : <RefreshCw size={12} />} Refresh token
