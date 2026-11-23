@@ -103,9 +103,9 @@ export function normalizeTranscript(raw, { offsetSec = 0, maxChars = 42 } = {}) 
  * Panggil Whisper pada satu potongan audio.
  * @param {object} env Worker env (butuh binding `AI`).
  * @param {Uint8Array} audio WAV/MP3/WebM biner.
- * @param {{language?:string, offsetSec?:number}} options
+ * @param {{language?:string, offsetSec?:number, autoLanguage?:boolean}} options
  */
-export async function transcribeChunk(env, audio, { language = 'id', offsetSec = 0 } = {}) {
+export async function transcribeChunk(env, audio, { language = 'id', offsetSec = 0, autoLanguage = false } = {}) {
   if (!isWhisperAvailable(env)) {
     const err = new Error('Transkripsi tidak tersedia: binding Workers AI (env.AI) belum aktif.');
     err.status = 503;
@@ -123,16 +123,23 @@ export async function transcribeChunk(env, audio, { language = 'id', offsetSec =
     throw err;
   }
 
-  const raw = await env.AI.run(WHISPER_MODEL, {
+  const input = {
     audio: bytesToBase64(bytes),
     task: 'transcribe',
-    language: String(language || 'id').slice(0, 8),
     vad_filter: true,
-  });
+  };
+  // `language` dikosongkan = deteksi otomatis. Dipakai saat pengguna memilih
+  // "deteksi otomatis"; memaksa 'id' pada video berbahasa Inggris menghasilkan
+  // transkrip ngawur yang tidak bisa dideteksi dari outputnya.
+  if (!autoLanguage) input.language = String(language || 'id').slice(0, 8);
+
+  const raw = await env.AI.run(WHISPER_MODEL, input);
 
   // Bentuk output berbeda antar versi model; terima keduanya.
   const payload = raw?.result && !raw.segments ? raw.result : raw;
-  return normalizeTranscript(payload, { offsetSec });
+  const result = normalizeTranscript(payload, { offsetSec });
+  result.language = String(payload?.transcription_info?.language || '');
+  return result;
 }
 
 /**
@@ -142,6 +149,7 @@ export async function transcribeChunk(env, audio, { language = 'id', offsetSec =
  */
 export function mergeTranscripts(parts) {
   const segments = [];
+  let language = '';
   for (const part of parts || []) {
     for (const segment of part?.segments || []) {
       const last = segments[segments.length - 1];
@@ -149,8 +157,12 @@ export function mergeTranscripts(parts) {
       segments.push(segment);
     }
   }
+  for (const part of parts || []) {
+    if (!language && part?.language) language = String(part.language);
+  }
   return {
     segments,
     text: segments.map((segment) => segment.text).join(' ').slice(0, 40_000),
+    language,
   };
 }

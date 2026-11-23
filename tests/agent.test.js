@@ -815,7 +815,10 @@ test('AgentPage wires analysis + clip confirmation without auto-cutting', async 
 
   const panel = fs.readFileSync(new URL('../src/agent/ClipPlanPanel.jsx', import.meta.url), 'utf8');
   assert.match(panel, /trimVideoToWebm/, 'pemotongan harus di browser via mediaTrim');
-  assert.match(panel, /Potong \{selected\.size\} klip/, 'harus ada tombol konfirmasi eksplisit');
+  // Label tombol berubah sesuai opsi burn-in, jadi yang diuji: tombol yang
+  // menyebut jumlah klip dan hanya aktif saat ada yang dipilih.
+  assert.match(panel, /Potong \$\{selected\.size\} klip/, 'harus ada tombol konfirmasi eksplisit');
+  assert.match(panel, /disabled=\{working \|\| !selected\.size\}/, 'tombol harus mati tanpa pilihan');
   assert.equal(/useEffect\([^)]*cutClips/.test(panel), false, 'pemotongan tidak boleh otomatis');
 
   const analysis = fs.readFileSync(new URL('../src/lib/videoAnalysis.js', import.meta.url), 'utf8');
