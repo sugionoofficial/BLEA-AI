@@ -7,7 +7,8 @@ import {
 } from 'lucide-react';
 import { fetchEnabledModelItems } from '../api/unorouter';
 import { fetchAgentSkills, runAgentTurn } from '../agent/agentClient';
-import { resolveAgentModel } from '../agent/modelRouting';
+import { fetchStudioModels } from '../studio/studioClient';
+import { assertStudioModel, resolveAgentModel } from '../agent/modelRouting';
 import { StudioMessageBody } from '../auth/AIStudio';
 import { supabase } from '../lib/supabase';
 import { analyzeVideo, isAnalysisSupported } from '../lib/videoAnalysis';
@@ -162,6 +163,13 @@ export function AgentPage() {
   const [error, setError] = useState('');
   const [modelItems, setModelItems] = useState([]);
   const [model, setModel] = useState('');
+  // Di dalam Studio, agen memakai model ChatGPT (pool akun manual), sama seperti
+  // ruang chat — bukan katalog provider yang terdaftar di Admin Panel.
+  const [studioMode] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return /^\/studio(\/|$)/.test(window.location.pathname || '');
+  });
+  const [studioPool, setStudioPool] = useState(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [copiedId, setCopiedId] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -185,16 +193,28 @@ export function AgentPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [items, catalogResult] = await Promise.all([fetchEnabledModelItems(), fetchAgentSkills()]);
+      // Satu panggilan saja: model + status pool datang dari endpoint yang sama.
+      const studioResult = studioMode ? await fetchStudioModels({ capability: 'agent' }).catch(() => null) : null;
+      const items = studioMode
+        ? (Array.isArray(studioResult?.data?.modelItems) ? studioResult.data.modelItems : [])
+        : await fetchEnabledModelItems();
+      const catalogResult = await fetchAgentSkills();
       if (cancelled) return;
+      if (studioMode) {
+        setStudioPool({ ready: Boolean(studioResult?.data?.ready), hint: studioResult?.data?.hint || '' });
+      }
       setModelItems(items);
       if (catalogResult.ok && Array.isArray(catalogResult.data?.skills)) setSkillCatalog(catalogResult.data.skills);
       const resolved = resolveAgentModel(items, '');
       if (resolved.resolved) setModel(resolved.model);
-      else if (!items.length) setError('Belum ada model chat aktif. Admin perlu mengaktifkan model di Admin Panel → Model.');
+      else if (!items.length) {
+        setError(studioMode
+          ? 'Belum ada model ChatGPT yang siap. Admin perlu menambahkan API key di Studio → Akun ChatGPT.'
+          : 'Belum ada model chat aktif. Admin perlu mengaktifkan model di Admin Panel → Model.');
+      }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [studioMode]);
 
   useEffect(() => {
     try {
@@ -226,14 +246,21 @@ export function AgentPage() {
 
   const activeModelMeta = useMemo(() => {
     const found = modelItems.find((item) => item.id === model);
-    return { model, provider: found?.provider || 'unorouter' };
-  }, [model, modelItems]);
+    return { model, provider: found?.provider || (studioMode ? 'openai' : 'unorouter') };
+  }, [model, modelItems, studioMode]);
 
   const send = useCallback(async (text) => {
     const content = String(text ?? '').trim();
     if ((!content && !attachments.length) || running) return;
     if (!activeModelMeta.model) {
       setError('Pilih model terlebih dulu.');
+      return;
+    }
+    // Di Studio, model dari katalog provider lain ditolak di klien juga — bukan
+    // hanya di server — supaya galatnya jelas sebelum giliran dimulai.
+    const modelViolation = assertStudioModel(activeModelMeta, { studioMode });
+    if (modelViolation) {
+      setError(modelViolation.message);
       return;
     }
     if (uploading) {
@@ -444,6 +471,7 @@ export function AgentPage() {
       <div className="agent-toolbar">
         <span className="agent-model-note">
           <Cpu size={12} /> {activeModelMeta.model || 'belum ada model'}
+          {studioMode && <em className="agent-model-source">ChatGPT{studioPool?.ready === false ? ' · pool belum siap' : ''}</em>}
           {lastCredits > 0 && <em> · {lastCredits} kredit/giliran</em>}
         </span>
         <button type="button" className="agent-ghost-btn" onClick={clearThread} disabled={!messages.length && !running}>

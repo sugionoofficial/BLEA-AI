@@ -53,6 +53,11 @@ export const STUDIO_TOOL_CAPABILITIES = {
 // Peta rute API → kapabilitas. Prefix terpanjang menang, supaya
 // /api/agent/transcribe tidak dianggap bagian dari kapabilitas `agent`.
 const API_CAPABILITY_RULES = [
+  // Media Studio lewat pool akun ChatGPT. Seedikit mungkin: prefix `studio/*`
+  // hanya boleh dipanggil ruang yang kapabilitasnya cocok, jadi ruang chat
+  // tidak bisa menembak generasi video.
+  ['studio/image', 'image'],
+  ['studio/video', 'video'],
   ['agent/transcribe', 'audio'],
   ['agent/skills', 'agent'],
   ['agent', 'agent'],

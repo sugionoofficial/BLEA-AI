@@ -5,6 +5,7 @@ import { GenerateMusicPanel } from '../auth/GenerateMusicPanel';
 import { MetadataCheckPage } from '../auth/MetadataCheckPage';
 import { AIStudio } from '../auth/AIStudio';
 import { AgentPage } from '../agent/AgentPage';
+import { StudioVideoRoom } from './StudioVideoRoom';
 import { findStudioTool } from './toolCatalog';
 import { StudioRoom } from './StudioRoom';
 import './studio-home.css';
@@ -35,7 +36,11 @@ const ROOMS = {
   },
   image: {
     render: () => <GenerateImagePanel />,
-    note: 'Model gambar dikunci admin; biaya dipotong dari kredit BLEA.',
+    note: 'Gambar dibuat lewat pool akun ChatGPT (gpt-image-1). Kuota akun, bukan kredit BLEA.',
+  },
+  video: {
+    render: () => <StudioVideoRoom />,
+    note: 'Video dibuat lewat pool akun ChatGPT (Sora). Kuota akun, bukan kredit BLEA.',
   },
   music: {
     render: () => <GenerateMusicPanel />,

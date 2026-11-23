@@ -58,3 +58,32 @@ export async function deleteChatGptAccount(id) {
 export async function testChatGptAccount(id) {
   return request('/chatgpt-accounts/test', { method: 'POST', body: { id }, tool: '' });
 }
+
+// ---- Model ChatGPT untuk Studio ----
+// Studio memakai model OpenAI (pool akun manual), bukan katalog provider yang
+// terdaftar di Admin Panel. Endpoint ini terpisah dari /api/enabled-models
+// supaya keduanya tidak saling mengubah.
+export async function fetchStudioModels({ capability = 'chat' } = {}) {
+  return request('/studio/models', { method: 'POST', body: { capability }, tool: '' });
+}
+
+export async function pingStudioModels() {
+  return request('/studio/ping', { method: 'POST', body: {}, tool: '' });
+}
+
+// ---- Generasi media lewat pool akun ChatGPT ----
+export async function fetchStudioImageConfig() {
+  return request('/studio/image/config', { method: 'POST', body: {} });
+}
+export async function generateStudioImage(payload) {
+  return request('/studio/image/generate', { method: 'POST', body: payload });
+}
+export async function fetchStudioVideoConfig() {
+  return request('/studio/video/config', { method: 'POST', body: {} });
+}
+export async function generateStudioVideo(payload) {
+  return request('/studio/video/generate', { method: 'POST', body: payload });
+}
+export async function fetchStudioVideoStatus(id) {
+  return request('/studio/video/status', { method: 'POST', body: { id } });
+}

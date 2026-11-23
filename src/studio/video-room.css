@@ -1,0 +1,51 @@
+/* Ruang video Studio (Sora lewat pool akun ChatGPT). */
+.studio-video { display: flex; flex-direction: column; gap: 14px; padding: 4px 2px 24px; }
+.studio-video-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-radius: 12px; font-size: 13px;
+  border: 1px solid var(--border, #26262b); background: var(--surface-2, #141416);
+}
+.studio-video-banner.is-error { border-color: #6b2a2a; color: #ffb4b4; }
+.studio-video-banner a { color: var(--primary, #8b8bff); font-weight: 600; text-decoration: none; }
+.studio-video-form {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 16px; border-radius: 16px;
+  border: 1px solid var(--border, #26262b); background: var(--surface, #0f0f11);
+}
+.studio-video-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.studio-video-row .studio-video-field { flex: 1 1 140px; }
+.studio-video-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.studio-video-field > span { opacity: .75; font-weight: 600; }
+.studio-video-field select,
+.studio-video-field textarea {
+  width: 100%; padding: 9px 11px; border-radius: 10px; font: inherit; font-size: 13px;
+  color: inherit; background: var(--surface-2, #141416);
+  border: 1px solid var(--border, #26262b);
+}
+.studio-video-field textarea { resize: vertical; line-height: 1.5; }
+.studio-video-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.studio-video-submit {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 16px; border-radius: 10px; border: 0; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600; color: #fff;
+  background: var(--primary, #6a5cff);
+}
+.studio-video-submit:disabled { opacity: .5; cursor: not-allowed; }
+.studio-video-hint { font-size: 12px; opacity: .65; }
+.studio-video-job {
+  padding: 14px 16px; border-radius: 16px; display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--border, #26262b); background: var(--surface-2, #141416);
+}
+.studio-video-job header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.studio-video-job header b { display: inline-flex; align-items: center; gap: 6px; }
+.studio-video-job header button {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  font: inherit; font-size: 12px; padding: 5px 9px; border-radius: 8px;
+  color: inherit; background: transparent; border: 1px solid var(--border, #26262b);
+}
+.studio-video-prompt { font-size: 13px; line-height: 1.5; margin: 0; white-space: pre-wrap; }
+.studio-video-job small { font-size: 11.5px; opacity: .7; }
+.studio-video-player { width: 100%; max-width: 520px; border-radius: 12px; background: #000; }
+.studio-video-download { font-size: 13px; font-weight: 600; color: var(--primary, #8b8bff); text-decoration: none; }
+.studio-video-download:hover { text-decoration: underline; }
+.studio-video-error { font-size: 12.5px; color: #ffb4b4; margin: 0; }

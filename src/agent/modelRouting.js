@@ -20,6 +20,25 @@ export function resolveAgentModel(enabledModels, requestedModel = '') {
   return { model: first.id, provider: first.provider || 'unorouter', resolved: true };
 }
 
+/**
+ * Ruang Studio memakai model ChatGPT saja. Dipakai UI sebelum mengirim giliran
+ * agen: model dari katalog provider lain tidak boleh lolos ke ruang Studio,
+ * meski pengguna memaksa lewat state/URL.
+ */
+export function assertStudioModel(item, { studioMode = false } = {}) {
+  const model = String(item?.model || '').trim();
+  const provider = String(item?.provider || '').trim().toLowerCase();
+  if (!studioMode) return null;
+  if (!model) return { code: 'model_missing', message: 'Pilih model ChatGPT terlebih dulu.' };
+  if (provider && provider !== 'openai') {
+    return {
+      code: 'studio_provider_mismatch',
+      message: `Studio hanya memakai model ChatGPT (openai), bukan "${provider}".`,
+    };
+  }
+  return null;
+}
+
 export function modelLabel(item) {
   if (!item?.id) return '';
   return item.provider && item.provider !== 'unorouter' ? `${item.id} · ${item.provider}` : item.id;
