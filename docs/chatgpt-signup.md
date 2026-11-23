@@ -59,7 +59,10 @@ verifikasi, isi email, atau cookie sesi `chatgpt.com`.
 2. Buka **Studio → Akun ChatGPT**, panel *Daftar ChatGPT dengan email TempMail*.
    Kolom email sudah terisi otomatis dari alias aktif.
 3. Tekan **Siapkan & buka daftar** → tab baru berisi formulir daftar ChatGPT
-   dengan email tersebut.
+   dengan email tersebut. Tab dibuka *sebelum* permintaan ke server, karena
+   `window.open` setelah `await` diblokir popup blocker. Bila browser tetap
+   memblokir, panel menampilkan tautan **Buka di tab baru** di blok
+   "URL yang dibuka".
 4. Isi formulir di tab itu, lalu kembali dan tekan **Formulir sudah dikirim**.
 5. Tunggu email OpenAI masuk; tekan **Cari email verifikasi**. Panel menampilkan
    pesan yang cocok beserta skornya. Buka pesan itu di TempMail dan klik

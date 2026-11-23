@@ -132,3 +132,20 @@ test('/api/chatgpt-signup menolak non-admin dan aksi asing', async () => {
     globalThis.fetch = oldFetch;
   }
 });
+
+// Regresi: `window.open` setelah `await` dianggap bukan bagian dari klik
+// pengguna sehingga diblokir popup blocker — tombol utama jadi tidak melakukan
+// apa pun. Panel harus membuka tab kosong SEBELUM menunggu server.
+test('panel pendaftaran membuka tab sebelum await dan menyediakan tautan manual', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  const prepareBody = source.slice(source.indexOf('async function prepare()'), source.indexOf('async function mark('));
+  const openIndex = prepareBody.indexOf("window.open('', '_blank')");
+  const awaitIndex = prepareBody.indexOf('chatGptSignupApi.prepare(');
+  assert.ok(openIndex > -1, 'tab kosong harus dibuka lewat window.open');
+  assert.ok(awaitIndex > -1, 'prepare harus memanggil API');
+  assert.ok(openIndex < awaitIndex, 'window.open harus dipanggil sebelum await, bukan sesudahnya');
+  assert.ok(!/await load\(\);\s*if \(url\) window\.open/.test(prepareBody), 'pola lama (open setelah await) tidak boleh kembali');
+  // Jalan keluar bila popup diblokir keras.
+  assert.ok(source.includes('Buka di tab baru'), 'harus ada tautan manual bila tab baru diblokir');
+});

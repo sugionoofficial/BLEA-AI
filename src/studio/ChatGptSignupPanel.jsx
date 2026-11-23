@@ -76,9 +76,26 @@ export function ChatGptSignupPanel({ onVerified }) {
     setError('');
     setNotice('');
     setCandidates([]);
-    const res = await chatGptSignupApi.prepare(email, newLoggingId());
+    // Tab harus dibuka SEBELUM `await`: window.open setelah await dianggap
+    // bukan bagian dari klik pengguna dan diblokir popup blocker (Chrome,
+    // Safari, Firefox). `noopener` membuat window.open mengembalikan null,
+    // jadi referensinya diambil tanpa `noopener` lalu opener-nya dinolkan.
+    const pendingTab = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+    if (pendingTab) pendingTab.opener = null;
+    const closePendingTab = () => { try { pendingTab?.close(); } catch { /* sudah tertutup */ } };
+
+    let res;
+    try {
+      res = await chatGptSignupApi.prepare(email, newLoggingId());
+    } catch (requestError) {
+      closePendingTab();
+      setBusy('');
+      setError(String(requestError?.message || 'URL pendaftaran tidak bisa disiapkan.'));
+      return;
+    }
     setBusy('');
     if (!res.ok) {
+      closePendingTab();
       setError(res.data?.error || 'URL pendaftaran tidak bisa disiapkan.');
       return;
     }
@@ -88,8 +105,14 @@ export function ChatGptSignupPanel({ onVerified }) {
     setNotice(res.data?.plus_address
       ? 'URL disiapkan, tetapi alamat ini memakai +tag. Sebagian formulir OpenAI menolak tanda +; siapkan alamat TempMail tanpa + bila pendaftaran ditolak.'
       : 'URL pendaftaran resmi disiapkan dengan email TempMail sebagai login_hint. Buka, isi formulir, lalu kembali ke sini.');
+    if (url && pendingTab) {
+      pendingTab.location.replace(url);
+    } else if (url) {
+      // Tab kosong tidak bisa dibuka (popup blocker keras): tetap beri jalan
+      // lewat tautan di blok "URL yang dibuka", bukan gagal diam-diam.
+      setError('Browser memblokir tab baru. Buka URL di blok "URL yang dibuka" di bawah secara manual.');
+    }
     await load();
-    if (url) window.open(url, '_blank', 'noopener,noreferrer');
   }
 
   async function mark(step) {
@@ -138,7 +161,7 @@ export function ChatGptSignupPanel({ onVerified }) {
   }
 
   return (
-    <section className="oauth-panel cga-signup">
+    <section className="oauth-panel cga-signup" id="cga-signup">
       <header className="oauth-head">
         <div>
           <span className="oauth-badge"><UserPlus size={12} /> Email TempMail</span>
@@ -188,7 +211,12 @@ export function ChatGptSignupPanel({ onVerified }) {
         <div className="oauth-manual">
           <b><ClipboardCopy size={13} /> URL yang dibuka</b>
           <p><code>{lastUrl}</code></p>
-          <button type="button" onClick={copyUrl}>Salin URL</button>
+          <div className="cga-signup-url-actions">
+            <a className="cga-signup-open" href={lastUrl} target="_blank" rel="noopener noreferrer">
+              Buka di tab baru <ExternalLink size={12} />
+            </a>
+            <button type="button" onClick={copyUrl}>Salin URL</button>
+          </div>
         </div>
       )}
 
