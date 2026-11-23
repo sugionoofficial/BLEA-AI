@@ -33,13 +33,45 @@ Tanpa langkah 1, langkah 2 selalu gagal — itulah pesan error di atas. Jadi
 membuka URL itu dengan navigasi biasa (GET) **tidak akan pernah** sampai ke
 formulir daftar, dan email TempMail tidak pernah terkirim.
 
-Sekarang `buildSignupUrl` mengembalikan **halaman** `https://chatgpt.com/auth/login`
-(bisa dibuka dengan GET), tetap membawa `login_hint` = email TempMail.
+Perbaikan pertama: `buildSignupUrl` mengembalikan **halaman**
+`https://chatgpt.com/auth/login` (bisa dibuka dengan GET), tetap membawa
+`login_hint` = email TempMail.
 
-**Batas kedua yang terbukti dari percobaan nyata:** halaman `/auth/login`
-mengabaikan `login_hint` — kolom "Alamat email" tetap kosong. `login_hint`
-tetap dibawa karena berpotensi dipakai pada tahap berikutnya (mis.
-`auth.openai.com`), tetapi tidak diandalkan.
+## Kesalahan kedua: `chatgpt.com/auth/login` tetap tidak menampilkan formulir
+
+Dua percobaan nyata pada 2026-11-23 menunjukkan halaman itu tetap buruk:
+
+1. Kunjungan pertama: halaman error **"ChatGPT tidak dapat menyiapkan pemuatan
+   ini"** — tidak ada kolom email, jadi tidak ada yang bisa dikirim.
+2. Setelah cookie `chatgpt.com` dihapus dan dicoba lagi: tab **langsung masuk ke
+   beranda chatgpt.com** tanpa formulir sama sekali.
+
+Sekarang tombol utama membuka **`https://auth.openai.com/log-in`** — formulir
+Auth0 yang sama dengan yang dipakai tombol "Log in" di chatgpt.com: ada kolom
+email, tombol **Continue**, tautan **Sign up**, dan tombol Google/Apple/
+Microsoft. Halaman ini juga bisa dibuka dengan GET (bukan endpoint POST), jadi
+tidak kena masalah NextAuth di atas.
+
+Akibat yang harus diterima:
+
+| Sebelumnya | Sekarang |
+|---|---|
+| URL membawa `prompt`, `screen_hint`, `login_hint`, `auth_session_logging_id` | URL **polos** tanpa parameter |
+| Diklaim `login_hint` diabaikan OpenAI | `login_hint` **tidak dijanjikan** sama sekali (`supported.login_hint = false`) |
+| Tombol di UI bernama "Lanjutkan" | Tombol di formulir bernama **Continue** |
+
+Alasan parameter dibuang: formulir Auth0 tidak terbukti memakai `login_hint`,
+dan parameter karangan pada halaman itu justru bisa memicu halaman error. Lebih
+baik URL polos yang jelas berhasil memuat formulir daripada URL "pintar" yang
+kadang gagal.
+
+URL lama tetap bisa dibangun lewat `buildLegacySignupUrl()` untuk rujukan dan
+dilaporkan sebagai `legacy_login_url` di `GET /api/chatgpt-signup`, tetapi
+**bukan** tombol utama.
+
+**Batas kedua yang terbukti dari percobaan nyata:** kolom "Alamat email" tetap
+kosong — tidak ada mekanisme yang mengisinya dari URL. Karena itu isian manual
+adalah jalur utama di UI.
 
 **Batas ketiga, yang tidak bisa dilanggar:** halaman BLEA **tidak bisa** mengisi
 kolom di `chatgpt.com` dari jauh. Same-origin policy melarang JavaScript BLEA
@@ -53,7 +85,7 @@ Jalan yang tersedia (dan memang disediakan panel):
 |---|---|---|
 | Tempel manual | tidak | selalu bisa |
 | Tombol **Salin email** | semi | fallback `execCommand` bila Clipboard API ditolak |
-| **Userscript** (`/api/chatgpt-signup/userscript`) | **ya, tanpa klik** | dipasang sekali di Tampermonkey; mengisi sendiri setiap `/auth/login` dibuka |
+| **Userscript** (`/api/chatgpt-signup/userscript`) | **ya, tanpa klik** | dipasang sekali di Tampermonkey; mengisi sendiri setiap halaman formulir OpenAI dibuka (`chatgpt.com` dan `auth.openai.com`) |
 | **Bookmarklet** | ya, sekali klik | tanpa ekstensi; Chrome membuang awalan `javascript:` kalau ditempel, jadi harus **diseret** |
 
 **Alur manual adalah jalur utama, bukan bingkai otomatis.** Tempel email dengan
@@ -96,16 +128,18 @@ diam-diam gagal.
    lalu menyalin alamat aktif.
 2. Buka **Studio → Akun ChatGPT**, panel *Daftar ChatGPT dengan email TempMail*.
    Kolom email sudah terisi otomatis dari alias aktif.
-3. Tekan **Siapkan & buka daftar** → tab baru membuka halaman
-   `chatgpt.com/auth/login` dengan email TempMail sebagai `login_hint`. Tab
-   dibuka *sebelum* permintaan ke server karena `window.open` setelah `await`
-   diblokir popup blocker; bila tetap diblokir, pakai tautan **Buka di tab baru**.
-4. Isi kolom **Alamat email** di ChatGPT: tempel manual, atau seret tombol
-   **Isi email otomatis** di panel ke bilah bookmark lalu klik bookmark itu di
-   tab ChatGPT. Kemudian tekan **Lanjutkan** di tab ChatGPT, salin URL halaman
-   berikutnya dan tempel di panel → **Periksa URL**.
-   - Halaman awal (`/auth/login` tanpa parameter) ditolak: itu berarti
-     **Lanjutkan** belum ditekan.
+3. Tekan **Siapkan & buka daftar** → tab baru membuka
+   `https://auth.openai.com/log-in` (formulir email OpenAI). Tab dibuka
+   *sebelum* permintaan ke server karena `window.open` setelah `await` diblokir
+   popup blocker; bila tetap diblokir, pakai tautan **Buka di tab baru**.
+   Kalau yang tampil **"Welcome back"** (bukan "Create your account"), tekan
+   tautan **Sign up** di bawah tombol Continue lebih dulu.
+4. Isi kolom **Email address**: tempel manual, atau pakai tombol bookmarklet/
+   userscript (opsional) di panel. Kemudian tekan **Continue** di tab itu, salin
+   URL halaman berikutnya dan tempel di panel → **Periksa URL**.
+   - Halaman awal (`auth.openai.com/log-in`, `chatgpt.com/auth/login`, atau
+     `/create-account`) ditolak: itu berarti **Continue** belum ditekan, atau
+     masih di formulir email.
    - URL halaman error (`/auth/error`, `error=…`) dan host non-OpenAI ditolak.
    - URL lanjutan seperti `auth.openai.com/u/login/identifier?state=…`
      **diterima**. OpenAI/Auth0 tidak membawa email di URL lanjutan — hanya
@@ -121,10 +155,11 @@ diam-diam gagal.
 7. Akun yang sudah jadi dimasukkan ke pool lewat **Continue with ChatGPT**
    (OAuth resmi) atau **Tambah akun manual** (API key).
 
-Kalau halaman login tetap menampilkan error, buka panel *"Email tidak terbawa /
+Kalau formulir tetap menampilkan error, buka panel *"Email tidak terbawa /
 halaman error?"*: di sana ada langkah mengambil `csrfToken` sendiri
 (`GET /api/auth/csrf`) dan formulir `POST` yang sah. Token itu diambil browser
-pada saat itu juga — BLEA tidak pernah menyimpan atau mengirimkannya.
+pada saat itu juga — BLEA tidak pernah menyimpan atau mengirimkannya. Langkah
+ini jalur cadangan, bukan jalur utama; halaman formulir biasa sudah cukup.
 
 ## Verifikasi berupa kode, bukan tautan
 
