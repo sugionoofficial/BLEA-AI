@@ -155,6 +155,11 @@ Yang berubah:
   tanpa ini kode hanya terlihat tepat setelah tombol verify ditekan, dan satu-
   satunya jalan adalah menekan verify lagi (memanggil Gmail ulang sekaligus
   me-reset `verified_at`).
+- Kode OpenAI hanya berlaku ±10 menit, jadi aksi `code` menyertakan
+  `code_expired`. Kode basi **tetap ditampilkan** tetapi ditandai (judul dan
+  warna berubah), bukan disembunyikan — kalau disembunyikan, pengguna akan
+  mengira BLEA tidak pernah menemukan kodenya. Kalau tanda itu muncul, minta
+  kode baru di ChatGPT lalu tekan **Cari email verifikasi** lagi.
 
 Kalau panel menampilkan pesan cocok tetapi kodenya kosong, buka pesan itu di
 TempMail dan salin kodenya manual; jangan mengarang kode dari potongan yang

@@ -64,6 +64,8 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [userscriptBusy, setUserscriptBusy] = useState(false);
   const [userscriptText, setUserscriptText] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
+  const [codeExpired, setCodeExpired] = useState(false);
+  const [codeNote, setCodeNote] = useState('');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -93,6 +95,8 @@ export function ChatGptSignupPanel({ onVerified }) {
       const res = await chatGptSignupApi.code(activeId);
       if (cancelled || !res.ok) return;
       setVerificationCode(String(res.data?.code || ''));
+      setCodeExpired(Boolean(res.data?.code_expired));
+      setCodeNote(String(res.data?.hint || ''));
     })();
     return () => { cancelled = true; };
   }, [activeId]);
@@ -239,6 +243,10 @@ export function ChatGptSignupPanel({ onVerified }) {
     }
     setCandidates(Array.isArray(res.data?.candidates) ? res.data.candidates : []);
     setVerificationCode(String(res.data?.code || ''));
+    // Kode yang baru diekstrak belum kedaluwarsa; status lama harus direset
+    // supaya peringatan basi tidak menempel pada kode baru.
+    setCodeExpired(Boolean(res.data?.code_expired));
+    setCodeNote('');
     if (res.data?.matched) {
       // Email OpenAI berisi KODE, bukan tautan. Instruksi "klik tautan" dulu
       // salah dan membuat pengguna buntu.
@@ -502,8 +510,8 @@ export function ChatGptSignupPanel({ onVerified }) {
                 </button>
               </div>
               {(verificationCode || active.verification_code) && (
-                <div className="cga-signup-code">
-                  <b>Kode verifikasi</b>
+                <div className={`cga-signup-code${codeExpired ? ' is-expired' : ''}`}>
+                  <b>Kode verifikasi{codeExpired ? ' (kemungkinan kedaluwarsa)' : ''}</b>
                   <div className="cga-signup-code-row">
                     <code className="cga-signup-code-value">{verificationCode || active.verification_code}</code>
                     <button type="button" onClick={() => copyText(verificationCode || active.verification_code, 'code')}>
@@ -514,6 +522,7 @@ export function ChatGptSignupPanel({ onVerified }) {
                     Tempelkan di kolom kode pada tab ChatGPT, lalu tekan tombol lanjut di sana.
                     Kode ini sekali pakai dan berumur pendek — jangan disimpan lama.
                   </small>
+                  {codeNote && <small className={codeExpired ? 'is-bad' : ''}>{codeNote}</small>}
                 </div>
               )}
               {active.note && <small>{active.note}</small>}
