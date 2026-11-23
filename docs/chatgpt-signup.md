@@ -146,6 +146,10 @@ Yang berubah:
 - Rute `verify` membaca sampai 3 pesan teratas lewat `tempmailMessageReader`
   (pemeriksaan pemilik alias sama seperti `/api/tempmail`), menyimpan
   `verification_code`, dan mengembalikan `code` + `code_from_message_id` ke UI.
+  Yang dibaca penuh hanya pesan yang masuk **setelah** permintaan pendaftaran
+  dibuat (toleransi 5 menit untuk selisih jam pengirim). Tanpa batas ini, surat
+  lama di inbox admin ikut dipindai dan angka 6 digit di dalamnya bisa tersaji
+  seolah kode verifikasi.
 - Panel menampilkan kode + **Salin kode**, dengan peringatan sekali pakai.
 - Kolom DB `chatgpt_signup_attempts.verification_code`
   (`20261213000002_…`) dan `verification_code_at`
