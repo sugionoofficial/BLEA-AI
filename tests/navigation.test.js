@@ -27,8 +27,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     userItems.map((item) => ({ title: item.title, href: item.href })),
     [
       { title: 'Dashboard', href: '/app' },
-      { title: 'Agen', href: '/agent' },
-      { title: 'Chat AI', href: '/studio' },
+      { title: 'Studio', href: '/studio' },
       { title: 'Generate', href: '/generate' },
       { title: 'Cek Metadata', href: '/metadata' },
       { title: 'Proses Live', href: '/live' },
@@ -43,8 +42,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
     adminItems.map((item) => ({ title: item.title, href: item.href })),
     [
       { title: 'Dashboard', href: '/app' },
-      { title: 'Agen', href: '/agent' },
-      { title: 'Chat AI', href: '/studio' },
+      { title: 'Studio', href: '/studio' },
       { title: 'Generate', href: '/generate' },
       { title: 'Cek Metadata', href: '/metadata' },
       { title: 'Proses Live', href: '/live' },

@@ -20,8 +20,6 @@ const LiveQueuePage = lazy(() => import('./auth/LiveQueuePage').then((module) =>
 const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => ({ default: module.FreebeatPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const TempMailPage = lazy(() => import('./auth/TempMailPage').then((module) => ({ default: module.TempMailPage })));
-const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
-const AgentPage = lazy(() => import('./agent/AgentPage').then((module) => ({ default: module.AgentPage })));
 import './dropx/dropx.css';
 import './auth/studio.css';
 import './agent/agent.css';
@@ -59,8 +57,13 @@ function App() {
             <Route path="/credits" element={<CreditsPage />} />
             <Route path="/credits/history" element={<CreditHistoryPage />} />
             <Route path="/projects" element={<Navigate to="/generate" replace />} />
-            <Route path="/studio" element={<StudioErrorBoundary><AIStudio /></StudioErrorBoundary>} />
-            <Route path="/agent" element={<StudioErrorBoundary><AgentPage /></StudioErrorBoundary>} />
+            {/* Studio: beranda alat + satu ruang kerja per tool. /studio/chat
+                dan /studio/agent adalah komponen lama, tidak disalin. */}
+            <Route path="/studio" element={<StudioErrorBoundary><StudioPage /></StudioErrorBoundary>} />
+            <Route path="/studio/connection" element={<StudioErrorBoundary><ConnectionPage /></StudioErrorBoundary>} />
+            <Route path="/studio/:toolId" element={<StudioErrorBoundary><StudioRoomPage /></StudioErrorBoundary>} />
+            {/* URL lama tetap hidup supaya tautan/Bookmark tidak 404. */}
+            <Route path="/agent" element={<Navigate to="/studio/agent" replace />} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />

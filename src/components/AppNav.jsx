@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import {
-  Bot, ChevronDown, CircleHelp, Clapperboard, Command, LogOut, MoreHorizontal,
-  Settings2, ShieldCheck, Sparkles, WandSparkles
+  ChevronDown, CircleHelp, Clapperboard, Command, LogOut, MoreHorizontal,
+  Settings2, ShieldCheck, Sparkles
 } from 'lucide-react';
 import { Brand } from './Brand';
 import { AppDrawerPanel } from './AppDrawer';
@@ -36,8 +36,7 @@ export function GlobalNav({ context = null }) {
       </div>
       <div className="app-nav-label">WORKSPACE</div>
       <NavLink end className={navItemClass} to="/app"><Command size={16} /> Dashboard</NavLink>
-      <NavLink className={navItemClass} to="/agent"><Bot size={16} /> Agen</NavLink>
-      <NavLink className={navItemClass} to="/studio"><WandSparkles size={16} /> Chat AI</NavLink>
+      <NavLink className={navItemClass} to="/studio"><Sparkles size={16} /> Studio</NavLink>
       <NavLink className={navItemClass} to="/generate"><Clapperboard size={16} /> Generate</NavLink>
       {isAdmin && <NavLink className={navItemClass} to="/admin"><ShieldCheck size={16} /> Admin Panel</NavLink>}
       {context}
