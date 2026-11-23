@@ -78,6 +78,56 @@ export function buildSignupUrl(email, { authSessionLoggingId = '' } = {}) {
  * GET /api/auth/csrf pada saat itu juga, tidak boleh disimpan atau dikirim ke
  * server BLEA. Karena itu field ini selalu kosong di keluaran.
  */
+/**
+ * Prioritas kolom isian di halaman login ChatGPT. `type=email` diutamakan,
+ * karena kolom itu yang benar-benar mengirim email; kolom telepon juga
+ * `type=tel`/text sehingga tidak boleh dipilih lebih dulu.
+ */
+export const EMAIL_INPUT_SELECTORS = [
+  'input[type="email"]',
+  'input[name="email"]',
+  'input[autocomplete="email"]',
+  'input[autocomplete="username"]',
+  'input[id*="email" i]',
+  'input[placeholder*="email" i]',
+];
+
+/**
+ * Bookmarklet: skrip yang dijalankan DI HALAMAN chatgpt.com, dipicu klik
+ * pengguna sendiri.
+ *
+ * Kenapa ini satu-satunya jalan: same-origin policy melarang halaman BLEA
+ * menyentuh DOM `chatgpt.com` (tidak bisa mengisi kolom dari jauh), dan OpenAI
+ * mengabaikan `login_hint`. Bookmarklet dieksekusi oleh dokumen chatgpt.com
+ * setelah pengguna mengkliknya, jadi ia boleh mengisi kolom — persis seperti
+ * pengguna mengetik sendiri.
+ *
+ * Batasannya disengaja: hanya mengisi kolom dan memfokuskan; TIDAK menekan
+ * "Lanjutkan", TIDAK mengirim formulir, TIDAK membaca cookie/token, dan TIDAK
+ * menyimpan apa pun. Pengguna tetap menekan tombolnya sendiri.
+ *
+ * Keamanan: email sudah lolos validasi (tanpa kutip, backslash, kurung kurawal,
+ * `@` tunggal, tanpa spasi), jadi aman disisipkan ke string literal JS.
+ */
+export function buildAutofillBookmarklet(email) {
+  const address = cleanText(email, 320).toLowerCase();
+  if (!isSignupEmail(address) || /["'\\`<>]/.test(address)) {
+    throw fail('Email tidak aman untuk dijadikan bookmarklet.', 400);
+  }
+  const script = `(function(){try{var v=${JSON.stringify(address)};`
+    + `var els=document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=checkbox]):not([type=radio])');`
+    + `var t=null;`
+    + `for(var i=0;i<els.length&&!t;i++){var el=els[i];if(el.type==='tel')continue;`
+    + `var hay=((el.getAttribute('name')||'')+' '+(el.id||'')+' '+(el.getAttribute('autocomplete')||'')+' '+(el.getAttribute('placeholder')||'')).toLowerCase();`
+    + `if(el.type==='email'||hay.indexOf('email')>-1||hay.indexOf('username')>-1){t=el;}}`
+    + `if(!t){alert('Kolom email tidak ditemukan di halaman ini. Buka https://chatgpt.com/auth/login dulu.');return;}`
+    + `var set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;`
+    + `set.call(t,v);t.dispatchEvent(new Event('input',{bubbles:true}));t.dispatchEvent(new Event('change',{bubbles:true}));t.focus();`
+    + `if(t.value!==v){t.value=v;}`
+    + `}catch(e){alert('Gagal mengisi email: '+e.message);}})();`;
+  return `javascript:${encodeURIComponent(script)}`;
+}
+
 export function buildSigninBootstrap(email) {
   const address = cleanText(email, 320).toLowerCase();
   return {
@@ -90,9 +140,13 @@ export function buildSigninBootstrap(email) {
       callback_url: 'https://chatgpt.com/',
     },
     fields_to_fill: { 'Alamat email': address },
+    // Bookmarklet = satu-satunya cara sah mengisi kolom lintas-origin:
+    // dijalankan di halaman chatgpt.com atas klik pengguna.
+    autofill_bookmarklet: buildAutofillBookmarklet(address),
     steps: [
-      'Di tab ChatGPT yang sudah terbuka, salin semua yang ada di URL (bila sudah diarahkan ke halaman error, buka https://chatgpt.com/auth/login dulu).',
-      'Tempel URL itu di kolom "URL setelah klik Lanjutkan" di panel ini.',
+      'Isi kolom "Alamat email" di ChatGPT: tempel manual, atau seret tombol "Isi email otomatis" di panel ke bilah bookmark lalu klik di tab ChatGPT.',
+      'Tekan "Lanjutkan" di tab ChatGPT (BLEA tidak pernah menekan tombol itu untuk Anda).',
+      'Salin URL halaman hasil lalu tempel di kolom "URL setelah menekan Lanjutkan" di panel ini.',
       'Panel cocokkan email dan domain, lalu menandai permintaan sebagai "email dikirim".',
     ],
     csrf: '',

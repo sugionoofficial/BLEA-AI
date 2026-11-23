@@ -14,6 +14,9 @@ import {
   validateSignupInput,
 } from '../src/lib/chatgptSignup.js';
 
+const signupModule = await import('../src/lib/chatgptSignup.js');
+globalThis.__signup = signupModule;
+
 const BASE = 'https://app.example';
 const ENV = {
   SUPABASE_URL: 'https://supabase.example',
@@ -285,7 +288,40 @@ test('panel tidak menjanjikan autofill email dan menyediakan salin email dengan 
   assert.ok(source.includes('mengabaikan') && source.includes('login_hint'));
   assert.ok(source.includes('Salin email'), 'harus ada tombol salin email');
   assert.ok(!/login_hint\. Ketik email itu/.test(source), 'janji autofill lama tidak boleh kembali');
+  // Klaim baru: autofill hanya lewat bookmarklet yang diklik pengguna.
+  assert.ok(source.includes('Isi email otomatis'));
+  assert.ok(source.includes('same-origin'));
+  assert.ok(source.includes('bookmarklet'));
   // Fallback wajib: navigator.clipboard sering ditolak di iframe/preview.
   assert.ok(source.includes('execCommand'), 'harus ada fallback execCommand');
   assert.ok(source.includes('Clipboard tidak tersedia di browser ini'));
+});
+
+// Autofill lintas-origin tidak mungkin dari halaman BLEA (same-origin policy)
+// dan OpenAI mengabaikan login_hint. Satu-satunya jalan sah: bookmarklet yang
+// dijalankan DI halaman chatgpt.com atas klik pengguna.
+test('bookmarklet pengisi email: aman, tidak mengirim, dan menargetkan kolom email', () => {
+  const { buildAutofillBookmarklet } = globalThis.__signup;
+  const email = 'sugionoofficial88+1@gmail.com';
+  const bookmarklet = buildAutofillBookmarklet(email);
+  assert.ok(bookmarklet.startsWith('javascript:'), 'harus berupa bookmarklet javascript:');
+  const decoded = decodeURIComponent(bookmarklet.slice('javascript:'.length));
+  assert.ok(decoded.includes(JSON.stringify(email)), 'email harus ikut tertanam');
+  // Hanya mengisi kolom: tidak menekan tombol, tidak submit, tidak baca cookie.
+  assert.ok(!/\.submit\(|\.click\(|requestSubmit|cookie|localStorage|fetch\(/i.test(decoded));
+  assert.ok(decoded.includes("dispatchEvent(new Event('input'"));
+  // Kolom telepon tidak boleh dipilih lebih dulu (Lanjutkan dengan nomor
+  // telepon ada di halaman yang sama).
+  assert.ok(decoded.includes("el.type==='tel'"));
+  // Injektif aman: email berkutip ditolak, bukan disisipkan mentah.
+  assert.throws(() => buildAutofillBookmarklet('a"@b.co'), /tidak aman/i);
+  assert.throws(() => buildAutofillBookmarklet('a b@c.co'), /tidak valid|tidak aman/i);
+});
+
+test('bootstrap menyertakan bookmarklet dan langkah yang tidak mengklaim otomatis', () => {
+  const { buildSigninBootstrap } = globalThis.__signup;
+  const bootstrap = buildSigninBootstrap('kotak+1@mail.tm');
+  assert.ok(bootstrap.autofill_bookmarklet.startsWith('javascript:'));
+  assert.ok(bootstrap.steps.some((line) => /bookmarklet|tempel/i.test(line)));
+  assert.ok(bootstrap.steps.some((line) => /BLEA tidak pernah menekan/i.test(line)));
 });

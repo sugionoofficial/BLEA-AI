@@ -37,11 +37,30 @@ Sekarang `buildSignupUrl` mengembalikan **halaman** `https://chatgpt.com/auth/lo
 (bisa dibuka dengan GET), tetap membawa `login_hint` = email TempMail.
 
 **Batas kedua yang terbukti dari percobaan nyata:** halaman `/auth/login`
-mengabaikan `login_hint` — kolom "Alamat email" tetap kosong. Jadi UI tidak
-menjanjikan isian otomatis; ia menyediakan tombol **Salin email** (dengan
-fallback `execCommand` bila Clipboard API ditolak) dan instruksi menempel
-manual. `login_hint` tetap dibawa karena berpotensi dipakai pada tahap
-berikutnya (mis. `auth.openai.com`), tetapi tidak diandalkan.
+mengabaikan `login_hint` — kolom "Alamat email" tetap kosong. `login_hint`
+tetap dibawa karena berpotensi dipakai pada tahap berikutnya (mis.
+`auth.openai.com`), tetapi tidak diandalkan.
+
+**Batas ketiga, yang tidak bisa dilanggar:** halaman BLEA **tidak bisa** mengisi
+kolom di `chatgpt.com` dari jauh. Same-origin policy melarang JavaScript BLEA
+menyentuh DOM domain lain, dan `window.open` hanya mengembalikan referensi
+window — bukan akses DOM. Jadi "email terisi otomatis saat tab terbuka" tidak
+mungkin dari aplikasi web mana pun, bukan hanya BLEA.
+
+Jalan yang tersedia (dan memang disediakan panel):
+
+| Cara | Otomatis? | Catatan |
+|---|---|---|
+| Tempel manual | tidak | selalu bisa |
+| Tombol **Salin email** | semi | fallback `execCommand` bila Clipboard API ditolak |
+| **Bookmarklet "Isi email otomatis"** | ya, sekali klik | dijalankan DI halaman `chatgpt.com` atas klik pengguna |
+
+Bookmarklet (`buildAutofillBookmarklet`) hanya: memilih `input` email
+(bukan `type=tel`), mengisi `value` lewat setter native + event `input`/`change`,
+lalu fokus. Ia **tidak** menekan `Lanjutkan`, tidak mengirim formulir, tidak
+membaca cookie/token, dan tidak menyimpan apa pun. Email disisipkan sebagai
+literal JSON setelah divalidasi (kutip/backslash/`<`/`>` ditolak), jadi tidak
+bisa dipakai untuk injeksi.
 
 ## Kenapa server tetap tidak mem-POST endpoint itu
 
@@ -67,9 +86,10 @@ diam-diam gagal.
    `chatgpt.com/auth/login` dengan email TempMail sebagai `login_hint`. Tab
    dibuka *sebelum* permintaan ke server karena `window.open` setelah `await`
    diblokir popup blocker; bila tetap diblokir, pakai tautan **Buka di tab baru**.
-4. Di tab itu tekan **Salin email** di panel, tempel di kolom **Alamat email**
-   ChatGPT (kolom itu **tidak** terisi otomatis), tekan **Lanjutkan**, lalu
-   salin URL halaman berikutnya dan tempel di panel → **Periksa URL**.
+4. Isi kolom **Alamat email** di ChatGPT: tempel manual, atau seret tombol
+   **Isi email otomatis** di panel ke bilah bookmark lalu klik bookmark itu di
+   tab ChatGPT. Kemudian tekan **Lanjutkan** di tab ChatGPT, salin URL halaman
+   berikutnya dan tempel di panel → **Periksa URL**.
    - URL halaman error (`/auth/error`, `error=…`) ditolak dengan alasan jelas.
    - URL di luar domain OpenAI ditolak.
    - Langkah baru ditandai `email_dikirim` bila email TempMail benar-benar

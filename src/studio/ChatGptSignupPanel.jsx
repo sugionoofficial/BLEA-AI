@@ -15,6 +15,7 @@ import {
   newLoggingId,
   SIGNUP_STEP_META,
 } from './chatgptSignupClient';
+import { buildAutofillBookmarklet } from '../lib/chatgptSignup';
 
 const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi'];
 
@@ -57,6 +58,7 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [returnUrl, setReturnUrl] = useState('');
   const [returnAnalysis, setReturnAnalysis] = useState(null);
   const [copied, setCopied] = useState('');
+  const [bookmarklet, setBookmarklet] = useState('');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -74,6 +76,18 @@ export function ChatGptSignupPanel({ onVerified }) {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Bookmarklet dibangun di klien supaya selalu memakai email yang sedang
+  // tertulis di kolom — bukan nilai lama dari server.
+  useEffect(() => {
+    if (!email.trim()) { setBookmarklet(''); return; }
+    try {
+      setBookmarklet(buildAutofillBookmarklet(email));
+    } catch {
+      // Email belum valid: jangan tampilkan bookmarklet yang salah alamat.
+      setBookmarklet('');
+    }
+  }, [email]);
 
   const active = attempts.find((item) => item.id === activeId) || null;
   const stepIndex = active ? STEP_ORDER.indexOf(active.step) : -1;
@@ -270,10 +284,37 @@ export function ChatGptSignupPanel({ onVerified }) {
               diabaikan halaman /auth/login, kolom "Alamat email" tetap kosong.
               Jangan menjanjikan isian otomatis. */}
           <small className="cga-signup-hint">
-            Kolom <b>Alamat email</b> di ChatGPT <b>tidak terisi otomatis</b> — OpenAI mengabaikan
-            <code>login_hint</code> di halaman ini. Tekan <b>Salin email</b>, tempel di sana, lalu
-            tekan <b>Lanjutkan</b>.
+            Kolom <b>Alamat email</b> di ChatGPT <b>tidak terisi otomatis</b>: halaman BLEA tidak
+            boleh menyentuh DOM <code>chatgpt.com</code> (same-origin policy), dan OpenAI mengabaikan
+            <code>login_hint</code>. Pilih salah satu: tempel manual, atau pakai tombol bookmarklet
+            di bawah (Anda yang mengklik di tab ChatGPT).
           </small>
+          <div className="cga-signup-bookmarklet">
+            <b>Isi email otomatis (opsional)</b>
+            <p>
+              Seret tombol ini ke bilah bookmark, lalu buka tab ChatGPT dan klik bookmark itu —
+              kolom email akan terisi. Tidak ada yang dikirim, disimpan, atau diklik otomatis;
+              tombol <b>Lanjutkan</b> tetap Anda yang tekan.
+            </p>
+            <div className="cga-signup-bookmarklet-row">
+              <a
+                className="cga-signup-drag"
+                href={bookmarklet}
+                title="Seret ke bilah bookmark, atau klik kalau panel ini dibuka di tab BLEA sendiri"
+                onClick={(event) => {
+                  // Klik di sini tidak akan jalan (eksekusi `javascript:` diblokir
+                  // di konteks BLEA), jadi beri arahan menyeret.
+                  event.preventDefault();
+                  setError('Seret tombol itu ke bilah bookmark (jangan diklik di halaman BLEA), lalu klik bookmark-nya di tab ChatGPT.');
+                }}
+              >
+                <ClipboardCopy size={12} /> Isi email otomatis
+              </a>
+              <button type="button" onClick={() => copyText(bookmarklet, 'bookmarklet')}>
+                {copied === 'bookmarklet' ? 'Skrip disalin' : 'Salin skrip'}
+              </button>
+            </div>
+          </div>
         </label>
         <div className="cga-signup-links">
           <a href="/tempmail" target="_blank" rel="noreferrer">Buka halaman TempMail <ExternalLink size={12} /></a>
