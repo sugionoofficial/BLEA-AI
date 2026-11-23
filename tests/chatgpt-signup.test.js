@@ -834,3 +834,32 @@ test('verify tetap membaca email baru pada baris yang dibuat beberapa hari lalu'
     globalThis.fetch = oldFetch;
   }
 });
+
+// Upsert per (user_id, email): memulai ronde baru harus mengosongkan kode lama,
+// kalau tidak kode ronde sebelumnya tetap tampil dan ditempel sia-sia.
+test('prepare mengosongkan kode verifikasi dari ronde sebelumnya', async () => {
+  const oldFetch = globalThis.fetch;
+  let sent = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      sent = JSON.parse(String(init.body))[0];
+      return Response.json([{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ...sent }]);
+    }
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'prepare', email: 'kotak@mail.tm' } }), ENV);
+    assert.equal(res.status, 201);
+    assert.equal(sent.verification_code, '');
+    assert.equal(sent.verification_message_id, '');
+    assert.equal(sent.verification_code_at, null);
+    assert.equal(sent.verified_at, null);
+    assert.equal(sent.step, 'dibuka');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});

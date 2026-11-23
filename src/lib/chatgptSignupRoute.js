@@ -98,7 +98,12 @@ async function saveAttempt(env, userId, input) {
       signup_url: signupUrl,
       step: 'dibuka',
       note: plus_address ? 'Alamat +tag Gmail: sebagian formulir OpenAI menolak tanda +.' : '',
+      // Upsert per (user_id, email): tanpa pengosongan eksplisit, kode dan id
+      // pesan dari ronde sebelumnya tetap menempel dan tampil seolah milik
+      // permintaan yang baru — lalu ditempel ke ChatGPT dan gagal.
       verification_message_id: '',
+      verification_code: '',
+      verification_code_at: null,
       verified_at: null,
       created_at: now,
       updated_at: now,
