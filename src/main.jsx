@@ -20,6 +20,12 @@ const LiveQueuePage = lazy(() => import('./auth/LiveQueuePage').then((module) =>
 const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => ({ default: module.FreebeatPage })));
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const TempMailPage = lazy(() => import('./auth/TempMailPage').then((module) => ({ default: module.TempMailPage })));
+// Halaman Studio. Ketiganya WAJIB dideklarasikan di sini: tanpa deklarasi ini
+// bundle produksi memuat identifier mentah (`StudioPage`) dan setiap rute
+// /studio* melempar ReferenceError saat render — hasilnya halaman kosong.
+const StudioPage = lazy(() => import('./studio/StudioPage').then((module) => ({ default: module.StudioPage })));
+const StudioRoomPage = lazy(() => import('./studio/StudioRoomPage').then((module) => ({ default: module.StudioRoomPage })));
+const ConnectionPage = lazy(() => import('./studio/ConnectionPage').then((module) => ({ default: module.ConnectionPage })));
 import './dropx/dropx.css';
 import './auth/studio.css';
 import './agent/agent.css';

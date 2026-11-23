@@ -104,3 +104,22 @@ test('no fake template items remain in navigation', () => {
     assert.equal(titles.includes(forbidden), false, `Unexpected template or legacy item: ${forbidden}`);
   }
 });
+
+test('setiap komponen yang dipakai di <Route> dideklarasikan di main.jsx', () => {
+  // Regresi: commit Studio memakai <StudioPage/> di rute tanpa mendeklarasikan
+  // komponennya. Build tetap "sukses", tetapi bundle memuat identifier mentah
+  // sehingga SELURUH app melempar ReferenceError dan halaman jadi kosong/hitam.
+  const declared = new Set();
+  for (const match of mainSource.matchAll(/^const\s+(\w+)\s*=\s*lazy\(/gm)) declared.add(match[1]);
+  for (const match of mainSource.matchAll(/^import\s+\{([^}]+)\}\s+from/gm)) {
+    for (const name of match[1].split(',')) declared.add(name.trim());
+  }
+
+  const elementTags = new Set();
+  for (const match of mainSource.matchAll(/<([A-Z]\w+)\s*\/>/g)) elementTags.add(match[1]);
+
+  // `App` dideklarasikan sebagai function di file yang sama, bukan import/lazy.
+  declared.add('App');
+  const missing = [...elementTags].filter((name) => !declared.has(name));
+  assert.deepEqual(missing, [], `komponen dipakai di rute tapi tidak dideklarasikan: ${missing.join(', ')}`);
+});
