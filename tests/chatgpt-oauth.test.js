@@ -19,6 +19,8 @@ import {
   OPENAI_SCOPES,
 } from '../src/lib/chatgptOAuth.js';
 import { sendOAuthResponses, pickChatGptAccountsFor } from '../src/lib/chatgptPool.js';
+import { parseCallbackInput } from '../src/studio/oauthCallbackUrl.js';
+import { listOAuthLinks } from '../src/lib/chatgptOAuth.js';
 import { sealChatGptToken } from '../src/lib/chatgptPool.js';
 
 const ENC_KEY = 'test-encryption-key-for-oauth-suite-32b';
@@ -403,4 +405,120 @@ test('decodeJwtPayload hanya membaca klaim, bukan memverifikasi', () => {
   const jwt = `h.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.s`;
   assert.deepEqual(decodeJwtPayload(jwt), payload);
   assert.equal(decodeJwtPayload('bukan-jwt'), null);
+});
+
+// ---- Regresi dua bug nyata dari percobaan login pertama ---------------------
+// 1. URL callback yang ditempel dari chat/HTML berisi `&amp;`, sehingga
+//    `state` dan `client_id` terbaca null dan login berhenti dengan pesan
+//    "state tidak cocok" yang menyesatkan.
+test('parseCallbackInput menormalkan &amp; dan URL ter-encode', () => {
+  const dirty = 'http://127.0.0.1:1455/auth/callback?code=ac.1.AACBHIQ&amp;scope=chatgpt.tokens.use.direct+openid&amp;state=gA9JD-UGGcJF40ZriI4PW5PYY_kf6A&amp;client_id=oaiapp_VnTWNNu';
+  const clean = parseCallbackInput(dirty);
+  const params = new URLSearchParams(clean.slice(1));
+  assert.equal(params.get('code'), 'ac.1.AACBHIQ');
+  assert.equal(params.get('state'), 'gA9JD-UGGcJF40ZriI4PW5PYY_kf6A');
+  assert.equal(params.get('client_id'), 'oaiapp_VnTWNNu');
+  assert.equal(params.get('scope'), 'chatgpt.tokens.use.direct openid');
+
+  const encoded = parseCallbackInput('http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback%3Fcode%3Dac.1.X%26state%3Ds1%26client_id%3Doaiapp_A');
+  assert.equal(new URLSearchParams(encoded.slice(1)).get('state'), 's1');
+
+  assert.ok(parseCallbackInput('?code=ac.1.X&state=s1'));
+  assert.equal(parseCallbackInput('halo dunia'), null);
+  assert.equal(parseCallbackInput(''), null);
+});
+
+// 2. Percobaan `pending` yang lewat 30 menit tidak bisa diselesaikan lagi,
+//    tetapi UI terus menampilkan "menunggu persetujuan". Sekarang ditandai
+//    kedaluwarsa supaya pengguna tahu harus mengulang login.
+test('listOAuthLinks menandai percobaan pending yang kedaluwarsa', async () => {
+  const realFetch = globalThis.fetch;
+  const old = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+  globalThis.fetch = async (url) => {
+    if (url.includes('/rest/v1/chatgpt_oauth_links?')) {
+      return Response.json([
+        { id: 'a', status: 'pending', created_at: old },
+        { id: 'b', status: 'pending', created_at: new Date().toISOString() },
+        { id: 'c', status: 'linked', created_at: old },
+      ]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const links = await listOAuthLinks(createEnv(), { id: 'user-1' });
+    assert.equal(links[0].status, 'expired');
+    assert.equal(links[0].stale, true);
+    assert.equal(links[1].status, 'pending');
+    assert.equal(links[2].status, 'linked', 'tautan yang sudah tersambung tidak ikut kedaluwarsa');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('completeOAuthAttempt bisa dipanggil dengan state saja (tanpa attempt_id)', async () => {
+  const realFetch = globalThis.fetch;
+  const calls = { token: null };
+  const idToken = `x.${Buffer.from(JSON.stringify({ email: 'me@example.com', sub: 's1' })).toString('base64url')}.y`;
+  globalThis.fetch = async (url, init = {}) => {
+    // Pencarian baris lewat state (callback dari domain lain).
+    if (url.includes('/rest/v1/chatgpt_oauth_links?select=id,status,created_at')) {
+      return Response.json([{ id: '11111111-1111-1111-1111-111111111111', status: 'pending', created_at: new Date().toISOString() }]);
+    }
+    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.')) {
+      return new Response(null, { status: 204 });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_oauth_links?')) {
+      return Response.json([{
+        id: '11111111-1111-1111-1111-111111111111',
+        status: 'pending',
+        code_verifier: 'c'.repeat(64),
+        redirect_uri: 'http://127.0.0.1:1455/auth/callback',
+      }]);
+    }
+    if (url.endsWith('https://auth.openai.com/api/accounts/oauth/token')) {
+      calls.token = Object.fromEntries(new URLSearchParams(init.body));
+      return Response.json({
+        access_token: 'oauth-access-token',
+        refresh_token: 'oauth-refresh-token',
+        id_token: idToken,
+        expires_in: 3600,
+        scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
+      });
+    }
+    if (url.endsWith('/rest/v1/chatgpt_accounts?select=*&order=priority.asc,created_at.asc&limit=200')) {
+      return Response.json([]);
+    }
+    if (url.endsWith('/rest/v1/chatgpt_accounts')) {
+      return Response.json([{ id: '22222222-2222-2222-2222-222222222222', ...JSON.parse(init.body) }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const result = await completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+      state: 'gA9JD-UGGcJF40ZriI4PW5PYY_kf6A',
+      code: 'ac.1.AACBHIQ',
+      client_id: 'oaiapp_VnTWNNu',
+    });
+    assert.equal(calls.token.code_verifier, 'c'.repeat(64), 'PKCE verifier diambil dari baris server');
+    assert.equal(result.link.plan_usage, true);
+    assert.equal(result.account.credential_kind, 'oauth');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('completeOAuthAttempt menolak state yang tidak dikenal', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/rest/v1/chatgpt_oauth_links?select=id,status,created_at')) return Response.json([]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, { state: 'tidak-ada', code: 'x', client_id: 'oaiapp_x' }),
+      /tidak ditemukan atau sudah dipakai/,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
