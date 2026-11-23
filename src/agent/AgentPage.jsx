@@ -13,6 +13,8 @@ import { StudioMessageBody } from '../auth/AIStudio';
 import { supabase } from '../lib/supabase';
 import { analyzeVideo, isAnalysisSupported } from '../lib/videoAnalysis';
 import { ClipPlanPanel } from './ClipPlanPanel';
+import { SubtitlePanel } from './SubtitlePanel';
+import { transcribeMedia } from './transcribeClient';
 import { useAuth } from '../auth/AuthProvider';
 import {
   MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, UPLOAD_ACCEPT, formatBytes, oversizeMessage,
@@ -168,6 +170,10 @@ export function AgentPage() {
   const [analysis, setAnalysis] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
+  const [transcript, setTranscript] = useState(null);
+  const [transcribeStatus, setTranscribeStatus] = useState('idle');
+  const [transcribeProgress, setTranscribeProgress] = useState(0);
+  const [subtitleTemplate, setSubtitleTemplate] = useState('boxed');
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const endRef = useRef(null);
@@ -203,6 +209,15 @@ export function AgentPage() {
   useEffect(() => {
     if (!attachedVideo || (analysis && analysis.url !== attachedVideo.url)) setAnalysis(null);
   }, [attachedVideo, analysis]);
+
+  // Transkrip terikat pada berkas: mengganti lampiran membuang transkrip lama,
+  // karena timestamp-nya milik video yang berbeda.
+  useEffect(() => {
+    if (!attachedVideo || (transcript && transcript.url !== attachedVideo.url)) {
+      setTranscript(null);
+      setTranscribeStatus('idle');
+    }
+  }, [attachedVideo, transcript]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
@@ -264,6 +279,9 @@ export function AgentPage() {
           audio: sentAnalysis.audio,
         }
         : null,
+      videoTranscript: transcript && transcript.url === sentAttachments.find((item) => item.kind === 'video')?.url
+        ? { segments: transcript.segments }
+        : null,
       signal: controller.signal,
       onMeta: (meta) => {
         if (meta.fallback) setError(`Model utama sibuk, jawaban dialihkan ke ${meta.model}.`);
@@ -314,7 +332,7 @@ export function AgentPage() {
       at: new Date().toISOString(),
     }]);
     setSteps([]);
-  }, [activeModelMeta, attachments, messages, pinnedSkill, running, uploading]);
+  }, [activeModelMeta, attachments, messages, pinnedSkill, running, uploading, transcript]);
 
   function stop() {
     abortRef.current?.abort();
@@ -340,6 +358,24 @@ export function AgentPage() {
       setError(`Analisis video gagal: ${err?.message || err}. Kamu masih bisa mengirim video tanpa analisis.`);
     } finally {
       setAnalyzing(false);
+    }
+  }
+
+  async function transcribeAttachedVideo() {
+    if (!attachedVideo || transcribeStatus === 'running') return;
+    setTranscribeStatus('running');
+    setTranscribeProgress(0);
+    setError('');
+    try {
+      const result = await transcribeMedia(attachedVideo.url, {
+        language: 'id',
+        onProgress: setTranscribeProgress,
+      });
+      setTranscript({ ...result, url: attachedVideo.url, name: attachedVideo.name });
+      setTranscribeStatus('done');
+    } catch (err) {
+      setTranscript({ url: attachedVideo.url, name: attachedVideo.name, segments: [], error: String(err?.message || err) });
+      setTranscribeStatus('error');
     }
   }
 
@@ -475,6 +511,7 @@ export function AgentPage() {
                     client={supabase}
                     userId={user?.id}
                     videoName={message.clipPlan.sourceUrl?.split('/').pop()}
+                    transcript={transcript && transcript.url === message.clipPlan.sourceUrl ? transcript.segments : []}
                   />
                 )}
                 {message.actions?.length > 0 && (
@@ -527,6 +564,20 @@ export function AgentPage() {
                     <Clapperboard size={12} /> Analisis video untuk cari hook
                   </button>
                 )}
+              </div>
+            )}
+            {attachedVideo && (
+              <div className="agent-analysis">
+                <SubtitlePanel
+                  source={attachedVideo}
+                  transcript={transcript}
+                  onTranscript={(next) => setTranscript(next)}
+                  status={transcribeStatus}
+                  progress={transcribeProgress}
+                  onTranscribe={transcribeAttachedVideo}
+                  template={subtitleTemplate}
+                  onTemplate={setSubtitleTemplate}
+                />
               </div>
             )}
             {(attachments.length > 0 || uploading) && (

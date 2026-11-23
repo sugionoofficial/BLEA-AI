@@ -76,6 +76,11 @@ export async function handleAgentTurn(request, url, env, deps) {
   // data yang dikirim klien, jadi diperlakukan sebagai input tak tepercaya:
   // hanya dipakai sebagai konteks teks, tidak pernah sebagai perintah.
   const videoAnalysis = deps.normalizeVideoAnalysis(body.videoAnalysis);
+  // Transkrip ASR opsional dari klien. Diperlakukan sama seperti analisis:
+  // data tak tepercaya yang hanya masuk sebagai konteks teks.
+  const videoTranscript = deps.normalizeVideoTranscript
+    ? deps.normalizeVideoTranscript(body.videoTranscript)
+    : { text: '', segmentCount: 0 };
 
   // Provider credentials, resolved once (failover may swap the model, never the
   // provider list).
@@ -147,7 +152,7 @@ export async function handleAgentTurn(request, url, env, deps) {
       role: 'system',
       content: deps.buildSystemPrompt({
         skillIds: deps.availableSkillIds,
-        workspace: { blueprint, videoAnalysis: videoAnalysis.text },
+        workspace: { blueprint, videoAnalysis: videoAnalysis.text, videoTranscript: videoTranscript.text },
         pinnedSection,
       }),
     },

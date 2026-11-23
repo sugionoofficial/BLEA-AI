@@ -20,14 +20,29 @@ export function buildAgentSystemPrompt({ skillIds = [], workspace = {}, pinnedSe
     '- Kode, perintah, dan konfigurasi selalu di blok kode dengan nama bahasa.',
   ];
 
-  if (workspace.videoAnalysis) {
+  if (workspace.videoAnalysis || workspace.videoTranscript) {
+    lines.push('');
+    if (workspace.videoAnalysis) {
+      lines.push(
+        '## ANALISIS VIDEO LAMPIRAN',
+        'Angka di bawah diukur di browser (pergantian gambar + energi audio), bukan tebakan model.',
+        workspace.videoAnalysis,
+      );
+    }
+    if (workspace.videoTranscript) {
+      lines.push(
+        '## TRANSKRIP UCAPAN (ASR Whisper, timestamp detik)',
+        'Teks ini hasil mesin ASR: bisa salah pada slang, nama merek, dan istilah campur bahasa. Kutipan dari sini boleh dipakai sebagai judul atau alasan klip, tetapi JANGAN mengarang kalimat yang tidak ada di daftar.',
+        workspace.videoTranscript,
+      );
+    } else if (workspace.videoAnalysis) {
+      lines.push('Tidak ada transkrip: kamu TIDAK mendengar ucapan, jadi jangan mengarang isi pembicaraan.');
+    }
     lines.push(
       '',
-      '## ANALISIS VIDEO LAMPIRAN',
-      'Angka di bawah diukur di browser, bukan hasil transkrip: tidak ada ASR di sistem ini, jadi kamu TIDAK mendengar ucapan dan TIDAK membaca teks di video.',
-      workspace.videoAnalysis,
-      '',
-      'Aturan memilih klip: prioritaskan momen dengan pergantian gambar dan/atau lonjakan audio; setiap klip 3–45 detik; jangan membuat klip yang tumpang tindih; jangan mengarang isi ucapan. Untuk tiap klip, sebutkan alasan berbasis sinyal yang terlihat ("pergantian gambar di 12s"), bukan klaim tentang apa yang dibicarakan orang di video.',
+      workspace.videoTranscript
+        ? 'Aturan memilih klip: utamakan kalimat yang berdiri sendiri dan memancing rasa penasaran (pertanyaan, angka, klaim mengejutkan) dari transkrip; setiap klip 3-45 detik; jangan tumpang tindih; tulis alasan berbasis kalimat yang benar-benar ada beserta detiknya.'
+        : 'Aturan memilih klip: prioritaskan momen dengan pergantian gambar dan/atau lonjakan audio; setiap klip 3-45 detik; jangan tumpang tindih; tulis alasan berbasis sinyal yang terlihat (mis. "pergantian gambar di 12s"), bukan klaim tentang isi ucapan.',
     );
   }
 

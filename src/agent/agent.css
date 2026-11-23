@@ -185,9 +185,10 @@
 .agent-clips-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; color: var(--foreground); }
 .agent-clips header small { font-size: 10.5px; line-height: 1.5; color: var(--muted-foreground); }
 .agent-clip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.agent-clip-list li { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); }
+.agent-clip-list li { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); display: flex; align-items: center; }
 .agent-clip-list li.is-selected { border-color: var(--primary); }
-.agent-clip-list label { display: flex; align-items: center; gap: 9px; padding: 7px 9px; cursor: pointer; }
+.agent-clip-list label { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 9px; cursor: pointer; }
+.agent-clip-srt { flex: none; margin-right: 8px; padding: 3px 7px; }
 .agent-clip-list input { flex: none; accent-color: var(--primary); }
 .agent-clip-range { flex: none; font-variant-numeric: tabular-nums; font-size: 11.5px; font-weight: 600; color: var(--primary); min-width: 84px; }
 .agent-clip-meta { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -205,6 +206,34 @@
 .agent-clip-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 .agent-clip-actions .agent-send { margin-left: 0; }
 .agent-clip-progress { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted-foreground); }
+
+/* ---------- Transkrip & subtitle ---------- */
+.agent-subtitles { margin-top: 8px; }
+.agent-subtitle-list {
+  list-style: none; margin: 0 0 8px; padding: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 180px; overflow-y: auto;
+}
+.agent-subtitle-list li { display: flex; gap: 8px; align-items: baseline; }
+.agent-subtitle-list .agent-clip-range { min-width: 44px; font-weight: 500; }
+.agent-subtitle-list .agent-clip-meta b { white-space: normal; font-weight: 450; }
+.agent-subtitle-more { font-size: 10.5px; color: var(--muted-foreground); padding-left: 52px; }
+.agent-subtitle-templates { display: flex; flex-wrap: wrap; gap: 5px; }
+.agent-subtitle-template {
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 99px;
+  background: var(--card); color: var(--muted-foreground);
+  font-family: inherit; font-size: 10.5px; cursor: pointer;
+}
+.agent-subtitle-template.is-active { border-color: var(--primary); color: var(--primary); background: var(--primary-50); }
+.dark .agent-subtitle-template.is-active { background: rgb(99 102 241 / .12); }
+.agent-subtitle-hint { margin: 5px 0 8px; font-size: 10.5px; color: var(--muted-foreground); }
+.agent-subtitle-edit textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 8px 10px; margin-bottom: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--card); color: var(--foreground);
+  font-family: inherit; font-size: 12px; line-height: 1.6;
+}
 
 /* ---------- Composer ---------- */
 .agent-composer { flex: none; margin: 0 18px 16px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); transition: border-color .15s ease; }

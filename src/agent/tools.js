@@ -326,6 +326,28 @@ export function describeClipProposal(clips) {
  */
 export const MAX_VIDEO_ANALYSIS_CHARS = 1_800;
 
+/**
+ * Transkrip dikirim klien, jadi diperlakukan sebagai DATA, bukan instruksi:
+ * hanya timestamp+teks yang diteruskan, dan setiap baris dipotong. Ini yang
+ * membuat model bisa memilih hook berdasarkan kalimat yang benar-benar diucapkan
+ * — sebelumnya ia hanya tahu di detik berapa ada scene cut.
+ */
+export const MAX_TRANSCRIPT_CHARS = 3_500;
+export const MAX_TRANSCRIPT_LINES = 120;
+
+export function normalizeVideoTranscript(raw) {
+  const segments = Array.isArray(raw?.segments) ? raw.segments : [];
+  const lines = [];
+  for (const segment of segments.slice(0, MAX_TRANSCRIPT_LINES)) {
+    const text = String(segment?.text || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+    const start = Number(segment?.startSec);
+    if (!text || !Number.isFinite(start) || start < 0) continue;
+    lines.push(`[${Math.round(start * 10) / 10}s] ${text}`);
+  }
+  const text = lines.join('\n').slice(0, MAX_TRANSCRIPT_CHARS);
+  return { text, segmentCount: lines.length };
+}
+
 export function normalizeVideoAnalysis(raw) {
   if (!raw || typeof raw !== 'object') return { text: '', durationSec: 0 };
   const durationSec = Number(raw.durationSec);

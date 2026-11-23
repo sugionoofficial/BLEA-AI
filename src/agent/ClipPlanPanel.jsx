@@ -3,6 +3,7 @@ import { Check, Clapperboard, Loader2, Scissors, X } from 'lucide-react';
 import { trimVideoToWebm } from '../lib/mediaTrim';
 import { uploadAttachments } from '../lib/uploads';
 import { fmtRange } from '../lib/clipPlanner';
+import { sliceTranscript, toSrt } from '../lib/subtitles';
 
 /**
  * Panel konfirmasi rencana klip. Pemotongan terjadi di sini, di browser, HANYA
@@ -10,7 +11,7 @@ import { fmtRange } from '../lib/clipPlanner';
  * mengusulkan. Worker tidak punya ffmpeg, jadi re-encode berjalan lokal lalu
  * hasilnya diunggah ke storage.
  */
-export function ClipPlanPanel({ plan, client, userId, videoName }) {
+export function ClipPlanPanel({ plan, client, userId, videoName, transcript = [] }) {
   const [selected, setSelected] = useState(() => new Set(plan.clips.map((clip) => clip.index)));
   const [working, setWorking] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -33,6 +34,22 @@ export function ClipPlanPanel({ plan, client, userId, videoName }) {
       return next;
     });
   };
+
+  /**
+   * SRT per klip: timestamp transkrip digeser agar relatif terhadap awal klip,
+   * sehingga subtitle yang diimpor CapCut langsung pas tanpa digeser manual.
+   */
+  function downloadClipSrt(clip) {
+    const cues = sliceTranscript(transcript, clip.startSec, clip.endSec);
+    if (!cues.length) return;
+    const blob = new Blob([toSrt(cues)], { type: 'application/x-subrip' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${(videoName || 'klip').replace(/\.[^.]+$/, '')}-${clip.index}.srt`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
 
   async function cutClips() {
     const chosen = plan.clips.filter((clip) => selected.has(clip.index));
@@ -91,6 +108,16 @@ export function ClipPlanPanel({ plan, client, userId, videoName }) {
                 <small>{clip.durationSec}s · {clip.reason || 'tanpa alasan'}</small>
               </span>
             </label>
+            {transcript.length > 0 && sliceTranscript(transcript, clip.startSec, clip.endSec).length > 0 && (
+              <button
+                type="button"
+                className="agent-analysis-trigger agent-clip-srt"
+                onClick={() => downloadClipSrt(clip)}
+                title="Unduh subtitle klip ini (SRT, timestamp sudah relatif ke klip)"
+              >
+                SRT
+              </button>
+            )}
           </li>
         ))}
       </ul>

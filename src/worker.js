@@ -72,6 +72,7 @@ import {
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { handleAgentTurn } from './agent/agentRoute.js';
+import { handleTranscribe } from './agent/transcribeRoute.js';
 import { buildAgentSystemPrompt } from './agent/prompts.js';
 import { availableSkills, loadSkillSection } from './agent/skills/loadSkill.js';
 import {
@@ -82,6 +83,7 @@ import {
   normalizeAgentAttachments,
   normalizeClipProposal,
   normalizeVideoAnalysis,
+  normalizeVideoTranscript,
   parseAgentToolCall,
   stripAgentToolCalls,
 } from './agent/tools.js';
@@ -4842,6 +4844,10 @@ async function handleApi(request, url, env) {
       });
     }
 
+    if (path === 'agent/transcribe' && method === 'POST') {
+      return handleTranscribe(request, env, { getUser });
+    }
+
     if (path === 'agent' && method === 'POST') {
       return handleAgentTurn(request, url, env, {
         getUser,
@@ -4871,6 +4877,7 @@ async function handleApi(request, url, env) {
         normalizeAgentAttachments,
         normalizeClipProposal,
         normalizeVideoAnalysis,
+        normalizeVideoTranscript,
         buildAttachmentContent,
         // Harga giliran opsional (credit_model_prices, modality 'agent_turn').
         chargeCredits: (envRef, userId, amount, description, generationId) => creditRpc(envRef, 'spend_credits', {

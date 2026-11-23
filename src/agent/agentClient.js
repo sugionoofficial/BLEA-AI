@@ -19,6 +19,7 @@ export async function runAgentTurn({
   blueprint = '',
   attachments = [],
   videoAnalysis = null,
+  videoTranscript = null,
   signal,
   onMeta,
   onStep,
@@ -35,7 +36,7 @@ export async function runAgentTurn({
     response = await fetch(AGENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ messages, model, provider, skill, resource, blueprint, attachments, videoAnalysis }),
+      body: JSON.stringify({ messages, model, provider, skill, resource, blueprint, attachments, videoAnalysis, videoTranscript }),
       signal,
     });
   } catch (error) {
