@@ -97,10 +97,21 @@ test('analyzeReturnUrl membedakan halaman error, host asing, dan email yang bena
   assert.equal(verification.ok, true);
   assert.equal(verification.status, 'verifikasi');
 
-  // URL sah tetapi emailnya tidak terlihat: jangan diklaim berhasil.
-  const unclear = analyzeReturnUrl('https://chatgpt.com/auth/login', email);
-  assert.equal(unclear.ok, false);
-  assert.equal(unclear.status, 'email_tidak_terlihat');
+  // Halaman awal (belum menekan Lanjutkan) tetap ditolak.
+  const landing = analyzeReturnUrl('https://chatgpt.com/auth/login', email);
+  assert.equal(landing.ok, false);
+  assert.equal(landing.status, 'halaman_awal');
+
+  // Auth0 TIDAK membawa email di URL lanjutan (hanya state=). URL seperti itu
+  // harus DITERIMA — bukan ditolak karena email tidak terlihat.
+  const advanced = analyzeReturnUrl('https://auth.openai.com/u/login/identifier?state=hKFo2SAbcdef', email);
+  assert.equal(advanced.ok, true);
+  assert.equal(advanced.status, 'lanjutan');
+  assert.equal(advanced.email_matches, false);
+  assert.match(advanced.detail, /normal, bukan kegagalan/i);
+
+  // Status lama yang mustahil dipenuhi tidak boleh kembali.
+  assert.ok(!JSON.stringify(analyzeReturnUrl('https://auth.openai.com/u/signup/password?state=x', email)).includes('email_tidak_terlihat'));
 });
 
 test('validasi email pendaftaran menolak alamat rusak dan menandai +tag', () => {

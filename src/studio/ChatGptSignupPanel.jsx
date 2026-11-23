@@ -427,6 +427,11 @@ export function ChatGptSignupPanel({ onVerified }) {
               <div className="cga-signup-confirm">
                 <label htmlFor="cga-signup-return-url">
                   URL setelah menekan <b>Lanjutkan</b> di tab ChatGPT
+                  <small className="cga-signup-hint">
+                    Yang diharapkan: halaman berikutnya, biasanya{' '}
+                    <code>auth.openai.com/u/login/…?state=…</code>. Email <b>tidak</b> muncul di URL
+                    itu — OpenAI tidak menampilkannya, dan itu normal.
+                  </small>
                 </label>
                 <div className="cga-signup-confirm-row">
                   <input
