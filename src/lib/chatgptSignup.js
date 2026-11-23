@@ -490,7 +490,7 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
       code,
       cause: hasPendingAttempt
         ? 'OpenAI mengembalikan state yang tidak cocok dengan percobaan login yang dikirim dari perangkat ini — biasanya karena halaman OAuth dibuka ulang/duplikat, atau callback diselesaikan di perangkat/tab lain.'
-        : 'OpenAI tidak mengenali state itu, dan tidak ada percobaan OAuth yang sah dari perangkat ini. URL authorize dibuka tanpa percobaan yang tercatat (mis. URL lama dari riwayat, bookmark, atau tab hasil duplikat), atau percobaannya sudah lebih dari 30 menit.',
+        : 'Tidak ada percobaan OAuth yang sah dari perangkat ini, jadi state ini bukan milik BLEA. Pada halaman daftar/verifikasi (mis. /email-verification?auth_page=…) state itu milik sesi tab OpenAI sendiri: tab ditutup lalu dipulihkan dari riwayat, formulir dibuka dua kali, atau sesinya sudah kedaluwarsa. Pada halaman authorize, kemungkinan URL lama dibuka lagi atau percobaannya sudah lewat 30 menit.',
       fix: hasPendingAttempt
         ? 'Tutup tab ChatGPT/OAuth yang lama, lalu tekan Continue with ChatGPT SEKALI dan selesaikan di tab itu sampai kembali ke BLEA.'
         : 'Tekan Continue with ChatGPT sampai halaman izin OpenAI terbuka, jangan menyimpan atau membuka ulang URL-nya, dan jangan menekan tombol itu dua kali (dua percobaan = dua state).',
@@ -600,6 +600,14 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
   const expected = cleanText(expectedEmail, 320).toLowerCase();
   const emailMatches = Boolean(expected) && whole.includes(expected);
   const stillError = /\/auth\/error/.test(path) || /error=/.test(parsed.search);
+  // Halaman "Session ended" milik OpenAI (mis. `/email-verification`) TIDAK
+  // memuat kata "error" di path maupun query — hanya judulnya yang berkata
+  // begitu, dan `auth_page=…` hanyalah penanda sesi tab yang sudah mati.
+  // URL semacam itu tidak membawa `state` dan tidak menyebut email apa pun,
+  // jadi tidak bisa dipakai melanjutkan daftar. Kalau URL-nya menyebut email
+  // (`?email=…`), halaman itu masih bisa dikenali sebagai tahap verifikasi.
+  const endsSession = /\/(email-verification|session-ended)(\/|$)/.test(path);
+  const sessionEnded = endsSession && !/state=/.test(parsed.search) && !emailMatches;
   const verification = /verify|verification|confirm|check.?email|email-verification/.test(`${path} ${whole}`);
   const password = /password|create-account|signup\/password/.test(`${path} ${whole}`);
   // Halaman awal: pengguna baru membuka formulir dan belum menekan Continue.
@@ -612,6 +620,16 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
 
   if (!openAiHost) {
     return { ok: false, status: 'host_asing', detail: `Host ${host} bukan domain OpenAI/ChatGPT.`, email_matches: false };
+  }
+  if (sessionEnded) {
+    return {
+      ok: false,
+      status: 'sesi_berakhir',
+      detail: 'Itu halaman “Session ended” milik OpenAI: sesi login di tab itu sudah tidak berlaku. '
+        + 'Tab lama tidak bisa dilanjutkan — buka lagi dari panel (tab BARU, bukan dari riwayat) dan '
+        + 'jangan menutup tab TempMail.',
+      email_matches: emailMatches,
+    };
   }
   if (stillError) {
     return {
