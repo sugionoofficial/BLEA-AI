@@ -122,6 +122,28 @@ halaman error?"*: di sana ada langkah mengambil `csrfToken` sendiri
 (`GET /api/auth/csrf`) dan formulir `POST` yang sah. Token itu diambil browser
 pada saat itu juga — BLEA tidak pernah menyimpan atau mengirimkannya.
 
+## Email verifikasi tidak muncul di TempMail (alias Gmail `+tag`)
+
+Gmail membuang plus-tag saat menyimpan alamat tujuan: pesan ke
+`nama+1@gmail.com` sering tersimpan sebagai `nama@gmail.com`. Akibatnya
+pencarian lama (`to:nama+1@gmail.com`) mengembalikan nol hasil walau emailnya
+ada — "Cari email verifikasi" melaporkan tidak ada pesan.
+
+Perbaikan di `src/lib/gmailProvider.js`:
+
+- **Pencarian** memakai alamat dasar + `deliveredto:<alias lengkap>`, lalu
+  mundur ke `to:<alamat dasar>` bila hasil pertama kosong.
+- **Pencocokan penerima** berlapis: header yang masih memuat tag (cocok),
+  tag muncul di subject/snippet (cocok), atau alamat dasar cocok tanpa jejak
+  tag → hanya cocok pada `matchMode: 'loose'`.
+- `/api/tempmail` tetap **ketat** (hanya pesan untuk alias `+tag`), sedangkan
+  pembaca pendaftaran (`/api/chatgpt-signup`) memakai **longgar**, karena ia
+  memang harus menemukan email verifikasi yang tag-nya sudah dibuang Gmail.
+
+Kalau masih kosong: periksa tag Gmail (mis. `+1`), tunggu beberapa menit,
+lalu tekan **Cari email verifikasi** lagi. Kalau tetap kosong, email-nya tidak
+pernah sampai — itu sisi OpenAI/Gmail, bukan panel ini.
+
 ## Catatan operasional
 
 - Alamat Gmail `+tag` ditandai di UI: sebagian formulir OpenAI menolak tanda

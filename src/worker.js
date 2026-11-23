@@ -184,7 +184,9 @@ async function tempmailInboxReader(env, user) {
       if (!connection || !aliasBelongsToGmailConnection(alias, connection)) {
         throw Object.assign(new Error('Koneksi Gmail tidak cocok dengan akhiran yang aktif. Hubungkan ulang Gmail atau buat akhiran baru.'), { status: 409 });
       }
-      return listGmailMessages(env, connection, alias.email);
+      // Mode longgar: pendaftaran butuh melihat email verifikasi walau Gmail
+      // membuang plus-tag dari alamat tujuan.
+      return listGmailMessages(env, connection, alias.email, { matchMode: 'loose' });
     }
     const credentials = parseMailtmCredentials(alias.token);
     return fetchMailtmMessages(credentials.token);
@@ -290,6 +292,9 @@ async function handleTempmail(request, url, env) {
       if (alias.provider === 'gmailapi') {
         const connection = await getGmailConnection(env, user.id);
         if (!connection || !aliasBelongsToConnection(alias, connection)) return respond({ error: 'Koneksi Gmail tidak cocok dengan akhiran yang aktif. Hubungkan ulang Gmail atau buat akhiran baru.' }, 409);
+        // Tetap mode ketat: halaman TempMail hanya menampilkan pesan untuk
+        // alias +tag. Mode longgar dipakai khusus pembaca pendaftaran, yang
+        // perlu email verifikasi walau Gmail membuang tag dari alamat tujuan.
         if (action === 'messages') result = await listGmailMessages(env, connection, alias.email);
         else {
           const messageId = String(url.searchParams.get('messageId') || '');

@@ -537,24 +537,71 @@ const EMAIL_ADDRESS_RE = /[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/gi;
 /* Gmail API memakai scope gmail.readonly untuk SELURUH mailbox akun yang
    terhubung. Karena itu hasil pencarian tidak boleh langsung dipercaya:
    setiap pesan harus benar-benar ditujukan ke alias milik user ini. */
-function recipientMatchesAlias(headers, aliasEmail) {
-    const expected = String(aliasEmail || "").trim().toLowerCase();
-    if (!expected) return false;
-    const recipientHeaders = [
-        "to", "delivered-to", "x-original-to", "x-forwarded-to",
-        "cc", "bcc", "resent-to"
-    ];
-    return recipientHeaders.some(key => {
+function splitAddress(value) {
+    const address = String(value || "").trim().toLowerCase();
+    const at = address.lastIndexOf("@");
+    if (at <= 0) return { local: address, domain: "" };
+    const local = address.slice(0, at);
+    const plus = local.indexOf("+");
+    return {
+        local: plus > 0 ? local.slice(0, plus) : local,
+        domain: address.slice(at + 1),
+        tag: plus > 0 ? local.slice(plus + 1) : "",
+    };
+}
+
+/* Header yang biasanya MEMPERTAHANKAN plus-tag (dicatat Gmail saat pengiriman). */
+const TAG_AWARE_HEADERS = ["delivered-to", "x-original-to", "x-forwarded-to", "resent-to", "to"];
+
+/* Dipakai hanya bila header penerima sudah kehilangan tag: carilah tag di
+   header lain, subject, atau snippet sebelum menyimpulkan pesan ini milik alias. */
+function messageMentionsTag(source, tag) {
+    const needle = String(tag || "").toLowerCase();
+    if (!needle) return false;
+    const hay = String(source || "").toLowerCase();
+    // Tag harus muncul sebagai `+tag` diikuti batas kata, bukan potongan kata lain.
+    return new RegExp(`\\+${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9_-])`).test(hay);
+}
+
+/* Gmail kadang membuang plus-tag pada alamat tujuan (`nama+1@gmail.com`
+   tersimpan sebagai `nama@gmail.com`). Pemeriksaan karena itu berlapis:
+     1. ada header penerima yang masih memuat alamat lengkap dengan tag → cocok;
+     2. tag ditemukan di header/subject/snippet pesan → cocok;
+     3. alamat dasar sama TANPA jejak tag apa pun dan alias memang ber-tag →
+        hanya cocok bila tanda tangan tidak diminta (mode longgar), atau
+        `strict && fallbackBase` diizinkan pemanggil.
+   Pesan ke alamat dasar tanpa tag tidak boleh otomatis dianggap milik alias
+   `+tag` — itu akan membocorkan email pribadi ke halaman TempMail.
+*/
+function matchesAlias(headers, aliasEmail, { tagSource = "", strict = true, allowBaseFallback = false } = {}) {
+    const expected = splitAddress(aliasEmail);
+    if (!expected.local || !expected.domain) return false;
+    const readHeader = (key) => {
         const matches = [...String(headers[key] || "").matchAll(EMAIL_ADDRESS_RE)];
-        return matches.some(match => String(match[0]).toLowerCase() === expected);
-    });
+        return matches.map((match) => splitAddress(match[0]))
+            .filter((found) => found.local === expected.local && found.domain === expected.domain);
+    };
+    const tagged = TAG_AWARE_HEADERS.some((key) => readHeader(key).some((found) => found.tag));
+    if (tagged) return true;
+    if (expected.tag && messageMentionsTag(`${tagSource} ${Object.values(headers).join(" ")}`, expected.tag)) return true;
+    const baseMatch = TAG_AWARE_HEADERS.some((key) => readHeader(key).length > 0);
+    if (!baseMatch) return false;
+    // Alamat dasar cocok tetapi tanpa jejak tag.
+    if (!expected.tag) return true;               // alias tanpa tag: sah
+    if (allowBaseFallback) return true;           // pemanggil menerima risiko
+    return !strict ? true : false;
+}
+
+/* Versi ringkas untuk pemanggil lama (mis. /api/tempmail mode ketat). */
+function recipientMatchesAlias(headers, aliasEmail) {
+    return matchesAlias(headers, aliasEmail, { strict: true });
 }
 
 function notAliasMessageError(status = 404) {
     return configError(
         "Pesan tidak ditemukan untuk alamat TempMail ini.",
         status,
-        "Gmail API punya akses baca ke seluruh mailbox; Worker hanya menampilkan pesan yang benar-benar ditujukan ke alias plus-addressing milik akun ini."
+        "Gmail API punya akses baca ke seluruh mailbox; Worker hanya menampilkan pesan yang ditujukan ke alamat dasar + domain milik akun ini (Gmail membuang plus-tag saat menyimpan)."
     );
 }
 
@@ -587,17 +634,52 @@ function gmailMessagePath(messageId, params) {
     return `/users/me/messages/${encodeURIComponent(messageId)}?${search.toString()}`;
 }
 
-export async function listGmailMessages(env, connection, aliasEmail) {
+/* Gmail TIDAK menyimpan plus-tag apa adanya: pesan ke `nama+1@gmail.com`
+   sering tercatat sebagai `nama@gmail.com` (tag dibuang), dan pencarian
+   `to:nama+1@gmail.com` karena itu tidak menemukan apa pun — pesan ada, filter
+   yang salah. Query dibangun dari alamat DASAR ditambah syarat `deliveredto:`
+   untuk tag tersebut, lalu setiap pesan tetap diperiksa ulang lewat
+   recipientMatchesAlias(). */
+function gmailSearchQueries(aliasEmail) {
+    const address = String(aliasEmail || "").trim().toLowerCase();
+    const at = address.lastIndexOf("@");
+    const plus = address.indexOf("+");
+    if (at <= 0) return [`to:${address}`];
+    const base = plus > 0 && plus < at ? `${address.slice(0, plus)}${address.slice(at)}` : address;
+    const queries = [
+        // Paling tepat: alamat dasar + deliveredto (tag).
+        plus > 0 && plus < at ? `to:${base} deliveredto:${address}` : `to:${base}`,
+        // Alamat dasar saja: menangkap pesan yang tag-nya sudah dinormalkan.
+        `to:${base}`,
+    ];
+    return [...new Set(queries)];
+}
+
+/**
+ * @param {object} options
+ * @param {'strict'|'loose'} [options.matchMode]  `strict` (default) hanya
+ *   menampilkan pesan yang benar-benar untuk alias `+tag`; `loose` juga
+ *   menampilkan pesan ke alamat dasar, untuk halaman TempMail milik admin
+ *   sendiri yang butuh melihat email verifikasi walau tag dibuang Gmail.
+ */
+export async function listGmailMessages(env, connection, aliasEmail, { matchMode = "strict" } = {}) {
+    const loose = matchMode === "loose";
     const refreshToken = await decryptRefreshToken(connection, env);
     const accessToken = await gmailAccessToken(env, refreshToken);
-    const query = new URLSearchParams({
-        q: `to:${aliasEmail}`,
-        maxResults: "20"
-    });
-    const list = await gmailFetch(accessToken, `/users/me/messages?${query.toString()}`);
-    const ids = (Array.isArray(list.messages) ? list.messages : [])
-        .map(item => String(item?.id || ""))
-        .filter(Boolean);
+    const ids = [];
+    const seen = new Set();
+    for (const q of gmailSearchQueries(aliasEmail)) {
+        const query = new URLSearchParams({ q, maxResults: "20" });
+        const list = await gmailFetch(accessToken, `/users/me/messages?${query.toString()}`);
+        for (const item of Array.isArray(list?.messages) ? list.messages : []) {
+            const id = String(item?.id || "");
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            ids.push(id);
+        }
+        // Sudah dapat kiriman untuk tag ini: tidak perlu query yang lebih longgar.
+        if (ids.length) break;
+    }
 
     const metadataParams = new URLSearchParams({ format: "metadata" });
     for (const header of [
@@ -619,7 +701,15 @@ export async function listGmailMessages(env, connection, aliasEmail) {
             to: aliasEmail,
             preview: String(message.snippet || "").replace(/\s+/g, " ").trim().slice(0, 180),
             createdAt: headers.date || null,
-            matchesAlias: recipientMatchesAlias(headers, aliasEmail)
+            // Mode longgar: pesan ke alamat dasar tetap ditampilkan karena
+            // Gmail bisa menghapus tag sebelum penyimpanan. Ini hanya dipakai
+            // untuk membaca inbox TempMail milik admin sendiri.
+            matchesAlias: matchesAlias(headers, aliasEmail, {
+                tagSource: `${headers.subject || ""} ${message.snippet || ""}`,
+                // matchesAlias({ strict }) = "tolak pesan tanpa jejak tag".
+                strict: !loose,
+                allowBaseFallback: loose,
+            })
         };
     }));
     return messages
@@ -635,7 +725,7 @@ export async function getGmailMessage(env, connection, aliasEmail, messageId) {
         gmailMessagePath(messageId, { format: "full" })
     );
     const headers = headerMap(message?.payload?.headers ?? message?.headers);
-    if (!recipientMatchesAlias(headers, aliasEmail)) {
+    if (!matchesAlias(headers, aliasEmail, { tagSource: `${headers.subject || ""} ${message?.snippet || ""}`, strict: false, allowBaseFallback: true })) {
         throw notAliasMessageError();
     }
     const collected = { text: [], html: [], attachments: [] };
