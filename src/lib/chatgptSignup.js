@@ -22,9 +22,11 @@
 //      langsung ditahan captcha.
 //
 // Jadi:
-//   • `buildSignupUrl` menghasilkan URL HALAMAN (/auth/login) yang memang bisa
-//     dibuka dengan GET oleh siapa pun, membawa email TempMail sebagai
-//     `login_hint`.
+//   • `buildSignupUrl` menghasilkan URL HALAMAN formulir (auth.openai.com/log-in)
+//     yang memang bisa dibuka dengan GET oleh siapa pun — bukan endpoint POST.
+//     `chatgpt.com/auth/login` ditinggalkan sebagai tombol utama setelah dua
+//     kegagalan nyata: halaman error "tidak dapat menyiapkan pemuatan ini", lalu
+//     (setelah cookie dihapus) tab dilempar ke beranda tanpa formulir.
 //   • Di halaman itu, browser sendirilah yang mengambil csrfToken dan mem-POST
 //     formulir — jalur yang sah, dengan cookie & Turnstile milik pengguna.
 //   • `buildSigninBootstrap` menyediakan langkah yang sama untuk kasus halaman
@@ -38,6 +40,17 @@
 export const SIGNUP_REQUEST_URL = 'https://chatgpt.com/api/auth/signin/openai';
 // Halaman yang memang bisa dibuka dengan GET. Ini yang dipakai tombol utama.
 export const SIGNUP_PAGE_URL = 'https://chatgpt.com/auth/login';
+/**
+ * Halaman formulir Auth0 milik OpenAI ("Welcome back" / "Create your account").
+ *
+ * Kenapa ini yang dipakai, bukan /auth/login: dua percobaan nyata menunjukkan
+ * /auth/login?prompt=login&screen_hint=signup berakhir di halaman error
+ * ("Kami tidak dapat menyiapkan pemuatan ini") dan, setelah cookie dihapus,
+ * langsung melempar tab ke beranda chatgpt.com tanpa formulir sama sekali.
+ * Halaman ini adalah formulir yang sama dengan yang dipakai tombol "Log in"
+ * di chatgpt.com — bukan endpoint POST, jadi sah dibuka dengan GET.
+ */
+export const SIGNUP_FORM_URL = 'https://auth.openai.com/log-in';
 export const SIGNUP_CSRF_URL = 'https://chatgpt.com/api/auth/csrf';
 export const SIGNUP_STEPS = [
   'dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi', 'dilewati',
@@ -62,6 +75,21 @@ function cleanText(value, max) {
  * tidak ada token di URL.
  */
 export function buildSignupUrl(email, { authSessionLoggingId = '' } = {}) {
+  const address = cleanText(email, 320).toLowerCase();
+  // Formulir Auth0 tidak punya jaminan menerima `login_hint`, dan parameter
+  // karangan bisa memicu halaman error. Yang terbukti hanya: URL polos ini
+  // menampilkan formulir "Welcome back" beserta tautan Sign up.
+  void address;
+  void authSessionLoggingId;
+  return SIGNUP_FORM_URL;
+}
+
+/**
+ * URL lama `chatgpt.com/auth/login` — DIPERTAHANKAN hanya sebagai rujukan dan
+ * untuk laporan `signupConfig`, bukan tombol utama. Dua kegagalan nyata sudah
+ * terjadi di sana, jadi jangan dipakai lagi tanpa bukti baru.
+ */
+export function buildLegacySignupUrl(email, { authSessionLoggingId = '' } = {}) {
   const address = cleanText(email, 320).toLowerCase();
   const params = new URLSearchParams({ prompt: 'login', screen_hint: 'signup' });
   const loggingId = cleanText(authSessionLoggingId, 64);
@@ -103,7 +131,7 @@ export const EMAIL_INPUT_SELECTORS = [
  * pengguna mengetik sendiri.
  *
  * Batasannya disengaja: hanya mengisi kolom dan memfokuskan; TIDAK menekan
- * "Lanjutkan", TIDAK mengirim formulir, TIDAK membaca cookie/token, dan TIDAK
+ * "Continue", TIDAK mengirim formulir, TIDAK membaca cookie/token, dan TIDAK
  * menyimpan apa pun. Pengguna tetap menekan tombolnya sendiri.
  *
  * Keamanan: email sudah lolos validasi (tanpa kutip, backslash, kurung kurawal,
@@ -137,7 +165,7 @@ export function buildAutofillBookmarklet(email) {
  * Userscript dipasang sekali, lalu berjalan sendiri setiap halaman login
  * ChatGPT dibuka: tidak ada seret, tidak ada tempel.
  *
- * Batasannya tetap sama: hanya mengisi kolom email, tidak menekan "Lanjutkan",
+ * Batasannya tetap sama: hanya mengisi kolom email, tidak menekan "Continue",
  * tidak mengirim formulir, tidak membaca cookie/token, tidak mengirim data ke
  * mana pun. Pengguna tetap menekan tombolnya sendiri.
  */
@@ -151,7 +179,7 @@ export function buildAutofillUserscript(email, { origin = '' } = {}) {
 // @name         BLEA — isi email ChatGPT
 // @namespace    blea-ai
 // @version      1.0
-// @description  Mengisi kolom email di halaman login/daftar ChatGPT dengan email TempMail. Tidak menekan Lanjutkan.
+// @description  Mengisi kolom email di formulir login/daftar OpenAI dengan email TempMail. Tidak menekan Continue.
 // @match        https://chatgpt.com/*
 // @match        https://auth.openai.com/*
 // @run-at       document-idle
@@ -233,10 +261,10 @@ export function buildSigninBootstrap(email) {
     // Jalur otomatis tanpa seret/tempel: dipasang sekali di Tampermonkey.
     autofill_userscript: buildAutofillUserscript(address),
     steps: [
-      'Isi kolom "Alamat email" di ChatGPT: tempel manual, atau seret tombol "Isi email otomatis" di panel ke bilah bookmark lalu klik di tab ChatGPT.',
-      'Tekan "Lanjutkan" di tab ChatGPT (BLEA tidak pernah menekan tombol itu untuk Anda).',
-      'Salin URL halaman hasil lalu tempel di kolom "URL setelah menekan Lanjutkan" di panel ini.',
-      'Panel cocokkan email dan domain, lalu menandai permintaan sebagai "email dikirim".',
+      'Tempel email TempMail di kolom "Alamat email" pada tab formulir OpenAI (tempel manual, atau pakai tombol "Isi email otomatis" di panel setelah tab formulir terbuka).',
+      'Tekan "Continue" di tab itu (BLEA tidak pernah menekan tombol itu untuk Anda).',
+      'Salin URL halaman hasil lalu tempel di kolom "URL setelah menekan Continue" di panel ini.',
+      'Panel cocokkan domain, lalu menandai permintaan sebagai "email dikirim".',
     ],
     csrf: '',
   };
@@ -248,13 +276,15 @@ export function buildSigninBootstrap(email) {
  */
 export function signupConfig() {
   return {
-    signup_url: SIGNUP_PAGE_URL,
+    signup_url: SIGNUP_FORM_URL,
+    legacy_login_url: SIGNUP_PAGE_URL,
     signin_endpoint: SIGNUP_REQUEST_URL,
     csrf_url: SIGNUP_CSRF_URL,
     method_used_by_browser: 'GET',
     supported: {
       build_signup_link: true,
-      login_hint: true,
+      // login_hint TIDAK dijanjikan: formulir Auth0 tidak terbukti memakainya.
+      login_hint: false,
       server_side_post: false,
       headless_signup: false,
       captcha_bypass: false,
@@ -416,7 +446,7 @@ export function validateSignupInput(input = {}) {
 }
 
 /**
- * Baca URL hasil klik "Lanjutkan" di halaman ChatGPT, untuk memastikan langkah
+ * Baca URL hasil klik "Continue" di formulir OpenAI, untuk memastikan langkah
  * benar-benar sampai ke tahap berikutnya (bukan tetap di halaman error).
  *
  * Yang diperiksa hanya hal yang bisa dibuktikan dari URL: domain OpenAI dan
@@ -445,8 +475,12 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
   const stillError = /\/auth\/error/.test(path) || /error=/.test(parsed.search);
   const verification = /verify|verification|confirm|check.?email|email-verification/.test(`${path} ${whole}`);
   const password = /password|create-account|signup\/password/.test(`${path} ${whole}`);
-  // Halaman awal: pengguna baru membuka formulir dan belum menekan Lanjutkan.
-  const landing = /^\/auth\/(login|signup|log-in)?\/?$/.test(path) || path === '/';
+  // Halaman awal: pengguna baru membuka formulir dan belum menekan Continue.
+  // Termasuk formulir Auth0 (`/log-in`, `/create-account`) yang sekarang
+  // menjadi halaman pertama, dan `chatgpt.com/auth/login` yang lama.
+  const landing = /^\/auth\/(login|signup|log-in)?\/?$/.test(path)
+    || /^\/(log-in|create-account)\/?$/.test(path)
+    || path === '/';
 
   if (!openAiHost) {
     return { ok: false, status: 'host_asing', detail: `Host ${host} bukan domain OpenAI/ChatGPT.`, email_matches: false };
@@ -463,7 +497,7 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
     return {
       ok: false,
       status: 'halaman_awal',
-      detail: 'Itu masih halaman awal. Isi email, tekan Lanjutkan, lalu salin URL halaman berikutnya.',
+      detail: 'Itu masih halaman awal (formulir email). Isi email, tekan Continue, lalu salin URL halaman berikutnya.',
       email_matches: emailMatches,
     };
   }

@@ -2,13 +2,14 @@
 //
 // Lihat src/lib/chatgptSignup.js untuk alasan mengapa server TIDAK mem-POST ke
 // chatgpt.com. Modul ini hanya:
-//   1. menyiapkan URL halaman daftar resmi dengan `login_hint` = email TempMail;
+//   1. menyiapkan URL HALAMAN formulir resmi OpenAI (auth.openai.com/log-in);
 //   2. mencatat langkah manual admin (dibuka → email dikirim → menunggu → terverifikasi);
 //   3. mencocokkan pesan verifikasi di inbox TempMail.
 //
 // Inbox dibaca lewat `listInbox` yang disuntikkan Worker (jalur TempMail yang
-// sudah ada: mail.tm atau Gmail alias + pemeriksaan pemilik alias). Modul ini
-// tidak menyimpan isi email, kode verifikasi, atau cookie sesi apa pun.
+// sudah ada: mail.tm atau Gmail alias + pemeriksaan pemilik alias). Kode
+// verifikasi disimpan (kolom `verification_code`, sekali pakai, bukan
+// kredensial login); isi email dan cookie sesi tidak pernah disimpan.
 
 import {
   analyzeReturnUrl,
@@ -111,9 +112,10 @@ async function saveAttempt(env, userId, input) {
   });
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) throw fail('Permintaan pendaftaran gagal disimpan.', 500);
-  // `url` adalah halaman login (GET), bukan endpoint POST NextAuth — lihat
-  // catatan di chatgptSignup.js. `signin` berisi langkah manual bila
-  // login_hint diabaikan oleh halaman itu.
+  // `url` adalah HALAMAN formulir OpenAI (GET), bukan endpoint POST NextAuth —
+  // lihat catatan di chatgptSignup.js. `signin` berisi langkah manual yang sama
+  // (nama field `login_hint` di sana hanya mengikuti formulir NextAuth, bukan
+  // janji bahwa email akan terisi).
   return {
     attempt: normalizeSignupRequest(row),
     url: signupUrl,

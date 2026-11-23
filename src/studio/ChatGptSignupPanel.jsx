@@ -24,9 +24,10 @@ const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifi
 // Ditampilkan sebelum server menjawab, supaya batasan ini terlihat sejak awal
 // (bukan hanya setelah /api/chatgpt-signup selesai dimuat).
 const DEFAULT_LIMITS = [
-  'Yang dibuka adalah halaman /auth/login milik ChatGPT, bukan endpoint POST /api/auth/signin/openai — endpoint itu wajib csrfToken, kalau tidak hasilnya halaman "tidak dapat memproses upaya masuk".',
+  'Yang dibuka adalah HALAMAN formulir auth.openai.com/log-in, bukan endpoint POST /api/auth/signin/openai — endpoint itu wajib csrfToken, kalau tidak hasilnya halaman "tidak dapat memproses upaya masuk".',
   'BLEA tidak mem-POST pendaftaran dari server: Worker diblokir ke domain OpenAI dan Turnstile tidak bisa dilewati.',
-  'Akun dibuat hanya bila formulir dikirim dari browser Anda dan kode verifikasi ditempel sendiri di tab ChatGPT.',
+  'Akun dibuat hanya bila formulir dikirim dari browser Anda dan kode verifikasi ditempel sendiri di tab OpenAI.',
+  'Halaman formulir yang dibuka adalah auth.openai.com/log-in (halaman yang sama dengan tombol "Log in" di chatgpt.com). Halaman lama chatgpt.com/auth/login pernah berakhir di error "tidak dapat menyiapkan pemuatan ini" dan, setelah cookie dihapus, langsung melempar tab ke beranda tanpa formulir.',
   'Alamat +tag Gmail bisa ditolak formulir OpenAI; gunakan alias TempMail tanpa tanda + bila itu terjadi.',
 ];
 
@@ -41,9 +42,11 @@ function toneOf(step) {
  * `chatgpt.com/api/auth/signin/openai?...` dengan GET. Itu endpoint POST
  * NextAuth, jadi tanpa csrfToken halaman selalu berakhir di
  * "Kami tidak dapat memproses upaya masuk Anda" dan email tidak pernah
- * terkirim. Sekarang yang dibuka adalah HALAMAN `/auth/login` (bisa GET),
- * lalu langkah berikutnya diverifikasi lewat URL setelah pengguna menekan
- * "Lanjutkan" — bukan diklaim berhasil tanpa bukti.
+ * terkirim. Percobaan berikutnya menunjukkan `chatgpt.com/auth/login` juga
+ * gagal (halaman error, lalu tab dilempar ke beranda setelah cookie dihapus),
+ * jadi yang dibuka sekarang adalah HALAMAN formulir `auth.openai.com/log-in`.
+ * Langkah berikutnya diverifikasi lewat URL setelah pengguna menekan
+ * "Continue" — bukan diklaim berhasil tanpa bukti.
  */
 export function ChatGptSignupPanel({ onVerified }) {
   const [config, setConfig] = useState(null);
@@ -153,8 +156,8 @@ export function ChatGptSignupPanel({ onVerified }) {
     setReturnUrl('');
     setReturnAnalysis(null);
     setNotice(res.data?.plus_address
-      ? 'Halaman login ChatGPT dibuka, tetapi alamat ini memakai +tag dan sebagian formulir OpenAI menolak tanda +. Tempel emailnya di kolom "Alamat email" (login_hint diabaikan OpenAI), lalu tekan Lanjutkan.'
-      : 'Halaman login ChatGPT dibuka. Tempel email TempMail di kolom "Alamat email" (OpenAI mengabaikan login_hint, jadi kolom itu kosong), tekan Lanjutkan, lalu tempel URL hasilnya di bawah.');
+      ? 'Formulir OpenAI dibuka. Alamat ini memakai +tag, dan sebagian formulir OpenAI menolak tanda + — kalau ditolak, ganti alias tanpa + di TempMail. Tempel emailnya di kolom "Email address", lalu tekan Continue.'
+      : 'Formulir OpenAI dibuka. Tempel email TempMail di kolom "Email address", lalu tekan Continue. Kalau yang tampil "Welcome back", tekan tautan "Sign up" di bawah tombol Continue lebih dulu.');
     if (url && pendingTab) {
       pendingTab.location.replace(url);
     } else if (url) {
@@ -305,7 +308,7 @@ export function ChatGptSignupPanel({ onVerified }) {
           <h2>Daftar ChatGPT dengan email TempMail</h2>
           <p>
             Jalur utamanya sederhana: <b>isi email manual</b>. Satu tombol membuka halaman
-            login/daftar ChatGPT, Anda salin-tempel email TempMail, tekan <b>Lanjutkan</b>, lalu
+            formulir OpenAI (auth.openai.com), Anda salin-tempel email TempMail, tekan <b>Continue</b>, lalu
             tempel URL hasilnya di sini supaya langkahnya terbukti — panel memantau inbox untuk
             email verifikasi. Bingkai otomatis (userscript/bookmarklet) hanya opsi tambahan,
             tidak wajib. Pendaftaran dikirim dari browser Anda, bukan dari server BLEA.
@@ -349,13 +352,14 @@ export function ChatGptSignupPanel({ onVerified }) {
                 : 'Belum ada alias TempMail aktif. Buat dulu di halaman TempMail supaya email verifikasi bisa dibaca.'}
             </small>
           </div>
-          {/* Fakta yang sudah terbukti dari percobaan: parameter login_hint
-              diabaikan halaman /auth/login, kolom "Alamat email" tetap kosong.
-              Jangan menjanjikan isian otomatis. */}
+          {/* Fakta yang sudah terbukti dari percobaan: kolom email tetap kosong
+              dan parameter login_hint tidak terbukti dipakai formulir OpenAI.
+              Jangan menjanjikan isian otomatis, dan jangan mengarang sebabnya. */}
           <small className="cga-signup-hint">
-            Kolom <b>Alamat email</b> di ChatGPT <b>tidak terisi otomatis</b>: halaman BLEA tidak
-            boleh menyentuh DOM <code>chatgpt.com</code> (same-origin policy), dan OpenAI mengabaikan
-            <code>login_hint</code>. <b>Cukup tempel manual</b> — itu sudah benar dan paling cepat.
+            Kolom email di halaman OpenAI <b>tidak terisi otomatis</b>: halaman BLEA tidak boleh
+            menyentuh DOM domain lain (same-origin policy), dan parameter{' '}
+            <code>login_hint</code> tidak terbukti dipakai formulir OpenAI.{' '}
+            <b>Cukup tempel manual</b> — itu sudah benar dan paling cepat.
           </small>
           <details className="cga-signup-optional">
             <summary>Opsional: isi otomatis (tidak wajib)</summary>
@@ -363,7 +367,7 @@ export function ChatGptSignupPanel({ onVerified }) {
               Tempel manual sudah cukup. Bagian ini hanya untuk yang malas mengetik ulang:
               <b> Jalur A</b> userscript Tampermonkey (mengisi sendiri tiap halaman dibuka),
               <b> Jalur B</b> bookmarklet (tanpa ekstensi, diklik tiap kali). Keduanya hanya
-              mengisi kolom email — <b>Lanjutkan</b> tetap Anda yang tekan.
+              mengisi kolom email — <b>Continue</b> tetap Anda yang tekan.
             </p>
             <div className="cga-signup-bookmarklet-row">
               <button type="button" className="cga-signup-userscript" onClick={downloadUserscript} disabled={userscriptBusy || !email.trim()}>
@@ -401,7 +405,7 @@ export function ChatGptSignupPanel({ onVerified }) {
         </label>
         <div className="cga-signup-links">
           <a href="/tempmail" target="_blank" rel="noreferrer">Buka halaman TempMail <ExternalLink size={12} /></a>
-          <a href="https://chatgpt.com/auth/login" target="_blank" rel="noreferrer">Halaman login ChatGPT <ExternalLink size={12} /></a>
+          <a href="https://auth.openai.com/log-in" target="_blank" rel="noreferrer">Formulir login OpenAI <ExternalLink size={12} /></a>
         </div>
       </div>
 
@@ -458,11 +462,12 @@ export function ChatGptSignupPanel({ onVerified }) {
                   disiapkan" padahal browser berhenti di halaman error. */}
               <div className="cga-signup-confirm">
                 <label htmlFor="cga-signup-return-url">
-                  URL setelah menekan <b>Lanjutkan</b> di tab ChatGPT
+                  URL setelah menekan <b>Continue</b> di tab OpenAI
                   <small className="cga-signup-hint">
                     Yang diharapkan: halaman berikutnya, biasanya{' '}
-                    <code>auth.openai.com/u/login/…?state=…</code>. Email <b>tidak</b> muncul di URL
-                    itu — OpenAI tidak menampilkannya, dan itu normal.
+                    <code>auth.openai.com/u/…?state=…</code>. Kalau URL masih{' '}
+                    <code>auth.openai.com/log-in</code>, artinya Continue belum ditekan. Email{' '}
+                    <b>tidak</b> muncul di URL lanjutan — itu normal.
                   </small>
                 </label>
                 <div className="cga-signup-confirm-row">
