@@ -18,10 +18,12 @@ export async function runAgentTurn({
   resource = '',
   blueprint = '',
   attachments = [],
+  videoAnalysis = null,
   signal,
   onMeta,
   onStep,
   onSkill,
+  onClips,
   onDelta,
   onDone,
 }) {
@@ -33,7 +35,7 @@ export async function runAgentTurn({
     response = await fetch(AGENT_ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ messages, model, provider, skill, resource, blueprint, attachments }),
+      body: JSON.stringify({ messages, model, provider, skill, resource, blueprint, attachments, videoAnalysis }),
       signal,
     });
   } catch (error) {
@@ -71,6 +73,7 @@ export async function runAgentTurn({
     if (event.type === 'meta') onMeta?.(event);
     else if (event.type === 'step') onStep?.(event);
     else if (event.type === 'skill') onSkill?.(event);
+    else if (event.type === 'clips') onClips?.(event);
     else if (event.type === 'delta' && event.text) onDelta?.(event.text);
     else if (event.type === 'done') done = event;
     else if (event.type === 'error') streamError = event.error || 'Agen gagal menyelesaikan giliran ini.';

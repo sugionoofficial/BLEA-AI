@@ -13,6 +13,7 @@
 //   {type:'meta',     model, provider, skills?, fallback?, credits?, attachments?}
 //   {type:'step',     index, label, status:'start'|'done'|'error', detail, progress?}
 //   {type:'skill',    id, resource, source}
+//   {type:'clips',    clips, sourceUrl, durationSec}   // rencana klip, menunggu konfirmasi
 //   {type:'delta',    text}
 //   {type:'done',     ok, reply, actions, skills, stopReason, model, provider}
 //   {type:'error',    error, code}
@@ -71,6 +72,10 @@ export async function handleAgentTurn(request, url, env, deps) {
   const pinnedSkill = String(body.skill || '').trim();
   const pinnedResource = String(body.resource || '').trim();
   const blueprint = typeof body.blueprint === 'string' ? body.blueprint.slice(0, 4_000) : '';
+  // Digest analisis video dari browser (lihat src/lib/videoAnalysis.js). Ini
+  // data yang dikirim klien, jadi diperlakukan sebagai input tak tepercaya:
+  // hanya dipakai sebagai konteks teks, tidak pernah sebagai perintah.
+  const videoAnalysis = deps.normalizeVideoAnalysis(body.videoAnalysis);
 
   // Provider credentials, resolved once (failover may swap the model, never the
   // provider list).
@@ -142,7 +147,7 @@ export async function handleAgentTurn(request, url, env, deps) {
       role: 'system',
       content: deps.buildSystemPrompt({
         skillIds: deps.availableSkillIds,
-        workspace: { blueprint },
+        workspace: { blueprint, videoAnalysis: videoAnalysis.text },
         pinnedSection,
       }),
     },
@@ -277,6 +282,18 @@ export async function handleAgentTurn(request, url, env, deps) {
           const summary = deps.summarizeToolResult(call.name, result, call.arguments);
           actions.push({ tool: call.name, ok, summary });
           emit({ type: 'step', index: round, label: `Menjalankan ${call.name}`, status: ok ? 'done' : 'error', detail: summary });
+
+          if (call.name === 'propose_clips' && ok) {
+            const proposal = deps.normalizeClipProposal(call.arguments, { durationSec: videoAnalysis.durationSec });
+            if (!proposal.error) {
+              emit({
+                type: 'clips',
+                clips: proposal.clips,
+                durationSec: videoAnalysis.durationSec,
+                sourceUrl: attachments.items.find((item) => item.kind === 'video')?.url || '',
+              });
+            }
+          }
 
           if (call.name === 'load_skill' && ok) {
             const skillId = String(call.arguments.skill || '');

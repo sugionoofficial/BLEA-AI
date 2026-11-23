@@ -80,6 +80,8 @@ import {
   buildAttachmentContent,
   findAgentTool,
   normalizeAgentAttachments,
+  normalizeClipProposal,
+  normalizeVideoAnalysis,
   parseAgentToolCall,
   stripAgentToolCalls,
 } from './agent/tools.js';
@@ -4867,6 +4869,8 @@ async function handleApi(request, url, env) {
         describeToolCall: (name, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.describe(args) || '',
         summarizeToolResult: (name, result, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.summarize(result, args) || '',
         normalizeAgentAttachments,
+        normalizeClipProposal,
+        normalizeVideoAnalysis,
         buildAttachmentContent,
         // Harga giliran opsional (credit_model_prices, modality 'agent_turn').
         chargeCredits: (envRef, userId, amount, description, generationId) => creditRpc(envRef, 'spend_credits', {

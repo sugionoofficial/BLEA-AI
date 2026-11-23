@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowUpRight, BookOpen, Check, ChevronDown, CircleAlert, Coins, Copy, Cpu, FileText,
-  Globe, Image as ImageIcon, ListChecks, Loader2, Music, Paperclip, Send, Sparkles,
+  Clapperboard, Globe, Image as ImageIcon, ListChecks, Loader2, Music, Paperclip, Send, Sparkles,
   Square, Trash2, Video, Wrench, X,
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
@@ -11,6 +11,8 @@ import { fetchAgentSkills, runAgentTurn } from '../agent/agentClient';
 import { resolveAgentModel } from '../agent/modelRouting';
 import { StudioMessageBody } from '../auth/AIStudio';
 import { supabase } from '../lib/supabase';
+import { analyzeVideo, isAnalysisSupported } from '../lib/videoAnalysis';
+import { ClipPlanPanel } from './ClipPlanPanel';
 import { useAuth } from '../auth/AuthProvider';
 import {
   MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, UPLOAD_ACCEPT, formatBytes, oversizeMessage,
@@ -163,6 +165,9 @@ export function AgentPage() {
   const [copiedId, setCopiedId] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const endRef = useRef(null);
@@ -193,6 +198,12 @@ export function AgentPage() {
     } catch { /* kuota penuh: riwayat sesi tetap jalan di memori */ }
   }, [messages, skills]);
 
+  // Digest analisis hanya valid untuk video yang sedang dilampirkan.
+  const attachedVideo = attachments.find((attachment) => attachment.kind === 'video');
+  useEffect(() => {
+    if (!attachedVideo || (analysis && analysis.url !== attachedVideo.url)) setAnalysis(null);
+  }, [attachedVideo, analysis]);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
   }, [messages, steps, running]);
@@ -219,6 +230,7 @@ export function AgentPage() {
     setSteps([]);
     setTickCount(0);
     const sentAttachments = attachments;
+    const sentAnalysis = analysis;
     const userMessage = {
       id: `u-${Date.now()}`,
       role: 'user',
@@ -234,6 +246,7 @@ export function AgentPage() {
     abortRef.current = controller;
 
     const liveSteps = [];
+    let pendingClipPlan = null;
     const result = await runAgentTurn({
       messages: history,
       model: activeModelMeta.model,
@@ -241,6 +254,16 @@ export function AgentPage() {
       skill: pinnedSkill,
       blueprint: '',
       attachments: sentAttachments.map(({ url, name, kind, type, size }) => ({ url, name, kind, type, size })),
+      videoAnalysis: sentAnalysis
+        ? {
+          durationSec: sentAnalysis.durationSec,
+          width: sentAnalysis.width,
+          height: sentAnalysis.height,
+          truncated: sentAnalysis.truncated,
+          sceneCuts: sentAnalysis.sceneCuts,
+          audio: sentAnalysis.audio,
+        }
+        : null,
       signal: controller.signal,
       onMeta: (meta) => {
         if (meta.fallback) setError(`Model utama sibuk, jawaban dialihkan ke ${meta.model}.`);
@@ -262,6 +285,7 @@ export function AgentPage() {
           ? current
           : [...current, { id: skill.id, resource: skill.resource || '', at: new Date().toISOString() }]));
       },
+      onClips: (event) => { pendingClipPlan = event; },
       onDelta: () => { /* teks final ditambahkan dari onDone agar tidak dobel */ },
     });
 
@@ -284,6 +308,7 @@ export function AgentPage() {
       content: result.data.reply || '',
       actions: result.data.actions || [],
       credits: Number(result.data.credits) || 0,
+      clipPlan: pendingClipPlan,
       model: result.data.model,
       stopReason: result.data.stopReason,
       at: new Date().toISOString(),
@@ -295,6 +320,27 @@ export function AgentPage() {
     abortRef.current?.abort();
     abortRef.current = null;
     setRunning(false);
+  }
+
+  async function analyzeAttachedVideo() {
+    if (!attachedVideo || analyzing) return;
+    if (!isAnalysisSupported()) {
+      setError('Analisis video hanya bisa dijalankan di browser.');
+      return;
+    }
+    setAnalyzing(true);
+    setAnalyzeProgress(0);
+    setError('');
+    try {
+      const result = await analyzeVideo(attachedVideo.url, { onProgress: setAnalyzeProgress });
+      setAnalysis({ ...result, url: attachedVideo.url, name: attachedVideo.name });
+    } catch (err) {
+      // Gagal analisis bukan kegagalan fatal: pengguna masih bisa bertanya
+      // tentang video tanpa digest sinyal.
+      setError(`Analisis video gagal: ${err?.message || err}. Kamu masih bisa mengirim video tanpa analisis.`);
+    } finally {
+      setAnalyzing(false);
+    }
   }
 
   async function onFilesPicked(event) {
@@ -423,6 +469,14 @@ export function AgentPage() {
                     <span className="agent-action is-cost"><Coins size={10} /> {message.credits} kredit untuk giliran ini</span>
                   </div>
                 )}
+                {message.clipPlan?.clips?.length > 0 && (
+                  <ClipPlanPanel
+                    plan={message.clipPlan}
+                    client={supabase}
+                    userId={user?.id}
+                    videoName={message.clipPlan.sourceUrl?.split('/').pop()}
+                  />
+                )}
                 {message.actions?.length > 0 && (
                   <div className="agent-action-row">
                     {message.actions.map((action, index) => (
@@ -456,6 +510,25 @@ export function AgentPage() {
           )}
 
           <form className="agent-composer" onSubmit={onSubmit}>
+            {attachedVideo && (
+              <div className="agent-analysis">
+                {analyzing ? (
+                  <span className="agent-analysis-status">
+                    <Loader2 size={12} className="agent-spin" /> Menganalisis video… {Math.round(analyzeProgress * 100)}%
+                    <small>diproses di browser, video tidak diunggah ke server analisis</small>
+                  </span>
+                ) : analysis ? (
+                  <span className="agent-analysis-status is-done">
+                    <Check size={12} /> Teranalisis · {analysis.sceneCuts.length} scene cut
+                    {analysis.audio ? ` · ${analysis.audio.peaks.length} lonjakan audio` : ' · audio tidak terbaca'}
+                  </span>
+                ) : (
+                  <button type="button" className="agent-analysis-trigger" onClick={analyzeAttachedVideo}>
+                    <Clapperboard size={12} /> Analisis video untuk cari hook
+                  </button>
+                )}
+              </div>
+            )}
             {(attachments.length > 0 || uploading) && (
               <div className="agent-attachments">
                 {attachments.map((attachment) => (

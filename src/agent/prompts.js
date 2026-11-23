@@ -20,6 +20,17 @@ export function buildAgentSystemPrompt({ skillIds = [], workspace = {}, pinnedSe
     '- Kode, perintah, dan konfigurasi selalu di blok kode dengan nama bahasa.',
   ];
 
+  if (workspace.videoAnalysis) {
+    lines.push(
+      '',
+      '## ANALISIS VIDEO LAMPIRAN',
+      'Angka di bawah diukur di browser, bukan hasil transkrip: tidak ada ASR di sistem ini, jadi kamu TIDAK mendengar ucapan dan TIDAK membaca teks di video.',
+      workspace.videoAnalysis,
+      '',
+      'Aturan memilih klip: prioritaskan momen dengan pergantian gambar dan/atau lonjakan audio; setiap klip 3–45 detik; jangan membuat klip yang tumpang tindih; jangan mengarang isi ucapan. Untuk tiap klip, sebutkan alasan berbasis sinyal yang terlihat ("pergantian gambar di 12s"), bukan klaim tentang apa yang dibicarakan orang di video.',
+    );
+  }
+
   if (workspace.blueprint) {
     lines.push('', '## Rencana kerja yang sudah disetujui pengguna', workspace.blueprint);
   }
@@ -34,6 +45,7 @@ export function buildAgentSystemPrompt({ skillIds = [], workspace = {}, pinnedSe
     'Setelah blok itu, sistem menjalankan alat dan mengembalikan hasilnya. Jangan menebak hasilnya lebih dulu. Jika tidak perlu alat, jawab langsung tanpa blok `tool`.',
     '- `web_search` — {"query":"kata kunci spesifik"} — cari informasi terkini.',
     '- `read_url` — {"url":"https://..."} — ambil isi satu halaman publik.',
+    '- `propose_clips` — {"clips":[{"startSec":0,"endSec":15,"title":"...","reason":"..."}]} — usulkan potongan klip dari video yang dilampirkan. Hanya mengusulkan; pengguna yang menekan tombol potong.',
   );
 
   for (const skill of skills) {

@@ -1,0 +1,127 @@
+import { useState } from 'react';
+import { Check, Clapperboard, Loader2, Scissors, X } from 'lucide-react';
+import { trimVideoToWebm } from '../lib/mediaTrim';
+import { uploadAttachments } from '../lib/uploads';
+import { fmtRange } from '../lib/clipPlanner';
+
+/**
+ * Panel konfirmasi rencana klip. Pemotongan terjadi di sini, di browser, HANYA
+ * setelah pengguna mencentang klip dan menekan tombol — bukan saat model
+ * mengusulkan. Worker tidak punya ffmpeg, jadi re-encode berjalan lokal lalu
+ * hasilnya diunggah ke storage.
+ */
+export function ClipPlanPanel({ plan, client, userId, videoName }) {
+  const [selected, setSelected] = useState(() => new Set(plan.clips.map((clip) => clip.index)));
+  const [working, setWorking] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [results, setResults] = useState([]);
+  const [error, setError] = useState('');
+
+  if (!plan?.sourceUrl) {
+    return (
+      <div className="agent-clips is-blocked">
+        <p><Clapperboard size={13} /> Rencana klip butuh video yang diunggah lewat BLEA di pesan yang sama.</p>
+      </div>
+    );
+  }
+
+  const toggle = (index) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  async function cutClips() {
+    const chosen = plan.clips.filter((clip) => selected.has(clip.index));
+    if (!chosen.length) {
+      setError('Pilih minimal satu klip.');
+      return;
+    }
+    setWorking(true);
+    setError('');
+    setResults([]);
+    const out = [];
+    try {
+      for (const [position, clip] of chosen.entries()) {
+        setProgress(position / chosen.length);
+        // eslint-disable-next-line no-await-in-loop
+        const blob = await trimVideoToWebm(plan.sourceUrl, clip.startSec, clip.endSec);
+        // eslint-disable-next-line no-await-in-loop
+        const { uploaded, failures } = await uploadAttachments({
+          client,
+          files: [new File([blob], `${(videoName || 'klip').replace(/\.[^.]+$/, '')}-${clip.index}.webm`, { type: blob.type || 'video/webm' })],
+          userId,
+          folder: 'clips',
+        });
+        if (failures.length) throw new Error(failures[0].error);
+        if (uploaded[0]) out.push({ ...uploaded[0], clip });
+      }
+      setProgress(1);
+      setResults(out);
+    } catch (err) {
+      setError(err?.message || 'Pemotongan klip gagal.');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <div className="agent-clips">
+      <header>
+        <span className="agent-clips-title"><Scissors size={13} /> Rencana klip</span>
+        <small>Perlu konfirmasi. Pemotongan berjalan di browser ini, bukan di server.</small>
+      </header>
+
+      <ul className="agent-clip-list">
+        {plan.clips.map((clip) => (
+          <li key={clip.index} className={selected.has(clip.index) ? 'is-selected' : ''}>
+            <label>
+              <input
+                type="checkbox"
+                checked={selected.has(clip.index)}
+                onChange={() => toggle(clip.index)}
+                disabled={working}
+              />
+              <span className="agent-clip-range">{fmtRange(clip.startSec, clip.endSec)}</span>
+              <span className="agent-clip-meta">
+                <b>{clip.title || `Klip ${clip.index}`}</b>
+                <small>{clip.durationSec}s · {clip.reason || 'tanpa alasan'}</small>
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+
+      {error && <p className="agent-clips-error"><X size={11} /> {error}</p>}
+
+      {results.length > 0 && (
+        <div className="agent-clip-results">
+          <p><Check size={12} /> {results.length} klip selesai. Bisa diunduh atau dipakai sebagai input video.</p>
+          <ul>
+            {results.map((result) => (
+              <li key={result.id}>
+                <a href={result.url} target="_blank" rel="noopener noreferrer">{result.name}</a>
+                <span>{fmtRange(result.clip.startSec, result.clip.endSec)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="agent-clip-actions">
+        {working && (
+          <span className="agent-clip-progress" role="status">
+            <Loader2 size={12} className="agent-spin" /> Memotong… {Math.round(progress * 100)}%
+          </span>
+        )}
+        <button type="button" className="agent-send" onClick={cutClips} disabled={working || !selected.size}>
+          <span>Potong {selected.size} klip</span>
+          <Scissors size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}

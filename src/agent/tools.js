@@ -162,6 +162,20 @@ export const AGENT_TOOL_DEFINITIONS = [
     summarize: (result, args) => (String(result).startsWith('Alat gagal') ? 'gagal' : `${String(result).length} karakter dari ${String(args?.url || 'halaman')}`),
   },
   {
+    // Tanpa eksekusi: hanya mengusulkan. Halaman menampilkan tombol konfirmasi.
+    name: 'propose_clips',
+    description: 'Usulkan rentang klip dari video yang sudah dianalisis. Butuh konfirmasi pengguna.',
+    run: async (args) => {
+      const result = normalizeClipProposal(args);
+      if (result.error) return `Alat gagal: ${result.error}`;
+      return `Rencana klip tersimpan (menunggu konfirmasi pengguna):\n${result.clips
+        .map((clip) => `${clip.index}. ${clip.startSec}–${clip.endSec}s${clip.title ? ` — ${clip.title}` : ''}${clip.reason ? ` (${clip.reason})` : ''}`)
+        .join('\n')}`;
+    },
+    describe: (args) => `${Array.isArray(args?.clips) ? args.clips.length : 0} klip`,
+    summarize: (result, args) => `${Array.isArray(args?.clips) ? args.clips.length : 0} klip diusulkan`,
+  },
+  {
     name: 'load_skill',
     description: 'Muat panduan skill pihak ketiga yang tersedia.',
     run: runLoadSkill,
@@ -264,4 +278,79 @@ export function buildAttachmentContent(text, attachments = []) {
     }
   }
   return parts;
+}
+
+// ---------------------------------------------------------------- klip video
+//
+// Alat ini TIDAK memotong apa pun. Ia hanya menyimpan rencana klip (rentang
+// waktu + alasan) sebagai event agar halaman bisa menampilkan tombol konfirmasi.
+// Pemotongan berjalan di browser (src/lib/mediaTrim.js) setelah pengguna setuju,
+// karena Worker tidak punya ffmpeg dan tidak bisa men-decode video.
+const CLIP_TOOL_MAX = 6;
+
+export function normalizeClipProposal(args, { durationSec } = {}) {
+  const clips = Array.isArray(args?.clips) ? args.clips : [];
+  if (!clips.length) return { error: 'Rencana klip kosong.' };
+  const duration = Number(durationSec) || Number(args?.durationSec) || 0;
+  const cleaned = [];
+  for (const clip of clips.slice(0, CLIP_TOOL_MAX)) {
+    const start = Number(clip?.startSec);
+    const end = Number(clip?.endSec);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return { error: 'Rentang klip harus berupa angka detik.' };
+    if (start < 0 || end <= start) return { error: `Klip ${cleaned.length + 1} punya rentang tidak sah.` };
+    if (duration && start >= duration) return { error: `Klip ${cleaned.length + 1} mulai di luar durasi video.` };
+    const safeEnd = duration ? Math.min(end, duration) : end;
+    if (safeEnd - start < 2) return { error: `Klip ${cleaned.length + 1} terlalu pendek (< 2 detik).` };
+    if (safeEnd - start > 60) return { error: `Klip ${cleaned.length + 1} lebih dari 60 detik.` };
+    cleaned.push({
+      index: cleaned.length + 1,
+      startSec: Math.round(start * 100) / 100,
+      endSec: Math.round(safeEnd * 100) / 100,
+      durationSec: Math.round((safeEnd - start) * 100) / 100,
+      title: String(clip?.title || '').slice(0, 80),
+      reason: String(clip?.reason || '').slice(0, 200),
+    });
+  }
+  return { clips: cleaned };
+}
+
+export function describeClipProposal(clips) {
+  if (!clips?.length) return 'tidak ada klip';
+  return clips.map((clip) => `${clip.startSec}-${clip.endSec}s`).join(', ');
+}
+
+/**
+ * Digest analisis video dikirim oleh browser, jadi bentuknya diperiksa ketat
+ * sebelum masuk system prompt. Nilai yang tidak masuk akal dibuang; teks bebas
+ * dibatasi panjangnya supaya tidak bisa dipakai menyelipkan instruksi.
+ */
+export const MAX_VIDEO_ANALYSIS_CHARS = 1_800;
+
+export function normalizeVideoAnalysis(raw) {
+  if (!raw || typeof raw !== 'object') return { text: '', durationSec: 0 };
+  const durationSec = Number(raw.durationSec);
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return { text: '', durationSec: 0 };
+
+  const nums = (list, limit) => (Array.isArray(list) ? list : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 86_400)
+    .slice(0, limit);
+
+  const sceneCuts = nums(raw.sceneCuts, 40);
+  const peaks = nums(raw.audio?.peaks, 24);
+  const silence = nums(raw.audio?.silence, 16);
+
+  const lines = [
+    `Durasi video: ${Math.round(durationSec * 100) / 100} detik`,
+    raw.width && raw.height ? `Resolusi: ${Number(raw.width)}x${Number(raw.height)}` : '',
+    `Scene cut (detik): ${sceneCuts.length ? sceneCuts.join(', ') : 'tidak terdeteksi'}`,
+    peaks.length ? `Lonjakan energi audio (detik): ${peaks.join(', ')}` : 'Lonjakan audio: tidak terdeteksi',
+    silence.length ? `Bagian hening (detik): ${silence.slice(0, 12).join(', ')}` : '',
+    raw.truncated ? `Catatan: hanya bagian awal video yang dianalisis.` : '',
+  ].filter(Boolean);
+
+  return {
+    text: lines.join('\n').slice(0, MAX_VIDEO_ANALYSIS_CHARS),
+    durationSec: Math.round(durationSec * 100) / 100,
+  };
 }
