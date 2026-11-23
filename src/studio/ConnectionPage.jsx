@@ -47,6 +47,12 @@ const PROVIDERS = [
     state: 'degraded',
   },
   {
+    id: 'chatgpt',
+    label: 'Akun ChatGPT / OpenAI (pool manual)',
+    note: 'Dikelola admin di Studio → Akun ChatGPT: prioritas, kuota harian, cooldown, lalu lanjut akun berikutnya.',
+    state: 'degraded',
+  },
+  {
     id: 'tempmail',
     label: 'Saluran email (TempMail)',
     note: 'Aktif dan dipakai untuk verifikasi email milikmu sendiri.',
@@ -158,7 +164,18 @@ export function ConnectionPage() {
             OAuth resmi. Kalau kamu mau menambahkan provider baru, admin bisa menambahkannya di
             Panel Admin → Model beserta harga kreditnya.
           </p>
-          <Link className="studio-connection-link" to="/studio">Kembali ke Studio</Link>
+          <h2>Jalur yang tersedia sekarang</h2>
+          <p>
+            Untuk ChatGPT/OpenAI: admin menambahkan akun sendiri (email + kunci resmi) di halaman
+            <b> Studio → Akun ChatGPT</b>. Halaman itu menampilkan prioritas, sisa kuota harian, dan
+            status cooldown tiap akun; bila kuota akun pertama habis, permintaan otomatis pindah ke
+            akun berikutnya. Hasil semua tool bisa diambil di <b>Studio → Hasil</b>.
+          </p>
+          <p className="studio-connection-links">
+            <Link className="studio-connection-link" to="/studio/chatgpt-accounts">Kelola akun ChatGPT</Link>
+            <Link className="studio-connection-link" to="/studio/library">Lihat hasil & unduhan</Link>
+            <Link className="studio-connection-link" to="/studio">Kembali ke Studio</Link>
+          </p>
         </section>
       </div>
     </DropXLayout>

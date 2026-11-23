@@ -1,0 +1,153 @@
+/* Halaman Hasil & Unduhan — satu keluarga visual dengan beranda Studio. */
+
+.library {
+  --lib-canvas: #060607;
+  --lib-block: #141416;
+  --lib-block-2: #1b1b1f;
+  --lib-line: #26262b;
+  --lib-ink: #f4f4f5;
+  --lib-muted: #9a9aa3;
+  --lib-accent: #8b8bff;
+
+  margin: -4px;
+  padding: 22px clamp(14px, 3vw, 34px) 40px;
+  border-radius: 26px;
+  color: var(--lib-ink);
+  background:
+    radial-gradient(1100px 480px at 14% -12%, rgb(139 139 255 / .16), transparent 62%),
+    var(--lib-canvas);
+  border: 1px solid var(--lib-line);
+}
+
+:root:not(.dark) .library {
+  --lib-canvas: #f6f6f7;
+  --lib-block: #ffffff;
+  --lib-block-2: #ededf0;
+  --lib-line: #dcdce1;
+  --lib-ink: #111113;
+  --lib-muted: #5d5d66;
+  --lib-accent: #4f46e5;
+  background:
+    radial-gradient(1100px 480px at 14% -12%, rgb(79 70 229 / .10), transparent 62%),
+    var(--lib-canvas);
+}
+
+.library-hero { max-width: 720px; margin-bottom: 20px; }
+.library-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 11px; margin-bottom: 14px; border-radius: 99px;
+  border: 1px solid var(--lib-line); background: var(--lib-block);
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--lib-muted);
+}
+.library-hero h1 {
+  margin: 0 0 10px; font-family: var(--font-sans);
+  font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -.03em;
+}
+.library-hero p { margin: 0 0 14px; font-size: 13.5px; line-height: 1.7; color: var(--lib-muted); }
+
+.library-why {
+  padding: 6px 13px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--lib-line); background: var(--lib-block);
+  color: var(--lib-ink); font-family: inherit; font-size: 11.5px;
+}
+.library-why:hover { border-color: var(--lib-accent); }
+
+.library-reasons {
+  display: grid; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+.library-reasons li {
+  padding: 12px 14px; border-radius: 14px;
+  border: 1px solid var(--lib-line); background: var(--lib-block);
+}
+.library-reasons b { display: block; margin-bottom: 4px; font-size: 12.5px; }
+.library-reasons small { font-size: 11.5px; line-height: 1.6; color: var(--lib-muted); }
+
+.library-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.library-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 13px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--lib-line); background: transparent;
+  color: var(--lib-muted); font-family: inherit; font-size: 11.5px;
+}
+.library-tab:hover { color: var(--lib-ink); }
+.library-tab.is-active { background: var(--lib-block-2); color: var(--lib-ink); border-color: var(--lib-accent); }
+.library-tab em {
+  padding: 0 6px; border-radius: 99px; font-style: normal; font-size: 10px;
+  background: color-mix(in srgb, var(--lib-accent) 22%, transparent); color: var(--lib-ink);
+}
+
+.library-error {
+  display: flex; align-items: center; gap: 7px; margin: 0 0 14px;
+  padding: 9px 12px; border-radius: 12px;
+  border: 1px solid rgb(230 120 120 / .4); background: rgb(230 120 120 / .10);
+  font-size: 12px; color: #ffb4b4;
+}
+:root:not(.dark) .library-error { color: #a12424; }
+
+.library-empty { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--lib-muted); }
+.library-empty-block {
+  padding: 22px; border-radius: 16px; margin-bottom: 16px;
+  border: 1px dashed var(--lib-line); background: var(--lib-block);
+  font-size: 13px;
+}
+.library-empty-block p { margin: 0 0 6px; }
+.library-empty-hint { color: var(--lib-muted); font-size: 12px; }
+.library-empty-hint a { color: var(--lib-accent); }
+
+.library-list {
+  display: grid; gap: 12px; margin: 0; padding: 0; list-style: none;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+}
+
+.library-item {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px; border-radius: 18px;
+  border: 1px solid var(--lib-line); background: var(--lib-block);
+}
+.library-item-head { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--lib-muted); }
+.library-item-tool {
+  padding: 2px 8px; border-radius: 99px;
+  border: 1px solid var(--lib-line); background: var(--lib-block-2);
+  font-size: 10px; letter-spacing: .03em; color: var(--lib-ink);
+}
+.library-item-status {
+  padding: 2px 8px; border-radius: 99px; font-size: 10px;
+  border: 1px solid var(--lib-line); color: var(--lib-muted);
+}
+.library-item-status.is-completed { color: #61d68f; border-color: rgb(97 214 143 / .35); background: rgb(97 214 143 / .10); }
+.library-item-status.is-failed { color: #ff9a9a; border-color: rgb(230 120 120 / .4); background: rgb(230 120 120 / .10); }
+:root:not(.dark) .library-item-status.is-completed { color: #0f7a43; }
+:root:not(.dark) .library-item-status.is-failed { color: #a12424; }
+.library-item-head time { margin-left: auto; }
+
+.library-thumb { display: block; border-radius: 12px; overflow: hidden; border: 1px solid var(--lib-line); }
+.library-thumb img { display: block; width: 100%; height: 156px; object-fit: cover; }
+.library-player { width: 100%; border-radius: 12px; background: #000; max-height: 190px; }
+.library-audio { width: 100%; }
+
+.library-item-title {
+  margin: 0; font-size: 12.5px; line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  white-space: pre-wrap; word-break: break-word;
+}
+.library-item-error { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11.5px; color: #ff9a9a; }
+:root:not(.dark) .library-item-error { color: #a12424; }
+
+.library-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 6px; }
+.library-item-actions button,
+.library-item-actions a {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--lib-line); background: var(--lib-block-2);
+  color: var(--lib-ink); font-family: inherit; font-size: 11px; text-decoration: none;
+}
+.library-item-actions button:hover,
+.library-item-actions a:hover { border-color: var(--lib-accent); }
+.library-item-actions .is-copied { color: #61d68f; border-color: rgb(97 214 143 / .4); }
+.library-item-actions .library-download { background: color-mix(in srgb, var(--lib-accent) 20%, var(--lib-block-2)); }
+
+@media (max-width: 560px) {
+  .library { padding: 18px 14px 30px; border-radius: 20px; }
+  .library-list { grid-template-columns: 1fr; }
+}

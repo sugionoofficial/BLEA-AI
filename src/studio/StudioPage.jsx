@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  ArrowUpRight, Bot, Clapperboard, Code, FileSearch2, FileText, Globe, GraduationCap,
+  ArrowUpRight, Bot, Clapperboard, Code, FileSearch2, FileText, FolderDown, Globe, GraduationCap,
   Image as ImageIcon, Languages, Lock, MessageSquare, Music, Plug, Scissors, Search, Sparkles,
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
-import { STUDIO_TOOLS, STUDIO_TOOL_STATUS, toolsByGroup } from './toolCatalog';
+import { STUDIO_TOOLS, STUDIO_TOOL_STATUS, TOOL_SEPARATION_REASONS, toolsByGroup } from './toolCatalog';
 import './studio-home.css';
 
 const ICONS = {
   MessageSquare, Bot, Image: ImageIcon, Clapperboard, Music, Scissors, FileSearch2, Globe, Code, FileText, GraduationCap, Languages, Plug,
+  FolderDown,
 };
 
 /**
@@ -125,6 +126,22 @@ export function StudioPage() {
             </div>
           </section>
         ))}
+
+        {/* Alasan tool dipisah ditampilkan di beranda, bukan disembunyikan di
+            dokumentasi: ini keputusan desain yang menentukan biaya & keamanan. */}
+        {group === 'Semua' && !query.trim() && (
+          <section className="studio-home-why">
+            <h2>Kenapa satu alat = satu fungsi</h2>
+            <ul>
+              {TOOL_SEPARATION_REASONS.map((reason) => (
+                <li key={reason.title}>
+                  <b>{reason.title}</b>
+                  <small>{reason.body}</small>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </DropXLayout>
   );

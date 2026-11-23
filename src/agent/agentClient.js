@@ -5,6 +5,15 @@ import { getAccessToken } from '../api/client';
 // would make chatStream.js depend on agent-only concepts.
 export const AGENT_ENDPOINT = '/api/agent';
 
+// Ruang Studio yang membuka giliran agen. Worker memakainya untuk membatasi
+// alat agen (ruang riset ≠ ruang klip) dan menolak kapabilitas di luar tool.
+function studioToolHeader() {
+  if (typeof window === 'undefined') return {};
+  const match = /^\/studio\/([a-z0-9-]+)/i.exec(window.location.pathname || '');
+  if (!match) return {};
+  return { 'x-blea-studio-tool': match[1].toLowerCase() };
+}
+
 /**
  * @returns {Promise<{ok:boolean, status:number, data:object}>} resolves when the
  *   stream closes. Errors are returned, never thrown, so the page can render
@@ -35,7 +44,7 @@ export async function runAgentTurn({
   try {
     response = await fetch(AGENT_ENDPOINT, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...studioToolHeader() },
       body: JSON.stringify({ messages, model, provider, skill, resource, blueprint, attachments, videoAnalysis, videoTranscript }),
       signal,
     });

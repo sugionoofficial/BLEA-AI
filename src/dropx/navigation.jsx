@@ -3,6 +3,8 @@ import {
   Clapperboard,
   Coins,
   FileSearch2,
+  FolderDown,
+  KeyRound,
   LayoutDashboard,
   History,
   Mail,
@@ -29,6 +31,13 @@ export const navigation = [
         icon: Sparkles,
         description: 'Semua alat BLEA: teks, gambar, video, audio, utilitas',
         keywords: ['studio', 'alat', 'tool', 'chat', 'gambar', 'image', 'video', 'musik', 'subtitle', 'riset', 'metadata'],
+      },
+      {
+        title: 'Hasil',
+        href: '/studio/library',
+        icon: FolderDown,
+        description: 'Hasil dari semua tool: salin atau unduh',
+        keywords: ['hasil', 'library', 'unduh', 'download', 'arsip', 'gambar', 'video', 'musik'],
       },
       {
         title: 'Generate',
@@ -87,6 +96,15 @@ export const navigation = [
         badge: 'Admin',
         description: 'Uji koneksi Freebeat',
         keywords: ['freebeat', 'mcp', 'koneksi'],
+      },
+      {
+        title: 'Akun ChatGPT',
+        href: '/studio/chatgpt-accounts',
+        icon: KeyRound,
+        adminOnly: true,
+        badge: 'Admin',
+        description: 'Pool akun ChatGPT manual: prioritas, kuota harian, cooldown',
+        keywords: ['chatgpt', 'openai', 'akun', 'pool', 'kuota', 'api key', 'manual'],
       },
       {
         title: 'TempMail',

@@ -71,6 +71,18 @@ import {
   sanitizeMusicRow,
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
+import {
+  CHATGPT_CAPABILITIES,
+  chatGptPoolSummary,
+  createChatGptAccount,
+  deleteChatGptAccount,
+  listChatGptAccounts,
+  pickChatGptAccountsFor,
+  sendWithChatGptPool,
+  testChatGptAccount,
+  updateChatGptAccount,
+} from './lib/chatgptPool.js';
+import { agentToolsForStudioTool, toolCapabilityViolation } from './lib/toolCapabilities.js';
 import { handleAgentTurn } from './agent/agentRoute.js';
 import { handleTranscribe } from './agent/transcribeRoute.js';
 import { buildAgentSystemPrompt } from './agent/prompts.js';
@@ -470,6 +482,25 @@ async function requestUser(request, env) {
   const token = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
   return token ? getUser(env, token) : null;
 }
+// ---- Isolasi kapabilitas per tool Studio -------------------------------
+// Klien mengirim header `x-blea-studio-tool` berisi id tool yang sedang
+// dibuka. Worker menolak panggilan API yang kapabilitasnya tidak dideklarasikan
+// tool itu (lihat src/lib/toolCapabilities.js). Ini lapisan kedua: UI tidak
+// menampilkan tombol lintas-tool, dan lapisan ini menahan permintaan yang
+// dibuat manual/dimanipulasi.
+const STUDIO_TOOL_HEADER = 'x-blea-studio-tool';
+function studioToolHeader(request) {
+  const value = request.headers.get(STUDIO_TOOL_HEADER);
+  return value && /^[a-z0-9-]{1,40}$/i.test(value) ? value.toLowerCase() : '';
+}
+function studioToolGuard(request, path) {
+  const toolId = studioToolHeader(request);
+  if (!toolId) return null;
+  const violation = toolCapabilityViolation(toolId, path);
+  if (!violation) return null;
+  return jsonResponse({ error: violation.message, code: violation.code }, 403, { 'cache-control': 'no-store' });
+}
+
 function sameOrigin(request, url) {
   const origin = request.headers.get('origin');
   return !origin || origin === url.origin;
@@ -2800,6 +2831,12 @@ async function handleApi(request, url, env) {
     const blockedAccount = await accountGate(request, env, path);
     if (blockedAccount) return blockedAccount;
 
+    // Gerbang isolasi tool: hanya berlaku bila klien menyatakan ruang Studio-nya.
+    // Tanpa header (jalur lama, /generate, /history) semuanya tetap berjalan
+    // seperti sebelumnya.
+    const toolViolation = studioToolGuard(request, path);
+    if (toolViolation) return toolViolation;
+
     // ---- /account: status akun untuk UI. Satu-satunya jalur yang tetap bisa
     // dibaca akun yang ditangguhkan, supaya alasannya bisa ditampilkan. ----
     if (path === 'account' && (method === 'GET' || method === 'POST')) {
@@ -3696,6 +3733,64 @@ async function handleApi(request, url, env) {
       }
     }
 
+    // ---- /chatgpt-accounts: pool akun ChatGPT/OpenAI manual (admin) ----
+    //
+    // Sama seperti pool freebeat: kredensial hanya ada di server, browser cuma
+    // menerima sidik jari (token_hint). Semua aksi di sini wajib admin.
+    if (path === 'chatgpt-accounts' || path.startsWith('chatgpt-accounts/')) {
+      if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const admin = token ? await isAdmin(env, token) : false;
+      if (!admin) return jsonResponse({ error: 'Pool akun ChatGPT hanya untuk admin.' }, 403, { 'cache-control': 'no-store' });
+      const action = path.slice('chatgpt-accounts'.length).replace(/^\//, '');
+      try {
+        if (!action && method === 'GET') {
+          return jsonResponse({
+            ok: true,
+            accounts: await listChatGptAccounts(env),
+            capabilities: CHATGPT_CAPABILITIES,
+            policy: {
+              order: 'prioritas naik → paling sedikit dipakai hari ini → paling lama dibuat',
+              quotaReset: 'tenggat harian dihitung pada tanggal Asia/Jakarta',
+              cooldown: '401/402/403/429 → cooldown 10–60 menit lalu lanjut akun berikutnya',
+            },
+          });
+        }
+        if (!action && method === 'POST') {
+          const token2 = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+          let userId = null;
+          try {
+            const caller = token2 ? await getUser(env, token2) : null;
+            userId = caller?.id ?? null;
+          } catch { userId = null; }
+          const body = await request.json().catch(() => null);
+          return jsonResponse({ ok: true, account: await createChatGptAccount(env, body, userId) }, 201);
+        }
+        if (!action && method === 'PATCH') {
+          const body = await request.json().catch(() => null);
+          return jsonResponse({ ok: true, account: await updateChatGptAccount(env, body) });
+        }
+        if (!action && method === 'DELETE') {
+          const body = await request.json().catch(() => null);
+          if (!body || typeof body !== 'object' || Object.keys(body).some((key) => key !== 'id')) {
+            return jsonResponse({ error: 'Hanya parameter id yang diterima.' }, 400);
+          }
+          return jsonResponse(await deleteChatGptAccount(env, body.id));
+        }
+        if (action === 'test' && method === 'POST') {
+          const body = await request.json().catch(() => null);
+          const result = await testChatGptAccount(env, body?.id);
+          return jsonResponse({ ok: true, result });
+        }
+        if (action === 'summary' && (method === 'GET' || method === 'POST')) {
+          return jsonResponse({ ok: true, ...(await chatGptPoolSummary(env)) });
+        }
+        return jsonResponse({ error: 'Aksi pool akun ChatGPT tidak dikenal.' }, 404);
+      } catch (error) {
+        return jsonResponse({ error: error?.message || 'Pool akun ChatGPT gagal diproses.' }, error?.status || 500);
+      }
+    }
+
     // ---- /admin-models: full model list & registered providers (admin) ----
     if (path === 'admin-models' && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
@@ -4270,6 +4365,144 @@ async function handleApi(request, url, env) {
       const rows = await res.json().catch(() => []);
       const generations = await Promise.all((rows || []).slice(0, 40).map((row) => sanitizeGenerationRow(row, env)));
       return jsonResponse({ ok: true, generations, hasMore: rows.length > 40 });
+    }
+
+    // ---- /library: satu daftar hasil dari semua tool Studio ------------------
+    //
+    // Riwayat (/history) dibangun untuk pemutaran ulang per jenis; halaman ini
+    // dibangun untuk "ambil hasilnya": setiap baris membawa teks yang bisa
+    // disalin dan tautan unduhan bertanda tangan yang bisa diklik.
+    if (path === 'library' && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401);
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const limit = Math.min(60, Math.max(1, Number(body.limit ?? url.searchParams.get('limit') ?? 40)));
+      const tool = String(body.tool ?? url.searchParams.get('tool') ?? 'all').toLowerCase();
+      const uid = `/user_id=eq.${encodeURIComponent(user.id)}`;
+      const wanted = (kind) => tool === 'all' || tool === kind;
+      const readRows2 = async (query) => {
+        const res = await servicePostgrest(env, query).catch(() => null);
+        if (!res || !res.ok) return [];
+        const rows = await res.json().catch(() => []);
+        return Array.isArray(rows) ? rows : [];
+      };
+      const [imageRows, videoRows, musicRows, metadataRows, conversationRows] = await Promise.all([
+        wanted('image') ? readRows2(`/image_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
+        wanted('video') ? readRows2(`/video_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
+        wanted('music') ? readRows2(`/music_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
+        wanted('metadata') ? readRows2(`/metadata_jobs?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
+        wanted('chat') ? readRows2(`/ai_messages?select=id,conversation_id,role,content,created_at&${uid}&role=eq.assistant&order=created_at.desc&limit=${limit}`) : [],
+      ]);
+
+      const items = [];
+      for (const row of imageRows) {
+        const clean = sanitizeImageRow(row);
+        const withDownload = await attachImageDownloadUrls(clean, env);
+        items.push({
+          id: `image:${row.id}`,
+          tool: 'image',
+          tool_label: 'Buat Gambar',
+          title: clean.prompt || 'Gambar tanpa prompt',
+          text: clean.prompt || '',
+          status: clean.status,
+          media_kind: 'image',
+          preview_url: clean.image_url || '',
+          download_url: withDownload.download_url || '',
+          extra_downloads: withDownload.download_urls || [],
+          created_at: clean.created_at,
+          credits: clean.credits_charged || 0,
+          error: clean.error_message || null,
+        });
+      }
+      for (const row of videoRows) {
+        const status = row.status || 'queued';
+        items.push({
+          id: `video:${row.id}`,
+          tool: 'video',
+          tool_label: 'Buat Video',
+          title: row.prompt || 'Video tanpa prompt',
+          text: row.prompt || '',
+          status,
+          media_kind: 'video',
+          preview_url: status === 'completed' ? (row.result_url || row.video_url || '') : '',
+          download_url: status === 'completed' ? await signVideoContentUrl(row.id, env) : '',
+          extra_downloads: [],
+          created_at: row.created_at,
+          credits: Number(row.credits_charged) || 0,
+          error: row.error_message || null,
+        });
+      }
+      for (const row of musicRows) {
+        const clean = sanitizeMusicRow(row);
+        const audioCount = Number(clean.audio_count) || (clean.has_audio ? 1 : 0);
+        items.push({
+          id: `music:${row.id}`,
+          tool: 'music',
+          tool_label: 'Buat Musik',
+          title: clean.prompt || clean.title || 'Musik tanpa prompt',
+          text: clean.prompt || '',
+          status: clean.status,
+          media_kind: 'audio',
+          preview_url: clean.status === 'completed' ? String(row.audio_url || '') : '',
+          download_url: clean.status === 'completed' && audioCount
+            ? await signMusicContentUrl(row.id, 'audio', 0, env, { download: true })
+            : '',
+          extra_downloads: [],
+          created_at: clean.created_at,
+          credits: 0,
+          error: clean.error_message || null,
+        });
+      }
+      for (const row of metadataRows) {
+        items.push({
+          id: `metadata:${row.id}`,
+          tool: 'metadata',
+          tool_label: 'Cek Metadata',
+          title: row.filename || 'Berkas tanpa nama',
+          text: [
+            `Berkas: ${row.filename || '-'}`,
+            `Jenis: ${row.media_kind || '-'}`,
+            `Metadata AI terdeteksi: ${row.ai_detected ? 'ya' : 'tidak'}`,
+            (Array.isArray(row.detected_tools) && row.detected_tools.length) ? `Generator: ${row.detected_tools.join(', ')}` : '',
+            `Field dihapus: ${Number(row.removed_count) || 0}`,
+            `Ukuran: ${Number(row.original_size) || 0} → ${Number(row.cleaned_size) || 0} byte`,
+          ].filter(Boolean).join('\n'),
+          status: row.status,
+          media_kind: 'file',
+          preview_url: '',
+          download_url: row.status === 'completed' && row.cleaned_path ? `/api/metadata/content/${encodeURIComponent(row.id)}?download=1` : '',
+          extra_downloads: [],
+          created_at: row.created_at,
+          credits: Number(row.credits_charged) || 0,
+          error: row.error_message || null,
+        });
+      }
+      for (const row of conversationRows) {
+        const text = String(row.content || '');
+        items.push({
+          id: `chat:${row.id}`,
+          tool: 'chat',
+          tool_label: 'Chat & Tulis',
+          title: text.replace(/\s+/g, ' ').slice(0, 90) || 'Jawaban chat',
+          text,
+          status: 'completed',
+          media_kind: 'text',
+          preview_url: '',
+          download_url: '',
+          extra_downloads: [],
+          created_at: row.created_at,
+          credits: 0,
+          error: null,
+        });
+      }
+
+      items.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+      return jsonResponse({
+        ok: true,
+        items: items.slice(0, limit * 2),
+        counts: { image: imageRows.length, video: videoRows.length, music: musicRows.length, metadata: metadataRows.length, chat: conversationRows.length },
+      });
     }
 
     // ---- /video/generate: submit async video generation job & persist in Supabase ----
@@ -4849,6 +5082,17 @@ async function handleApi(request, url, env) {
     }
 
     if (path === 'agent' && method === 'POST') {
+      // Alat yang boleh dijalankan loop agen diikuti ruang Studio yang membuka
+      // giliran ini. Ruang riset tidak bisa menyuruh agen mengusulkan klip,
+      // dan ruang klip tidak bisa menyuruhnya menulis dokumen.
+      const studioTool = studioToolHeader(request);
+      const scopedAgentTools = agentToolsForStudioTool(studioTool);
+      const scopedAgentToolNames = Array.isArray(scopedAgentTools)
+        ? AGENT_TOOL_NAMES.filter((name) => scopedAgentTools.includes(name))
+        : AGENT_TOOL_NAMES;
+      if (Array.isArray(scopedAgentTools) && !scopedAgentToolNames.length) {
+        return jsonResponse({ error: `Ruang "${studioTool}" tidak memakai alat agen.` }, 403);
+      }
       return handleAgentTurn(request, url, env, {
         getUser,
         servicePostgrest,
@@ -4866,12 +5110,17 @@ async function handleApi(request, url, env) {
         buildSystemPrompt: buildAgentSystemPrompt,
         availableSkillIds: availableSkills().map((skill) => skill.id),
         loadSkillSection,
-        runTool: (tool, args, ctx) => tool.run(args, ctx),
+        runTool: (tool, args, ctx) => {
+          if (!scopedAgentToolNames.includes(tool.name)) {
+            return `Alat gagal: "${tool.name}" tidak tersedia di ruang ${studioTool || 'ini'}. Alat yang tersedia: ${scopedAgentToolNames.join(', ')}.`;
+          }
+          return tool.run(args, ctx);
+        },
         extractAssistantReply,
         parseAgentToolCall,
         stripAgentToolCalls,
-        findTool: findAgentTool,
-        availableToolNames: AGENT_TOOL_NAMES,
+        findTool: (name) => (scopedAgentToolNames.includes(name) ? findAgentTool(name) : null),
+        availableToolNames: scopedAgentToolNames,
         describeToolCall: (name, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.describe(args) || '',
         summarizeToolResult: (name, result, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.summarize(result, args) || '',
         normalizeAgentAttachments,
@@ -4948,7 +5197,28 @@ async function handleApi(request, url, env) {
       if (alibabaCandidates.length) {
         keyByProvider.set('alibaba', { provider: 'alibaba', api_key: alibabaCandidates[0].api_key, base_url: alibabaCandidates[0].base_url });
       }
-      const alibabaPoolMap = alibabaCandidates.length ? new Map([['alibaba', alibabaCandidates]]) : undefined;
+      const alibabaPoolMap = new Map(alibabaCandidates.length ? [['alibaba', alibabaCandidates]] : []);
+      // Pool akun ChatGPT manual (dikelola di /studio/chatgpt-accounts) ikut
+      // menjadi kandidat provider `openai` — termasuk untuk rantai fallback,
+      // supaya akun yang ditambahkan admin benar-benar terpakai.
+      const chatgptCandidates = env.CHATGPT_POOL_DISABLED === '1' || env.CHATGPT_POOL_DISABLED === 'true'
+        ? []
+        : await pickChatGptAccountsFor(env, { capability: 'chat', limit: 4 }).catch(() => []);
+      if (chatgptCandidates.length) {
+        if (!keyByProvider.get('openai')?.api_key) {
+          keyByProvider.set('openai', {
+            provider: 'openai',
+            api_key: chatgptCandidates[0].apiKey,
+            base_url: `${chatgptCandidates[0].apiBase}/v1`,
+            label: 'Pool akun ChatGPT (manual)',
+          });
+        }
+        alibabaPoolMap.set('openai', chatgptCandidates.map((account) => ({
+          api_key: account.apiKey,
+          base_url: `${account.apiBase}/v1`,
+          label: account.accountLabel || account.accountEmail || 'Pool ChatGPT',
+        })));
+      }
       const primaryKeyRow = primaryProvider === 'alibaba' ? (alibabaCandidates[0] || null) : keyByProvider.get(primaryProvider);
       let primaryApiKey = primaryKeyRow?.api_key || (primaryProvider === 'unorouter' ? 'use-free' : '');
       if (primaryProvider === 'cloudflare' && !primaryApiKey && hasWorkersAiBinding(env)) {
@@ -4988,20 +5258,43 @@ async function handleApi(request, url, env) {
 
         if (wantStream) {
           let alibabaPrimaryCand = null;
-          const primaryAttempt = activeProvider === 'alibaba'
-            ? (await sendWithAlibabaPool({ candidates: alibabaCandidates, model: activeModel, payload: fetchBody, timeoutMs: 120_000, env, stream: true }).then((out) => { alibabaPrimaryCand = out.cand; return out.attempt; }))
-            : await sendChatCompletionRequest({
-              provider: activeProvider,
+          let probed = null;
+          if (activeProvider === 'openai') {
+            // Round-robin lintas akun pool ChatGPT manual: akun yang kuota
+            // hariannya habis atau sedang cooldown dilewati di dalam pool.
+            const pooled = await sendWithChatGptPool({
+              env,
+              capability: 'chat',
               model: activeModel,
-              apiKey: activeApiKey,
-              baseUrl: activeBaseUrl,
               payload: fetchBody,
               timeoutMs: chatUpstreamTimeoutMs(activeProvider, true),
-              env,
               stream: true,
+              send: sendChatCompletionRequest,
             });
-          if (alibabaPrimaryCand) { activeApiKey = alibabaPrimaryCand.api_key; activeBaseUrl = alibabaPrimaryCand.base_url; }
-          let probed = await probeChatStreamAttempt(primaryAttempt);
+            if (pooled.attempt) {
+              probed = await probeChatStreamAttempt(pooled.attempt);
+              if (pooled.account) {
+                activeApiKey = pooled.account.apiKey;
+                activeBaseUrl = `${pooled.account.apiBase}/v1`;
+              }
+            }
+          }
+          if (!probed) {
+            const primaryAttempt = activeProvider === 'alibaba'
+              ? (await sendWithAlibabaPool({ candidates: alibabaCandidates, model: activeModel, payload: fetchBody, timeoutMs: 120_000, env, stream: true }).then((out) => { alibabaPrimaryCand = out.cand; return out.attempt; }))
+              : await sendChatCompletionRequest({
+                provider: activeProvider,
+                model: activeModel,
+                apiKey: activeApiKey,
+                baseUrl: activeBaseUrl,
+                payload: fetchBody,
+                timeoutMs: chatUpstreamTimeoutMs(activeProvider, true),
+                env,
+                stream: true,
+              });
+            if (alibabaPrimaryCand) { activeApiKey = alibabaPrimaryCand.api_key; activeBaseUrl = alibabaPrimaryCand.base_url; }
+            probed = await probeChatStreamAttempt(primaryAttempt);
+          }
           if (!probed.ok) {
             const reasonCode = probed.errorInfo?.code || `http_${probed.status}`;
             triedDetails.push({
@@ -5129,7 +5422,25 @@ async function handleApi(request, url, env) {
         }
 
         let alibabaPrimaryCand2 = null;
-        let attempt = activeProvider === 'alibaba'
+        let attempt = null;
+        if (activeProvider === 'openai') {
+          const pooled = await sendWithChatGptPool({
+            env,
+            capability: 'chat',
+            model: activeModel,
+            payload: fetchBody,
+            timeoutMs: chatUpstreamTimeoutMs(activeProvider),
+            send: sendChatCompletionRequest,
+          });
+          if (pooled.attempt) {
+            attempt = pooled.attempt;
+            if (pooled.account) {
+              activeApiKey = pooled.account.apiKey;
+              activeBaseUrl = `${pooled.account.apiBase}/v1`;
+            }
+          }
+        }
+        if (!attempt) attempt = activeProvider === 'alibaba'
           ? (await sendWithAlibabaPool({ candidates: alibabaCandidates, model: activeModel, payload: fetchBody, timeoutMs: 120_000, env, stream: false }).then((out) => { alibabaPrimaryCand2 = out.cand; return out.attempt; }))
           : await sendChatCompletionRequest({
             provider: activeProvider,
