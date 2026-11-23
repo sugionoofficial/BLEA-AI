@@ -580,3 +580,61 @@ test('/api/chatgpt-signup action=code membaca kode tersimpan tanpa menyentuh inb
     globalThis.fetch = oldFetch;
   }
 });
+
+// Kode OpenAI berumur pendek. Panel harus menandai kode basi, bukan diam saja.
+test('describeStoredCode menandai kode lewat 10 menit sebagai kedaluwarsa', () => {
+  const { describeStoredCode, VERIFICATION_CODE_TTL_MS } = globalThis.__signup;
+  const now = Date.parse('2026-11-23T14:00:00Z');
+  assert.equal(VERIFICATION_CODE_TTL_MS, 600000);
+
+  const fresh = describeStoredCode({ code: '483920', verified_at: '2026-11-23T13:55:00Z', now });
+  assert.equal(fresh.code, '483920');
+  assert.equal(fresh.expired, false);
+  assert.equal(fresh.note, '');
+
+  const stale = describeStoredCode({ code: '483920', verified_at: '2026-11-23T13:40:00Z', now });
+  assert.equal(stale.code, '483920', 'kode basi tetap ditampilkan, hanya ditandai');
+  assert.equal(stale.expired, true);
+  assert.match(stale.note, /kedaluwarsa/i);
+
+  // Tanpa kode: tidak ada apa pun untuk ditampilkan.
+  assert.deepEqual(describeStoredCode({ code: '', verified_at: '2026-11-23T13:55:00Z', now }).code, '');
+  // Tanpa waktu: jangan mengklaim masih berlaku.
+  const unknown = describeStoredCode({ code: '111222', verified_at: null, now });
+  assert.equal(unknown.expired, false);
+  assert.match(unknown.note, /tidak tercatat/i);
+});
+
+test('action=code menandai kode tersimpan yang sudah basi', async () => {
+  const oldFetch = globalThis.fetch;
+  const attempt = {
+    id: '66666666-6666-4666-8666-666666666666',
+    user_id: 'admin-1',
+    email: 'kotak@mail.tm',
+    step: 'terverifikasi',
+    signup_url: '',
+    note: '',
+    verification_message_id: 'msg-9',
+    verification_code: '483920',
+    // 40 menit lalu: sudah lewat TTL 10 menit.
+    verified_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+    created_at: '2026-11-23T10:00:00Z',
+    updated_at: '2026-11-23T10:00:00Z',
+  };
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/chatgpt_signup_attempts')) return Response.json([attempt]);
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id: attempt.id } }), ENV);
+    const body = await res.json();
+    assert.equal(body.code, '483920');
+    assert.equal(body.code_expired, true);
+    assert.match(body.hint, /kedaluwarsa/i);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});

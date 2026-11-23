@@ -479,3 +479,11 @@
   color: inherit; background: transparent; border: 1px solid var(--cga-line, #26262b);
 }
 .cga-signup-code small { font-size: 11.5px; line-height: 1.55; opacity: .8; }
+/* Kode basi tetap ditampilkan (bukan disembunyikan) tetapi ditandai, supaya
+   pengguna tidak menempelkan kode 10 menit lalu dan bingung gagal terus. */
+.cga-signup-code.is-expired {
+  border-color: rgba(240, 180, 90, .5);
+  background: rgba(240, 180, 90, .08);
+}
+.cga-signup-code.is-expired .cga-signup-code-value { color: #ffe3b0; text-decoration: line-through; }
+.cga-signup-code small.is-bad { color: #f3c67e; opacity: .95; }

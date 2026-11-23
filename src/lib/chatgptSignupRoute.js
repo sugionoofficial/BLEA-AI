@@ -12,6 +12,7 @@
 
 import {
   analyzeReturnUrl,
+  describeStoredCode,
   extractVerificationCode,
   buildSigninBootstrap,
   buildSignupUrl,
@@ -220,6 +221,8 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
     matched: true,
     best,
     code: verificationCode,
+    // Kode baru diekstrak, jadi belum kedaluwarsa saat ini.
+    code_expired: false,
     code_from_message_id: codeSource,
     candidates: scored.slice(0, 5),
     attempt: normalizeSignupRequest((Array.isArray(rows) ? rows[0] : null) || row),
@@ -272,15 +275,19 @@ async function confirmAttempt(env, userId, input) {
  */
 async function readStoredCode(env, userId, input) {
   const row = await readAttempt(env, userId, input.id);
-  const code = String(row.verification_code || '').trim();
+  const stored = describeStoredCode({
+    code: row.verification_code,
+    verified_at: row.verified_at,
+  });
   return {
     ok: true,
-    code,
+    code: stored.code,
+    code_expired: stored.expired,
     verification_message_id: row.verification_message_id || '',
     verified_at: row.verified_at || null,
     attempt: normalizeSignupRequest(row),
-    hint: code
-      ? 'Kode tersimpan ini sekali pakai. Kalau sudah kedaluwarsa, minta kode baru di ChatGPT lalu tekan "Cari email verifikasi" lagi.'
+    hint: stored.code
+      ? (stored.note || 'Kode tersimpan ini sekali pakai. Kalau sudah dipakai atau kedaluwarsa, minta kode baru di ChatGPT.')
       : 'Belum ada kode tersimpan untuk permintaan ini.',
   };
 }

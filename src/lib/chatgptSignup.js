@@ -358,6 +358,36 @@ export function extractVerificationCode({ subject = '', bodyText = '', bodyHtml 
   return { code: best.code, candidates };
 }
 
+/**
+ * Kode verifikasi OpenAI berumur pendek (±10 menit). Panel harus tahu itu,
+ * supaya tidak menyajikan kode basi seolah masih berlaku.
+ *
+ * Ambang 10 menit dipakai sebagai batas tampil; lewat dari itu kode tetap
+ * ditunjukkan tetapi ditandai kedaluwarsa, bukan disembunyikan — menghapusnya
+ * akan membuat pengguna mengira BLEA tidak pernah menemukan kode.
+ */
+export const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000;
+
+export function describeStoredCode({ code = '', verified_at: verifiedAt = null, now = Date.now() } = {}) {
+  const value = String(code || '').trim();
+  if (!value) return { code: '', expired: false, age_ms: null, note: '' };
+  const takenAt = Date.parse(verifiedAt || '');
+  if (!Number.isFinite(takenAt)) {
+    // Tanpa waktu, jangan mengklaim masih berlaku.
+    return { code: value, expired: false, age_ms: null, note: 'Waktu kode tidak tercatat — pastikan masih yang terbaru.' };
+  }
+  const age = Math.max(0, now - takenAt);
+  const expired = age > VERIFICATION_CODE_TTL_MS;
+  return {
+    code: value,
+    expired,
+    age_ms: age,
+    note: expired
+      ? 'Kode ini sudah lewat 10 menit dan hampir pasti kedaluwarsa. Minta kode baru di ChatGPT lalu tekan "Cari email verifikasi" lagi.'
+      : '',
+  };
+}
+
 export function normalizeSignupRequest(row) {
   if (!row || typeof row !== 'object') return null;
   return {
