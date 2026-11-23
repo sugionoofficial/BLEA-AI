@@ -443,68 +443,28 @@ export function describeStoredCode({ code = '', verified_at: verifiedAt = null, 
 }
 
 /**
- * Periksa apakah perangkat ini punya sesi ChatGPT yang masih hidup.
+ * Kenapa TIDAK ada pemeriksaan sesi otomatis dari browser.
  *
- * Kenapa perlu: halaman error "tidak dapat menyiapkan pemuatan ini" dan
- * lemparan ke beranda setelah cookie dihapus adalah gejala sesi, bukan URL.
- * Kalau `callBackendAPI` masih menjawab 200 JSON, berarti perangkat ini masih
- * login ke chatgpt.com (atau setidaknya punya sesi yang belum dibersihkan) —
- * dan halaman /auth/login sengaja menolak alur masuk baru.
+ * Versi sebelumnya memanggil `chatgpt.com/backend-api/me` dengan
+ * `credentials: 'include'`. Hasil nyata di browser pengguna: **"Failed to
+ * fetch"** — endpoint itu bukan API publik dan tidak mengirim header CORS,
+ * jadi jawabannya tidak bisa dibaca dari origin lain (BLEA). Itu kesalahan
+ * rancang saya, bukan gangguan jaringan pengguna.
  *
- * Ini hanya membaca status HTTP; tidak ada cookie/token yang disimpan atau
- * dikirim ke server BLEA. Panggilan dilakukan DARI BROWSER pengguna, karena
- * Worker tidak diizinkan menghubungi domain OpenAI.
+ * Jadi yang disediakan hanya langkah manual yang jujur: periksa sendiri di
+ * chatgpt.com, karena di sana sesi itu memang terlihat.
  */
-export async function checkSessionState({ fetchImpl, timeoutMs = 8000 } = {}) {
-  const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
-  const result = {
-    reachable: false,
-    status: 0,
-    logged_in: false,
-    detail: '',
-    advice: '',
+export function sessionCheckGuide() {
+  return {
+    automatic: false,
+    why: 'chatgpt.com tidak mengizinkan halaman lain membaca status sesinya (tanpa header CORS), jadi BLEA selalu mendapat "Failed to fetch".',
+    steps: [
+      'Buka https://chatgpt.com di tab yang sama dengan tab formulir.',
+      'Kalau pojok kanan bawah menampilkan avatar/nama akun, perangkat ini MASIH login — keluarkan dulu (klik avatar → Log out), atau pakai jendela Incognito yang benar-benar baru.',
+      'Kalau yang muncul tombol "Log in"/"Sign up", sesi bersih dan formulir daftar bisa dibuka.',
+    ],
+    note: 'BLEA tidak membaca cookie chatgpt.com. Setelah berhasil masuk, simpan aksesnya lewat "Continue with ChatGPT" (OAuth resmi) di panel Akun ChatGPT.',
   };
-  if (!doFetch) {
-    return { ...result, detail: 'Pemeriksaan sesi tidak tersedia di lingkungan ini.', advice: 'Lewati pemeriksaan; lanjutkan manual.' };
-  }
-  const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  try {
-    const response = await doFetch('https://chatgpt.com/backend-api/me', {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-      signal: controller?.signal,
-    });
-    result.reachable = true;
-    result.status = response.status;
-    if (response.ok) {
-      const payload = await response.json().catch(() => null);
-      result.logged_in = Boolean(payload && (payload.email || payload.id || payload.user));
-      result.detail = result.logged_in
-        ? `Perangkat ini masih login ke ChatGPT${payload?.email ? ` sebagai ${payload.email}` : ''}.`
-        : 'Server menjawab 200, tetapi tidak ada data akun.';
-      result.advice = result.logged_in
-        ? 'Keluarkan dulu sesi itu (klik avatar → Log out) atau pakai jendela Incognito yang benar-benar baru, lalu buka formulir lagi. Halaman /auth/login memang menolak alur daftar baru saat sesi masih ada.'
-        : '';
-    } else if (response.status === 401 || response.status === 403) {
-      result.detail = `Tidak ada sesi aktif (HTTP ${response.status}).`;
-      result.advice = 'Sesi bersih — lanjutkan membuka formulir.';
-    } else if (response.status === 404) {
-      // 404 sering muncul saat belum login pada versi API tertentu: jangan
-      // mengklaim "bersih" padahal tidak terbukti.
-      result.detail = 'Endpoint sesi menjawab 404; status login tidak bisa dipastikan.';
-    } else {
-      result.detail = `Endpoint sesi menjawab HTTP ${response.status}.`;
-    }
-  } catch (error) {
-    result.detail = controller?.signal?.aborted
-      ? 'Pemeriksaan sesi melewati batas waktu (bisa jadi diblokir jaringan atau ekstensi).'
-      : `Pemeriksaan sesi gagal: ${String(error?.message || 'jaringan menolak')}.`;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-  return result;
 }
 
 export function normalizeSignupRequest(row) {

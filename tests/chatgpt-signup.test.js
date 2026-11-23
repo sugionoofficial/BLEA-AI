@@ -12,7 +12,6 @@ import {
   buildLegacySignupUrl,
   buildSigninBootstrap,
   buildSignupUrl,
-  checkSessionState,
   isPlusAddress,
   scoreVerificationMessage,
   signupConfig,
@@ -987,49 +986,45 @@ test('panel tidak memakai chatgpt.com/auth/login sebagai tombol utama', async ()
   assert.ok(!/tekan <b>Lanjutkan<\/b>/.test(panel), 'tombol "Lanjutkan" tidak ada di formulir Auth0');
 });
 
-// Endpoint sesi: 200 + data akun berarti perangkat masih login (halaman daftar
-// akan menolak), 401 berarti bersih. Tidak ada cookie yang dibaca/disimpan.
-test('checkSessionState membedakan sesi aktif dan sesi bersih', async () => {
-  const calls = [];
-  const loggedIn = await checkSessionState({
-    fetchImpl: async (url, init) => {
-      calls.push({ url, credentials: init?.credentials });
-      return new Response(JSON.stringify({ email: 'lama@contoh.id', id: 'u1' }), { status: 200 });
-    },
-  });
-  assert.equal(loggedIn.logged_in, true);
-  assert.equal(loggedIn.reachable, true);
-  assert.match(loggedIn.detail, /masih login/i);
-  assert.match(loggedIn.advice, /Log out/i);
-  // Cookie ikut hanya ke domain chatgpt.com, tidak ke server BLEA.
-  assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/me');
-  assert.equal(calls[0].credentials, 'include');
-
-  const clean = await checkSessionState({ fetchImpl: async () => new Response('', { status: 401 }) });
-  assert.equal(clean.logged_in, false);
-  assert.equal(clean.status, 401);
-  assert.match(clean.detail, /Tidak ada sesi aktif/i);
-
-  // Server menjawab 200 tanpa data akun -> jangan diklaim login.
-  const empty = await checkSessionState({ fetchImpl: async () => new Response(JSON.stringify({}), { status: 200 }) });
-  assert.equal(empty.logged_in, false);
-
-  // Jaringan diblokir: jangan mengklaim apa pun.
-  const blocked = await checkSessionState({ fetchImpl: async () => { throw new Error('CORS'); } });
-  assert.equal(blocked.reachable, false);
-  assert.match(blocked.detail, /gagal/i);
-
-  // Tanpa fetch sama sekali (SSR/tests) tetap aman.
-  const none = await checkSessionState({ fetchImpl: null });
-  assert.equal(none.logged_in, false);
-});
-
-// Panel harus menyediakan tombol pemeriksa sesi: inilah yang membedakan
-// masalah sesi/perangkat dari masalah URL.
-test('panel menyediakan tombol Periksa sesi ChatGPT', async () => {
+// Regresi: pemeriksaan sesi otomatis TIDAK BOLEH kembali. Endpoint itu tanpa
+// header CORS, jadi hasilnya selalu "Failed to fetch" di browser pengguna.
+test('panel memakai panduan sesi manual, bukan fetch lintas-origin', async () => {
   const { readFileSync } = await import('node:fs');
   const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  assert.match(panel, /checkSessionState/);
-  assert.match(panel, /Periksa sesi ChatGPT/);
-  assert.match(panel, /cga-signup-session/);
+  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
+  assert.match(panel, /sessionCheckGuide/);
+  assert.match(panel, /Failed to fetch/);
+  // Komentar boleh menyebut nama endpoint (untuk menjelaskan sejarah); yang
+  // dilarang adalah pemanggilan sungguhan.
+  const code = panel.split('\n').filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//')).join('\n');
+  assert.ok(!/backend-api\/me/.test(code), 'panel tidak boleh memanggil backend-api/me');
+  assert.ok(!/checkSessionState/.test(lib), 'pemeriksa sesi otomatis sudah dihapus');
+  const libCode = lib.split('\n').filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//')).join('\n');
+  assert.ok(!/backend-api\/me/.test(libCode), 'jangan menyimpan pemanggilan yang tidak mungkin berhasil');
+  const guide = globalThis.__signup.sessionCheckGuide();
+  assert.equal(guide.automatic, false);
+  assert.ok(guide.steps.length >= 2);
+  assert.match(guide.why, /CORS|Failed to fetch/i);
+  assert.match(guide.note, /Continue with ChatGPT/);
+});
+
+// Setelah kode berhasil, akses disimpan lewat OAuth resmi — BUKAN dengan
+// menyalin cookie sesi browser (yang tidak bisa dibaca server dan bukan
+// kredensial yang layak disimpan).
+test('panel menyimpan akses lewat OAuth resmi, bukan cookie sesi', async () => {
+  const { readFileSync } = await import('node:fs');
+  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
+  // Tombol penutup hanya muncul setelah langkah terverifikasi.
+  assert.match(panel, /active\.step === 'terverifikasi'/);
+  assert.match(panel, /beginChatGptSignIn/);
+  assert.match(panel, /Simpan aksesnya ke pool/);
+  // Tidak boleh ada pembacaan cookie sesi chatgpt.com dari mana pun.
+  for (const [name, source] of [['panel', panel], ['lib', lib]]) {
+    assert.ok(!/document\.cookie/.test(source), `${name}: jangan baca document.cookie`);
+    assert.ok(!/__Secure-next-auth|next-auth\.session-token/.test(source), `${name}: jangan menyentuh cookie sesi ChatGPT`);
+  }
+  // Penjelasan yang diberikan ke pengguna harus jujur soal masa berlaku.
+  assert.match(panel, /1 jam/);
+  assert.match(panel, /refresh/);
 });

@@ -10,6 +10,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Stethoscope,
+  PlugZap,
   UserPlus,
 } from 'lucide-react';
 import {
@@ -18,7 +19,8 @@ import {
   newLoggingId,
   SIGNUP_STEP_META,
 } from './chatgptSignupClient';
-import { buildAutofillBookmarklet, checkSessionState } from '../lib/chatgptSignup';
+import { buildAutofillBookmarklet, sessionCheckGuide } from '../lib/chatgptSignup';
+import { beginChatGptSignIn } from './chatgptOAuthClient';
 
 const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi'];
 
@@ -70,8 +72,8 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [userscriptBusy, setUserscriptBusy] = useState(false);
   const [userscriptText, setUserscriptText] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
-  const [sessionState, setSessionState] = useState(null);
-  const [sessionBusy, setSessionBusy] = useState(false);
+  const [sessionGuide, setSessionGuide] = useState(null);
+  const [linking, setLinking] = useState(false);
   const [codeExpired, setCodeExpired] = useState(false);
   const [codeNote, setCodeNote] = useState('');
   const [codeUnverified, setCodeUnverified] = useState(false);
@@ -127,19 +129,41 @@ export function ChatGptSignupPanel({ onVerified }) {
   const stepIndex = active ? STEP_ORDER.indexOf(active.step) : -1;
 
   /**
-   * Cek apakah perangkat ini masih punya sesi ChatGPT.
+   * Panduan manual — BUKAN pemeriksaan otomatis.
    *
-   * Ini penting karena halaman error "tidak dapat menyiapkan pemuatan ini" dan
-   * lemparan ke beranda setelah cookie dihapus adalah gejala SESI, bukan URL.
-   * Kalau sesi masih hidup, membuka formulir daftar hanya akan gagal lagi —
-   * tidak peduli URL-nya diganti berapa kali.
+   * Versi sebelumnya memanggil chatgpt.com/backend-api/me dari browser dan
+   * hasilnya "Failed to fetch": endpoint itu tidak mengirim header CORS, jadi
+   * halaman BLEA memang tidak boleh membacanya. Itu kesalahan rancang saya.
    */
-  async function checkSession() {
-    setSessionBusy(true);
-    setSessionState(null);
-    const result = await checkSessionState();
-    setSessionState(result);
-    setSessionBusy(false);
+  function toggleSessionGuide() {
+    setSessionGuide((current) => (current ? null : sessionCheckGuide()));
+  }
+
+  /**
+   * Simpan akses akun yang BARU SAJA berhasil diverifikasi.
+   *
+   * Login manual di ChatGPT menghasilkan cookie sesi di browser Anda — dan
+   * justru cookie itulah yang tidak boleh dan tidak bisa dipakai BLEA: server
+   * tidak bisa membacanya, dan menyimpannya berarti menyimpan kredensial
+   * ChatGPT mentah. Yang dipakai adalah OAuth resmi yang sudah ada
+   * (`Continue with ChatGPT`): access token 1 jam + refresh token bergulir,
+   * diperbarui otomatis oleh pool, dan bisa dicabut terpisah.
+   *
+   * `login_hint` hanya dikirim pada login ulang akun yang sudah punya
+   * client_id terbitan — bukan pada pendaftaran pertama.
+   */
+  async function linkToPool() {
+    setLinking(true);
+    setError('');
+    setNotice('');
+    const res = await beginChatGptSignIn({ loginHint: email.trim().toLowerCase() });
+    if (!res.ok) {
+      setLinking(false);
+      setError(res.error || 'Tidak bisa memulai OAuth ChatGPT.');
+      return;
+    }
+    // Berhasil = halaman dialihkan ke OpenAI, jadi tidak ada state yang bisa
+    // diperbarui lagi dari sini.
   }
 
   async function prepare() {
@@ -383,14 +407,18 @@ export function ChatGptSignupPanel({ onVerified }) {
             <b>Cukup tempel manual</b> — itu sudah benar dan paling cepat.
           </small>
           <div className="cga-signup-session">
-            <button type="button" className="cga-signup-userscript" onClick={checkSession} disabled={sessionBusy}>
-              {sessionBusy ? <Loader2 size={12} className="agent-spin" /> : <Stethoscope size={12} />} Periksa sesi ChatGPT di browser ini
+            <button type="button" className="cga-signup-userscript" onClick={toggleSessionGuide}>
+              <Stethoscope size={12} /> {sessionGuide ? 'Tutup panduan sesi' : 'Sesi masih ada? Cek manual (30 detik)'}
             </button>
-            {sessionState && (
-              <small className={sessionState.logged_in ? 'is-bad' : 'is-ok'}>
-                {sessionState.detail}
-                {sessionState.advice ? ` ${sessionState.advice}` : ''}
-              </small>
+            <small>
+              BLEA <b>tidak bisa</b> memeriksa sesi ChatGPT dari sini: chatgpt.com tidak
+              mengizinkan halaman lain membacanya, jadi pemeriksaan otomatis selalu
+              berakhir &quot;Failed to fetch&quot;. Ini panduan manual, bukan tombol ajaib.
+            </small>
+            {sessionGuide && (
+              <ol className="cga-signup-session-steps">
+                {sessionGuide.steps.map((line) => <li key={line}>{line}</li>)}
+              </ol>
             )}
           </div>
           <details className="cga-signup-optional">
@@ -574,6 +602,20 @@ export function ChatGptSignupPanel({ onVerified }) {
                     </small>
                   )}
                   {codeNote && !codeUnverified && <small className={codeExpired ? 'is-bad' : ''}>{codeNote}</small>}
+                </div>
+              )}
+              {/* Setelah kode berhasil ditempel di ChatGPT, aksesnya disimpan
+                  lewat OAuth resmi — bukan dengan menyalin cookie sesi. */}
+              {active.step === 'terverifikasi' && (
+                <div className="cga-signup-link">
+                  <button type="button" className="cga-primary" onClick={linkToPool} disabled={linking}>
+                    {linking ? <Loader2 size={12} className="agent-spin" /> : <PlugZap size={12} />} Akun sudah masuk? Simpan aksesnya ke pool
+                  </button>
+                  <small>
+                    Memakai OAuth resmi OpenAI (<b>Continue with ChatGPT</b>), bukan cookie sesi
+                    browser. Access token berlaku 1 jam dan diperbarui otomatis lewat refresh
+                    token; BLEA tidak pernah menyimpan cookie <code>chatgpt.com</code>.
+                  </small>
                 </div>
               )}
               {active.note && <small>{active.note}</small>}
