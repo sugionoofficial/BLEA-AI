@@ -710,3 +710,19 @@ test('kode dari pengirim tak dikenal disimpan tanpa menaikkan langkah', async ()
     globalThis.fetch = oldFetch;
   }
 });
+
+// Halaman TempMail juga harus bisa menyalin kode: menyalin angka dari iframe
+// email (sandbox) sering terpotong, dan pengguna tidak selalu membuka panel
+// pendaftaran saat membaca email.
+test('halaman TempMail menampilkan kode + Salin kode dari isi pesan', async () => {
+  const { readFileSync } = await import('node:fs');
+  const page = readFileSync(new URL('../src/auth/TempMailPage.jsx', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../src/auth/tempmail.css', import.meta.url), 'utf8');
+  assert.ok(page.includes("from '../lib/chatgptSignup'"), 'harus memakai extractVerificationCode yang sama');
+  assert.match(page, /extractVerificationCode\(/);
+  assert.ok(/Salin kode/.test(page));
+  assert.match(page, /className="tempmail-code"/);
+  assert.match(css, /\.tempmail-code-value/);
+  // Kode harus dari isi pesan yang dibuka, bukan ditebak di klien lain.
+  assert.match(page, /selectedMessage\.bodyText/);
+});

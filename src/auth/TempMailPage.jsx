@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Copy, Inbox, Mail, RefreshCw, RotateCcw, ShieldCheck, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
+import { extractVerificationCode } from '../lib/chatgptSignup';
 import './tempmail.css';
 
 const POLL_MS = 15_000;
@@ -51,6 +52,10 @@ export function TempMailPage() {
   const [gmailConnected, setGmailConnected] = useState(false);
   const [gmailAccountEmail, setGmailAccountEmail] = useState('');
   const [gmailTag, setGmailTag] = useState('');
+  // Diambil dari isi pesan yang sedang dibuka. Email verifikasi berisi KODE,
+  // dan menyalinnya manual dari iframe email sering meleset (angka terpotong
+  // atau ikut terambil teks lain).
+  const [codeCopied, setCodeCopied] = useState(false);
 
   const loadMessages = useCallback(async (targetEmail, quiet = false) => {
     if (!targetEmail) return;
@@ -201,6 +206,7 @@ export function TempMailPage() {
     try {
       const data = await tempmailRequest('message', { params: { email, messageId: message.id } });
       setSelectedMessage(data.message || null);
+      setCodeCopied(false);
     } catch (requestError) {
       setError(requestError.message || 'Gagal membuka pesan.');
     } finally {
@@ -217,11 +223,30 @@ export function TempMailPage() {
     }
   };
 
+  const copyVerificationCode = async () => {
+    const value = verificationCode.code;
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCodeCopied(true);
+    } catch {
+      setError('Clipboard tidak tersedia di browser ini.');
+    }
+  };
+
   const gmailPreview = useMemo(() => {
     const [local = '', domain = 'gmail.com'] = gmailAccountEmail.split('@');
     return `${local}+${gmailTag.trim() || 'angka'}@${domain}`;
   }, [gmailAccountEmail, gmailTag]);
   const htmlDocument = useMemo(() => emailFrameDocument(selectedMessage?.bodyHtml), [selectedMessage?.bodyHtml]);
+  const verificationCode = useMemo(() => {
+    if (!selectedMessage) return { code: '', candidates: [] };
+    return extractVerificationCode({
+      subject: selectedMessage.subject,
+      bodyText: selectedMessage.bodyText,
+      bodyHtml: selectedMessage.bodyHtml,
+    });
+  }, [selectedMessage]);
   const gmailActive = gmailConfigured && gmailConnected;
 
   return (
@@ -287,7 +312,8 @@ export function TempMailPage() {
 
           <section className="tempmail-card tempmail-detail-card" aria-label="Isi email">
             <div className="tempmail-card-title"><div><span className="tempmail-kicker">PESAN</span><h2>{selectedMessage?.subject || 'Isi email'}</h2></div></div>
-            {!selectedMessage ? <div className="tempmail-list-empty"><Mail size={24} /><span>Pilih pesan di inbox untuk membaca isinya.</span></div> : <><div className="tempmail-detail-meta"><b>Dari</b><span>{selectedMessage.from || '—'}</span><b>Kepada</b><span>{selectedMessage.to || email}</span><b>Tanggal</b><span>{displayDate(selectedMessage.createdAt) || '—'}</span></div>{selectedMessage.bodyHtml ? <iframe className="tempmail-message-frame" title="Isi pesan email (terisolasi)" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlDocument} /> : <pre className="tempmail-message-text">{selectedMessage.bodyText || 'Email ini tidak berisi teks.'}</pre>}</>}
+            {!selectedMessage ? <div className="tempmail-list-empty"><Mail size={24} /><span>Pilih pesan di inbox untuk membaca isinya.</span></div> : <><div className="tempmail-detail-meta"><b>Dari</b><span>{selectedMessage.from || '—'}</span><b>Kepada</b><span>{selectedMessage.to || email}</span><b>Tanggal</b><span>{displayDate(selectedMessage.createdAt) || '—'}</span></div>
+              {verificationCode.code && <div className="tempmail-code"><div><span className="tempmail-kicker">KODE TERBACA</span><code className="tempmail-code-value">{verificationCode.code}</code></div><button type="button" className="tempmail-button tempmail-button-secondary" onClick={copyVerificationCode}><Copy size={14} /> {codeCopied ? 'Kode disalin' : 'Salin kode'}</button><small>Kode ini sekali pakai. Tempel di kolom verifikasi, bukan di URL.</small></div>}{selectedMessage.bodyHtml ? <iframe className="tempmail-message-frame" title="Isi pesan email (terisolasi)" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlDocument} /> : <pre className="tempmail-message-text">{selectedMessage.bodyText || 'Email ini tidak berisi teks.'}</pre>}</>}
           </section>
         </div>
       </main>
