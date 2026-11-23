@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { ChatGptOAuthPanel } from './ChatGptOAuthPanel';
+import { ChatGptSignupPanel } from './ChatGptSignupPanel';
 import {
   createChatGptAccount,
   deleteChatGptAccount,
@@ -217,6 +218,11 @@ export function ChatGptAccountsPage() {
         </section>
 
         <ChatGptOAuthPanel onLinked={load} />
+
+        {/* Pendaftaran akun baru dari email TempMail. Panel ini TIDAK mengirim
+            pendaftaran dari server (lihat src/lib/chatgptSignup.js); ia
+            menyiapkan URL resmi + memantau email verifikasi. */}
+        <ChatGptSignupPanel onVerified={load} />
 
         {notice && (
           <p className={`cga-notice is-${noticeTone}`}>

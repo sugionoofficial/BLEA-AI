@@ -122,6 +122,7 @@ import {
   stripAgentToolCalls,
 } from './agent/tools.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
+import { handleChatgptSignup } from './lib/chatgptSignupRoute.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
 import {
   handleMetadataContent,
@@ -148,6 +149,45 @@ async function supabaseFetch(env, path, { method = 'GET', token, body, headers =
     headers: finalHeaders,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+}
+
+/** Apakah alias `nama+tag@domain` benar-benar milik mailbox Gmail yang terhubung. */
+function aliasBelongsToGmailConnection(alias, connection) {
+  const address = String(alias?.email || '').toLowerCase();
+  const account = String(connection?.email || '').toLowerCase();
+  const plus = address.indexOf('+');
+  const at = address.lastIndexOf('@');
+  const accountAt = account.lastIndexOf('@');
+  return plus > 0 && at > plus && accountAt > 0
+    && address.slice(0, plus) === account.slice(0, accountAt)
+    && address.slice(at + 1) === account.slice(accountAt + 1);
+}
+
+/**
+ * Pembaca inbox TempMail untuk satu user admin, dipakai /api/chatgpt-signup
+ * supaya logika alias/penyedia tidak diduplikasi di dua tempat.
+ * Email yang diminta WAJIB sama dengan alias aktif milik user tersebut.
+ */
+async function tempmailInboxReader(env, user) {
+  const response = await servicePostgrest(env, `/tempmail_user_aliases?select=user_id,email,token,provider&user_id=eq.${encodeURIComponent(user.id)}&limit=1`);
+  if (!response.ok) throw Object.assign(new Error('Gagal membaca alias TempMail. Pastikan tabel tempmail_user_aliases sudah dibuat.'), { status: 503 });
+  const alias = (await response.json().catch(() => []))?.[0] || null;
+  return async (email) => {
+    if (!alias) throw Object.assign(new Error('Buat alamat TempMail terlebih dahulu.'), { status: 404 });
+    const requested = String(email || '').trim().toLowerCase();
+    if (!requested || requested !== String(alias.email || '').toLowerCase()) {
+      throw Object.assign(new Error('Alamat tidak ditemukan pada akun admin ini.'), { status: 404 });
+    }
+    if (alias.provider === 'gmailapi') {
+      const connection = await getGmailConnection(env, user.id);
+      if (!connection || !aliasBelongsToGmailConnection(alias, connection)) {
+        throw Object.assign(new Error('Koneksi Gmail tidak cocok dengan akhiran yang aktif. Hubungkan ulang Gmail atau buat akhiran baru.'), { status: 409 });
+      }
+      return listGmailMessages(env, connection, alias.email);
+    }
+    const credentials = parseMailtmCredentials(alias.token);
+    return fetchMailtmMessages(credentials.token);
+  };
 }
 
 async function handleTempmail(request, url, env) {
@@ -181,16 +221,9 @@ async function handleTempmail(request, url, env) {
     const response = await servicePostgrest(env, `/tempmail_user_aliases?user_id=eq.${encodeURIComponent(user.id)}`, { method: 'DELETE' });
     if (!response.ok) throw Object.assign(new Error('Gagal menghapus alias TempMail.'), { status: 503 });
   };
-  const aliasBelongsToConnection = (alias, connection) => {
-    const address = String(alias?.email || '').toLowerCase();
-    const account = String(connection?.email || '').toLowerCase();
-    const plus = address.indexOf('+');
-    const at = address.lastIndexOf('@');
-    const accountAt = account.lastIndexOf('@');
-    return plus > 0 && at > plus && accountAt > 0
-      && address.slice(0, plus) === account.slice(0, accountAt)
-      && address.slice(at + 1) === account.slice(accountAt + 1);
-  };
+  // Dipakai juga oleh /api/chatgpt-signup: pencocokan pesan verifikasi hanya
+  // boleh memakai alias milik admin ini.
+  const aliasBelongsToConnection = aliasBelongsToGmailConnection;
   const createGmailAliasForUser = async (connection, requestedTag = '') => {
     const custom = Boolean(String(requestedTag || '').trim());
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -2904,6 +2937,24 @@ async function handleApi(request, url, env) {
 
     if (path === 'tempmail' && ['GET', 'POST'].includes(method)) {
       return handleTempmail(request, url, env);
+    }
+
+    // ---- /chatgpt-signup: "Daftar ChatGPT pakai email TempMail" (admin) ----
+    //
+    // Sengaja TIDAK mem-POST ke chatgpt.com/api/auth/signin/openai: Workerd
+    // diblokir ke domain itu, endpointnya butuh cookie sesi + Turnstile, dan
+    // pendaftaran otomatis melanggar ToS OpenAI. Rute ini menyiapkan URL daftar
+    // resmi berisi `login_hint` = email TempMail, mencatat langkah manual, dan
+    // mencocokkan email verifikasi di inbox TempMail. Detail: chatgptSignup.js
+    if (path === 'chatgpt-signup') {
+      if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
+      if (!['GET', 'POST'].includes(method)) return jsonResponse({ error: 'Method tidak diizinkan.' }, 405);
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      const result = await handleChatgptSignup(request, env, user, {
+        listInbox: user ? await tempmailInboxReader(env, user).catch(() => null) : null,
+      });
+      return jsonResponse(result.body, result.status, { 'cache-control': 'no-store' });
     }
 
     // ---- POST /api/media/resolve: tautan Facebook/TikTok -> link siap pakai ----
