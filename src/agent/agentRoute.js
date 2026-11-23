@@ -11,7 +11,7 @@
 //
 // Events (consumed by src/agent/agentClient.js):
 //   {type:'meta',     model, provider, skills?, fallback?}
-//   {type:'step',     index, label, status:'start'|'done'|'error', detail}
+//   {type:'step',     index, label, status:'start'|'done'|'error', detail, progress?}
 //   {type:'skill',    id, resource, source}
 //   {type:'delta',    text}
 //   {type:'done',     ok, reply, actions, skills, stopReason, model, provider}
@@ -91,6 +91,35 @@ export async function handleAgentTurn(request, url, env, deps) {
     }
   }
 
+  // Harga per giliran (opsional). Modalitas `agent_turn` sengaja terpisah dari
+  // `text` supaya admin bisa memberi harga untuk agen tanpa mengubah harga
+  // chat. Tanpa baris harga, agen gratis seperti /api/chat.
+  const turnPriceRes = await deps.servicePostgrest(
+    env,
+    `/credit_model_prices?provider=eq.${encodeURIComponent(provider)}&model=eq.${encodeURIComponent(requestedModel)}&modality=eq.agent_turn&active=eq.true&select=credits&limit=1`,
+  ).catch(() => null);
+  const turnPriceRows = turnPriceRes?.ok ? await turnPriceRes.json().catch(() => []) : [];
+  const turnPrice = Number(turnPriceRows?.[0]?.credits) || 0;
+
+  let charged = 0;
+  let chargeId = '';
+  if (turnPrice > 0) {
+    // Ditagih sebelum panggilan model pertama: lebih baik menolak giliran
+    // daripada menanggung biaya provider tanpa saldo.
+    chargeId = crypto.randomUUID();
+    const paid = await deps.chargeCredits(env, user.id, turnPrice, `Agen · ${requestedModel}`, chargeId);
+    if (!paid) {
+      return Response.json(
+        { error: `Saldo kredit tidak cukup untuk giliran agen ini (${turnPrice} kredit). Isi kredit di halaman Kredit.`, code: 'insufficient_credits', credits: turnPrice },
+        { status: 402 },
+      );
+    }
+    charged = turnPrice;
+  }
+  const refundTurn = async () => {
+    if (charged > 0) await deps.refundCredits(env, user.id, charged, chargeId, 'Refund agen: giliran gagal');
+  };
+
   const turnMessages = [
     {
       role: 'system',
@@ -116,12 +145,21 @@ export async function handleAgentTurn(request, url, env, deps) {
       let stopReason = 'final';
 
       try {
-        emit({ type: 'meta', model: activeModel, provider: activeProvider });
+        emit({ type: 'meta', model: activeModel, provider: activeProvider, credits: charged });
         if (pinnedSection) emit({ type: 'skill', id: pinnedSkill, resource: pinnedResource, source: 'anthropics/skills' });
 
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
           const readLabel = round === 0 ? 'Membaca permintaan' : 'Menilai hasil alat';
           emit({ type: 'step', index: round, label: readLabel, status: 'start' });
+
+          // A tool turn makes up to four upstream calls; without this the page
+          // looks frozen for 10–30 s between steps. Best-effort and unawaited so
+          // a closed stream can never reject the turn.
+          const ticker = setInterval(() => {
+            try {
+              emit({ type: 'step', index: round, label: readLabel, status: 'start', progress: true });
+            } catch { /* stream sudah ditutup */ }
+          }, 2_500);
 
           let attempt = await deps.sendChatCompletionRequest({
             provider: activeProvider,
@@ -131,7 +169,7 @@ export async function handleAgentTurn(request, url, env, deps) {
             payload: { model: activeModel, messages: turnMessages, stream: false },
             timeoutMs: deps.chatUpstreamTimeoutMs(activeProvider),
             env,
-          });
+          }).finally(() => clearInterval(ticker));
 
           if (isRateLimited(attempt)) {
             const alt = deps.buildFallbackCandidates({
@@ -169,6 +207,7 @@ export async function handleAgentTurn(request, url, env, deps) {
               error: info.friendlyMessage || 'Model tidak bisa dihubungi.',
               code: info.code || `http_${attempt.status || 0}`,
             });
+            await refundTurn();
             return;
           }
           emit({ type: 'step', index: round, label: readLabel, status: 'done' });
@@ -232,6 +271,9 @@ export async function handleAgentTurn(request, url, env, deps) {
         }
 
         if (!finalReply) {
+          // Tidak ada jawaban model yang bisa dipakai: jangan tagih giliran.
+          await refundTurn();
+          charged = 0;
           stopReason = 'tool_budget';
           finalReply = 'Batas alat untuk giliran ini sudah habis dan jawaban final belum terbentuk. Lihat panel langkah untuk hasil alat terakhir, lalu persempit permintaan.';
         }
@@ -246,8 +288,10 @@ export async function handleAgentTurn(request, url, env, deps) {
           stopReason,
           model: activeModel,
           provider: activeProvider,
+          credits: charged,
         });
       } catch (error) {
+        await refundTurn();
         emit({ type: 'error', error: String(error?.message || error).slice(0, 400), code: 'agent_failed' });
       } finally {
         controller.close();

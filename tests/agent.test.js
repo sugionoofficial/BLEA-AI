@@ -49,8 +49,14 @@ async function readSse(response) {
 // A fetch stub that routes Supabase auth/rest + one chat provider. `chatReplies`
 // is consumed in order, so a test can script the model → tool → final answer
 // sequence.
-function stubUpstream({ chatReplies = [], models = [{ provider: 'unorouter', model: 'gpt-oss-120b:free' }], chatStatus = 200 } = {}) {
-  const state = { chatBodies: [], fetchCalls: [], remaining: [...chatReplies] };
+function stubUpstream({
+  chatReplies = [],
+  models = [{ provider: 'unorouter', model: 'gpt-oss-120b:free' }],
+  chatStatus = 200,
+  turnPrice = 0,
+  spendOk = true,
+} = {}) {
+  const state = { chatBodies: [], fetchCalls: [], remaining: [...chatReplies], rpcCalls: [] };
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input.url;
@@ -61,6 +67,17 @@ function stubUpstream({ chatReplies = [], models = [{ provider: 'unorouter', mod
     }
     if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
       return Response.json(models);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) {
+      return Response.json(turnPrice > 0 ? [{ credits: turnPrice }] : []);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) {
+      state.rpcCalls.push({ fn: 'spend_credits', body: JSON.parse(init.body) });
+      return Response.json(spendOk);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/rpc/refund_credits')) {
+      state.rpcCalls.push({ fn: 'refund_credits', body: JSON.parse(init.body) });
+      return Response.json(true);
     }
     if (url.includes('/chat/completions')) {
       const payload = JSON.parse(init.body);
@@ -428,5 +445,85 @@ test('AgentPage renders the single-page agent shell and links to its skill prove
     assert.ok(css.includes('prefers-reduced-motion'));
   } finally {
     await vite.close();
+  }
+});
+
+test('priced agent turn is charged up front and reported on done', async () => {
+  const stub = stubUpstream({ chatReplies: ['Jawaban berbayar.'], turnPrice: 5 });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: { messages: [{ role: 'user', content: 'halo' }], model: 'gpt-oss-120b:free', provider: 'unorouter' },
+    }), createEnv());
+    const events = await readSse(res);
+    assert.equal(stub.state.rpcCalls.length, 1);
+    assert.equal(stub.state.rpcCalls[0].fn, 'spend_credits');
+    assert.equal(stub.state.rpcCalls[0].body.p_amount, 5);
+    assert.equal(stub.state.rpcCalls[0].body.p_user_id, 'user-1');
+    assert.equal(events.find((event) => event.type === 'meta').credits, 5);
+    assert.equal(events.at(-1).credits, 5);
+    assert.equal(events.some((event) => event.type === 'delta' && event.text === 'Jawaban berbayar.'), true);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('priced agent turn refuses before calling the model when the wallet is empty', async () => {
+  const stub = stubUpstream({ chatReplies: ['tidak boleh terpakai'], turnPrice: 5, spendOk: false });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: { messages: [{ role: 'user', content: 'halo' }], model: 'gpt-oss-120b:free', provider: 'unorouter' },
+    }), createEnv());
+    assert.equal(res.status, 402);
+    const data = await res.json();
+    assert.equal(data.code, 'insufficient_credits');
+    assert.match(data.error, /Saldo kredit tidak cukup/);
+    assert.equal(stub.state.chatBodies.length, 0, 'model tidak boleh dipanggil tanpa saldo');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('failed priced turn is refunded instead of charging for nothing', async () => {
+  const stub = stubUpstream({ chatStatus: 500, turnPrice: 5 });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: { messages: [{ role: 'user', content: 'halo' }], model: 'gpt-oss-120b:free', provider: 'unorouter' },
+    }), createEnv());
+    const events = await readSse(res);
+    assert.ok(events.some((event) => event.type === 'error'));
+    const refund = stub.state.rpcCalls.find((call) => call.fn === 'refund_credits');
+    assert.ok(refund, 'harus ada refund saat model gagal');
+    assert.equal(refund.body.p_amount, 5);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('tool-budget placeholder is refunded and reported as zero credits', async () => {
+  const looping = Array.from({ length: 6 }, () => '```tool\n{"name":"web_search","arguments":{"query":"x"}}\n```');
+  const stub = stubUpstream({ chatReplies: looping, turnPrice: 5 });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: { messages: [{ role: 'user', content: 'ulangi' }], model: 'gpt-oss-120b:free', provider: 'unorouter' },
+    }), createEnv());
+    const events = await readSse(res);
+    const done = events.at(-1);
+    assert.equal(done.stopReason, 'tool_budget');
+    assert.equal(done.credits, 0);
+    assert.ok(stub.state.rpcCalls.some((call) => call.fn === 'refund_credits'));
+  } finally {
+    stub.restore();
+  }
+});
+
+test('free (unpriced) models never touch the wallet', async () => {
+  const stub = stubUpstream({ chatReplies: ['gratis'] });
+  try {
+    await worker.fetch(apiRequest('/api/agent', {
+      body: { messages: [{ role: 'user', content: 'halo' }], model: 'gpt-oss-120b:free', provider: 'unorouter' },
+    }), createEnv());
+    assert.deepEqual(stub.state.rpcCalls, []);
+  } finally {
+    stub.restore();
   }
 });

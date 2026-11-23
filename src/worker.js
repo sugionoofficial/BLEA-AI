@@ -4864,6 +4864,19 @@ async function handleApi(request, url, env) {
         availableToolNames: AGENT_TOOL_NAMES,
         describeToolCall: (name, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.describe(args) || '',
         summarizeToolResult: (name, result, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.summarize(result, args) || '',
+        // Harga giliran opsional (credit_model_prices, modality 'agent_turn').
+        chargeCredits: (envRef, userId, amount, description, generationId) => creditRpc(envRef, 'spend_credits', {
+          p_user_id: userId,
+          p_amount: amount,
+          p_description: description,
+          p_generation_id: generationId,
+        }),
+        refundCredits: (envRef, userId, amount, generationId, description) => creditRpc(envRef, 'refund_credits', {
+          p_user_id: userId,
+          p_amount: amount,
+          p_description: description,
+          p_generation_id: generationId,
+        }),
       });
     }
 

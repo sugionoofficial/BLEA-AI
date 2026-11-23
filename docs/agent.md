@@ -77,9 +77,27 @@ permintaan menambah latensi, kuota, dan titik gagal. Teks ikut bundel.
 4. Jalankan `npm run skills:build`.
 5. Tambahkan overlay jika teksnya menyuruh menjalankan skrip yang tidak ada.
 
+## Harga per giliran (opsional)
+
+Agen memakai beberapa panggilan model + pencarian web per giliran, jadi ada
+modalitas harga tersendiri: `agent_turn` di `credit_model_prices`
+(migrasi `20261206000000_agent_turn_price_modality.sql`). Admin mengaturnya di
+**Admin Panel → API & Keys → Katalog Model → tarif "Agen (per giliran)"** pada
+model chat yang dipakai agen.
+
+- **Tanpa baris harga aktif** → giliran gratis, sama seperti `/api/chat`.
+- **Dengan harga** → `spend_credits` dipanggil **sebelum** panggilan model
+  pertama. Saldo kurang → HTTP 402 `insufficient_credits`, model tidak
+  dipanggil.
+- **Refund otomatis** (via `refund_credits`) jika model gagal dihubungi, ada
+  error tak terduga, atau giliran berakhir di batas alat tanpa jawaban final
+  (`done.credits = 0`).
+- Modalitas ini sengaja terpisah dari `text` supaya mengaktifkan harga agen
+  tidak ikut menagih chat biasa di AI Studio.
+
 ## Konfigurasi
 
-Tidak ada variabel baru. Halaman memakai model chat yang aktif di
+Tidak ada variabel environment baru. Halaman memakai model chat yang aktif di
 `provider_models` dan kunci di `provider_api_keys`, persis seperti `/api/chat`.
 Model dipilih dari `/api/enabled-models`; jika model yang diminta pengguna
 sudah tidak aktif, permintaan gagal dengan pesan jelas alih-alih diam-diam
@@ -93,6 +111,9 @@ pindah model (`resolveAgentModel`).
 - **Tidak ada riwayat lintas perangkat.** Utas hanya di browser ini.
 - **Hasil pencarian bisa usang/salah.** DuckDuckGo, Wikipedia, Stack Overflow,
   GitHub, Hacker News — sama seperti `/api/search`.
-- **Belum ada gerbang kredit.** Seperti `/api/chat`, setiap giliran memakai
-  kuota provider. Jika nanti perlu dibatasi, tempatnya di `handleAgentTurn`
-  sebelum panggilan model pertama.
+- **Biaya per giliran hanya menutup panggilan model.** Pencarian web dan
+  `read_url` tidak dihitung terpisah; kalau biaya itu penting, naikkan harga
+  `agent_turn` untuk mengompensasi, bukan menambah hitungan per alat.
+- **Belum ada rate limit per pengguna.** Yang membatasi hanya kuota provider
+  dan saldo kredit. Batas per akun (mis. X giliran/menit) belum ada; tempatnya
+  di `handleAgentTurn` sebelum panggilan model pertama.

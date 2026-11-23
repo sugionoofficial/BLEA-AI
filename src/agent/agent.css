@@ -75,6 +75,9 @@
 .dark .agent-action.is-ok { color: #6ee7b7; }
 .dark .agent-action.is-fail { color: #fca5a5; }
 
+.agent-action.is-cost { background: rgb(99 102 241 / .1); color: var(--primary-700); border-color: rgb(99 102 241 / .25); }
+.dark .agent-action.is-cost { color: #c7d2fe; }
+
 .agent-note { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 11px; color: var(--warning); }
 
 /* ---------- Step feed (satu-satunya elemen bergerak) ---------- */
@@ -199,7 +202,8 @@
 .agent-rail-link:hover { text-decoration: underline; }
 
 .agent-head-actions { display: flex; align-items: center; gap: 10px; }
-.agent-model-note { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--muted-foreground); }
+.agent-model-note { display: inline-flex; align-items: center; gap: 5px; max-width: 260px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--muted-foreground); }
+.agent-model-note em { font-style: normal; color: var(--primary); }
 .agent-ghost-btn {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-lg);

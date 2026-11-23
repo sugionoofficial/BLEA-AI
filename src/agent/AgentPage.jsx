@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  ArrowUpRight, BookOpen, Check, ChevronDown, CircleAlert, Copy, Cpu, Globe,
+  ArrowUpRight, BookOpen, Check, ChevronDown, CircleAlert, Coins, Copy, Cpu, Globe,
   ListChecks, Loader2, Send, Sparkles, Square, Trash2, Wrench, X,
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
@@ -36,8 +36,9 @@ function shortTime(value) {
   return date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
 
-function StepFeed({ steps, running }) {
+function StepFeed({ steps, running, tickCount = 0 }) {
   if (!steps.length && !running) return null;
+  const waitingOnModel = running && steps.length > 0 && steps[steps.length - 1].status === 'start';
   return (
     <ol className="agent-feed" aria-label="Langkah agen">
       {steps.map((step, index) => (
@@ -51,7 +52,16 @@ function StepFeed({ steps, running }) {
           </span>
         </li>
       ))}
-      {running && (
+      {waitingOnModel && (
+        <li className="agent-feed-item is-running">
+          <span className="agent-feed-mark" aria-hidden="true"><Loader2 size={11} className="agent-spin" /></span>
+          <span className="agent-feed-text">
+            <b>Model sedang memproses</b>
+            {tickCount > 0 && <small>{(tickCount * 2.5).toFixed(0)} detik berjalan · panggilan model bisa memakan waktu</small>}
+          </span>
+        </li>
+      )}
+      {running && !waitingOnModel && (
         <li className="agent-feed-item is-running">
           <span className="agent-feed-mark" aria-hidden="true"><Loader2 size={11} className="agent-spin" /></span>
           <span className="agent-feed-text"><b>Menyusun jawaban</b></span>
@@ -109,6 +119,8 @@ export function AgentPage() {
   const stored = useMemo(loadStoredThread, []);
   const [messages, setMessages] = useState(stored.messages);
   const [steps, setSteps] = useState([]);
+  const [tickCount, setTickCount] = useState(0);
+  const [lastCredits, setLastCredits] = useState(0);
   const [skills, setSkills] = useState(stored.skills || []);
   const [skillCatalog, setSkillCatalog] = useState([]);
   const [pinnedSkill, setPinnedSkill] = useState('');
@@ -168,6 +180,7 @@ export function AgentPage() {
     setError('');
     setDraft('');
     setSteps([]);
+    setTickCount(0);
     const userMessage = { id: `u-${Date.now()}`, role: 'user', content, at: new Date().toISOString() };
     const history = [...messages, userMessage].map(({ role, content: body }) => ({ role, content: body }));
     setMessages((current) => [...current, userMessage]);
@@ -185,13 +198,18 @@ export function AgentPage() {
       signal: controller.signal,
       onMeta: (meta) => {
         if (meta.fallback) setError(`Model utama sibuk, jawaban dialihkan ke ${meta.model}.`);
+        if (Number(meta.credits) > 0) setLastCredits(Number(meta.credits));
       },
       onStep: (step) => {
+        // `progress` menandai model masih memproses, bukan langkah baru: ia
+        // hanya menyalakan indikator di langkah yang sedang berjalan.
+        if (step.progress) { setTickCount((count) => count + 1); return; }
         const index = liveSteps.findIndex((item) => item.label === step.label && item.status === 'start');
         if (step.status === 'start') liveSteps.push(step);
         else if (index >= 0) liveSteps[index] = step;
         else liveSteps.push(step);
         setSteps([...liveSteps]);
+        setTickCount(0);
       },
       onSkill: (skill) => {
         setSkills((current) => (current.some((item) => item.id === skill.id && (item.resource || '') === (skill.resource || ''))
@@ -219,6 +237,7 @@ export function AgentPage() {
       role: 'assistant',
       content: result.data.reply || '',
       actions: result.data.actions || [],
+      credits: Number(result.data.credits) || 0,
       model: result.data.model,
       stopReason: result.data.stopReason,
       at: new Date().toISOString(),
@@ -265,7 +284,10 @@ export function AgentPage() {
       description="Satu agen untuk mengerjakan tugas: menulis, menganalisis, menelusuri sumber, dan memuat panduan skill."
       actions={(
         <div className="agent-head-actions">
-          <span className="agent-model-note"><Cpu size={12} /> {activeModelMeta.model || 'belum ada model'}</span>
+          <span className="agent-model-note">
+            <Cpu size={12} /> {activeModelMeta.model || 'belum ada model'}
+            {lastCredits > 0 && <em> · {lastCredits} kredit/giliran</em>}
+          </span>
           <button type="button" className="agent-ghost-btn" onClick={clearThread} disabled={!messages.length && !running}>
             <Trash2 size={13} /> Bersihkan
           </button>
@@ -310,6 +332,11 @@ export function AgentPage() {
                 ) : (
                   <p className="agent-user-text">{message.content}</p>
                 )}
+                {Number(message.credits) > 0 && (
+                  <div className="agent-action-row">
+                    <span className="agent-action is-cost"><Coins size={10} /> {message.credits} kredit untuk giliran ini</span>
+                  </div>
+                )}
                 {message.actions?.length > 0 && (
                   <div className="agent-action-row">
                     {message.actions.map((action, index) => (
@@ -328,7 +355,7 @@ export function AgentPage() {
             {running && (
               <article className="agent-message from-assistant is-live">
                 <header><b>BLEA Agent</b><time>berjalan</time></header>
-                <StepFeed steps={steps} running />
+                <StepFeed steps={steps} running tickCount={tickCount} />
               </article>
             )}
             <div ref={endRef} />

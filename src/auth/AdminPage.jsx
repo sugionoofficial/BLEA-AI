@@ -176,6 +176,7 @@ const CATALOG_MODALITIES = [
   { id: 'image_edit_2k', label: 'Edit Gambar 2K' },
   { id: 'music', label: 'Musik (Music)' },
   { id: 'text', label: 'Teks / Chat' },
+  { id: 'agent_turn', label: 'Agen (per giliran)' },
   { id: 'speech', label: 'Speech / Audio' },
   { id: 'embedding', label: 'Embedding' },
   { id: 'other', label: 'Lainnya' },
@@ -196,6 +197,9 @@ function defaultModalityForModel(model) {
 function modalityOptionsForModel(model, existingEntries = {}) {
   const def = defaultModalityForModel(model);
   const keep = new Set([def, ...Object.keys(existingEntries || {})]);
+  // Model chat juga dipakai halaman /agent: admin perlu bisa memberi harga
+  // per giliran tanpa mengubah harga teks.
+  if (def === 'text') keep.add('agent_turn');
   if (def === 'image') {
     keep.add('image');
     keep.add('image_edit');
