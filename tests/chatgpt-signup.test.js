@@ -638,3 +638,75 @@ test('action=code menandai kode tersimpan yang sudah basi', async () => {
     globalThis.fetch = oldFetch;
   }
 });
+
+// Regresi penting: kode yang ditemukan pada pesan TIDAK dikenali tetap harus
+// tersimpan, supaya tidak hilang saat panel dimuat ulang. Langkahnya pun tidak
+// boleh naik ke "terverifikasi" karena belum terbukti email OpenAI.
+test('kode dari pengirim tak dikenal disimpan tanpa menaikkan langkah', async () => {
+  const oldFetch = globalThis.fetch;
+  const attempt = {
+    id: '77777777-7777-4777-8777-777777777777',
+    user_id: 'admin-1',
+    email: 'kotak@mail.tm',
+    step: 'menunggu_verifikasi',
+    signup_url: '',
+    note: '',
+    verification_message_id: '',
+    verification_code: '',
+    verification_code_at: null,
+    verified_at: null,
+    created_at: '2026-11-23T10:00:00Z',
+    updated_at: '2026-11-23T10:00:00Z',
+  };
+  let patched = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(String(init.body));
+        return Response.json([{ ...attempt, ...patched }]);
+      }
+      return Response.json([attempt]);
+    }
+    if (target.includes('api.mail.tm/messages/msg-77')) {
+      // Pengirim dikenal, tetapi isi pesannya tidak menyebut verifikasi/kode
+      // di snippet; skornya di bawah ambang walau kode ada di isi.
+      return Response.json({
+        id: 'msg-77',
+        subject: 'Pemberitahuan',
+        from: { address: 'info@contoh.invalid' },
+        text: 'Kode akses sementara: 730145',
+        createdAt: '2026-11-23T10:00:30Z',
+      });
+    }
+    if (target.includes('api.mail.tm/messages')) {
+      return Response.json({ 'hydra:member': [{
+        id: 'msg-77',
+        subject: 'Pemberitahuan',
+        from: { address: 'info@contoh.invalid' },
+        to: [{ address: 'kotak@mail.tm' }],
+        intro: 'Pemberitahuan',
+        createdAt: '2026-11-23T10:00:30Z',
+      }] });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const body = await res.json();
+    assert.equal(body.matched, false, 'pengirim tak dikenal tidak boleh dianggap verifikasi');
+    assert.equal(body.code, '730145');
+    // Yang disimpan hanya kode + waktunya; langkah tidak dinaikkan.
+    assert.equal(patched.verification_code, '730145');
+    assert.equal(patched.verification_message_id, 'msg-77');
+    assert.ok(patched.verification_code_at, 'waktu kode harus disimpan agar TTL bisa dihitung');
+    assert.equal(patched.step, undefined);
+    assert.equal(patched.verified_at, undefined);
+    assert.equal(body.code_unverified, true, 'kode dari pengirim tak dikenal harus ditandai');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});

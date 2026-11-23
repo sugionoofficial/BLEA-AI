@@ -398,6 +398,7 @@ export function normalizeSignupRequest(row) {
     note: row.note || '',
     verification_message_id: row.verification_message_id || '',
     verification_code: row.verification_code || '',
+    verification_code_at: row.verification_code_at || null,
     verified_at: row.verified_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,

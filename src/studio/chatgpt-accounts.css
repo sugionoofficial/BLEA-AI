@@ -487,3 +487,10 @@
 }
 .cga-signup-code.is-expired .cga-signup-code-value { color: #ffe3b0; text-decoration: line-through; }
 .cga-signup-code small.is-bad { color: #f3c67e; opacity: .95; }
+/* Kode dari pesan yang tidak dikenali sebagai OpenAI: jangan terlihat sama
+   yakinkan dengan kode yang sudah cocok. */
+.cga-signup-code.is-unverified {
+  border-color: rgba(150, 170, 255, .45);
+  background: rgba(150, 170, 255, .07);
+}
+.cga-signup-code.is-unverified .cga-signup-code-value { color: #d6ddff; }
