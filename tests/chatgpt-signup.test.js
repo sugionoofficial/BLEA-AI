@@ -149,3 +149,19 @@ test('panel pendaftaran membuka tab sebelum await dan menyediakan tautan manual'
   // Jalan keluar bila popup diblokir keras.
   assert.ok(source.includes('Buka di tab baru'), 'harus ada tautan manual bila tab baru diblokir');
 });
+
+// Regresi 42P10: upsert memakai PostgREST `on_conflict=user_id,email`, jadi
+// migrasi WAJIB punya unique constraint pada kolom apa adanya. Unique index
+// ekspresi (user_id, lower(email)) saja tidak bisa diinferensi ON CONFLICT.
+test('migrasi pendaftaran menyediakan unique constraint (user_id, email) untuk upsert', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../supabase/migrations/', import.meta.url);
+  const files = readdirSync(dir).filter((name) => name.includes('chatgpt_signup_attempts') || name.includes('chatgpt_signup_on_conflict'));
+  assert.ok(files.length >= 2, 'migrasi awal + migrasi perbaikan harus ada');
+  const sql = files.map((name) => readFileSync(new URL(name, dir), 'utf8')).join('\n');
+  assert.ok(
+    /unique\s*\(\s*user_id\s*,\s*email\s*\)/i.test(sql),
+    'harus ada unique (user_id, email) agar ON CONFLICT (user_id, email) sah',
+  );
+  assert.ok(/on_conflict=user_id,email/.test(readFileSync(new URL('../src/lib/chatgptSignupRoute.js', import.meta.url), 'utf8')));
+});
