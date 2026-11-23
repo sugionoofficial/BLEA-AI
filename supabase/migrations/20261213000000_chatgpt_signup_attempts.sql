@@ -41,7 +41,18 @@ create table if not exists public.chatgpt_signup_attempts (
 comment on table public.chatgpt_signup_attempts is
   'Jejak permintaan pendaftaran ChatGPT dari email TempMail (tanpa kredensial). Satu baris per pengguna+email.';
 
-create unique index if not exists chatgpt_signup_attempts_user_email_key
+-- Unik per (admin, email). WAJIB berupa unique CONSTRAINT pada kolom apa adanya:
+-- Worker melakukan upsert lewat PostgREST `on_conflict=user_id,email`, dan
+-- ON CONFLICT hanya bisa menginferensi index/constraint yang kolomnya persis
+-- sama. Index ekspresi (user_id, lower(email)) TIDAK bisa dipakai dan membuat
+-- upsert gagal dengan 42P10 ("there is no unique or exclusion constraint
+-- matching the ON CONFLICT specification"). Worker selalu menulis email
+-- lowercase, jadi kunci ini cukup.
+alter table public.chatgpt_signup_attempts
+  add constraint chatgpt_signup_attempts_user_email_unique unique (user_id, email);
+
+-- Jaring pengaman untuk baris lama yang mungkin tersimpan dengan huruf besar.
+create unique index if not exists chatgpt_signup_attempts_user_email_lower_key
   on public.chatgpt_signup_attempts (user_id, lower(email));
 
 create index if not exists chatgpt_signup_attempts_user_created_idx

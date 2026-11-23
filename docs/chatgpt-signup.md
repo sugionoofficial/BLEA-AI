@@ -76,4 +76,10 @@ verifikasi, isi email, atau cookie sesi `chatgpt.com`.
   `+`. Bila pendaftaran ditolak, buat alias TempMail tanpa `+`.
 - Migrasi baru perlu dijalankan di Supabase, lalu
   `NOTIFY pgrst, 'reload schema'` agar `/api/chatgpt-signup` tidak 503.
+- Upsert memakai PostgREST `on_conflict=user_id,email`. Itu hanya sah bila ada
+  **unique constraint** pada `(user_id, email)` — unique *index ekspresi*
+  `(user_id, lower(email))` tidak bisa diinferensi `ON CONFLICT` dan
+  menghasilkan `42P10 "there is no unique or exclusion constraint matching the
+  ON CONFLICT specification"`. Migrasi `20261213000001_fix_chatgpt_signup_on_conflict.sql`
+  memperbaikinya (idempoten, aman dijalankan berulang).
 - Tes: `node --test tests/chatgpt-signup.test.js`.
