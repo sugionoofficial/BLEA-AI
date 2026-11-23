@@ -22,11 +22,11 @@
 //      langsung ditahan captcha.
 //
 // Jadi:
-//   • `buildSignupUrl` menghasilkan URL HALAMAN formulir (auth.openai.com/log-in)
-//     yang memang bisa dibuka dengan GET oleh siapa pun — bukan endpoint POST.
-//     `chatgpt.com/auth/login` ditinggalkan sebagai tombol utama setelah dua
-//     kegagalan nyata: halaman error "tidak dapat menyiapkan pemuatan ini", lalu
-//     (setelah cookie dihapus) tab dilempar ke beranda tanpa formulir.
+//   • `buildSignupUrl` menghasilkan URL HALAMAN nyata yang memuat formulir:
+//     `chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup` →
+//     `auth.openai.com/create-account`. Bukan endpoint POST, jadi sah dibuka
+//     dengan GET. Dua URL sebelumnya sudah dicoba dan gagal (lihat catatan di
+//     SIGNUP_FORM_URL).
 //   • Di halaman itu, browser sendirilah yang mengambil csrfToken dan mem-POST
 //     formulir — jalur yang sah, dengan cookie & Turnstile milik pengguna.
 //   • `buildSigninBootstrap` menyediakan langkah yang sama untuk kasus halaman
@@ -41,16 +41,36 @@ export const SIGNUP_REQUEST_URL = 'https://chatgpt.com/api/auth/signin/openai';
 // Halaman yang memang bisa dibuka dengan GET. Ini yang dipakai tombol utama.
 export const SIGNUP_PAGE_URL = 'https://chatgpt.com/auth/login';
 /**
- * Halaman formulir Auth0 milik OpenAI ("Welcome back" / "Create your account").
+ * Titik masuk formulir pendaftaran yang TERBUKTI memuat halaman daftar.
  *
- * Kenapa ini yang dipakai, bukan /auth/login: dua percobaan nyata menunjukkan
- * /auth/login?prompt=login&screen_hint=signup berakhir di halaman error
- * ("Kami tidak dapat menyiapkan pemuatan ini") dan, setelah cookie dihapus,
- * langsung melempar tab ke beranda chatgpt.com tanpa formulir sama sekali.
- * Halaman ini adalah formulir yang sama dengan yang dipakai tombol "Log in"
- * di chatgpt.com — bukan endpoint POST, jadi sah dibuka dengan GET.
+ * Riwayat kegagalan (semua direproduksi, bukan tebakan):
+ *   1. `chatgpt.com/api/auth/signin/openai?...` — endpoint POST NextAuth, GET
+ *      selalu berakhir "Kami tidak dapat memproses upaya masuk Anda".
+ *   2. `chatgpt.com/auth/login?...` — di browser pengguna berakhir di
+ *      "ChatGPT tidak dapat menyiapkan pemuatan ini", dan setelah cookie
+ *      dihapus tab dilempar ke beranda. (Dari luar browser halaman ini tetap
+ *      bisa dimuat, jadi penyebabnya di sisi sesi/perangkat, bukan URL.)
+ *   3. `auth.openai.com/log-in` tanpa cookie — menampilkan "Sesi Anda telah
+ *      berakhir / Lanjutkan dengan masuk, atau gunakan ChatGPT.com tanpa
+ *      akun", bukan formulir. Saya sendiri yang salah memilih ini di #196.
+ *
+ * Yang sekarang dipakai adalah jalur yang dipakai tombol "Log in" di
+ * chatgpt.com, ditambah `screen_hint=signup`:
+ *
+ *   https://chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup
+ *      → auth.openai.com/create-account ... "Create an account", ada kolom
+ *        email, tombol Continue, DAN tautan "Already have an account? Log in".
+ *
+ * Dua detail yang mahal kalau salah:
+ *   • `callback_path=/` harus literal. Versi ter-encode (`%2F`) membuat
+ *     halaman ini menghasilkan HTTP 500.
+ *   • JANGAN tambahkan `prompt=...`. `prompt` di jalur ini juga HTTP 500
+ *     (di `/auth/login` parameter itu baik-baik saja — beda halaman, beda
+ *     perilaku). Keduanya diuji langsung ke server OpenAI.
  */
-export const SIGNUP_FORM_URL = 'https://auth.openai.com/log-in';
+export const SIGNUP_FORM_ORIGIN = 'https://chatgpt.com';
+export const SIGNUP_ENTRY_PATH = '/auth/login_with';
+export const SIGNUP_FORM_URL = `${SIGNUP_FORM_ORIGIN}${SIGNUP_ENTRY_PATH}?callback_path=/&screen_hint=signup`;
 export const SIGNUP_CSRF_URL = 'https://chatgpt.com/api/auth/csrf';
 export const SIGNUP_STEPS = [
   'dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi', 'dilewati',
@@ -75,13 +95,17 @@ function cleanText(value, max) {
  * tidak ada token di URL.
  */
 export function buildSignupUrl(email, { authSessionLoggingId = '' } = {}) {
-  const address = cleanText(email, 320).toLowerCase();
-  // Formulir Auth0 tidak punya jaminan menerima `login_hint`, dan parameter
-  // karangan bisa memicu halaman error. Yang terbukti hanya: URL polos ini
-  // menampilkan formulir "Welcome back" beserta tautan Sign up.
-  void address;
-  void authSessionLoggingId;
-  return SIGNUP_FORM_URL;
+  // Disusun sebagai string, bukan URLSearchParams: `callback_path=/` harus
+  // literal (`%2F` → halaman error 500 di server OpenAI).
+  // `email` sengaja tidak dipakai: tidak ada parameter di jalur ini yang
+  // terbukti mengisi kolom email, dan parameter karangan bisa memicu error.
+  void email;
+  const loggingId = String(authSessionLoggingId ?? '').trim().slice(0, 64);
+  // `auth_session_logging_id` sudah terbukti diterima jalur ini (dipakai alur
+  // login resmi chatgpt.com) dan tidak mengubah halaman tujuan.
+  return loggingId
+    ? `${SIGNUP_FORM_URL}&auth_session_logging_id=${encodeURIComponent(loggingId)}`
+    : SIGNUP_FORM_URL;
 }
 
 /**
@@ -418,6 +442,71 @@ export function describeStoredCode({ code = '', verified_at: verifiedAt = null, 
   };
 }
 
+/**
+ * Periksa apakah perangkat ini punya sesi ChatGPT yang masih hidup.
+ *
+ * Kenapa perlu: halaman error "tidak dapat menyiapkan pemuatan ini" dan
+ * lemparan ke beranda setelah cookie dihapus adalah gejala sesi, bukan URL.
+ * Kalau `callBackendAPI` masih menjawab 200 JSON, berarti perangkat ini masih
+ * login ke chatgpt.com (atau setidaknya punya sesi yang belum dibersihkan) —
+ * dan halaman /auth/login sengaja menolak alur masuk baru.
+ *
+ * Ini hanya membaca status HTTP; tidak ada cookie/token yang disimpan atau
+ * dikirim ke server BLEA. Panggilan dilakukan DARI BROWSER pengguna, karena
+ * Worker tidak diizinkan menghubungi domain OpenAI.
+ */
+export async function checkSessionState({ fetchImpl, timeoutMs = 8000 } = {}) {
+  const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  const result = {
+    reachable: false,
+    status: 0,
+    logged_in: false,
+    detail: '',
+    advice: '',
+  };
+  if (!doFetch) {
+    return { ...result, detail: 'Pemeriksaan sesi tidak tersedia di lingkungan ini.', advice: 'Lewati pemeriksaan; lanjutkan manual.' };
+  }
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await doFetch('https://chatgpt.com/backend-api/me', {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      signal: controller?.signal,
+    });
+    result.reachable = true;
+    result.status = response.status;
+    if (response.ok) {
+      const payload = await response.json().catch(() => null);
+      result.logged_in = Boolean(payload && (payload.email || payload.id || payload.user));
+      result.detail = result.logged_in
+        ? `Perangkat ini masih login ke ChatGPT${payload?.email ? ` sebagai ${payload.email}` : ''}.`
+        : 'Server menjawab 200, tetapi tidak ada data akun.';
+      result.advice = result.logged_in
+        ? 'Keluarkan dulu sesi itu (klik avatar → Log out) atau pakai jendela Incognito yang benar-benar baru, lalu buka formulir lagi. Halaman /auth/login memang menolak alur daftar baru saat sesi masih ada.'
+        : '';
+    } else if (response.status === 401 || response.status === 403) {
+      result.detail = `Tidak ada sesi aktif (HTTP ${response.status}).`;
+      result.advice = 'Sesi bersih — lanjutkan membuka formulir.';
+    } else if (response.status === 404) {
+      // 404 sering muncul saat belum login pada versi API tertentu: jangan
+      // mengklaim "bersih" padahal tidak terbukti.
+      result.detail = 'Endpoint sesi menjawab 404; status login tidak bisa dipastikan.';
+    } else {
+      result.detail = `Endpoint sesi menjawab HTTP ${response.status}.`;
+    }
+  } catch (error) {
+    result.detail = controller?.signal?.aborted
+      ? 'Pemeriksaan sesi melewati batas waktu (bisa jadi diblokir jaringan atau ekstensi).'
+      : `Pemeriksaan sesi gagal: ${String(error?.message || 'jaringan menolak')}.`;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return result;
+}
+
 export function normalizeSignupRequest(row) {
   if (!row || typeof row !== 'object') return null;
   return {
@@ -476,9 +565,10 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
   const verification = /verify|verification|confirm|check.?email|email-verification/.test(`${path} ${whole}`);
   const password = /password|create-account|signup\/password/.test(`${path} ${whole}`);
   // Halaman awal: pengguna baru membuka formulir dan belum menekan Continue.
-  // Termasuk formulir Auth0 (`/log-in`, `/create-account`) yang sekarang
-  // menjadi halaman pertama, dan `chatgpt.com/auth/login` yang lama.
-  const landing = /^\/auth\/(login|signup|log-in)?\/?$/.test(path)
+  // Termasuk semua titik masuk yang pernah dipakai panel:
+  //   chatgpt.com/auth/login, chatgpt.com/auth/login_with,
+  //   auth.openai.com/log-in, auth.openai.com/create-account.
+  const landing = /^\/auth\/(login|login_with|signup|log-in)?\/?$/.test(path)
     || /^\/(log-in|create-account)\/?$/.test(path)
     || path === '/';
 

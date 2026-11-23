@@ -46,11 +46,44 @@ Dua percobaan nyata pada 2026-11-23 menunjukkan halaman itu tetap buruk:
 2. Setelah cookie `chatgpt.com` dihapus dan dicoba lagi: tab **langsung masuk ke
    beranda chatgpt.com** tanpa formulir sama sekali.
 
-Sekarang tombol utama membuka **`https://auth.openai.com/log-in`** — formulir
-Auth0 yang sama dengan yang dipakai tombol "Log in" di chatgpt.com: ada kolom
-email, tombol **Continue**, tautan **Sign up**, dan tombol Google/Apple/
-Microsoft. Halaman ini juga bisa dibuka dengan GET (bukan endpoint POST), jadi
-tidak kena masalah NextAuth di atas.
+## Kesalahan ketiga (dan yang saya buat sendiri di #196)
+
+`https://auth.openai.com/log-in` dibuka **tanpa cookie** dan hasilnya bukan
+formulir, melainkan halaman perpisahan:
+
+> **Sesi Anda telah berakhir** — Lanjutkan dengan masuk, atau gunakan
+> ChatGPT.com tanpa akun
+
+Halaman itu hanya masuk akal kalau perangkat sudah punya sesi yang diputus.
+Memilih URL ini di #196 adalah kesalahan saya: saya menguji halaman dari luar
+browser (tanpa cookie) dan salah membaca hasilnya sebagai "formulir biasa".
+
+## URL yang sekarang dipakai (diuji langsung ke server OpenAI)
+
+```
+https://chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup
+```
+
+Hasil pengujian per variasi:
+
+| URL | Hasil |
+|---|---|
+| `chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup` | **"Create an account"** di `auth.openai.com/create-account` — ada kolom email, Continue, dan tautan "Already have an account? Log in" |
+| `chatgpt.com/auth/login_with?callback_path=/` | "Welcome back" (login), bukan daftar |
+| `chatgpt.com/auth/login_with` **tanpa** `callback_path` | **HTTP 500** |
+| `callback_path=%2F` (ter-encode) | **HTTP 500** — harus literal `/` |
+| `chatgpt.com/auth/login_with?callback_path=/&prompt=login` | **HTTP 500** |
+| `chatgpt.com/auth/login?prompt=login&screen_hint=signup` | 200 dari luar browser, **tetapi gagal di browser pengguna** |
+
+Jadi: `callback_path=/` harus literal, `screen_hint=signup` wajib untuk memilih
+halaman daftar, dan `prompt=...` **haram** di jalur ini (walau baik-baik saja di
+`/auth/login` — beda halaman, beda perilaku).
+
+**Yang belum terbukti:** apakah `/auth/login_with` benar-benar melewati error
+"tidak dapat menyiapkan pemuatan ini" yang terjadi di browser pengguna. Itu
+hipotesis kuat (ini jalur yang dipakai tombol "Log in" milik OpenAI sendiri),
+bukan fakta. Karena itu panel sekarang punya **Periksa sesi ChatGPT**, yang
+memisahkan masalah sesi/perangkat dari masalah URL.
 
 Akibat yang harus diterima:
 
@@ -128,18 +161,24 @@ diam-diam gagal.
    lalu menyalin alamat aktif.
 2. Buka **Studio → Akun ChatGPT**, panel *Daftar ChatGPT dengan email TempMail*.
    Kolom email sudah terisi otomatis dari alias aktif.
-3. Tekan **Siapkan & buka daftar** → tab baru membuka
-   `https://auth.openai.com/log-in` (formulir email OpenAI). Tab dibuka
+3. (Opsional, disarankan bila pernah gagal) Tekan **Periksa sesi ChatGPT**:
+   panel menanyakan `chatgpt.com/backend-api/me` dari browser Anda. Kalau
+   jawabannya berisi akun, perangkat ini **masih login** dan halaman daftar akan
+   menolak — log out atau pakai Incognito baru.
+4. Tekan **Siapkan & buka daftar** → tab baru membuka
+   `chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup` yang
+   berakhir di formulir **"Create an account"**. Tab dibuka
    *sebelum* permintaan ke server karena `window.open` setelah `await` diblokir
    popup blocker; bila tetap diblokir, pakai tautan **Buka di tab baru**.
-   Kalau yang tampil **"Welcome back"** (bukan "Create your account"), tekan
-   tautan **Sign up** di bawah tombol Continue lebih dulu.
+   Kalau yang tampil **"Welcome back"** (bukan "Create an account"), tekan
+   tautan **Sign up** di bawah tombol Continue lebih dulu — artinya alamat itu
+   sudah pernah didaftarkan.
 4. Isi kolom **Email address**: tempel manual, atau pakai tombol bookmarklet/
    userscript (opsional) di panel. Kemudian tekan **Continue** di tab itu, salin
    URL halaman berikutnya dan tempel di panel → **Periksa URL**.
-   - Halaman awal (`auth.openai.com/log-in`, `chatgpt.com/auth/login`, atau
-     `/create-account`) ditolak: itu berarti **Continue** belum ditekan, atau
-     masih di formulir email.
+   - Halaman awal (`chatgpt.com/auth/login_with`, `auth.openai.com/log-in`,
+     `chatgpt.com/auth/login`, atau `/create-account`) ditolak: itu berarti
+     **Continue** belum ditekan, atau masih di formulir email.
    - URL halaman error (`/auth/error`, `error=…`) dan host non-OpenAI ditolak.
    - URL lanjutan seperti `auth.openai.com/u/login/identifier?state=…`
      **diterima**. OpenAI/Auth0 tidak membawa email di URL lanjutan — hanya
