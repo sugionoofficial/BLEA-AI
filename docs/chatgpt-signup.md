@@ -279,6 +279,28 @@ Kalau masih kosong: periksa tag Gmail (mis. `+1`), tunggu beberapa menit,
 lalu tekan **Cari email verifikasi** lagi. Kalau tetap kosong, email-nya tidak
 pernah sampai — itu sisi OpenAI/Gmail, bukan panel ini.
 
+## Menyimpan akses setelah akun berhasil masuk
+
+Permintaan yang wajar: "setelah kode berhasil, simpan cookie/token-nya supaya
+sesi tidak pernah kedaluwarsa". Setengahnya bisa, setengahnya tidak — dan yang
+tidak harus dikatakan terus terang.
+
+| Yang diminta | Bisa? | Alasannya |
+|---|---|---|
+| Menyimpan cookie sesi `chatgpt.com` (`__Secure-next-auth.session-token`) | **Tidak** | Cookie itu milik domain `chatgpt.com`. Halaman BLEA tidak bisa membacanya (same-origin policy), jadi tidak ada yang bisa dikirim ke server. Menyalinnya manual = menyimpan kredensial ChatGPT mentah di database. |
+| Sesi BLEA yang "tidak pernah kedaluwarsa" | **Tidak** | OAuth OpenAI memberi access token ±1 jam; memperpanjangnya butuh refresh token yang bergulir (≤30 hari) dan bisa dicabut. Mengklaim permanen = mengarang. |
+| Akses yang diperbarui otomatis dan tahan lama | **Ya, ini yang dipakai** | **Continue with ChatGPT** (OAuth resmi, PKCE). Access token disegel di database, di-refresh otomatis 60 detik sebelum kedaluwarsa oleh `refreshOAuthAccessToken()` di `src/lib/chatgptPool.js`. |
+
+Karena itu panel pendaftaran punya tombol penutup **"Akun sudah masuk? Simpan
+aksesnya ke pool"** (muncul setelah langkah `terverifikasi`). Tombol itu
+memanggil alur OAuth yang sudah ada — bukan alat baru, bukan pembaca cookie.
+
+**Kesalahan saya sebelumnya:** panel sempat mencoba memeriksa sesi otomatis
+dengan `fetch('https://chatgpt.com/backend-api/me', { credentials: 'include' })`.
+Hasilnya di browser pengguna: **"Failed to fetch"**. Endpoint itu tidak
+mengirim header CORS, jadi halaman lain memang tidak boleh membacanya. Fitur
+itu sudah dihapus dan diganti panduan manual 30 detik.
+
 ## Catatan operasional
 
 - Alamat Gmail `+tag` ditandai di UI: sebagian formulir OpenAI menolak tanda

@@ -498,5 +498,12 @@
 /* Pemeriksa sesi: memisahkan masalah sesi/perangkat dari masalah URL. */
 .cga-signup-session { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
 .cga-signup-session small { font-size: 11.5px; line-height: 1.55; }
-.cga-signup-session small.is-ok { color: #8fe5b0; }
-.cga-signup-session small.is-bad { color: #f3c67e; }
+.cga-signup-session small { opacity: .82; }
+.cga-signup-session-steps { margin: 2px 0 0; padding-left: 18px; font-size: 11.5px; line-height: 1.6; opacity: .9; }
+
+/* Langkah penutup: akun yang sudah masuk disambungkan ke pool lewat OAuth resmi. */
+.cga-signup-link {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--cga-line, #26262b);
+}
+.cga-signup-link small { font-size: 11.5px; line-height: 1.55; opacity: .82; }
