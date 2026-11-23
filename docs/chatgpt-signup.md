@@ -170,8 +170,11 @@ Yang berubah:
   kode baru di ChatGPT lalu tekan **Cari email verifikasi** lagi.
 
 Kalau panel menampilkan pesan cocok tetapi kodenya kosong, buka pesan itu di
-TempMail dan salin kodenya manual; jangan mengarang kode dari potongan yang
-tidak jelas.
+TempMail: halaman **TempMail** kini menampilkan kode yang terbaca di atas isi
+pesan, lengkap dengan tombol **Salin kode**. Itu penting karena menyalin angka
+dari iframe email yang di-sandbox sering terpotong. Kalau tetap tidak ada kode
+yang terbaca, salin manual — jangan mengarang kode dari potongan yang tidak
+jelas.
 
 ## Email verifikasi tidak muncul di TempMail (alias Gmail `+tag`)
 
