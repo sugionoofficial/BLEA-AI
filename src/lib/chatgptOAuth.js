@@ -80,6 +80,16 @@ async function dbJson(env, path, options = {}) {
   return await res.json().catch(() => null);
 }
 
+/**
+ * Sidik jari kode otorisasi (SHA-256, 12 heksadesimal pertama).
+ * Dipakai untuk mencegah penukaran ganda dan untuk jejak debug tanpa
+ * menyimpan kode aslinya.
+ */
+async function fingerprintCode(code) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(code || '')));
+  return [...new Uint8Array(digest)].slice(0, 6).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function isOAuthLinkId(value) {
   return typeof value === 'string' && UUID_RE.test(value);
 }
@@ -178,35 +188,93 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     throw fail('Callback tidak memuat client_id terbitan OpenAI. Registrasi belum selesai; ulangi login.', 400);
   }
 
-  const form = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: clientId,
-    code,
-    code_verifier: attempt.code_verifier,
-    redirect_uri: attempt.redirect_uri,
-    resource: OPENAI_RESOURCE,
-  });
-  let res;
-  try {
-    res = await fetch(`${OPENAI_AUTH_BASE}/api/accounts/oauth/token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: form.toString(),
-      signal: AbortSignal.timeout(30_000),
-    });
-  } catch (error) {
-    throw fail(`Tidak bisa menghubungi OpenAI: ${String(error?.message || error).slice(0, 160)}`, 502);
+  // `state` WAJIB cocok dengan baris percobaan. Tanpa ini, callback dari
+  // percobaan lama bisa dipasangkan dengan code_verifier percobaan baru —
+  // PKCE tidak cocok, dan OpenAI menjawab `invalid_grant` tanpa penjelasan.
+  if (returnedState && attempt.state && returnedState !== attempt.state) {
+    throw fail('state callback tidak cocok dengan sesi login yang tersimpan. Mulai lagi dari tombol Continue with ChatGPT.', 409);
   }
-  const text = await res.text().catch(() => '');
-  let token = null;
-  try { token = JSON.parse(text); } catch { token = null; }
-  if (!res.ok || !token?.access_token) {
+
+  // Satu kode hanya boleh ditukar sekali. Kalau tidak, penukaran kedua
+  // menghasilkan `invalid_grant` yang menyesatkan (kode sebenarnya sudah sah
+  // ditukar sebelumnya).
+  const codeFingerprint = await fingerprintCode(code);
+  if (attempt.exchanged_code_fingerprint) {
+    throw fail(attempt.exchanged_code_fingerprint === codeFingerprint
+      ? 'Kode ini sudah pernah ditukar. Kalau akun belum muncul, muat ulang halaman; kalau tidak, ulangi login.'
+      : 'Percobaan login ini sudah dipakai untuk kode lain. Ulangi dari tombol Continue with ChatGPT.', 409);
+  }
+  // Tandai SEBELUM memanggil OpenAI, supaya dua permintaan bersamaan (klik
+  // ganda / dua tab) tidak sama-sama menukar kode yang sama.
+  const claimed = await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(attemptId)}&exchanged_code_fingerprint=is.null`, {
+    method: 'PATCH',
+    prefer: 'return=representation',
+    body: { exchanged_code_fingerprint: codeFingerprint, updated_at: new Date().toISOString() },
+  }).then((r) => r.json()).catch(() => null);
+  if (Array.isArray(claimed) && claimed.length === 0) {
+    throw fail('Kode ini sedang/ sudah dipakai untuk login. Muat ulang halaman; bila akun belum muncul, ulangi login.', 409);
+  }
+
+  // Pertukaran kode. `resource` dikirim sesuai dokumentasi; bila OpenAI
+  // menolak dengan `invalid_grant` (sesuai catatan mereka: "discard that code
+  // and start a fresh authorization"), percobaan kedua tanpa `resource`
+  // dicoba sekali — perbedaan ini dulu tidak terlihat karena errornya sama.
+  const exchange = async (withResource) => {
+    const form = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      code,
+      code_verifier: attempt.code_verifier,
+      redirect_uri: attempt.redirect_uri,
+      ...(withResource ? { resource: OPENAI_RESOURCE } : {}),
+    });
+    let res;
+    try {
+      res = await fetch(`${OPENAI_AUTH_BASE}/api/accounts/oauth/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form.toString(),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      throw fail(`Tidak bisa menghubungi OpenAI: ${String(error?.message || error).slice(0, 160)}`, 502);
+    }
+    const text = await res.text().catch(() => '');
+    let data = null;
+    try { data = JSON.parse(text); } catch { data = null; }
+    return { ok: res.ok && Boolean(data?.access_token), status: res.status, data, text, withResource };
+  };
+
+  let result = await exchange(true);
+  if (!result.ok && result.data?.error === 'invalid_grant') {
+    const retry = await exchange(false);
+    if (retry.ok) result = retry;
+    else {
+      // Simpan kedua jawaban: tanpa ini, "invalid_grant" tidak bisa dilacak
+      // (OpenAI tidak mengirim error_description pada kasus ini).
+      result = { ...retry, attempts: [result, retry] };
+    }
+  }
+  const text = result.text;
+  const token = result.data;
+  if (!result.ok) {
     await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(attemptId)}`, {
       method: 'PATCH',
       prefer: 'return=minimal',
-      body: { status: 'failed', error_message: cleanText(text, 240), updated_at: new Date().toISOString() },
+      body: {
+        status: 'failed',
+        // Jejak teknis (tanpa token/kode) supaya penyebab bisa dibaca nanti.
+        error_message: cleanText(`client=${clientId} verify=${codeFingerprint} status=${result.status} body=${text.slice(0, 160)}${result.attempts ? ` | retry(${result.attempts[1].status})=${result.attempts[1].text.slice(0, 80)}` : ''}`, 900),
+        updated_at: new Date().toISOString(),
+      },
     }).catch(() => {});
-    const detail = token?.error_description || token?.error || text.slice(0, 200) || `HTTP ${res.status}`;
+    const detail = token?.error_description || token?.error || text.slice(0, 200) || `HTTP ${result.status}`;
+    if (token?.error === 'invalid_grant') {
+      throw fail(
+        'OpenAI menjawab invalid_grant: kode otorisasi tidak diterima (biasanya sudah terpakai, kedaluwarsa, atau halaman 127.0.0.1 dimuat dua kali sehingga kode terpakai lebih dulu). Ulangi login lalu tempel URL-nya SEKALI.',
+        400,
+      );
+    }
     throw fail(`OpenAI menolak pertukaran kode: ${detail}`, 400);
   }
 

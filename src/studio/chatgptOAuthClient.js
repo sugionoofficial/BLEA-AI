@@ -164,8 +164,30 @@ function hostId() {
  * Worker yang memvalidasi state, menukar kode, menyegel token, dan mendaftarkan
  * akun ke pool.
  */
+// Satu kode otorisasi hanya boleh ditukar SEKALI. Halaman /auth/callback bisa
+// termuat lebih dari sekali (hard reload, tab dipulihkan, StrictMode di dev),
+// dan dulu setiap pemuatan mengirim penukaran baru — kode pertama menang,
+// sisanya mendapat `invalid_grant` yang menutupi keberhasilan sebenarnya.
+// Promise modul ini memastikan penukaran hanya terjadi satu kali per kode.
+let inFlightExchange = null;
+let exchangedCode = '';
+
 export async function finishChatGptSignIn(search = '') {
   const params = new URLSearchParams(search || (typeof window !== 'undefined' ? window.location.search : ''));
+  const codeForExchange = params.get('code') || '';
+  if (codeForExchange && exchangedCode === codeForExchange && inFlightExchange) {
+    return inFlightExchange;
+  }
+  if (codeForExchange) exchangedCode = codeForExchange;
+  inFlightExchange = runExchange(params);
+  try {
+    return await inFlightExchange;
+  } finally {
+    setTimeout(() => { inFlightExchange = null; }, 30_000);
+  }
+}
+
+async function runExchange(params) {
   const pending = readPendingAttempt();
   const returnedState = params.get('state') || '';
   if (!returnedState) {

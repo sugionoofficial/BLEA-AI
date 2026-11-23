@@ -578,3 +578,124 @@ test('kolom tempel URL callback muncul di halaman Akun ChatGPT', async () => {
     await vite.close();
   }
 });
+
+// ---- invalid_grant ---------------------------------------------------------
+// OpenAI hanya menjawab {"error":"invalid_grant"} tanpa error_description, jadi
+// penyebabnya harus dicegah dan dijejaki di sisi kita.
+function oauthEnvWith({ attempt, tokenResponses = [] } = {}) {
+  const state = { tokenCalls: [], patches: [], claims: 0 };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const method = init.method || 'GET';
+    if (url.includes('/rest/v1/chatgpt_oauth_links?select=*')) return Response.json([attempt]);
+    // Klaim penukaran sekali-pakai.
+    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.') && method === 'PATCH' && url.includes('exchanged_code_fingerprint=is.null')) {
+      state.claims += 1;
+      return Response.json(state.claims > 1 ? [] : [{ id: attempt.id }]);
+    }
+    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.') && method === 'PATCH') {
+      state.patches.push(JSON.parse(init.body));
+      return new Response(null, { status: 204 });
+    }
+    if (url.endsWith('/api/accounts/oauth/token')) {
+      state.tokenCalls.push(Object.fromEntries(new URLSearchParams(init.body)));
+      const next = tokenResponses.shift();
+      return new Response(JSON.stringify(next.body), { status: next.status });
+    }
+    if (url.includes('/rest/v1/chatgpt_accounts')) return Response.json([]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  return { state, restore: () => { globalThis.fetch = realFetch; } };
+}
+
+const baseAttempt = (overrides = {}) => ({
+  id: '11111111-1111-1111-1111-111111111111',
+  status: 'pending',
+  state: 'S'.repeat(32),
+  code_verifier: 'V'.repeat(86),
+  redirect_uri: 'http://127.0.0.1:1455/auth/callback',
+  exchanged_code_fingerprint: null,
+  ...overrides,
+});
+
+test('invalid_grant: ulangi tanpa `resource` sekali, lalu berhasil', async () => {
+  const stub = oauthEnvWith({
+    attempt: baseAttempt(),
+    tokenResponses: [
+      { status: 400, body: { error: 'invalid_grant' } },
+      { status: 200, body: { access_token: 'oa-access-xx', refresh_token: 'oa-refresh-xx', expires_in: 3600, scope: 'openid chatgpt.tokens.use.direct', id_token: `x.${Buffer.from(JSON.stringify({ email: 'a@b.c' })).toString('base64url')}.y` } },
+    ],
+  });
+  try {
+    const result = await completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+      attempt_id: '11111111-1111-1111-1111-111111111111',
+      state: 'S'.repeat(32),
+      code: 'code-1',
+      client_id: 'oaiapp_X',
+    });
+    assert.equal(stub.state.tokenCalls.length, 2, 'dua percobaan: dengan lalu tanpa resource');
+    assert.equal(stub.state.tokenCalls[0].resource, 'https://api.openai.com/v1');
+    assert.equal(stub.state.tokenCalls[1].resource, undefined);
+    assert.equal(result.link.plan_usage, true);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('invalid_grant: pesan yang jelas + jejak teknis tersimpan', async () => {
+  const attempt = baseAttempt();
+  const stub = oauthEnvWith({
+    attempt,
+    tokenResponses: [
+      { status: 400, body: { error: 'invalid_grant' } },
+      { status: 400, body: { error: 'invalid_grant' } },
+    ],
+  });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-2', client_id: 'oaiapp_X',
+      }),
+      /invalid_grant: kode otorisasi tidak diterima/,
+    );
+    const failed = stub.state.patches.find((patch) => patch.status === 'failed');
+    assert.ok(failed, 'kegagalan harus dicatat');
+    assert.match(failed.error_message, /client=oaiapp_X/);
+    assert.match(failed.error_message, /verify=[0-9a-f]{12}/);
+    assert.ok(!failed.error_message.includes('code-2'), 'kode asli tidak boleh disimpan');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('kode yang sama tidak bisa ditukar dua kali', async () => {
+  const attempt = baseAttempt({ exchanged_code_fingerprint: 'deadbeef1234' });
+  const stub = oauthEnvWith({ attempt, tokenResponses: [] });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-3', client_id: 'oaiapp_X',
+      }),
+      /sudah dipakai untuk kode lain|sudah pernah ditukar/,
+    );
+    assert.equal(stub.state.tokenCalls.length, 0, 'tidak boleh memanggil OpenAI');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('state yang tidak cocok ditolak sebelum memanggil OpenAI', async () => {
+  const attempt = baseAttempt();
+  const stub = oauthEnvWith({ attempt, tokenResponses: [] });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'X'.repeat(32), code: 'code-4', client_id: 'oaiapp_X',
+      }),
+      /state callback tidak cocok/,
+    );
+    assert.equal(stub.state.tokenCalls.length, 0);
+  } finally {
+    stub.restore();
+  }
+});
