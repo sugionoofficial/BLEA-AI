@@ -522,3 +522,19 @@ test('completeOAuthAttempt menolak state yang tidak dikenal', async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+// 3. Callback bisa mendarat di origin yang tidak punya sesi login BLEA
+//    (127.0.0.1:1455). Worker menolak 401, dan UI harus menjelaskan bahwa
+//    penyelesaiannya dilakukan di halaman BLEA yang sudah login.
+test('/api/chatgpt-oauth/complete menolak 401 tanpa sesi BLEA', async () => {
+  const res = await worker.fetch(
+    apiRequest('/chatgpt-oauth/complete', {
+      method: 'POST',
+      body: { state: 'VwqxTXi69L78pLlRyBJHeYPNmmsqlnQwbtXq1_iMzkA', code: 'ac.1.x', client_id: 'oaiapp_x' },
+      token: '',
+    }),
+    createEnv(),
+  );
+  assert.equal(res.status, 401);
+  assert.match((await res.json()).error, /Login diperlukan/);
+});

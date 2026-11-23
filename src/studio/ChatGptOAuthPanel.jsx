@@ -39,6 +39,8 @@ const PLAN_LIMITS = [
  */
 export function ChatGptOAuthPanel({ onLinked }) {
   const callbackPage = isOAuthCallbackPage();
+  const [callbackUrl, setCallbackUrl] = useState(() => (typeof window === 'undefined' ? '' : window.location.href));
+  const [needsLogin, setNeedsLogin] = useState(false);
   const [links, setLinks] = useState([]);
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(!callbackPage);
@@ -124,7 +126,13 @@ export function ChatGptOAuthPanel({ onLinked }) {
     setNotice('');
     const res = await finishChatGptSignInFromUrl(pasteUrl);
     setPasteBusy(false);
-    if (!res.ok) { setError(res.error || 'URL callback tidak bisa diselesaikan.'); return; }
+    if (!res.ok) {
+      setError(res.error || 'URL callback tidak bisa diselesaikan.');
+      // Tanpa sesi login di origin ini, Worker menolak dengan 401. Itu bukan
+      // "belum menyetujui", jadi tawarkan jalan keluarnya alih-alih diam.
+      if (/login diperlukan/i.test(String(res.error || ''))) setNeedsLogin(true);
+      return;
+    }
     setPasteUrl('');
     setHasPending(false);
     setNotice(res.hint || 'Akun ChatGPT tersambung tanpa API key.');
@@ -178,8 +186,22 @@ export function ChatGptOAuthPanel({ onLinked }) {
 
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
         {callbackState !== 'working' && (
-          <p className="oauth-note">
-            Kembali ke <a href="/studio/chatgpt-accounts">Studio → Akun ChatGPT</a> untuk melihat kuota akun ini.
+          <>
+            <div className="oauth-copybox">
+              <small>Alamat halaman ini (untuk diselesaikan di BLEA):</small>
+              <code>{callbackUrl}</code>
+              <button type="button" onClick={() => navigator.clipboard?.writeText(callbackUrl)}>Salin alamat</button>
+            </div>
+            <p className="oauth-note">
+              Kembali ke <a href="/studio/chatgpt-accounts">Studio → Akun ChatGPT</a> untuk melihat kuota akun ini.
+            </p>
+          </>
+        )}
+        {needsLogin && (
+          <p className="oauth-error">
+            <CircleAlert size={14} /> Login BLEA di halaman ini belum aktif. Buka{' '}
+            <a href="/studio/chatgpt-accounts">Studio → Akun ChatGPT</a> (sudah login), lalu tempel alamat di atas
+            pada kolom “Sudah menyetujui di ChatGPT?”.
           </p>
         )}
       </section>
