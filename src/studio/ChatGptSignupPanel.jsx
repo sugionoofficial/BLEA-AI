@@ -21,7 +21,8 @@ const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifi
 // Ditampilkan sebelum server menjawab, supaya batasan ini terlihat sejak awal
 // (bukan hanya setelah /api/chatgpt-signup selesai dimuat).
 const DEFAULT_LIMITS = [
-  'BLEA tidak mem-POST pendaftaran ke chatgpt.com: Worker diblokir ke domain itu dan endpointnya butuh cookie sesi + Turnstile.',
+  'Yang dibuka adalah halaman /auth/login milik ChatGPT, bukan endpoint POST /api/auth/signin/openai — endpoint itu wajib csrfToken, kalau tidak hasilnya halaman "tidak dapat memproses upaya masuk".',
+  'BLEA tidak mem-POST pendaftaran dari server: Worker diblokir ke domain OpenAI dan Turnstile tidak bisa dilewati.',
   'Akun dibuat hanya bila formulir dikirim dari browser Anda dan email verifikasi diklik sendiri.',
   'Alamat +tag Gmail bisa ditolak formulir OpenAI; gunakan alias TempMail tanpa tanda + bila itu terjadi.',
 ];
@@ -33,11 +34,13 @@ function toneOf(step) {
 /**
  * Panel "Daftar ChatGPT pakai email TempMail".
  *
- * Alurnya sengaja jujur: tombol pertama hanya MENYIAPKAN URL daftar resmi
- * (login_hint = email TempMail) lalu membukanya di tab baru. Pendaftaran
- * sendiri tidak diotomasi — server BLEA tidak mem-POST ke chatgpt.com dan
- * tidak bisa melewati Turnstile. Setelah formulir dikirim, panel memantau
- * inbox TempMail untuk email verifikasi.
+ * Perbaikan penting: dulu tombol utama membuka
+ * `chatgpt.com/api/auth/signin/openai?...` dengan GET. Itu endpoint POST
+ * NextAuth, jadi tanpa csrfToken halaman selalu berakhir di
+ * "Kami tidak dapat memproses upaya masuk Anda" dan email tidak pernah
+ * terkirim. Sekarang yang dibuka adalah HALAMAN `/auth/login` (bisa GET),
+ * lalu langkah berikutnya diverifikasi lewat URL setelah pengguna menekan
+ * "Lanjutkan" — bukan diklaim berhasil tanpa bukti.
  */
 export function ChatGptSignupPanel({ onVerified }) {
   const [config, setConfig] = useState(null);
@@ -50,6 +53,9 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [activeId, setActiveId] = useState('');
   const [lastUrl, setLastUrl] = useState('');
   const [candidates, setCandidates] = useState([]);
+  const [signin, setSignin] = useState(null);
+  const [returnUrl, setReturnUrl] = useState('');
+  const [returnAnalysis, setReturnAnalysis] = useState(null);
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -101,10 +107,13 @@ export function ChatGptSignupPanel({ onVerified }) {
     }
     const url = res.data?.url || res.data?.attempt?.signup_url || '';
     setLastUrl(url);
+    setSignin(res.data?.signin || null);
     setActiveId(res.data?.attempt?.id || '');
+    setReturnUrl('');
+    setReturnAnalysis(null);
     setNotice(res.data?.plus_address
       ? 'URL disiapkan, tetapi alamat ini memakai +tag. Sebagian formulir OpenAI menolak tanda +; siapkan alamat TempMail tanpa + bila pendaftaran ditolak.'
-      : 'URL pendaftaran resmi disiapkan dengan email TempMail sebagai login_hint. Buka, isi formulir, lalu kembali ke sini.');
+      : 'Halaman login ChatGPT dibuka dengan email TempMail sebagai login_hint. Ketik email itu di kolom "Alamat email" lalu tekan Lanjutkan, kemudian tempel URL hasilnya di bawah.');
     if (url && pendingTab) {
       pendingTab.location.replace(url);
     } else if (url) {
@@ -113,6 +122,26 @@ export function ChatGptSignupPanel({ onVerified }) {
       setError('Browser memblokir tab baru. Buka URL di blok "URL yang dibuka" di bawah secara manual.');
     }
     await load();
+  }
+
+  async function confirmReturnUrl() {
+    if (!active) return;
+    setBusy('confirm');
+    setError('');
+    setReturnAnalysis(null);
+    const res = await chatGptSignupApi.confirm(active.id, returnUrl);
+    setBusy('');
+    if (!res.ok) {
+      setError(res.data?.error || 'URL hasil tidak bisa diperiksa.');
+      return;
+    }
+    setReturnAnalysis(res.data?.analysis || null);
+    if (res.data?.ok) {
+      setNotice(res.data?.hint || 'Langkah terkonfirmasi.');
+      await load();
+    } else {
+      setError(res.data?.hint || 'URL itu belum membuktikan bahwa formulir menerima email TempMail.');
+    }
   }
 
   async function mark(step) {
@@ -167,9 +196,10 @@ export function ChatGptSignupPanel({ onVerified }) {
           <span className="oauth-badge"><UserPlus size={12} /> Email TempMail</span>
           <h2>Daftar ChatGPT dengan email TempMail</h2>
           <p>
-            Satu tombol menyiapkan halaman daftar resmi ChatGPT dengan email TempMail
-            sebagai <code>login_hint</code>, lalu memantau inbox untuk email verifikasi.
-            Pendaftaran sendiri tetap dikirim dari browser Anda — bukan dari server BLEA.
+            Satu tombol membuka halaman daftar resmi ChatGPT dengan email TempMail sebagai
+            <code>login_hint</code>. Setelah Anda menekan <b>Lanjutkan</b> di sana, tempel URL
+            hasilnya di sini supaya langkahnya terbukti — lalu panel memantau inbox untuk email
+            verifikasi. Pendaftaran dikirim dari browser Anda, bukan dari server BLEA.
           </p>
         </div>
         <div className="oauth-head-actions">
@@ -254,10 +284,51 @@ export function ChatGptSignupPanel({ onVerified }) {
                   </li>
                 ))}
               </ol>
+              {/* Bukti sebelum klaim: langkah "email dikirim" hanya boleh
+                  dicatat setelah URL hasil klik memuat email TempMail. Ini
+                  yang mencegah kejadian sebelumnya — UI bilang "URL
+                  disiapkan" padahal browser berhenti di halaman error. */}
+              <div className="cga-signup-confirm">
+                <label htmlFor="cga-signup-return-url">
+                  URL setelah menekan <b>Lanjutkan</b> di tab ChatGPT
+                </label>
+                <div className="cga-signup-confirm-row">
+                  <input
+                    id="cga-signup-return-url"
+                    type="url"
+                    inputMode="url"
+                    spellCheck={false}
+                    value={returnUrl}
+                    onChange={(event) => setReturnUrl(event.target.value)}
+                    placeholder="https://auth.openai.com/… atau https://chatgpt.com/auth/…"
+                  />
+                  <button type="button" className="cga-primary" onClick={confirmReturnUrl} disabled={busy === 'confirm' || !returnUrl.trim()}>
+                    {busy === 'confirm' ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Periksa URL
+                  </button>
+                </div>
+                {returnAnalysis && (
+                  <small className={returnAnalysis.ok ? 'is-ok' : 'is-bad'}>
+                    {returnAnalysis.ok ? 'Cocok — ' : 'Belum cocok — '}{returnAnalysis.detail}
+                  </small>
+                )}
+              </div>
+
+              {signin?.steps?.length > 0 && (
+                <details className="cga-signup-help">
+                  <summary>Email tidak terbawa / halaman error? Ikuti langkah ini</summary>
+                  <ol>
+                    {signin.steps.map((line) => <li key={line}>{line}</li>)}
+                  </ol>
+                  <p>
+                    Formulir aslinya <code>POST {signin.form.url}</code> dengan
+                    {' '}<code>{signin.form.fields.join(' + ')}</code>. Token CSRF diambil browser dari
+                    {' '}<code>{signin.csrf_url}</code> pada saat itu juga — BLEA tidak menyimpan atau
+                    mengirimkannya.
+                  </p>
+                </details>
+              )}
+
               <div className="cga-item-actions">
-                <button type="button" onClick={() => mark('email_dikirim')} disabled={busy === 'mark:email_dikirim'}>
-                  {busy === 'mark:email_dikirim' ? <Loader2 size={12} className="agent-spin" /> : <CircleCheck size={12} />} Formulir sudah dikirim
-                </button>
                 <button type="button" onClick={() => mark('menunggu_verifikasi')} disabled={busy === 'mark:menunggu_verifikasi'}>
                   <RefreshCw size={12} /> Tunggu verifikasi
                 </button>

@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import {
+  SIGNUP_CSRF_URL,
+  SIGNUP_PAGE_URL,
   SIGNUP_REQUEST_URL,
+  analyzeReturnUrl,
+  buildSigninBootstrap,
   buildSignupUrl,
   isPlusAddress,
   scoreVerificationMessage,
@@ -31,22 +35,69 @@ function request(path, { method = 'GET', body, token = 'admin-jwt' } = {}) {
   });
 }
 
-test('URL daftar memakai login_hint email TempMail dan bukan POST ke chatgpt.com', () => {
+test('URL yang dibuka adalah halaman /auth/login, bukan endpoint POST NextAuth', () => {
   const url = new URL(buildSignupUrl('sugionoofficial88+1@gmail.com', { authSessionLoggingId: '3aa1b9d5-3741-4c50-abb1-498284787a85' }));
-  assert.equal(`${url.origin}${url.pathname}`, SIGNUP_REQUEST_URL);
+  // Regresi bug nyata: buildSignupUrl pernah menghasilkan
+  // https://chatgpt.com/api/auth/signin/openai?... Endpoint itu POST NextAuth
+  // sehingga GET dari browser selalu berakhir di
+  // "Kami tidak dapat memproses upaya masuk Anda. Coba lagi".
+  assert.equal(`${url.origin}${url.pathname}`, SIGNUP_PAGE_URL);
+  assert.notEqual(`${url.origin}${url.pathname}`, SIGNUP_REQUEST_URL);
+  assert.ok(!url.pathname.includes('/api/auth/signin'), 'endpoint POST tidak boleh dibuka dengan GET');
   assert.equal(url.searchParams.get('screen_hint'), 'signup');
   assert.equal(url.searchParams.get('prompt'), 'login');
   assert.equal(url.searchParams.get('login_hint'), 'sugionoofficial88+1@gmail.com');
   assert.equal(url.searchParams.get('auth_session_logging_id'), '3aa1b9d5-3741-4c50-abb1-498284787a85');
-  assert.ok(!/password|token|cookie/i.test(url.toString()));
+  assert.ok(!/password|csrfToken|cookie/i.test(url.toString()), 'URL tidak boleh membawa kredensial');
 
   const config = signupConfig({});
-  // Klaim yang harus jujur: daftar otomatis dari server tidak didukung.
+  assert.equal(config.signup_url, SIGNUP_PAGE_URL);
+  assert.equal(config.csrf_url, SIGNUP_CSRF_URL);
   assert.equal(config.supported.server_side_post, false);
   assert.equal(config.supported.headless_signup, false);
   assert.equal(config.supported.captcha_bypass, false);
   assert.equal(config.supported.capture_session_cookie, false);
-  assert.ok(config.why_not_post.length >= 3);
+  assert.ok(config.why_not_post.some((line) => line.includes('csrfToken')));
+});
+
+test('bootstrap sign-in menyebut langkah sah dan tidak pernah membawa csrfToken', () => {
+  const bootstrap = buildSigninBootstrap('a+1@b.co');
+  assert.equal(bootstrap.csrf_url, SIGNUP_CSRF_URL);
+  assert.equal(bootstrap.form.url, SIGNUP_REQUEST_URL);
+  assert.equal(bootstrap.form.method, 'POST');
+  assert.ok(bootstrap.form.fields.includes('csrfToken'));
+  assert.equal(bootstrap.fields_to_fill['Alamat email'], 'a+1@b.co');
+  // Token CSRF wajib diambil browser saat itu juga; tidak boleh ada di payload.
+  assert.equal(bootstrap.csrf, '');
+});
+
+test('analyzeReturnUrl membedakan halaman error, host asing, dan email yang benar-benar terkirim', () => {
+  const email = 'kotak+1@mail.tm';
+
+  const error = analyzeReturnUrl('https://chatgpt.com/auth/error?error=OAuthSignin', email);
+  assert.equal(error.ok, false);
+  assert.equal(error.status, 'masih_error');
+
+  const foreign = analyzeReturnUrl('https://evil.example/login?email=kotak%2B1%40mail.tm', email);
+  assert.equal(foreign.ok, false);
+  assert.equal(foreign.status, 'host_asing');
+
+  const notUrl = analyzeReturnUrl('bukan url', email);
+  assert.equal(notUrl.ok, false);
+  assert.equal(notUrl.status, 'tidak_valid');
+
+  const accepted = analyzeReturnUrl('https://auth.openai.com/u/signup/identifier?state=abc&login_hint=kotak%2B1%40mail.tm', email);
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.email_matches, true);
+
+  const verification = analyzeReturnUrl('https://auth.openai.com/u/email-verification?email=kotak%2B1%40mail.tm', email);
+  assert.equal(verification.ok, true);
+  assert.equal(verification.status, 'verifikasi');
+
+  // URL sah tetapi emailnya tidak terlihat: jangan diklaim berhasil.
+  const unclear = analyzeReturnUrl('https://chatgpt.com/auth/login', email);
+  assert.equal(unclear.ok, false);
+  assert.equal(unclear.status, 'email_tidak_terlihat');
 });
 
 test('validasi email pendaftaran menolak alamat rusak dan menandai +tag', () => {
@@ -164,4 +215,61 @@ test('migrasi pendaftaran menyediakan unique constraint (user_id, email) untuk u
     'harus ada unique (user_id, email) agar ON CONFLICT (user_id, email) sah',
   );
   assert.ok(/on_conflict=user_id,email/.test(readFileSync(new URL('../src/lib/chatgptSignupRoute.js', import.meta.url), 'utf8')));
+});
+
+// Aksi `confirm` harus menolak URL yang tidak membuktikan apa pun, dan hanya
+// menandai `email_dikirim` bila URL memang memuat email TempMail.
+test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-email', async () => {
+  const oldFetch = globalThis.fetch;
+  const attempt = {
+    id: '22222222-2222-4222-8222-222222222222',
+    user_id: 'admin-1',
+    email: 'kotak+1@mail.tm',
+    signup_url: 'https://chatgpt.com/auth/login?login_hint=kotak%2B1%40mail.tm',
+    step: 'dibuka',
+    note: '',
+    verification_message_id: '',
+    verified_at: null,
+    created_at: '2026-11-23T10:00:00Z',
+    updated_at: '2026-11-23T10:00:00Z',
+  };
+  let patched = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(String(init.body));
+        return Response.json([{ ...attempt, ...patched }]);
+      }
+      if (target.includes('id=eq.')) return Response.json([attempt]);
+      return Response.json([attempt]);
+    }
+    if (target.includes('/tempmail_user_aliases')) return Response.json([]);
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const bad = await worker.fetch(request('/chatgpt-signup', {
+      method: 'POST',
+      body: { action: 'confirm', id: attempt.id, url: 'https://chatgpt.com/auth/error?error=OAuthSignin' },
+    }), ENV);
+    const badBody = await bad.json();
+    assert.equal(bad.status, 200);
+    assert.equal(badBody.ok, false);
+    assert.equal(badBody.analysis.status, 'masih_error');
+    assert.equal(patched, null, 'URL error tidak boleh mengubah langkah');
+
+    const good = await worker.fetch(request('/chatgpt-signup', {
+      method: 'POST',
+      body: { action: 'confirm', id: attempt.id, url: 'https://auth.openai.com/u/signup/identifier?login_hint=kotak%2B1%40mail.tm' },
+    }), ENV);
+    const goodBody = await good.json();
+    assert.equal(good.status, 200);
+    assert.equal(goodBody.ok, true);
+    assert.equal(goodBody.attempt.step, 'email_dikirim');
+    assert.equal(patched.step, 'email_dikirim');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
 });

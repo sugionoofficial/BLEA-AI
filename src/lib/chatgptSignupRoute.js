@@ -10,7 +10,16 @@
 // sudah ada: mail.tm atau Gmail alias + pemeriksaan pemilik alias). Modul ini
 // tidak menyimpan isi email, kode verifikasi, atau cookie sesi apa pun.
 
-import { signupConfig, buildSignupUrl, normalizeSignupRequest, scoreVerificationMessage, validateSignupInput, SIGNUP_STEPS } from './chatgptSignup.js';
+import {
+  analyzeReturnUrl,
+  buildSigninBootstrap,
+  buildSignupUrl,
+  normalizeSignupRequest,
+  scoreVerificationMessage,
+  signupConfig,
+  validateSignupInput,
+  SIGNUP_STEPS,
+} from './chatgptSignup.js';
 
 const TABLE = '/chatgpt_signup_attempts';
 
@@ -95,7 +104,15 @@ async function saveAttempt(env, userId, input) {
   });
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) throw fail('Permintaan pendaftaran gagal disimpan.', 500);
-  return { attempt: normalizeSignupRequest(row), url: signupUrl, plus_address };
+  // `url` adalah halaman login (GET), bukan endpoint POST NextAuth — lihat
+  // catatan di chatgptSignup.js. `signin` berisi langkah manual bila
+  // login_hint diabaikan oleh halaman itu.
+  return {
+    attempt: normalizeSignupRequest(row),
+    url: signupUrl,
+    plus_address,
+    signin: buildSigninBootstrap(email),
+  };
 }
 
 async function markAttempt(env, userId, input) {
@@ -164,6 +181,42 @@ async function verifyAttempt(env, userId, input, listInbox) {
   };
 }
 
+/**
+ * Cocokkan URL setelah pengguna menekan "Lanjutkan" di halaman ChatGPT dengan
+ * permintaan pendaftaran. Dipakai untuk membuktikan langkah benar-benar
+ * berjalan, bukan berhenti di halaman error.
+ *
+ * Tidak ada kredensial yang diambil: URL hanya dibaca (domain + jejak email),
+ * bukan disimpan mentah.
+ */
+async function confirmAttempt(env, userId, input) {
+  const row = await readAttempt(env, userId, input.id);
+  const analysis = analyzeReturnUrl(input.url, row.email);
+  if (!analysis.ok) {
+    return {
+      ok: false,
+      analysis,
+      attempt: normalizeSignupRequest(row),
+      hint: analysis.detail,
+    };
+  }
+  const rows = await dbJson(env, `${TABLE}?id=eq.${encodeURIComponent(row.id)}&user_id=eq.${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    prefer: 'return=representation',
+    body: {
+      step: 'email_dikirim',
+      note: `Terkonfirmasi di halaman ChatGPT (${analysis.status}).`,
+      updated_at: new Date().toISOString(),
+    },
+  });
+  return {
+    ok: true,
+    analysis,
+    attempt: normalizeSignupRequest((Array.isArray(rows) ? rows[0] : null) || row),
+    hint: analysis.detail,
+  };
+}
+
 export async function handleChatgptSignup(request, env, user, { listInbox } = {}) {
   if (!user) return { status: 401, body: { error: 'Login diperlukan.' } };
   if (user.app_metadata?.role !== 'admin') {
@@ -187,6 +240,12 @@ export async function handleChatgptSignup(request, env, user, { listInbox } = {}
     const action = String(body.action || 'prepare').toLowerCase();
     if (action === 'prepare') return { status: 201, body: { ok: true, ...(await saveAttempt(env, user.id, body)) } };
     if (action === 'mark') return { status: 200, body: { ok: true, ...(await markAttempt(env, user.id, body)) } };
+    if (action === 'confirm') {
+      const result = await confirmAttempt(env, user.id, body);
+      // 200 juga untuk URL yang belum cocok: itu jawaban sah, bukan kegagalan
+      // server, dan UI perlu menampilkan alasannya.
+      return { status: 200, body: result };
+    }
     if (action === 'verify') return { status: 200, body: await verifyAttempt(env, user.id, body, listInbox) };
     return { status: 400, body: { error: 'Aksi pendaftaran tidak dikenal.' } };
   } catch (error) {
@@ -195,4 +254,4 @@ export async function handleChatgptSignup(request, env, user, { listInbox } = {}
 }
 
 export default handleChatgptSignup;
-export { listAttempts, saveAttempt, markAttempt, verifyAttempt };
+export { listAttempts, saveAttempt, markAttempt, verifyAttempt, confirmAttempt };

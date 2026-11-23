@@ -1,30 +1,44 @@
 // Daftar akun ChatGPT dari halaman admin, memakai email yang sedang aktif di
 // halaman TempMail.
 //
-// PENTING — baca dulu sebelum memakai:
+// BACA INI — inti persoalannya:
 //
-// Yang diminta adalah meniru request `POST https://chatgpt.com/api/auth/signin/openai`
-// langsung dari server. Itu TIDAK mungkin dan tidak akan dikerjakan di sini:
-//   1. Cloudflare Workerd memblokir request ke `chatgpt.com` (IP/ASN Worker
-//      ditolak, sama seperti api.openai.com), jadi hasilnya pasti gagal.
-//   2. Endpoint itu butuh cookie sesi + token CSRF milik browser, Cloudflare
-//      Turnstile, lalu verifikasi email lewat tautan di inbox. Tanpa langkah
-//      itu, respons 200 hanya berarti "halaman login terbuka", bukan akun jadi.
-//   3. Membuat akun OpenAI secara otomatis melanggar Terms of Use mereka.
+// `POST https://chatgpt.com/api/auth/signin/openai` adalah endpoint NextAuth,
+// bukan halaman. Kontraknya (lihat SDK ChatGPT: GET /api/auth/csrf → POST
+// {provider}?prompt=login dengan body callbackUrl + csrfToken) adalah:
 //
-// Jadi modul ini TIDAK melakukan POST ke chatgpt.com. Ia menyiapkan bahan yang
-// memang bisa disiapkan server dengan benar, lalu membuka alur pendaftaran
-// resmi di browser (dengan `login_hint` = email TempMail aktif):
-//   • ringkasan konfigurasi (login_hint dipakai atau tidak, alasan bila tidak);
-//   • permintaan verifikasi tertunda + pencocokan email verifikasi di inbox
-//     TempMail (mail.tm atau Gmail alias) dengan skor kecocokan;
-//   • satu percobaan pendaftaran per alamat email, supaya tidak mengulang
-//     alamat yang sama dan mengotori inbox.
+//   GET  /api/auth/csrf            → { csrfToken: "…" }  + cookie __Host-next-auth.csrf-token
+//   POST /api/auth/signin/openai   → 302 ke auth.openai.com/… (atau JSON { url }) 
 //
-// Yang disimpan HANYA: email, URL permintaan, dan langkah terakhir. Tidak ada
-// kata sandi, kode verifikasi, atau token sesi chatgpt.com.
+// Konsekuensinya:
+//   1. Menavigasi browser ke URL POST itu (GET tanpa csrfToken) SELALU gagal
+//      dengan "Kami tidak dapat memproses upaya masuk Anda. Coba lagi" —
+//      persis halaman error yang dilaporkan. Tab tidak pernah sampai ke
+//      formulir daftar, jadi email TempMail tidak pernah terkirim.
+//   2. Server BLEA juga tidak boleh mem-POST-nya: Cloudflare Worker diblokir
+//      ke domain OpenAI, dan hasil POST tanpa cookie/Turnstile browser tetap
+//      tidak menghasilkan akun.
+//   3. Pendaftaran akun otomatis ke OpenAI melanggar Terms of Use dan hasilnya
+//      langsung ditahan captcha.
+//
+// Jadi:
+//   • `buildSignupUrl` menghasilkan URL HALAMAN (/auth/login) yang memang bisa
+//     dibuka dengan GET oleh siapa pun, membawa email TempMail sebagai
+//     `login_hint`.
+//   • Di halaman itu, browser sendirilah yang mengambil csrfToken dan mem-POST
+//     formulir — jalur yang sah, dengan cookie & Turnstile milik pengguna.
+//   • `buildSigninBootstrap` menyediakan langkah yang sama untuk kasus halaman
+//     login sudah terbuka: kirim email (POST identitas) lalu lanjut ke
+//     verifikasi. Ini panduan, bukan eksekusi otomatis.
+//
+// Yang disimpan HANYA: email, URL yang dibuka, dan langkah terakhir. Tidak ada
+// kata sandi, kode verifikasi, csrfToken, atau token sesi chatgpt.com.
 
+// Endpoint NextAuth untuk memulai OAuth (HANYA sah lewat POST + csrfToken).
 export const SIGNUP_REQUEST_URL = 'https://chatgpt.com/api/auth/signin/openai';
+// Halaman yang memang bisa dibuka dengan GET. Ini yang dipakai tombol utama.
+export const SIGNUP_PAGE_URL = 'https://chatgpt.com/auth/login';
+export const SIGNUP_CSRF_URL = 'https://chatgpt.com/api/auth/csrf';
 export const SIGNUP_STEPS = [
   'dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi', 'dilewati',
 ];
@@ -43,8 +57,9 @@ function cleanText(value, max) {
 }
 
 /**
- * Query string yang dipakai UI untuk membuka halaman daftar ChatGPT.
- * `login_hint` hanya berisi email — tidak ada password, tidak ada token.
+ * URL yang benar untuk dibuka browser: halaman login/daftar, bukan endpoint
+ * POST NextAuth. `login_hint` berisi email TempMail; tidak ada password dan
+ * tidak ada token di URL.
  */
 export function buildSignupUrl(email, { authSessionLoggingId = '' } = {}) {
   const address = cleanText(email, 320).toLowerCase();
@@ -52,33 +67,59 @@ export function buildSignupUrl(email, { authSessionLoggingId = '' } = {}) {
   const loggingId = cleanText(authSessionLoggingId, 64);
   if (loggingId) params.set('auth_session_logging_id', loggingId);
   if (address) params.set('login_hint', address);
-  return `${SIGNUP_REQUEST_URL}?${params.toString()}`;
+  return `${SIGNUP_PAGE_URL}?${params.toString()}`;
 }
 
 /**
- * Konfigurasi yang dikirim ke UI. `POST` selalu dilaporkan tidak tersedia,
- * dengan alasan tertulis — bukan tombol yang diam-diam gagal.
+ * Langkah manual di halaman login yang sudah terbuka, untuk kasus tombol
+ * utama tidak membawa `login_hint` (mis. OpenAI mengabaikan parameter itu).
+ *
+ * `csrf` disertakan sebagai dokumentasi: nilainya harus diambil browser dari
+ * GET /api/auth/csrf pada saat itu juga, tidak boleh disimpan atau dikirim ke
+ * server BLEA. Karena itu field ini selalu kosong di keluaran.
  */
-export function signupConfig(env = {}) {
-  const autoOpen = String(env.CHATGPT_SIGNUP_AUTO_OPEN || '').toLowerCase() === '1'
-    || String(env.CHATGPT_SIGNUP_AUTO_OPEN || '').toLowerCase() === 'true';
+export function buildSigninBootstrap(email) {
+  const address = cleanText(email, 320).toLowerCase();
   return {
-    // Formulir daftar dibuka di tab browser pengguna. Server tidak mem-POST ke
-    // chatgpt.com; lihat catatan di kepala berkas ini.
-    signup_url: SIGNUP_REQUEST_URL,
+    csrf_url: SIGNUP_CSRF_URL,
+    form: {
+      method: 'POST',
+      url: SIGNUP_REQUEST_URL,
+      content_type: 'application/x-www-form-urlencoded',
+      fields: ['callbackUrl', 'csrfToken', 'login_hint'],
+      callback_url: 'https://chatgpt.com/',
+    },
+    fields_to_fill: { 'Alamat email': address },
+    steps: [
+      'Di tab ChatGPT yang sudah terbuka, salin semua yang ada di URL (bila sudah diarahkan ke halaman error, buka https://chatgpt.com/auth/login dulu).',
+      'Tempel URL itu di kolom "URL setelah klik Lanjutkan" di panel ini.',
+      'Panel cocokkan email dan domain, lalu menandai permintaan sebagai "email dikirim".',
+    ],
+    csrf: '',
+  };
+}
+
+/**
+ * Konfigurasi yang dikirim ke UI. `server_side_post` selalu false, dengan
+ * alasan tertulis — bukan tombol yang diam-diam gagal.
+ */
+export function signupConfig() {
+  return {
+    signup_url: SIGNUP_PAGE_URL,
+    signin_endpoint: SIGNUP_REQUEST_URL,
+    csrf_url: SIGNUP_CSRF_URL,
     method_used_by_browser: 'GET',
     supported: {
       build_signup_link: true,
       login_hint: true,
-      auto_open_from_server: autoOpen,
       server_side_post: false,
       headless_signup: false,
       captcha_bypass: false,
       capture_session_cookie: false,
     },
     why_not_post: [
-      'Cloudflare Worker diblokir saat menghubungi chatgpt.com, jadi POST dari server tidak akan pernah berhasil.',
-      'Endpoint itu butuh cookie sesi + token CSRF browser dan Cloudflare Turnstile; POST tanpa keduanya hanya membuka halaman login.',
+      `${SIGNUP_REQUEST_URL} adalah endpoint POST NextAuth: tanpa csrfToken dari ${SIGNUP_CSRF_URL} hasilnya halaman "Kami tidak dapat memproses upaya masuk Anda".`,
+      'Cloudflare Worker juga diblokir ke domain OpenAI, jadi POST dari server tidak akan pernah berhasil.',
       'Pendaftaran akun otomatis melanggar Terms of Use OpenAI dan akunnya biasanya dinonaktifkan.',
     ],
     verification_note: 'Verifikasi email tetap diklik manusia. BLEA hanya membaca inbox TempMail dan menandai pesan verifikasi yang cocok.',
@@ -141,4 +182,64 @@ export function validateSignupInput(input = {}) {
     throw fail('auth_session_logging_id harus berupa UUID.', 400);
   }
   return { email, auth_session_logging_id: authSessionLoggingId, plus_address: isPlusAddress(email) };
+}
+
+/**
+ * Baca URL hasil klik "Lanjutkan" di halaman ChatGPT, untuk memastikan langkah
+ * benar-benar sampai ke tahap berikutnya (bukan tetap di halaman error).
+ *
+ * Yang diperiksa hanya hal yang bisa dibuktikan dari URL: domain OpenAI dan
+ * apakah email yang diminta muncul di sana. Tidak ada yang diambil dari sini
+ * untuk autentikasi — BLEA tidak pernah memakai cookie atau kode dari langkah
+ * ini.
+ */
+export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
+  const raw = cleanText(rawUrl, 2000);
+  if (!raw) return { ok: false, status: 'kosong', detail: 'URL masih kosong.', email_matches: false };
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, status: 'tidak_valid', detail: 'Itu bukan URL yang bisa dibaca. Salin ulang dari bilah alamat browser.', email_matches: false };
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, status: 'tidak_valid', detail: 'URL harus https.', email_matches: false };
+  }
+  const host = parsed.hostname.toLowerCase();
+  const openAiHost = host === 'chatgpt.com' || host.endsWith('.chatgpt.com') || host === 'openai.com' || host.endsWith('.openai.com');
+  const path = parsed.pathname || '';
+  const whole = `${parsed.search} ${decodeURIComponent(parsed.search)}`.toLowerCase();
+  const expected = cleanText(expectedEmail, 320).toLowerCase();
+  const emailMatches = Boolean(expected) && whole.includes(expected);
+  const stillError = /\/auth\/error/.test(path) || /error=/.test(parsed.search);
+  const verification = /verify|verification|confirm|check.?email|email-verification/.test(`${path} ${whole}`);
+  const password = /password|create-account|signup\/password/.test(`${path} ${whole}`);
+
+  if (!openAiHost) {
+    return { ok: false, status: 'host_asing', detail: `Host ${host} bukan domain OpenAI/ChatGPT.`, email_matches: false };
+  }
+  if (stillError) {
+    return {
+      ok: false,
+      status: 'masih_error',
+      detail: 'URL itu halaman error. Ulangi dari halaman daftar di panel; kalau tetap error, coba jendela privat atau jaringan lain.',
+      email_matches: emailMatches,
+    };
+  }
+  if (emailMatches) {
+    return {
+      ok: true,
+      status: verification ? 'verifikasi' : password ? 'kata_sandi' : 'email_diterima',
+      detail: verification
+        ? 'Email sudah diterima OpenAI — langkah berikutnya memeriksa inbox TempMail.'
+        : 'Email TempMail terbaca di URL, jadi formulir sudah menerimanya.',
+      email_matches: true,
+    };
+  }
+  return {
+    ok: false,
+    status: 'email_tidak_terlihat',
+    detail: `URL ini diterima, tetapi email ${expected || '(kosong)'} tidak terlihat di dalamnya. Pastikan Anda menyalin URL setelah menekan Lanjutkan, bukan alamat halaman awal.`,
+    email_matches: false,
+  };
 }
