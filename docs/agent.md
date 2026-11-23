@@ -168,3 +168,34 @@ Alur lengkapnya, semuanya di sisi klien kecuali transkripsi:
   permintaan, jadi satu permintaan menangani ~20 menit audio.
 - Kuota neuron Workers AI belum diukur; kalau habis, endpoint membalas error
   dari Cloudflare apa adanya.
+
+## Studio (beranda alat)
+
+Sejak halaman Agen dan Chat AI digabung, `/studio` bukan lagi percakapan: itu
+daftar alat (`src/studio/toolCatalog.js`). Setiap kartu membuka ruang kerja
+sendiri di `/studio/:toolId`:
+
+| Tool | Rute | Komponen |
+| --- | --- | --- |
+| Chat & Tulis | `/studio/chat` | `AIStudio` |
+| Agen Otonom | `/studio/agent` | `AgentPage` |
+| Buat Gambar | `/studio/image` | `GenerateImagePanel` |
+| Buat Musik | `/studio/music` | `GenerateMusicPanel` |
+| Cek Metadata | `/studio/metadata` | `MetadataCheckPage` |
+| Koneksi | `/studio/connection` | `ConnectionPage` |
+
+`/agent` dipertahankan sebagai redirect ke `/studio/agent`; tidak ada tautan
+lama yang pecah. Ruang kerja memakai komponen yang sudah ada, bukan salinan,
+supaya tidak ada dua versi form.
+
+Tool yang mesinnya belum ada (video saat OAuth freebeat putus) tetap tampil
+dengan status `Terbatas`, dan halamannya menjelaskan alasannya alih-alih
+menampilkan form yang pasti gagal.
+
+### Yang sengaja tidak dibangun
+
+Alur "klik CONNECTION → BLEA membuat email temp → mendaftarkan akun ChatGPT →
+mengambil kode verifikasi → akun terhubung". Itu tidak diimplementasikan karena
+tidak ada API pendaftaran resmi (hanya otomasi halaman signup, yang melanggar
+ToS), rapuh terhadap captcha, dan menempatkan risiko banned pada pemilik akun
+BLEA. Koneksi provider tetap hanya lewat API key/OAuth resmi.

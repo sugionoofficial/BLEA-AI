@@ -1,6 +1,5 @@
 import {
   Activity,
-  Bot,
   Clapperboard,
   Coins,
   FileSearch2,
@@ -8,9 +7,9 @@ import {
   History,
   Mail,
   Plug,
-  MessageSquare,
   Settings,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 
 export const navigation = [
@@ -25,18 +24,11 @@ export const navigation = [
         keywords: ['dashboard', 'ringkasan', 'beranda', 'utama', 'statistik'],
       },
       {
-        title: 'Agen',
-        href: '/agent',
-        icon: Bot,
-        description: 'Satu agen yang mengerjakan tugas: riset, tulis, rancang',
-        keywords: ['agen', 'agent', 'otomatis', 'tugas', 'tool', 'skill', 'riset', 'kerjakan'],
-      },
-      {
-        title: 'Chat AI',
+        title: 'Studio',
         href: '/studio',
-        icon: MessageSquare,
-        description: 'AI Studio, chat & riwayat percakapan',
-        keywords: ['chat', 'ai', 'studio', 'riwayat', 'history', 'percakapan'],
+        icon: Sparkles,
+        description: 'Semua alat BLEA: teks, gambar, video, audio, utilitas',
+        keywords: ['studio', 'alat', 'tool', 'chat', 'gambar', 'image', 'video', 'musik', 'subtitle', 'riset', 'metadata'],
       },
       {
         title: 'Generate',

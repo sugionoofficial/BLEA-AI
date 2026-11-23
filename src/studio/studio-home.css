@@ -1,0 +1,155 @@
+/* Beranda Studio — tampilan premium.
+   Prinsip: mode gelap memakai kanvas hitam pekat + blok abu-abu (bukan biru),
+   mode terang memakai kanvas kertas hangat + blok lebih gelap. Aksen tetap satu
+   (indigo) supaya tidak jadi pelangi. */
+
+.studio-home {
+  --studio-canvas: #060607;
+  --studio-block: #141416;
+  --studio-block-2: #1b1b1f;
+  --studio-line: #26262b;
+  --studio-ink: #f4f4f5;
+  --studio-muted: #9a9aa3;
+  --studio-accent: #8b8bff;
+
+  margin: -4px;
+  padding: 22px clamp(14px, 3vw, 34px) 40px;
+  border-radius: 26px;
+  color: var(--studio-ink);
+  background:
+    radial-gradient(1200px 520px at 18% -12%, rgb(139 139 255 / .16), transparent 62%),
+    radial-gradient(900px 420px at 88% 0%, rgb(255 255 255 / .05), transparent 60%),
+    var(--studio-canvas);
+  border: 1px solid var(--studio-line);
+}
+
+.dark .studio-home { color: var(--studio-ink); }
+
+/* Mode terang: kanvas kertas, blok abu terang, garis lebih jelas. */
+:root:not(.dark) .studio-home {
+  --studio-canvas: #f6f6f7;
+  --studio-block: #ffffff;
+  --studio-block-2: #ededf0;
+  --studio-line: #dcdce1;
+  --studio-ink: #111113;
+  --studio-muted: #5d5d66;
+  --studio-accent: #4f46e5;
+  background:
+    radial-gradient(1200px 520px at 18% -12%, rgb(79 70 229 / .10), transparent 62%),
+    radial-gradient(900px 420px at 88% 0%, rgb(0 0 0 / .04), transparent 60%),
+    var(--studio-canvas);
+}
+
+.studio-home-connection {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 99px;
+  border: 1px solid var(--border); color: inherit;
+  font-size: 12px; text-decoration: none;
+}
+.studio-home-connection:hover { border-color: var(--studio-accent, var(--primary)); }
+
+.studio-home-hero { max-width: 780px; margin-bottom: 26px; }
+.studio-home-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 11px; margin-bottom: 14px;
+  border-radius: 99px;
+  border: 1px solid var(--studio-line);
+  background: var(--studio-block);
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--studio-muted);
+}
+.studio-home-hero h1 {
+  margin: 0 0 10px;
+  font-family: var(--font-sans); font-size: clamp(26px, 4vw, 38px); font-weight: 700;
+  letter-spacing: -.03em; line-height: 1.1;
+}
+.studio-home-hero p { margin: 0 0 18px; font-size: 13.5px; line-height: 1.7; color: var(--studio-muted); max-width: 66ch; }
+
+.studio-home-search {
+  display: flex; align-items: center; gap: 9px;
+  padding: 11px 15px; margin-bottom: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--studio-line);
+  background: var(--studio-block);
+  color: var(--studio-muted);
+}
+.studio-home-search input {
+  flex: 1; min-width: 0; border: 0; outline: none; background: transparent;
+  color: var(--studio-ink); font-family: inherit; font-size: 13.5px;
+}
+.studio-home-search input::placeholder { color: var(--studio-muted); }
+
+.studio-home-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.studio-home-tab {
+  padding: 5px 12px; border-radius: 99px;
+  border: 1px solid var(--studio-line); background: transparent;
+  color: var(--studio-muted); font-family: inherit; font-size: 11.5px; cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.studio-home-tab:hover { color: var(--studio-ink); border-color: #3a3a42; }
+.studio-home-tab.is-active { background: var(--studio-block-2); color: var(--studio-ink); border-color: #3a3a42; }
+
+.studio-home-group { margin-bottom: 26px; }
+.studio-home-group h2 {
+  margin: 0 0 12px; font-size: 11px; font-weight: 650;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--studio-muted);
+}
+.studio-home-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+}
+
+.studio-tool-card {
+  display: flex; flex-direction: column; align-items: stretch; gap: 7px;
+  padding: 16px; text-align: left;
+  border-radius: 18px; cursor: pointer;
+  border: 1px solid var(--studio-line);
+  background: var(--studio-block);
+  color: var(--studio-ink);
+  font-family: inherit;
+  transition: transform .16s ease, border-color .16s ease, background .16s ease;
+}
+.studio-tool-card:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--studio-accent) 55%, var(--studio-line));
+  background: var(--studio-block-2);
+}
+.studio-tool-card:focus-visible { outline: 2px solid var(--studio-accent); outline-offset: 2px; }
+.studio-tool-card:disabled { opacity: .55; cursor: not-allowed; }
+.studio-tool-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.studio-tool-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 11px;
+  background: var(--studio-block-2);
+  border: 1px solid var(--studio-line);
+  color: var(--studio-accent);
+}
+.studio-tool-status {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 99px;
+  font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase;
+  border: 1px solid var(--studio-line); color: var(--studio-muted);
+}
+.studio-tool-status.is-ready { color: #61d68f; border-color: rgb(97 214 143 / .32); background: rgb(97 214 143 / .10); }
+.studio-tool-status.is-degraded { color: #e6b95c; border-color: rgb(230 185 92 / .32); background: rgb(230 185 92 / .10); }
+:root:not(.dark) .studio-tool-status.is-ready { color: #0f7a43; background: rgb(15 122 67 / .08); }
+:root:not(.dark) .studio-tool-status.is-degraded { color: #8a5a06; background: rgb(138 90 6 / .08); }
+
+.studio-tool-card b { font-size: 14px; font-weight: 620; letter-spacing: -.01em; }
+.studio-tool-card small { font-size: 12px; line-height: 1.55; color: var(--studio-muted); }
+.studio-tool-skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.studio-tool-skills em {
+  padding: 2px 7px; border-radius: 99px;
+  border: 1px solid var(--studio-line); background: var(--studio-block-2);
+  font-size: 9.5px; font-style: normal; color: var(--studio-muted);
+}
+.studio-tool-cta {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 8px; font-size: 11.5px; font-weight: 600; color: var(--studio-accent);
+}
+.studio-home-empty { padding: 22px 0; font-size: 13px; color: var(--studio-muted); }
+
+@media (max-width: 560px) {
+  .studio-home { padding: 18px 14px 30px; border-radius: 20px; }
+  .studio-home-grid { grid-template-columns: 1fr; }
+}
