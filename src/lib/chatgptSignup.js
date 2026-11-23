@@ -357,6 +357,8 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
   const stillError = /\/auth\/error/.test(path) || /error=/.test(parsed.search);
   const verification = /verify|verification|confirm|check.?email|email-verification/.test(`${path} ${whole}`);
   const password = /password|create-account|signup\/password/.test(`${path} ${whole}`);
+  // Halaman awal: pengguna baru membuka formulir dan belum menekan Lanjutkan.
+  const landing = /^\/auth\/(login|signup|log-in)?\/?$/.test(path) || path === '/';
 
   if (!openAiHost) {
     return { ok: false, status: 'host_asing', detail: `Host ${host} bukan domain OpenAI/ChatGPT.`, email_matches: false };
@@ -369,20 +371,32 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
       email_matches: emailMatches,
     };
   }
-  if (emailMatches) {
+  if (landing) {
+    return {
+      ok: false,
+      status: 'halaman_awal',
+      detail: 'Itu masih halaman awal. Isi email, tekan Lanjutkan, lalu salin URL halaman berikutnya.',
+      email_matches: emailMatches,
+    };
+  }
+  // PENTING: OpenAI/Auth0 TIDAK membawa email di URL lanjutan — yang tersisa
+  // hanya `state=`, dan itu memang normal. Jadi URL lanjutan yang bukan error
+  // dianggap bukti sah bahwa formulir menerima email. Email hanya bisa
+  // "terlihat" pada URL perantara tertentu; itu bonus, bukan syarat.
+  if (verification || password || emailMatches) {
     return {
       ok: true,
       status: verification ? 'verifikasi' : password ? 'kata_sandi' : 'email_diterima',
-      detail: verification
-        ? 'Email sudah diterima OpenAI — langkah berikutnya memeriksa inbox TempMail.'
-        : 'Email TempMail terbaca di URL, jadi formulir sudah menerimanya.',
-      email_matches: true,
+      detail: emailMatches
+        ? 'Email TempMail terbaca di URL — formulir sudah menerimanya.'
+        : 'Halaman lanjutan diterima (email memang tidak ditampilkan OpenAI di URL). Lanjutkan ke verifikasi email.',
+      email_matches: emailMatches,
     };
   }
   return {
-    ok: false,
-    status: 'email_tidak_terlihat',
-    detail: `URL ini diterima, tetapi email ${expected || '(kosong)'} tidak terlihat di dalamnya. Pastikan Anda menyalin URL setelah menekan Lanjutkan, bukan alamat halaman awal.`,
+    ok: true,
+    status: 'lanjutan',
+    detail: 'Halaman lanjutan OpenAI diterima. Email tidak ditampilkan di URL oleh OpenAI — itu normal, bukan kegagalan.',
     email_matches: false,
   };
 }

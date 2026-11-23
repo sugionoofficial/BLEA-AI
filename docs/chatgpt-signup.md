@@ -104,10 +104,13 @@ diam-diam gagal.
    **Isi email otomatis** di panel ke bilah bookmark lalu klik bookmark itu di
    tab ChatGPT. Kemudian tekan **Lanjutkan** di tab ChatGPT, salin URL halaman
    berikutnya dan tempel di panel → **Periksa URL**.
-   - URL halaman error (`/auth/error`, `error=…`) ditolak dengan alasan jelas.
-   - URL di luar domain OpenAI ditolak.
-   - Langkah baru ditandai `email_dikirim` bila email TempMail benar-benar
-     terlihat di URL. Tidak ada klaim "berhasil" tanpa bukti.
+   - Halaman awal (`/auth/login` tanpa parameter) ditolak: itu berarti
+     **Lanjutkan** belum ditekan.
+   - URL halaman error (`/auth/error`, `error=…`) dan host non-OpenAI ditolak.
+   - URL lanjutan seperti `auth.openai.com/u/login/identifier?state=…`
+     **diterima**. OpenAI/Auth0 tidak membawa email di URL lanjutan — hanya
+     `state=` — jadi menuntut email terlihat adalah syarat yang mustahil
+     dipenuhi (ini bug versi sebelumnya yang sudah diperbaiki).
 5. Tunggu email OpenAI masuk; tekan **Cari email verifikasi**. Panel menampilkan
    pesan yang cocok beserta skornya. Buka pesan itu di TempMail dan klik
    tautan verifikasinya sendiri.
