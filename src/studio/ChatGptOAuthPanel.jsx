@@ -1,0 +1,255 @@
+import { useCallback, useEffect, useState } from 'react';
+import { CircleAlert, CircleCheck, Link2, Loader2, LogIn, RefreshCw, ShieldCheck, Unlink } from 'lucide-react';
+import {
+  beginChatGptSignIn,
+  chatGptOAuthApi,
+  clearPendingAttempt,
+  finishChatGptSignIn,
+  finishChatGptSignInFromUrl,
+  isOAuthCallbackPage,
+  oauthAutoCallbackSupported,
+  readPendingAttempt,
+} from './chatgptOAuthClient';
+
+const STATUS_META = {
+  pending: { label: 'Menunggu persetujuan', tone: 'warn' },
+  linked: { label: 'Tersambung (paket dipakai)', tone: 'ok' },
+  linked_identity_only: { label: 'Tersambung (izin paket tidak dicentang)', tone: 'warn' },
+  denied: { label: 'Ditolak', tone: 'muted' },
+  failed: { label: 'Gagal', tone: 'bad' },
+};
+
+const PLAN_LIMITS = [
+  'Hanya untuk chat & agen (Responses API teks). Gambar, video, audio, dan unggah berkas tidak tersedia lewat jalur ini.',
+  'Kuota diambil dari paket ChatGPT pemilik akun (Plus/Pro/Go), bukan saldo API. Batas 5 jam dibagi dengan pemakaian ChatGPT lain.',
+  'Tidak ada API key dan tidak ada client secret: BLEA mendaftarkan client-nya sendiri saat login pertama.',
+  'Token disimpan tersegel di server dan bisa diputus kapan saja dari sini atau dari ChatGPT → Settings → Apps.',
+];
+
+/**
+ * Panel "Continue with ChatGPT".
+ *
+ * Tiga keadaan yang ditangani:
+ *   1. Halaman callback (http://127.0.0.1:<port>/auth/callback) — OAuth hanya
+ *      sah dengan redirect loopback, jadi penyelesaiannya terjadi di browser
+ *      pengguna. Halaman ini mengirim kode ke Worker lalu menampilkan hasil.
+ *   2. Halaman admin biasa — tombol untuk memulai login dan daftar tautan.
+ *   3. Gagal/izin tidak lengkap — dijelaskan apa yang harus dicentang.
+ */
+export function ChatGptOAuthPanel({ onLinked }) {
+  const callbackPage = isOAuthCallbackPage();
+  const [links, setLinks] = useState([]);
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(!callbackPage);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [callbackState, setCallbackState] = useState(callbackPage ? 'working' : 'idle');
+  const autoCallback = oauthAutoCallbackSupported();
+  const [pasteUrl, setPasteUrl] = useState('');
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [hasPending, setHasPending] = useState(() => Boolean(readPendingAttempt()));
+
+  const load = useCallback(async () => {
+    if (callbackPage) return;
+    setLoading(true);
+    const res = await chatGptOAuthApi.status();
+    if (res.ok) {
+      setLinks(Array.isArray(res.data?.links) ? res.data.links : []);
+      setConfig(res.data?.config || null);
+    } else {
+      setError(res.data?.error || 'Status tautan ChatGPT tidak bisa dimuat.');
+    }
+    setLoading(false);
+  }, [callbackPage]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Callback: jalankan sekali saat halaman dimuat.
+  useEffect(() => {
+    if (!callbackPage) return;
+    let cancelled = false;
+    (async () => {
+      const result = await finishChatGptSignIn();
+      if (cancelled) return;
+      clearPendingAttempt();
+      if (result.ok) {
+        setCallbackState('done');
+        setNotice(result.hint || 'Akun ChatGPT tersambung tanpa API key.');
+        onLinked?.();
+      } else {
+        setCallbackState('failed');
+        setError(result.error || 'Login ChatGPT gagal.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [callbackPage, onLinked]);
+
+  async function start() {
+    setBusy('start');
+    setError('');
+    setNotice('');
+    const res = await beginChatGptSignIn();
+    // Kalau berhasil, halaman langsung dialihkan ke OpenAI; tidak ada state lagi.
+    if (!res.ok) {
+      setBusy('');
+      setError(res.error || 'Tidak bisa memulai login ChatGPT.');
+    }
+  }
+
+  async function refreshLink(id) {
+    setBusy(`refresh:${id}`);
+    const res = await chatGptOAuthApi.refresh(id);
+    setBusy('');
+    if (!res.ok) { setError(res.data?.error || 'Refresh token gagal.'); return; }
+    setNotice('Token OAuth diperbarui.');
+    load();
+  }
+
+  async function disconnectLink(id) {
+    setBusy(`disconnect:${id}`);
+    const res = await chatGptOAuthApi.disconnect(id);
+    setBusy('');
+    if (!res.ok) { setError(res.data?.error || 'Gagal memutus tautan.'); return; }
+    setNotice(res.data?.note || 'Tautan ChatGPT dihapus. Pool menyesuaikan otomatis.');
+    load();
+    onLinked?.();
+  }
+
+  async function completeFromUrl(event) {
+    event.preventDefault();
+    setPasteBusy(true);
+    setError('');
+    setNotice('');
+    const res = await finishChatGptSignInFromUrl(pasteUrl);
+    setPasteBusy(false);
+    if (!res.ok) { setError(res.error || 'URL callback tidak bisa diselesaikan.'); return; }
+    setPasteUrl('');
+    setHasPending(false);
+    setNotice(res.hint || 'Akun ChatGPT tersambung tanpa API key.');
+    load();
+    onLinked?.();
+  }
+
+  if (callbackPage) {
+    return (
+      <section className="oauth-panel oauth-callback">
+        <header>
+          <span className="oauth-badge"><LogIn size={12} /> Continue with ChatGPT</span>
+          <h2>
+            {callbackState === 'working' && 'Menyelesaikan login…'}
+            {callbackState === 'done' && 'Akun ChatGPT tersambung.'}
+            {callbackState === 'failed' && 'Login belum berhasil.'}
+          </h2>
+        </header>
+        {callbackState === 'working' && (
+          <p className="oauth-note"><Loader2 size={14} className="agent-spin" /> Menukar kode otorisasi dengan token, lalu menyegelnya di server.</p>
+        )}
+        {notice && <p className="oauth-ok"><CircleCheck size={14} /> {notice}</p>}
+        {/* Domain publik tidak bisa menerima callback loopback, jadi login
+          diselesaikan dengan menempel URL callback. Di 127.0.0.1 alur ini
+          otomatis dan blok di bawah tidak perlu. */}
+      {!autoCallback && (
+        <div className="oauth-manual">
+          <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
+          <p>
+            OpenAI mengirim hasil login ke <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>.
+            Di perangkat itu alamat tersebut mungkin tidak terbuka — salin seluruh alamat dari bilah
+            browser (yang memuat <code>?code=…&amp;state=…</code>) dan tempel di sini. Kode ditukar
+            di server dan tidak disimpan di browser.
+          </p>
+          <form onSubmit={completeFromUrl}>
+            <input
+              type="url"
+              value={pasteUrl}
+              onChange={(event) => setPasteUrl(event.target.value)}
+              placeholder="http://127.0.0.1:1455/auth/callback?code=…&state=…"
+              aria-label="URL callback ChatGPT"
+            />
+            <button type="submit" disabled={pasteBusy || !pasteUrl.trim()}>
+              {pasteBusy ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Selesaikan
+            </button>
+          </form>
+          {hasPending && <small>Sesi login terbuka di tab ini — tempel URL-nya sebelum 15 menit.</small>}
+        </div>
+      )}
+
+      {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
+        {callbackState !== 'working' && (
+          <p className="oauth-note">
+            Kembali ke <a href="/studio/chatgpt-accounts">Studio → Akun ChatGPT</a> untuk melihat kuota akun ini.
+          </p>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="oauth-panel">
+      <header className="oauth-head">
+        <div>
+          <span className="oauth-badge"><LogIn size={12} /> Tanpa API key</span>
+          <h2>Continue with ChatGPT</h2>
+          <p>
+            Sambungkan akun ChatGPT seperti OAuth freebeat: satu tombol, izin di browser,
+            lalu Studio memakai paket ChatGPT itu. Tidak ada API key yang perlu ditempel.
+          </p>
+        </div>
+        <button type="button" className="oauth-start" onClick={start} disabled={busy === 'start'}>
+          {busy === 'start' ? <Loader2 size={14} className="agent-spin" /> : <Link2 size={14} />}
+          {busy === 'start' ? 'Membuka ChatGPT…' : 'Continue with ChatGPT'}
+        </button>
+      </header>
+
+      <ul className="oauth-limits">
+        {PLAN_LIMITS.map((line) => (
+          <li key={line}><ShieldCheck size={13} /> {line}</li>
+        ))}
+      </ul>
+
+      {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
+      {notice && <p className="oauth-ok"><CircleCheck size={14} /> {notice}</p>}
+
+      {loading ? (
+        <p className="oauth-note"><Loader2 size={14} className="agent-spin" /> Memuat tautan…</p>
+      ) : links.length === 0 ? (
+        <p className="oauth-note">
+          Belum ada akun ChatGPT yang ditautkan. Menekan tombol di atas akan membuka halaman izin OpenAI;
+          setelah disetujui, akun ini otomatis masuk pool untuk chat & agen.
+        </p>
+      ) : (
+        <ul className="oauth-links">
+          {links.map((link) => {
+            const meta = STATUS_META[link.status] || { label: link.status, tone: 'muted' };
+            return (
+              <li key={link.id} className={`oauth-link is-${meta.tone}`}>
+                <div className="oauth-link-main">
+                  <b>{link.email || 'Akun ChatGPT'}</b>
+                  <span className={`oauth-state is-${meta.tone}`}>{meta.label}</span>
+                  {link.plan_usage && <span className="oauth-state is-ok">paket aktif</span>}
+                </div>
+                <small>
+                  {link.client_id ? `client ${link.client_id.slice(0, 14)}…` : 'client belum terbit'}
+                  {link.access_expires_at ? ` · akses s/d ${new Date(link.access_expires_at).toLocaleString('id-ID')}` : ''}
+                </small>
+                {link.error && <small className="oauth-link-error">{link.error}</small>}
+                <div className="oauth-link-actions">
+                  <button type="button" onClick={() => refreshLink(link.id)} disabled={busy === `refresh:${link.id}` || !link.plan_usage}>
+                    {busy === `refresh:${link.id}` ? <Loader2 size={12} className="agent-spin" /> : <RefreshCw size={12} />} Refresh token
+                  </button>
+                  <button type="button" className="is-danger" onClick={() => disconnectLink(link.id)} disabled={busy === `disconnect:${link.id}`}>
+                    {busy === `disconnect:${link.id}` ? <Loader2 size={12} className="agent-spin" /> : <Unlink size={12} />} Putuskan
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {config?.note && <p className="oauth-foot">{config.note}</p>}
+    </section>
+  );
+}
+
+export default ChatGptOAuthPanel;

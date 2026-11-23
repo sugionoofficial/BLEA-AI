@@ -101,7 +101,9 @@ export async function studioMediaConfig(env, kind = 'image') {
     models: models.map((id) => ({ id, provider: 'openai', default: id === preferred })),
     recommended: models.includes(preferred) ? preferred : models[0],
     accounts: accounts.length,
-    ...(accounts.length ? {} : { hint: 'Belum ada akun ChatGPT yang siap. Admin perlu menambahkan API key di Studio → Akun ChatGPT.' }),
+    ...(accounts.length ? {} : {
+      hint: 'Tool gambar/video butuh akun ber-API key: izin OAuth “Continue with ChatGPT” hanya mencakup chat & agen. Tambahkan API key di Studio → Akun ChatGPT.',
+    }),
   };
 }
 
@@ -115,7 +117,7 @@ export async function generateStudioImage(env, user, input) {
   const prompt = cleanPrompt(input?.prompt);
   const size = ['1024x1024', '1024x1536', '1536x1024', 'auto'].includes(String(input?.size || '')) ? String(input.size) : '1024x1024';
   const accounts = await pickChatGptAccountsFor(env, { capability: 'image', limit: 4 });
-  if (!accounts.length) throw fail('Belum ada akun ChatGPT yang siap untuk tool gambar. Tambahkan akun di Studio → Akun ChatGPT.', 503);
+  if (!accounts.length) throw fail('Belum ada akun ChatGPT ber-API key yang siap untuk tool gambar. Izin OAuth hanya untuk chat & agen, jadi tool gambar butuh API key di Studio → Akun ChatGPT.', 503);
 
   const row = await insertRow(env, {
     user_id: user.id,
@@ -192,7 +194,7 @@ export async function generateStudioVideo(env, user, input) {
   const seconds = ['4', '8', '12'].includes(String(input?.seconds || '')) ? String(input.seconds) : '8';
   const size = typeof input?.size === 'string' && /^\d{2,4}x\d{2,4}$/.test(input.size) ? input.size : '1280x720';
   const accounts = await pickChatGptAccountsFor(env, { capability: 'video', limit: 4 });
-  if (!accounts.length) throw fail('Belum ada akun ChatGPT yang siap untuk tool video. Tambahkan akun di Studio → Akun ChatGPT.', 503);
+  if (!accounts.length) throw fail('Belum ada akun ChatGPT ber-API key yang siap untuk tool video. Izin OAuth hanya untuk chat & agen, jadi tool video butuh API key di Studio → Akun ChatGPT.', 503);
 
   const row = await insertRow(env, {
     user_id: user.id,

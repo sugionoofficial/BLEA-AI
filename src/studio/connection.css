@@ -105,3 +105,9 @@
 }
 
 .studio-connection-links { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; }
+
+/* Kutipan nama scope/izin OAuth pada halaman Koneksi. */
+.studio-connection-explain code {
+  font-size: 11.5px; padding: 1px 5px; border-radius: 5px;
+  background: rgba(255, 255, 255, .08); word-break: break-word;
+}

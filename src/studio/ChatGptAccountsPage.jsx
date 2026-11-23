@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
+import { ChatGptOAuthPanel } from './ChatGptOAuthPanel';
 import {
   createChatGptAccount,
   deleteChatGptAccount,
@@ -192,13 +193,14 @@ export function ChatGptAccountsPage() {
       <div className="chatgpt-accounts">
         <section className="cga-hero">
           <span className="cga-badge"><KeyRound size={12} /> Admin · Koneksi</span>
-          <h1>Akun ChatGPT ditambahkan manual.</h1>
+          <h1>ChatGPT disambungkan seperti freebeat.</h1>
           <p>
-            BLEA tidak mendaftarkan akun ke layanan pihak ketiga: pendaftaran otomatis melanggar
-            ketentuan layanan mereka dan akunnya berisiko ditutup. Yang bisa dilakukan: admin
-            menambahkan sendiri akun/kunci yang sudah dimiliki, lalu pool ini memakainya bergiliran
-            seperti pool freebeat — prioritas naik, kuota harian per akun, cooldown saat akun
-            menolak, lalu lanjut ke akun berikutnya.
+            Ada dua jalur masuk pool. <b>Pertama</b> — jalur utama, tanpa API key sama sekali:
+            <b> Continue with ChatGPT</b> di bawah memakai OAuth resmi OpenAI, jadi kuota yang
+            terpakai adalah paket ChatGPT pemilik akun. <b>Kedua</b> — jalur cadangan untuk tool
+            media: API key milik admin, karena izin OAuth hanya berlaku untuk chat & agen.
+            Keduanya masuk pool yang sama: prioritas naik, kuota harian per akun, cooldown saat
+            akun menolak, lalu lanjut ke akun berikutnya.
           </p>
           <ul className="cga-stats">
             <li><b>{summary.total}</b><small>akun di pool</small></li>
@@ -213,6 +215,8 @@ export function ChatGptAccountsPage() {
             <Link className="cga-link" to="/studio/connection">Lihat status koneksi</Link>
           </div>
         </section>
+
+        <ChatGptOAuthPanel onLinked={load} />
 
         {notice && (
           <p className={`cga-notice is-${noticeTone}`}>

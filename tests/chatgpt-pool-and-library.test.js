@@ -312,7 +312,10 @@ test('halaman Hasil & Unduhan serta Akun ChatGPT bisa dirender tanpa navigasi se
       React.createElement(MemoryRouter, null,
         React.createElement(AuthProvider, { initialSession: null }, React.createElement(ChatGptAccountsPage))),
     );
-    assert.ok(accountsHtml.includes('Akun ChatGPT ditambahkan manual.'));
+    // Sejak jalur OAuth resmi ("Continue with ChatGPT") ditambahkan, halaman ini
+    // menonjolkan koneksi tanpa API key, bukan lagi "ditambahkan manual".
+    assert.ok(accountsHtml.includes('ChatGPT disambungkan seperti freebeat.'));
+    assert.ok(accountsHtml.includes('Continue with ChatGPT'));
     assert.ok(accountsHtml.includes('Tambah akun manual'));
     assert.ok(accountsHtml.includes('Bagaimana pemilihan akun bekerja'));
   } finally {

@@ -187,6 +187,9 @@ export async function handleAgentTurn(request, url, env, deps) {
   let activeProvider = provider;
   let activeApiKey = apiKey;
   let activeBaseUrl = keyRow?.base_url || '';
+  // Akun pertama dari pool: kalau OAuth, seluruh giliran agen memakai
+  // Responses API (bukan /chat/completions).
+  let activeIsOAuth = Boolean(poolCandidates[0]?.oauth);
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -218,7 +221,18 @@ export async function handleAgentTurn(request, url, env, deps) {
             } catch { /* stream sudah ditutup */ }
           }, 2_500);
 
-          let attempt = await deps.sendChatCompletionRequest({
+          // Akun OAuth (Continue with ChatGPT) tidak punya API key dan hanya
+          // sah lewat Responses API; akun API key tetap ke /chat/completions.
+          const callModel = (args) => (activeIsOAuth && typeof deps.sendOAuthResponses === 'function'
+            ? deps.sendOAuthResponses({
+              accessToken: args.apiKey,
+              model: args.model,
+              payload: args.payload,
+              timeoutMs: args.timeoutMs,
+            })
+            : deps.sendChatCompletionRequest(args));
+
+          let attempt = await callModel({
             provider: activeProvider,
             model: activeModel,
             apiKey: activeApiKey,
@@ -236,7 +250,7 @@ export async function handleAgentTurn(request, url, env, deps) {
               env,
             })[0];
             if (alt) {
-              const retry = await deps.sendChatCompletionRequest({
+              const retry = await callModel({
                 provider: alt.provider,
                 model: alt.model,
                 apiKey: alt.apiKey,
@@ -251,6 +265,8 @@ export async function handleAgentTurn(request, url, env, deps) {
                 activeModel = alt.model;
                 activeApiKey = alt.apiKey;
                 activeBaseUrl = alt.baseUrl;
+                // Kandidat fallback memakai API key biasa (bukan token OAuth).
+                activeIsOAuth = false;
                 emit({ type: 'meta', model: activeModel, provider: activeProvider, fallback: true });
               }
             }

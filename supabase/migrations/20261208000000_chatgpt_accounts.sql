@@ -24,7 +24,14 @@ create table if not exists public.chatgpt_accounts (
   --                Disimpan sebagai catatan/koneksi milik admin; TIDAK dipakai
   --                untuk memanggil backend non-publik, karena itu melanggar
   --                ToS dan akunnya berisiko ditutup.
-  credential_kind text not null default 'api_key' check (credential_kind in ('api_key', 'session')),
+  --   'oauth'    → hasil "Continue with ChatGPT" (Sign in with ChatGPT). Tidak
+  --                ada API key; token hanya sah untuk Responses API teks.
+  credential_kind text not null default 'api_key' check (credential_kind in ('api_key', 'session', 'oauth')),
+  -- Kolom khusus OAuth: client_id terbitan OpenAI per akun, masa berlaku access
+  -- token (1 jam), dan refresh token tersegel (30 hari bergulir).
+  oauth_client_id text check (char_length(oauth_client_id) <= 120),
+  oauth_expires_at timestamptz,
+  oauth_refresh_sealed text,
   api_base text not null default 'https://api.openai.com' check (char_length(api_base) <= 300),
   model_default text not null default 'gpt-4o-mini' check (char_length(model_default) <= 120),
   -- Isolasi kapabilitas: akun hanya boleh dipakai tool yang tercantum di sini.
