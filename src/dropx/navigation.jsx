@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bot,
   Clapperboard,
   Coins,
   FileSearch2,
@@ -22,6 +23,13 @@ export const navigation = [
         icon: LayoutDashboard,
         description: 'Ringkasan aktivitas & statistik',
         keywords: ['dashboard', 'ringkasan', 'beranda', 'utama', 'statistik'],
+      },
+      {
+        title: 'Agen',
+        href: '/agent',
+        icon: Bot,
+        description: 'Satu agen yang mengerjakan tugas: riset, tulis, rancang',
+        keywords: ['agen', 'agent', 'otomatis', 'tugas', 'tool', 'skill', 'riset', 'kerjakan'],
       },
       {
         title: 'Chat AI',

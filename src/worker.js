@@ -71,6 +71,16 @@ import {
   sanitizeMusicRow,
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
+import { handleAgentTurn } from './agent/agentRoute.js';
+import { buildAgentSystemPrompt } from './agent/prompts.js';
+import { availableSkills, loadSkillSection } from './agent/skills/loadSkill.js';
+import {
+  AGENT_TOOL_DEFINITIONS,
+  AGENT_TOOL_NAMES,
+  findAgentTool,
+  parseAgentToolCall,
+  stripAgentToolCalls,
+} from './agent/tools.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
 import {
@@ -4814,6 +4824,60 @@ async function handleApi(request, url, env) {
       if (!query) return jsonResponse({ error: 'query required' }, 400);
       const results = await webSearch(query);
       return jsonResponse({ ok: true, results, query });
+    }
+
+    // ---- /agent: satu giliran agen (model → alat → jawaban), SSE ----
+    // Halaman /agent. Tool loop ada di server supaya kunci provider tidak
+    // pernah sampai ke browser dan loop tidak bisa dimanipulasi dari klien.
+    if (path === 'agent/skills' && (method === 'GET' || method === 'POST')) {
+      return jsonResponse({
+        ok: true,
+        source: { repo: 'anthropics/skills', license: 'Apache-2.0' },
+        skills: availableSkills().map(({ id, name, description, triggers }) => ({ id, name, description, triggers })),
+        tools: AGENT_TOOL_NAMES,
+      });
+    }
+
+    if (path === 'agent' && method === 'POST') {
+      return handleAgentTurn(request, url, env, {
+        getUser,
+        servicePostgrest,
+        webSearch,
+        sendChatCompletionRequest,
+        chatUpstreamTimeoutMs,
+        buildFallbackCandidates: ({ primaryProvider, primaryModel, keyByProvider }) => buildChatFallbackCandidates({
+          primaryProvider,
+          primaryModel,
+          keyByProvider,
+          dbModelRows: [],
+          env,
+        }),
+        hasWorkersAiBinding,
+        buildSystemPrompt: buildAgentSystemPrompt,
+        availableSkillIds: availableSkills().map((skill) => skill.id),
+        loadSkillSection,
+        runTool: (tool, args, ctx) => tool.run(args, ctx),
+        extractAssistantReply,
+        parseAgentToolCall,
+        stripAgentToolCalls,
+        findTool: findAgentTool,
+        availableToolNames: AGENT_TOOL_NAMES,
+        describeToolCall: (name, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.describe(args) || '',
+        summarizeToolResult: (name, result, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.summarize(result, args) || '',
+        // Harga giliran opsional (credit_model_prices, modality 'agent_turn').
+        chargeCredits: (envRef, userId, amount, description, generationId) => creditRpc(envRef, 'spend_credits', {
+          p_user_id: userId,
+          p_amount: amount,
+          p_description: description,
+          p_generation_id: generationId,
+        }),
+        refundCredits: (envRef, userId, amount, generationId, description) => creditRpc(envRef, 'refund_credits', {
+          p_user_id: userId,
+          p_amount: amount,
+          p_description: description,
+          p_generation_id: generationId,
+        }),
+      });
     }
 
     // GitHub routes
