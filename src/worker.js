@@ -193,6 +193,35 @@ async function tempmailInboxReader(env, user) {
   };
 }
 
+/**
+ * Pembaca SATU pesan (isi lengkap) dengan pemeriksaan pemilik alias yang sama.
+ * Dipakai untuk mengambil kode verifikasi: OpenAI mengirim kode di badan
+ * email, bukan tautan, dan `preview`/snippet inbox tidak selalu memuatnya.
+ */
+async function tempmailMessageReader(env, user) {
+  const response = await servicePostgrest(env, `/tempmail_user_aliases?select=user_id,email,token,provider&user_id=eq.${encodeURIComponent(user.id)}&limit=1`);
+  if (!response.ok) throw Object.assign(new Error('Gagal membaca alias TempMail. Pastikan tabel tempmail_user_aliases sudah dibuat.'), { status: 503 });
+  const alias = (await response.json().catch(() => []))?.[0] || null;
+  return async (email, messageId) => {
+    if (!alias) throw Object.assign(new Error('Buat alamat TempMail terlebih dahulu.'), { status: 404 });
+    const requested = String(email || '').trim().toLowerCase();
+    if (!requested || requested !== String(alias.email || '').toLowerCase()) {
+      throw Object.assign(new Error('Alamat tidak ditemukan pada akun admin ini.'), { status: 404 });
+    }
+    const id = String(messageId || '').trim();
+    if (!id) throw Object.assign(new Error('ID pesan wajib diisi.'), { status: 400 });
+    if (alias.provider === 'gmailapi') {
+      const connection = await getGmailConnection(env, user.id);
+      if (!connection || !aliasBelongsToGmailConnection(alias, connection)) {
+        throw Object.assign(new Error('Koneksi Gmail tidak cocok dengan akhiran yang aktif. Hubungkan ulang Gmail atau buat akhiran baru.'), { status: 409 });
+      }
+      return getGmailMessage(env, connection, alias.email, id);
+    }
+    const credentials = parseMailtmCredentials(alias.token);
+    return fetchMailtmMessage(credentials.token, id);
+  };
+}
+
 async function handleTempmail(request, url, env) {
   const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
   if (!token) return jsonResponse({ error: 'Login diperlukan untuk menggunakan TempMail.' }, 401, { 'cache-control': 'no-store' });
@@ -2978,6 +3007,7 @@ async function handleApi(request, url, env) {
       const user = token ? await getUser(env, token) : null;
       const result = await handleChatgptSignup(request, env, user, {
         listInbox: user ? await tempmailInboxReader(env, user).catch(() => null) : null,
+        readMessage: user ? await tempmailMessageReader(env, user).catch(() => null) : null,
       });
       return jsonResponse(result.body, result.status, { 'cache-control': 'no-store' });
     }

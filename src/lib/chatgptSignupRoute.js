@@ -12,6 +12,7 @@
 
 import {
   analyzeReturnUrl,
+  extractVerificationCode,
   buildSigninBootstrap,
   buildSignupUrl,
   normalizeSignupRequest,
@@ -140,7 +141,7 @@ async function markAttempt(env, userId, input) {
  * `listInbox(email)` disediakan Worker dan sudah memeriksa bahwa email itu
  * memang alias milik admin ini.
  */
-async function verifyAttempt(env, userId, input, listInbox) {
+async function verifyAttempt(env, userId, input, listInbox, readMessage) {
   const row = await readAttempt(env, userId, input.id);
   if (typeof listInbox !== 'function') throw fail('Inbox TempMail tidak tersedia di server ini.', 503);
   let messages;
@@ -152,14 +153,53 @@ async function verifyAttempt(env, userId, input, listInbox) {
   const scored = (Array.isArray(messages) ? messages : [])
     .map((message) => ({ ...message, match: scoreVerificationMessage(message, row) }))
     .sort((a, b) => b.match.score - a.match.score);
-  const best = scored.find((message) => message.match.matched) || null;
+  let best = scored.find((message) => message.match.matched) || null;
+
+  // Email verifikasi OpenAI berisi KODE, bukan tautan yang cukup diklik.
+  // Snippet inbox sering tidak memuat kodenya, jadi pesan teratas dibaca
+  // lengkap (dengan pemeriksaan pemilik alias yang sama) sebelum menyimpulkan.
+  let verificationCode = '';
+  let codeSource = '';
+  const depth = typeof readMessage === 'function' ? Math.min(scored.length, 3) : 0;
+  for (let index = 0; index < depth; index += 1) {
+    const candidate = scored[index];
+    if (!candidate?.id) continue;
+    let full = null;
+    try {
+      full = await readMessage(row.email, candidate.id);
+    } catch { continue; }
+    const extracted = extractVerificationCode({
+      subject: full?.subject || candidate.subject || '',
+      bodyText: full?.bodyText || '',
+      bodyHtml: full?.bodyHtml || '',
+    });
+    // Kalau kode hanya ada di isi pesan, pesan itu yang dijadikan bukti.
+    if (extracted.code) {
+      verificationCode = extracted.code;
+      codeSource = candidate.id;
+    }
+    const enriched = {
+      ...candidate,
+      subject: full?.subject || candidate.subject,
+      from: full?.from || candidate.from,
+      preview: String(full?.bodyText || candidate.preview || '').replace(/\s+/g, ' ').trim().slice(0, 180),
+      match: scoreVerificationMessage({ ...candidate, subject: full?.subject || candidate.subject, from: full?.from || candidate.from }, row),
+    };
+    scored[index] = enriched;
+    if (!best || enriched.match.matched) best = enriched.match.matched ? enriched : best;
+    if (verificationCode) break;
+  }
+
   if (!best) {
     return {
       ok: true,
       matched: false,
+      code: verificationCode,
       candidates: scored.slice(0, 5),
       attempt: normalizeSignupRequest(row),
-      hint: 'Belum ada pesan verifikasi yang cocok. Tunggu email dari OpenAI, klik "Refresh inbox" di TempMail, lalu coba lagi.',
+      hint: verificationCode
+        ? `Kode ditemukan di inbox walau pengirim tidak dikenali: ${verificationCode}.`
+        : 'Belum ada pesan verifikasi yang cocok. Tunggu email dari OpenAI, klik "Refresh inbox" di TempMail, lalu coba lagi.',
     };
   }
   const rows = await dbJson(env, `${TABLE}?id=eq.${encodeURIComponent(row.id)}&user_id=eq.${encodeURIComponent(userId)}`, {
@@ -168,6 +208,9 @@ async function verifyAttempt(env, userId, input, listInbox) {
     body: {
       step: 'terverifikasi',
       verification_message_id: String(best.id || ''),
+      // Kode disimpan HANYA untuk ditempel ke tab ChatGPT oleh admin; bukan
+      // kredensial dan tidak dipakai untuk autentikasi otomatis.
+      verification_code: verificationCode || '',
       verified_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
@@ -176,6 +219,8 @@ async function verifyAttempt(env, userId, input, listInbox) {
     ok: true,
     matched: true,
     best,
+    code: verificationCode,
+    code_from_message_id: codeSource,
     candidates: scored.slice(0, 5),
     attempt: normalizeSignupRequest((Array.isArray(rows) ? rows[0] : null) || row),
   };
@@ -217,7 +262,7 @@ async function confirmAttempt(env, userId, input) {
   };
 }
 
-export async function handleChatgptSignup(request, env, user, { listInbox } = {}) {
+export async function handleChatgptSignup(request, env, user, { listInbox, readMessage } = {}) {
   if (!user) return { status: 401, body: { error: 'Login diperlukan.' } };
   if (user.app_metadata?.role !== 'admin') {
     return { status: 403, body: { error: 'Pendaftaran ChatGPT hanya tersedia untuk admin.' } };
@@ -246,7 +291,7 @@ export async function handleChatgptSignup(request, env, user, { listInbox } = {}
       // server, dan UI perlu menampilkan alasannya.
       return { status: 200, body: result };
     }
-    if (action === 'verify') return { status: 200, body: await verifyAttempt(env, user.id, body, listInbox) };
+    if (action === 'verify') return { status: 200, body: await verifyAttempt(env, user.id, body, listInbox, readMessage) };
     return { status: 400, body: { error: 'Aksi pendaftaran tidak dikenal.' } };
   } catch (error) {
     return { status: Number(error?.status) || 500, body: { error: String(error?.message || 'Pendaftaran ChatGPT gagal diproses.') } };
