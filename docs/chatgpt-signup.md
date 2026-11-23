@@ -147,14 +147,22 @@ Yang berubah:
   (pemeriksaan pemilik alias sama seperti `/api/tempmail`), menyimpan
   `verification_code`, dan mengembalikan `code` + `code_from_message_id` ke UI.
 - Panel menampilkan kode + **Salin kode**, dengan peringatan sekali pakai.
-- Kolom DB `chatgpt_signup_attempts.verification_code` (migrasi
-  `20261213000002_chatgpt_signup_verification_code.sql`). Isinya **bukan**
+- Kolom DB `chatgpt_signup_attempts.verification_code`
+  (`20261213000002_…`) dan `verification_code_at`
+  (`20261213000003_chatgpt_signup_code_at.sql`, waktu kode diambil — dipakai
+  menghitung TTL, terpisah dari `verified_at`). Isinya **bukan**
   kredensial login — hanya bukti sekali pakai dari inbox milik admin sendiri.
 - Aksi `{action:'code', id}` mengembalikan kode yang **sudah tersimpan** tanpa
   memanggil Gmail/mail.tm lagi. Panel memakainya saat dibuka atau dimuat ulang;
   tanpa ini kode hanya terlihat tepat setelah tombol verify ditekan, dan satu-
   satunya jalan adalah menekan verify lagi (memanggil Gmail ulang sekaligus
   me-reset `verified_at`).
+- Kode bisa ditemukan pada pesan yang **tidak** dikenali sebagai email OpenAI
+  (mis. domain pengirim berubah). Kasus itu tidak menaikkan langkah menjadi
+  `terverifikasi`, tetapi kodenya tetap disimpan di kolom
+  `verification_code_at` + `verification_code` dan dikembalikan dengan
+  `code_unverified: true`. UI menandainya agar tidak ditempel tanpa dicek.
+  Tanpa penyimpanan ini kode tersebut hilang setiap halaman dimuat ulang.
 - Kode OpenAI hanya berlaku ±10 menit, jadi aksi `code` menyertakan
   `code_expired`. Kode basi **tetap ditampilkan** tetapi ditandai (judul dan
   warna berubah), bukan disembunyikan — kalau disembunyikan, pengguna akan

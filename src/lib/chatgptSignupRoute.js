@@ -192,14 +192,43 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
   }
 
   if (!best) {
+    // Kode bisa ditemukan walau pengirimnya tidak dikenali (mis. domain
+    // pengirim berubah). Langkah TIDAK dinaikkan ke "terverifikasi" karena itu
+    // belum bukti email OpenAI, tetapi kodenya tetap disimpan — kalau tidak,
+    // kode itu hilang begitu halaman dimuat ulang dan pengguna harus memindai
+    // inbox lagi padahal kodenya sudah ada.
+    let attemptRow = row;
+    if (verificationCode) {
+      try {
+        const saved = await dbJson(env, `${TABLE}?id=eq.${encodeURIComponent(row.id)}&user_id=eq.${encodeURIComponent(userId)}`, {
+          method: 'PATCH',
+          prefer: 'return=representation',
+          body: {
+            verification_code: verificationCode,
+            verification_message_id: codeSource,
+            verification_code_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        });
+        attemptRow = (Array.isArray(saved) ? saved[0] : null) || row;
+      } catch {
+        // Gagal menyimpan bukan alasan menggagalkan pencarian: kodenya tetap
+        // dikembalikan pada respons ini.
+      }
+    }
     return {
       ok: true,
       matched: false,
       code: verificationCode,
+      code_expired: false,
+      // Pengirim tidak dikenali: kode disimpan & ditampilkan, tetapi UI wajib
+      // memberi tanda supaya tidak ditempel sebagai kode OpenAI tanpa dicek.
+      code_unverified: Boolean(verificationCode),
+      code_from_message_id: codeSource,
       candidates: scored.slice(0, 5),
-      attempt: normalizeSignupRequest(row),
+      attempt: normalizeSignupRequest(attemptRow),
       hint: verificationCode
-        ? `Kode ditemukan di inbox walau pengirim tidak dikenali: ${verificationCode}.`
+        ? `Kode ditemukan di inbox walau pengirim tidak dikenali: ${verificationCode}. Cocokkan sendiri dengan email OpenAI, lalu tempel di tab ChatGPT.`
         : 'Belum ada pesan verifikasi yang cocok. Tunggu email dari OpenAI, klik "Refresh inbox" di TempMail, lalu coba lagi.',
     };
   }
@@ -212,6 +241,9 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
       // Kode disimpan HANYA untuk ditempel ke tab ChatGPT oleh admin; bukan
       // kredensial dan tidak dipakai untuk autentikasi otomatis.
       verification_code: verificationCode || '',
+      // Waktu kode diambil, terpisah dari verified_at: kode bisa ada tanpa
+      // pesan yang dikenali sebagai verifikasi.
+      verification_code_at: verificationCode ? new Date().toISOString() : null,
       verified_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
@@ -277,12 +309,15 @@ async function readStoredCode(env, userId, input) {
   const row = await readAttempt(env, userId, input.id);
   const stored = describeStoredCode({
     code: row.verification_code,
-    verified_at: row.verified_at,
+    verified_at: row.verification_code_at || row.verified_at,
   });
   return {
     ok: true,
     code: stored.code,
     code_expired: stored.expired,
+    // Kode bisa tersimpan walau langkah belum "terverifikasi" (pengirim tidak
+    // dikenali). Statusnya tidak boleh tampil seolah kode OpenAI yang sah.
+    code_unverified: Boolean(stored.code) && row.step !== 'terverifikasi',
     verification_message_id: row.verification_message_id || '',
     verified_at: row.verified_at || null,
     attempt: normalizeSignupRequest(row),
