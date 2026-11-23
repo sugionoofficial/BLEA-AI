@@ -150,6 +150,11 @@ Yang berubah:
 - Kolom DB `chatgpt_signup_attempts.verification_code` (migrasi
   `20261213000002_chatgpt_signup_verification_code.sql`). Isinya **bukan**
   kredensial login — hanya bukti sekali pakai dari inbox milik admin sendiri.
+- Aksi `{action:'code', id}` mengembalikan kode yang **sudah tersimpan** tanpa
+  memanggil Gmail/mail.tm lagi. Panel memakainya saat dibuka atau dimuat ulang;
+  tanpa ini kode hanya terlihat tepat setelah tombol verify ditekan, dan satu-
+  satunya jalan adalah menekan verify lagi (memanggil Gmail ulang sekaligus
+  me-reset `verified_at`).
 
 Kalau panel menampilkan pesan cocok tetapi kodenya kosong, buka pesan itu di
 TempMail dan salin kodenya manual; jangan mengarang kode dari potongan yang

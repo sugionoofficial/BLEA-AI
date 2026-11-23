@@ -262,6 +262,29 @@ async function confirmAttempt(env, userId, input) {
   };
 }
 
+/**
+ * Ambil kode verifikasi yang SUDAH tersimpan tanpa memanggil inbox lagi.
+ *
+ * Kenapa perlu: kode hanya sampai ke browser saat tombol verify ditekan.
+ * Setelah halaman dimuat ulang, DB menyimpan kodenya tetapi UI buta, sehingga
+ * satu-satunya jalan adalah menekan "Cari email verifikasi" lagi — dan itu
+ * memanggil Gmail ulang serta me-reset `verified_at` demi data yang sudah ada.
+ */
+async function readStoredCode(env, userId, input) {
+  const row = await readAttempt(env, userId, input.id);
+  const code = String(row.verification_code || '').trim();
+  return {
+    ok: true,
+    code,
+    verification_message_id: row.verification_message_id || '',
+    verified_at: row.verified_at || null,
+    attempt: normalizeSignupRequest(row),
+    hint: code
+      ? 'Kode tersimpan ini sekali pakai. Kalau sudah kedaluwarsa, minta kode baru di ChatGPT lalu tekan "Cari email verifikasi" lagi.'
+      : 'Belum ada kode tersimpan untuk permintaan ini.',
+  };
+}
+
 export async function handleChatgptSignup(request, env, user, { listInbox, readMessage } = {}) {
   if (!user) return { status: 401, body: { error: 'Login diperlukan.' } };
   if (user.app_metadata?.role !== 'admin') {
@@ -292,6 +315,7 @@ export async function handleChatgptSignup(request, env, user, { listInbox, readM
       return { status: 200, body: result };
     }
     if (action === 'verify') return { status: 200, body: await verifyAttempt(env, user.id, body, listInbox, readMessage) };
+    if (action === 'code') return { status: 200, body: await readStoredCode(env, user.id, body) };
     return { status: 400, body: { error: 'Aksi pendaftaran tidak dikenal.' } };
   } catch (error) {
     return { status: Number(error?.status) || 500, body: { error: String(error?.message || 'Pendaftaran ChatGPT gagal diproses.') } };

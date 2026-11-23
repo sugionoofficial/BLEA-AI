@@ -82,6 +82,21 @@ export function ChatGptSignupPanel({ onVerified }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Kode yang tersimpan hanya diketahui setelah tombol verify ditekan, jadi
+  // saat panel dibuka/dimuat ulang kodenya dibaca ulang dari server. Kalau
+  // gagal, panel tetap jalan tanpa kode — tidak perlu mengganggu pengguna
+  // dengan error hanya karena ini.
+  useEffect(() => {
+    if (!activeId) { setVerificationCode(''); return; }
+    let cancelled = false;
+    (async () => {
+      const res = await chatGptSignupApi.code(activeId);
+      if (cancelled || !res.ok) return;
+      setVerificationCode(String(res.data?.code || ''));
+    })();
+    return () => { cancelled = true; };
+  }, [activeId]);
+
   // Bookmarklet dibangun di klien supaya selalu memakai email yang sedang
   // tertulis di kolom — bukan nilai lama dari server.
   useEffect(() => {
