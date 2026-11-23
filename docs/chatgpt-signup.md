@@ -11,46 +11,44 @@ Fitur ini ada di **Studio → Akun ChatGPT** (`/studio/chatgpt-accounts`), panel
 | Tabel jejak | `supabase/migrations/20261213000000_chatgpt_signup_attempts.sql` |
 | Uji | `tests/chatgpt-signup.test.js` |
 
-## Yang tidak dikerjakan, dan alasannya
+## Kesalahan yang sudah diperbaiki: URL endpoint POST dibuka dengan GET
 
-Permintaan awal: tiru `POST https://chatgpt.com/api/auth/signin/openai` dari
-server memakai email TempMail. Itu **tidak** diimplementasikan. Tiga alasan
-teknis, bukan alasan kebijakan semata:
+Versi pertama fitur ini membuka
+`https://chatgpt.com/api/auth/signin/openai?prompt=login&screen_hint=signup&login_hint=…`
+di tab browser. Hasilnya selalu halaman:
+
+> **Kami tidak dapat memproses upaya masuk Anda. Coba lagi**
+
+Sebabnya bukan captcha dan bukan jaringan: `/api/auth/signin/openai` adalah
+**endpoint POST NextAuth**, bukan halaman. Kontraknya (terlihat pada SDK ChatGPT
+yang memakai `GET /api/auth/csrf` lalu `POST {provider}?prompt=login` dengan
+`callbackUrl` + `csrfToken`):
+
+| Langkah | Request | Hasil |
+|---|---|---|
+| 1 | `GET /api/auth/csrf` | `{ csrfToken }` + cookie `__Host-next-auth.csrf-token` |
+| 2 | `POST /api/auth/signin/openai` (form: `csrfToken`, `callbackUrl`, `login_hint`) | 302 ke `auth.openai.com/…` |
+
+Tanpa langkah 1, langkah 2 selalu gagal — itulah pesan error di atas. Jadi
+membuka URL itu dengan navigasi biasa (GET) **tidak akan pernah** sampai ke
+formulir daftar, dan email TempMail tidak pernah terkirim.
+
+Sekarang `buildSignupUrl` mengembalikan **halaman** `https://chatgpt.com/auth/login`
+(bisa dibuka dengan GET), tetap membawa `login_hint` = email TempMail.
+
+## Kenapa server tetap tidak mem-POST endpoint itu
 
 1. **Diblokir di runtime.** Cloudflare Workerd menolak permintaan keluar ke
-   domain OpenAI (`chatgpt.com`, `api.openai.com`) — alasan yang sama dengan
-   catatan pool akun di `src/lib/chatgptPool.js`. POST dari Worker akan gagal
-   sebelum sampai ke OpenAI.
-2. **Butuh konteks browser.** Endpoint itu memakai cookie sesi `chatgpt.com`,
-   token CSRF dari halaman, dan **Cloudflare Turnstile**. Respons `200 OK` pada
-   contoh request di laporan hanya berarti *halaman login terbuka*; akun tidak
-   dibuat oleh request itu. Tanpa Turnstile + verifikasi email, tidak ada akun.
-3. **Terms of Use.** Pendaftaran akun otomatis ke OpenAI melanggar ToS mereka
-   dan akun hasilnya biasanya dinonaktifkan. Karena itu `credential_kind`
-   `session` di pool pun sengaja tidak dipanggil ke backend non-publik.
+   `chatgpt.com` / `api.openai.com`.
+2. **Tidak ada cookie browser.** `csrfToken` terikat pada cookie
+   `__Host-next-auth.csrf-token` milik perangkat pengguna; token yang diambil
+   server untuk dirinya sendiri tidak sah untuk browser pengguna.
+3. **Turnstile + Terms of Use.** Pendaftaran otomatis ditahan captcha dan
+   melanggar ToS OpenAI.
 
-`GET /api/chatgpt-signup` mengembalikan `config.supported.server_side_post =
-false` beserta alasannya, jadi UI tidak pernah menampilkan tombol yang
+`GET /api/chatgpt-signup` karena itu mengembalikan `supported.server_side_post =
+false`, `csrf_url`, dan langkah manualnya (`signin`) — bukan tombol yang
 diam-diam gagal.
-
-## Yang benar-benar dilakukan
-
-1. **Siapkan URL daftar resmi.** `buildSignupUrl(email)` membentuk
-   `https://chatgpt.com/api/auth/signin/openai?prompt=login&screen_hint=signup&login_hint=<email>`
-   (plus `auth_session_logging_id` bila klien mengirim UUID). Email diambil dari
-   halaman TempMail (`tempmail_user_aliases`), bukan diketik ulang.
-2. **Catat langkah manual.** `POST /api/chatgpt-signup { action: "prepare" }`
-   menyimpan satu baris per (admin, email) berisi email, URL, dan langkah
-   `dibuka → email_dikirim → menunggu_verifikasi → terverifikasi | dilewati`.
-   Mengulang alamat yang sama memperbarui baris, bukan menumpuk riwayat.
-3. **Cocokkan email verifikasi.** `{ action: "verify" }` membaca inbox TempMail
-   (mail.tm atau Gmail alias, dengan pemeriksaan pemilik alias yang sama seperti
-   `/api/tempmail`) dan memberi skor tiap pesan: pengirim OpenAI/ChatGPT, kata
-   kunci verifikasi/kode, penerima cocok, dan waktu diterima setelah
-   pendaftaran dimulai. Pesan dengan skor ≥ 50 ditandai cocok.
-
-Yang disimpan hanya email, URL, dan langkah. Tidak ada kata sandi, kode
-verifikasi, isi email, atau cookie sesi `chatgpt.com`.
 
 ## Alur pemakaian
 
@@ -58,17 +56,26 @@ verifikasi, isi email, atau cookie sesi `chatgpt.com`.
    lalu menyalin alamat aktif.
 2. Buka **Studio → Akun ChatGPT**, panel *Daftar ChatGPT dengan email TempMail*.
    Kolom email sudah terisi otomatis dari alias aktif.
-3. Tekan **Siapkan & buka daftar** → tab baru berisi formulir daftar ChatGPT
-   dengan email tersebut. Tab dibuka *sebelum* permintaan ke server, karena
-   `window.open` setelah `await` diblokir popup blocker. Bila browser tetap
-   memblokir, panel menampilkan tautan **Buka di tab baru** di blok
-   "URL yang dibuka".
-4. Isi formulir di tab itu, lalu kembali dan tekan **Formulir sudah dikirim**.
+3. Tekan **Siapkan & buka daftar** → tab baru membuka halaman
+   `chatgpt.com/auth/login` dengan email TempMail sebagai `login_hint`. Tab
+   dibuka *sebelum* permintaan ke server karena `window.open` setelah `await`
+   diblokir popup blocker; bila tetap diblokir, pakai tautan **Buka di tab baru**.
+4. Di tab itu ketik/konfirmasi email TempMail, tekan **Lanjutkan**, lalu salin
+   URL halaman berikutnya dan tempel di panel → **Periksa URL**.
+   - URL halaman error (`/auth/error`, `error=…`) ditolak dengan alasan jelas.
+   - URL di luar domain OpenAI ditolak.
+   - Langkah baru ditandai `email_dikirim` bila email TempMail benar-benar
+     terlihat di URL. Tidak ada klaim "berhasil" tanpa bukti.
 5. Tunggu email OpenAI masuk; tekan **Cari email verifikasi**. Panel menampilkan
    pesan yang cocok beserta skornya. Buka pesan itu di TempMail dan klik
    tautan verifikasinya sendiri.
 6. Akun yang sudah jadi dimasukkan ke pool lewat **Continue with ChatGPT**
    (OAuth resmi) atau **Tambah akun manual** (API key).
+
+Kalau halaman login tetap menampilkan error, buka panel *"Email tidak terbawa /
+halaman error?"*: di sana ada langkah mengambil `csrfToken` sendiri
+(`GET /api/auth/csrf`) dan formulir `POST` yang sah. Token itu diambil browser
+pada saat itu juga — BLEA tidak pernah menyimpan atau mengirimkannya.
 
 ## Catatan operasional
 

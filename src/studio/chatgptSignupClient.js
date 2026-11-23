@@ -35,6 +35,8 @@ export const chatGptSignupApi = {
   }),
   mark: (id, step, note = '') => request('/chatgpt-signup', { method: 'POST', body: { action: 'mark', id, step, note } }),
   verify: (id) => request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id } }),
+  // Bukti langkah: URL setelah pengguna menekan "Lanjutkan" di halaman ChatGPT.
+  confirm: (id, url) => request('/chatgpt-signup', { method: 'POST', body: { action: 'confirm', id, url } }),
 };
 
 /** UUID acak untuk `auth_session_logging_id` (parameter yang sama seperti di browser ChatGPT). */
