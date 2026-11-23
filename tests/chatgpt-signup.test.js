@@ -781,3 +781,56 @@ test('verify tidak membaca isi email lama sebelum pendaftaran dimulai', async ()
     globalThis.fetch = oldFetch;
   }
 });
+
+// Baris dipakai ulang per alamat (upsert), jadi created_at bisa berhari-hari
+// lalu. Patokan jendela harus ikut langkah terakhir, bukan hanya created_at.
+test('verify tetap membaca email baru pada baris yang dibuat beberapa hari lalu', async () => {
+  const oldFetch = globalThis.fetch;
+  const now = Date.now();
+  const attempt = {
+    id: '99999999-9999-4999-8999-999999999999',
+    user_id: 'admin-1',
+    email: 'kotak@mail.tm',
+    step: 'menunggu_verifikasi',
+    signup_url: '',
+    note: '',
+    verification_message_id: '',
+    verification_code: '',
+    verification_code_at: null,
+    verified_at: null,
+    created_at: new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString(),
+    updated_at: new Date(now - 2 * 60 * 1000).toISOString(),
+  };
+  const receivedAt = new Date(now - 60 * 1000).toISOString();
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      if ((init.method || 'GET') === 'PATCH') return Response.json([attempt]);
+      return Response.json([attempt]);
+    }
+    if (target.includes('api.mail.tm/messages/msg-baru')) {
+      return Response.json({ id: 'msg-baru', subject: 'Verifikasi email Anda', from: { address: 'noreply@tm.openai.com' }, text: 'Kode verifikasi: 908172', createdAt: receivedAt });
+    }
+    if (target.includes('api.mail.tm/messages')) {
+      return Response.json({ 'hydra:member': [{
+        id: 'msg-baru',
+        subject: 'Verifikasi email Anda',
+        from: { address: 'noreply@tm.openai.com' },
+        to: [{ address: 'kotak@mail.tm' }],
+        intro: 'Kode verifikasi dikirim',
+        createdAt: receivedAt,
+      }] });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const body = await res.json();
+    assert.equal(body.code, '908172');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
