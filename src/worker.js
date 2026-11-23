@@ -82,7 +82,15 @@ import {
   testChatGptAccount,
   updateChatGptAccount,
 } from './lib/chatgptPool.js';
-import { agentToolsForStudioTool, toolCapabilityViolation } from './lib/toolCapabilities.js';
+import { agentToolsForStudioTool, capabilityForApiPath, toolCapabilityViolation } from './lib/toolCapabilities.js';
+import { studioModelItems } from './lib/openaiModels.js';
+import {
+  generateStudioImage,
+  generateStudioVideo,
+  recordStudioText,
+  studioMediaConfig,
+  studioVideoStatus,
+} from './lib/studioGenerations.js';
 import { handleAgentTurn } from './agent/agentRoute.js';
 import { handleTranscribe } from './agent/transcribeRoute.js';
 import { buildAgentSystemPrompt } from './agent/prompts.js';
@@ -1287,6 +1295,8 @@ function createChatSseResponse({
   env,
   conversationId,
   userId,
+  studioTool = '',
+  prompt = '',
 }) {
   const stream = new ReadableStream({
     async start(controller) {
@@ -1340,6 +1350,16 @@ function createChatSseResponse({
         }
 
         const savedContent = fullReply.trim() || fullReasoning.trim();
+        // Ruang Studio: simpan jawaban ke halaman Hasil & Unduhan.
+        if (savedContent && studioTool) {
+          await recordStudioText(env, userId, {
+            tool: studioTool,
+            model: meta.model || '',
+            prompt: prompt || '',
+            output: savedContent,
+            metadata: { provider: meta.provider || '', room: studioTool },
+          }).catch(() => null);
+        }
         let messageId = '';
         if (savedContent && conversationId) {
           const insertRes = await servicePostgrest(env, '/ai_messages', {
@@ -3459,6 +3479,111 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, supported: false, consoleUrl: CONSOLE_URLS[provider] || '', message: 'Provider ini tidak mengekspos kuota lewat API key; pantau dari konsol provider.' });
     }
 
+    // ---- /studio/image|video: generasi media lewat pool akun ChatGPT ----
+    //
+    // Tidak memotong kredit BLEA: yang berbayar adalah akun OpenAI milik admin,
+    // dan yang dibatasi adalah kuota harian per akun (lihat chatgptPool.js).
+    if ((path === 'studio/image/config' || path === 'studio/video/config') && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401);
+      const kind = path.startsWith('studio/video') ? 'video' : 'image';
+      return jsonResponse({ ok: true, ...(await studioMediaConfig(env, kind)) });
+    }
+
+    if (path === 'studio/image/generate' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401);
+      try {
+        const body = await request.json().catch(() => ({}));
+        return jsonResponse({ ok: true, ...(await generateStudioImage(env, user, body)) });
+      } catch (error) {
+        return jsonResponse({ error: error?.message || 'Generasi gambar gagal.' }, error?.status || 502);
+      }
+    }
+
+    if (path === 'studio/video/generate' && method === 'POST') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401);
+      try {
+        const body = await request.json().catch(() => ({}));
+        return jsonResponse({ ok: true, ...(await generateStudioVideo(env, user, body)) });
+      } catch (error) {
+        return jsonResponse({ error: error?.message || 'Generasi video gagal.' }, error?.status || 502);
+      }
+    }
+
+    if (path === 'studio/video/status' && (method === 'POST' || method === 'GET')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401);
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const id = String(body.id || url.searchParams.get('id') || '');
+      try {
+        return jsonResponse({ ok: true, ...(await studioVideoStatus(env, user, id)) });
+      } catch (error) {
+        return jsonResponse({ error: error?.message || 'Status video tidak tersedia.' }, error?.status || 500);
+      }
+    }
+
+    // ---- /studio/models: model ChatGPT untuk Studio ----
+    //
+    // Sengaja TERPISAH dari /api/enabled-models. Studio memakai model ChatGPT
+    // (pool akun manual di /studio/chatgpt-accounts), bukan katalog provider
+    // yang terdaftar di Admin Panel. `ready` hanya true bila ada minimal satu
+    // akun API key yang siap, supaya UI bisa jujur soal keadaan koneksi.
+    if ((path === 'studio/models' || path === 'studio/ping') && (method === 'GET' || method === 'POST')) {
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401, { 'cache-control': 'no-store' });
+      const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+      const capability = String(body.capability || url.searchParams.get('capability') || 'chat').toLowerCase();
+      const summary = await chatGptPoolSummary(env);
+      const ready = summary.usable > 0;
+      const models = studioModelItems([capability, 'chat'], env);
+      const payload = {
+        ok: true,
+        ready,
+        provider: 'openai',
+        capability,
+        models,
+        modelItems: models,
+        pool: summary,
+        source: 'pool akun ChatGPT manual (/studio/chatgpt-accounts)',
+        ...(ready ? {} : {
+          hint: 'Belum ada akun ChatGPT yang siap. Admin perlu menambahkan API key resmi di Studio → Akun ChatGPT.',
+        }),
+      };
+      if (path === 'studio/ping') {
+        // Ping ringan: panggil endpoint resmi termurah (/v1/models) memakai akun
+        // pertama yang siap, tanpa menaikkan kuota harian akun.
+        const picked = await pickChatGptAccountsFor(env, { capability: 'chat', limit: 1 });
+        if (!picked.length) return jsonResponse({ ...payload, ok: false, ping: { ok: false, message: 'Tidak ada akun pool yang siap dipakai.' } });
+        const account = picked[0];
+        let ping;
+        try {
+          const res = await fetch(`${account.apiBase}/v1/models`, {
+            method: 'GET',
+            headers: { authorization: `Bearer ${account.apiKey}`, accept: 'application/json' },
+            signal: AbortSignal.timeout(12_000),
+          });
+          await res.body?.cancel?.().catch?.(() => {});
+          ping = {
+            ok: res.ok,
+            status: res.status,
+            account: account.accountLabel || account.accountEmail || account.id.slice(0, 8),
+            message: res.ok ? 'Model ChatGPT bisa dihubungi.' : `API menolak kunci (HTTP ${res.status}).`,
+          };
+        } catch (error) {
+          ping = { ok: false, status: 0, account: account.accountLabel || '', message: String(error?.message || error).slice(0, 200) };
+        }
+        return jsonResponse({ ...payload, ok: ping.ok, ping }, ping.ok ? 200 : 502);
+      }
+      return jsonResponse(payload);
+    }
+
     // ---- /models & /enabled-models: active models for Chat AI ----
     if ((path === 'models' || path === 'enabled-models') && (method === 'GET' || method === 'POST')) {
       const res = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc');
@@ -4387,12 +4512,13 @@ async function handleApi(request, url, env) {
         const rows = await res.json().catch(() => []);
         return Array.isArray(rows) ? rows : [];
       };
-      const [imageRows, videoRows, musicRows, metadataRows, conversationRows] = await Promise.all([
+      const [imageRows, videoRows, musicRows, metadataRows, conversationRows, studioRows] = await Promise.all([
         wanted('image') ? readRows2(`/image_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
         wanted('video') ? readRows2(`/video_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
         wanted('music') ? readRows2(`/music_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
         wanted('metadata') ? readRows2(`/metadata_jobs?select=*&${uid}&order=created_at.desc&limit=${limit}`) : [],
         wanted('chat') ? readRows2(`/ai_messages?select=id,conversation_id,role,content,created_at&${uid}&role=eq.assistant&order=created_at.desc&limit=${limit}`) : [],
+        readRows2(`/studio_generations?select=*&${uid}&order=created_at.desc&limit=${limit}`),
       ]);
 
       const items = [];
@@ -4497,11 +4623,41 @@ async function handleApi(request, url, env) {
         });
       }
 
+      // Hasil dari pool akun ChatGPT (gambar/video/teks Studio).
+      const STUDIO_TOOL_LABEL = { chat: 'Chat & Tulis', agent: 'Agen Otonom', image: 'Buat Gambar', video: 'Buat Video', audio: 'Audio', library: 'Hasil' };
+      for (const row of studioRows) {
+        if (!wanted(row.kind === 'text' ? (row.tool === 'agent' ? 'agent' : 'chat') : row.kind)) continue;
+        const isText = row.kind === 'text';
+        items.push({
+          id: `studio:${row.id}`,
+          tool: row.tool || 'chat',
+          tool_label: STUDIO_TOOL_LABEL[row.tool] || 'Studio',
+          title: (isText ? String(row.output_text || '').replace(/\s+/g, ' ').slice(0, 90) : row.prompt) || 'Hasil Studio',
+          text: isText ? String(row.output_text || '') : String(row.prompt || ''),
+          status: row.status,
+          media_kind: row.kind === 'text' ? 'text' : row.kind,
+          preview_url: row.status === 'completed' ? String(row.media_url || '') : '',
+          download_url: row.status === 'completed' ? String(row.download_url || row.media_url || '') : '',
+          extra_downloads: [],
+          created_at: row.created_at,
+          credits: 0,
+          error: row.error_message || null,
+          model: row.model || '',
+        });
+      }
+
       items.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
       return jsonResponse({
         ok: true,
         items: items.slice(0, limit * 2),
-        counts: { image: imageRows.length, video: videoRows.length, music: musicRows.length, metadata: metadataRows.length, chat: conversationRows.length },
+        counts: {
+          image: imageRows.length,
+          video: videoRows.length,
+          music: musicRows.length,
+          metadata: metadataRows.length,
+          chat: conversationRows.length,
+          agent: studioRows.filter((row) => row.tool === 'agent').length,
+        },
       });
     }
 
@@ -5099,6 +5255,23 @@ async function handleApi(request, url, env) {
         webSearch,
         sendChatCompletionRequest,
         chatUpstreamTimeoutMs,
+        // Studio memakai model ChatGPT (pool akun manual). Ruang lain tetap
+        // memakai katalog provider seperti sebelumnya.
+        assertStudioProvider: (provider, model) => {
+          if (!studioTool) return null;
+          if (provider === 'openai') return null;
+          return {
+            code: 'studio_provider_mismatch',
+            message: `Ruang "${studioTool}" hanya memakai model ChatGPT (openai), bukan "${provider}" (${model}).`,
+          };
+        },
+        recordTurnText: async (payload) => (studioTool
+          ? recordStudioText(env, user.id, { ...payload, metadata: { room: studioTool } })
+          : null),
+        pickPoolAccounts: (capability = 'agent', options = {}) => pickChatGptAccountsFor(env, {
+          capability,
+          limit: Number(options?.limit) || 4,
+        }),
         buildFallbackCandidates: ({ primaryProvider, primaryModel, keyByProvider }) => buildChatFallbackCandidates({
           primaryProvider,
           primaryModel,
@@ -5391,6 +5564,8 @@ async function handleApi(request, url, env) {
               env,
               conversationId: body.conversationId,
               userId: user.id,
+              studioTool: studioToolHeader(request),
+              prompt: latestUserQuery(incomingMessages),
             });
           }
 
@@ -5634,6 +5809,18 @@ async function handleApi(request, url, env) {
           }
         }
         const reply = finalReply;
+        // Hasil chat dari ruang Studio ikut dicatat supaya muncul di halaman
+        // Hasil & Unduhan bersama output tool lain.
+        const studioToolForRecord = studioToolHeader(request);
+        if (reply && studioToolForRecord) {
+          await recordStudioText(env, user.id, {
+            tool: studioToolForRecord,
+            model: activeModel,
+            prompt: latestUserQuery(incomingMessages),
+            output: reply,
+            metadata: { provider: activeProvider, room: studioToolForRecord },
+          }).catch(() => null);
+        }
         const insertRes = await servicePostgrest(env, '/ai_messages', {
           method: 'POST',
           headers: { Prefer: 'return=representation' },

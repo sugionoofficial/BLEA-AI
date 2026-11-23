@@ -1425,3 +1425,17 @@
   }
 }
 
+
+/* Hasil gambar dari pool akun ChatGPT (ruang /studio/image). */
+.generate-studio-result {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start;
+  margin: 0 0 14px; padding: 12px; border-radius: 16px;
+  border: 1px solid var(--border, #26262b); background: var(--surface-2, #141416);
+}
+.generate-studio-result img {
+  width: 100%; max-width: 260px; border-radius: 12px; display: block;
+}
+.generate-studio-result-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.generate-studio-result-meta small { opacity: .72; }
+.generate-studio-result-meta a { color: var(--primary, #8b8bff); font-weight: 600; text-decoration: none; }
+.generate-studio-result-meta a:hover { text-decoration: underline; }

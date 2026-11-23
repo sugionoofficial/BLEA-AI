@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, ArrowUpRight, Check, ChevronDown, Copy, Cpu, Globe, Github, History, MessageSquarePlus, Network, Paperclip, Plus, RefreshCw, Send, Slack, Sparkles, Square, Trash2, WandSparkles, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { chatCompletionStream, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus } from '../api/unorouter';
+import { fetchStudioModels } from '../studio/studioClient';
 import { splitThinkingContent, thinkingStageLabel } from '../lib/chatStream';
 import { useAuth } from './AuthProvider';
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, UPLOAD_ACCEPT, formatBytes, oversizeMessage, partitionBySize, uploadAttachments } from '../lib/uploads';
@@ -276,6 +277,14 @@ export function AIStudio() {
   const [enabledModels, setEnabledModels] = useState([]);
   const [modelItems, setModelItems] = useState([]);
   const [selectedModel, setSelectedModel] = useState('gpt-oss-120b:free');
+  // Ruang Studio memakai model ChatGPT (pool akun manual), BUKAN katalog
+  // provider yang terdaftar di Admin Panel. Di luar /studio/* perilakunya tetap
+  // seperti sebelumnya supaya halaman lain tidak ikut berubah.
+  const [studioMode] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return /^\/studio(\/|$)/.test(window.location.pathname || '');
+  });
+  const [studioPool, setStudioPool] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -408,6 +417,32 @@ export function AIStudio() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Studio: model ChatGPT dari pool akun manual + status kesiapan pool.
+  useEffect(() => {
+    if (!studioMode) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchStudioModels({ capability: 'chat' });
+        if (cancelled) return;
+        const items = Array.isArray(res?.data?.modelItems) ? res.data.modelItems : [];
+        setStudioPool({ ready: Boolean(res?.data?.ready), pool: res?.data?.pool || null, hint: res?.data?.hint || '' });
+        if (items.length) {
+          setModelItems(items);
+          setEnabledModels(items.map((item) => item.id));
+          setModels([]);
+          setSelectedModel((current) => (items.some((item) => item.id === current) ? current : items[0].id));
+          setProviderStatus({ configured: Boolean(res?.data?.ready) });
+        } else {
+          setProviderStatus({ configured: false });
+        }
+      } catch {
+        if (!cancelled) setProviderStatus({ configured: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [studioMode]);
 
   useEffect(() => {
     if (retryCountdown <= 0) return undefined;
@@ -559,8 +594,10 @@ export function AIStudio() {
 
   const resolveProviderForModel = useCallback((modelId) => {
     const found = modelItems.find((item) => item.id === modelId);
-    return found?.provider || 'unorouter';
-  }, [modelItems]);
+    // Di Studio, model apa pun berasal dari pool ChatGPT, jadi provider
+    // default-nya 'openai' — bukan 'unorouter'.
+    return found?.provider || (studioMode ? 'openai' : 'unorouter');
+  }, [modelItems, studioMode]);
 
   function stopGeneration() {
     abortControllerRef.current?.abort();
@@ -1050,7 +1087,15 @@ export function AIStudio() {
               );
             })()}<div ref={endOfMessages} /></div>}
           </div>
-          {activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={13} /><span>Mode pratinjau — provider AI belum terhubung.</span></div>}
+          {studioMode && studioPool && !studioPool.ready && (
+            <div className="studio-not-connected">
+              <Sparkles size={13} />
+              <span>
+                Pool akun ChatGPT belum siap — {studioPool.hint || 'admin perlu menambahkan akun di Studio → Akun ChatGPT.'}
+              </span>
+            </div>
+          )}
+          {!studioMode && activeConversation && messages.length > 0 && !providerStatus?.configured && <div className="studio-not-connected"><Sparkles size={13} /><span>Mode pratinjau — provider AI belum terhubung.</span></div>}
           {fallbackNotice && <div className="studio-fallback-notice" role="status"><Sparkles size={13} /><span>{fallbackNotice}</span><button type="button" onClick={() => setFallbackNotice('')} aria-label="Tutup pemberitahuan"><X size={13} /></button></div>}
           {error && (
             <div className="studio-error" role="alert">

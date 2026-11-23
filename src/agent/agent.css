@@ -387,3 +387,10 @@
   .agent-spin { animation: none; }
   .agent-thread { scroll-behavior: auto; }
 }
+
+/* Sumber model di ruang agen Studio (ChatGPT / pool akun). */
+.agent-model-source {
+  margin-left: 6px; padding: 1px 7px; border-radius: 99px;
+  border: 1px solid var(--border, #2a2a30);
+  font-size: 9.5px; font-style: normal; opacity: .8;
+}

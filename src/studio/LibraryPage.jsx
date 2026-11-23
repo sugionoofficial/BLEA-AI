@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FolderDown,
   Image as ImageIcon,
+  Bot,
   Loader2,
   MessageSquare,
   Music,
@@ -29,6 +30,7 @@ const TABS = [
   { id: 'video', label: 'Video', icon: Video },
   { id: 'music', label: 'Musik', icon: Music },
   { id: 'chat', label: 'Chat', icon: MessageSquare },
+  { id: 'agent', label: 'Agen', icon: Bot },
   { id: 'metadata', label: 'Metadata', icon: Scissors },
 ];
 
@@ -54,6 +56,7 @@ function fileExtension(item) {
   if (item.media_kind === 'image') return 'png';
   if (item.media_kind === 'video') return 'mp4';
   if (item.media_kind === 'audio') return 'mp3';
+  if (item.media_kind === 'text') return 'txt';
   if (item.tool === 'metadata') return '';
   return 'txt';
 }

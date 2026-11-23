@@ -69,6 +69,21 @@ export async function handleAgentTurn(request, url, env, deps) {
   const requestedModel = String(body.model || '').trim();
   if (!requestedModel) return Response.json({ error: 'Model belum dipilih' }, { status: 400 });
 
+  // Isolasi provider per ruang: kalau klien menyatakan ruang Studio-nya, model
+  // hanya boleh berasal dari provider yang diizinkan ruang itu. Ruang agen di
+  // Studio memakai ChatGPT (openai); ruang lain memakai katalog lama.
+  if (typeof deps.assertStudioProvider === 'function') {
+    const violation = deps.assertStudioProvider(provider, requestedModel);
+    if (violation) return Response.json({ error: violation.message, code: violation.code }, { status: 400 });
+  }
+
+  const latestPrompt = (() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'user') return messages[i].content.slice(0, 4000);
+    }
+    return '';
+  })();
+
   const pinnedSkill = String(body.skill || '').trim();
   const pinnedResource = String(body.resource || '').trim();
   const blueprint = typeof body.blueprint === 'string' ? body.blueprint.slice(0, 4_000) : '';
@@ -92,6 +107,15 @@ export async function handleAgentTurn(request, url, env, deps) {
   const keyRow = keyByProvider.get(provider);
   let apiKey = keyRow?.api_key || (provider === 'unorouter' && requestedModel.endsWith(':free') ? 'use-free' : '');
   if (provider === 'cloudflare' && !apiKey && deps.hasWorkersAiBinding(env)) apiKey = 'binding:AI';
+  // Pool akun ChatGPT manual: satu giliran agen diambil dari akun yang paling
+  // siap, dan akun berikutnya dipakai bila akun itu menolak (401/402/403/429).
+  const poolCandidates = provider === 'openai' && typeof deps.pickPoolAccounts === 'function'
+    ? await deps.pickPoolAccounts('agent', { limit: 4 })
+    : [];
+  if (!apiKey && poolCandidates.length) {
+    apiKey = poolCandidates[0].apiKey;
+    keyByProvider.set('openai', { provider: 'openai', api_key: apiKey, base_url: `${poolCandidates[0].apiBase}/v1` });
+  }
   if (!apiKey) return Response.json({ error: `API key untuk provider "${provider}" belum dikonfigurasi.` }, { status: 400 });
 
   // Only a page-pinned skill loads up front; everything else arrives through
@@ -323,6 +347,10 @@ export async function handleAgentTurn(request, url, env, deps) {
           finalReply = 'Batas alat untuk giliran ini sudah habis dan jawaban final belum terbentuk. Lihat panel langkah untuk hasil alat terakhir, lalu persempit permintaan.';
         }
 
+        // Simpan jawaban agen ke halaman Hasil bila giliran datang dari Studio.
+        if (typeof deps.recordTurnText === 'function' && finalReply) {
+          await deps.recordTurnText({ tool: 'agent', model: activeModel, prompt: latestPrompt, output: finalReply, actions }).catch(() => null);
+        }
         emit({ type: 'delta', text: finalReply });
         emit({
           type: 'done',
