@@ -495,3 +495,41 @@ test('/api/chatgpt-signup verify membaca isi email dan mengembalikan kode', asyn
     globalThis.fetch = oldFetch;
   }
 });
+
+// Regresi: setelah alur kode masuk, tidak boleh ada lagi teks yang mengirim
+// pengguna mencari tautan verifikasi. OpenAI mengirim KODE.
+test('tidak ada lagi instruksi "klik tautan" verifikasi di panel/konfigurasi', async () => {
+  const { readFileSync } = await import('node:fs');
+  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
+  // Komentar boleh menyebut istilah lama untuk menjelaskan sejarah; yang
+  // dilarang adalah teks yang dilihat pengguna.
+  const visible = (source) => source
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+    .join('\n');
+  for (const [name, source] of [['panel', panel], ['lib', lib]]) {
+    const text = visible(source);
+    assert.ok(!/klik tautan/iu.test(text), `${name}: instruksi "klik tautan" verifikasi tidak boleh kembali`);
+    assert.ok(!/verifikasi (email )?tetap diklik/iu.test(text), `${name}: klaim "verifikasi diklik" sudah tidak benar`);
+  }
+  // Panel wajib menyediakan kode + aksi salin.
+  assert.match(panel, /cga-signup-code-value/);
+  assert.ok(/Salin kode/.test(panel));
+});
+
+// Kasus Gmail: pesan verifikasi OpenAI nyata yang memuat kode di tengah HTML.
+test('kode tetap terbaca dari HTML email yang berantakan', () => {
+  const { extractVerificationCode } = globalThis.__signup;
+  const html = '<div style="font-family:Arial"><p>Halo,</p><p>Masukkan kode ini untuk memverifikasi email Anda:</p>'
+    + '<h1>604 217</h1><p>Kode ini berlaku 10 menit.</p><p>&copy; 2026 OpenAI</p></div>';
+  // Kode ditulis berkelompok dengan spasi; kata "kode" di dekatnya membuatnya sah.
+  assert.equal(extractVerificationCode({ subject: 'Verifikasi email Anda', bodyHtml: html }).code, '604217');
+  // Tanpa kata kunci, bentuk berspasi tidak ditebak.
+  assert.equal(extractVerificationCode({ bodyHtml: '<p>604 217</p>' }).code, '');
+});
+
+test('kode di subjek email tetap ditemukan', () => {
+  const { extractVerificationCode } = globalThis.__signup;
+  assert.equal(extractVerificationCode({ subject: 'Your OpenAI verification code: 552310', bodyText: '' }).code, '552310');
+});

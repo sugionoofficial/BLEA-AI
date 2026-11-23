@@ -136,8 +136,11 @@ Yang berubah:
 
 - `extractVerificationCode()` di `src/lib/chatgptSignup.js` menarik kode dari
   **isi lengkap** pesan (teks + HTML), karena snippet inbox sering memotongnya.
-  Aturannya konservatif: utamakan 6–8 digit, dukung bentuk `483-920`, abaikan
-  tahun (`2026`), nominal/harga, dan deret yang menempel pada angka/huruf lain.
+  Aturannya konservatif: utamakan 6–8 digit, dukung bentuk berkelompok
+  (`483-920`, `604 217` — bentuk berspasi hanya diterima bila ada kata kunci di
+  dekatnya), baca juga subjek karena sebagian email menaruh kodenya di sana,
+  lalu abaikan tahun (`2026`), nominal/harga, dan deret yang menempel pada
+  angka/huruf lain.
   Bila ada beberapa kandidat tanpa kata kunci di sekitarnya, hasilnya kosong —
   lebih baik kosong daripada salah tempel.
 - Rute `verify` membaca sampai 3 pesan teratas lewat `tempmailMessageReader`
