@@ -10,9 +10,10 @@
 // below; `done.reply` is the only text that becomes the assistant message.
 //
 // Events (consumed by src/agent/agentClient.js):
-//   {type:'meta',     model, provider, skills?, fallback?}
+//   {type:'meta',     model, provider, skills?, fallback?, credits?, attachments?}
 //   {type:'step',     index, label, status:'start'|'done'|'error', detail, progress?}
 //   {type:'skill',    id, resource, source}
+//   {type:'clips',    clips, sourceUrl, durationSec}   // rencana klip, menunggu konfirmasi
 //   {type:'delta',    text}
 //   {type:'done',     ok, reply, actions, skills, stopReason, model, provider}
 //   {type:'error',    error, code}
@@ -38,7 +39,8 @@ function isRateLimited(attempt) {
  *   sendChatCompletionRequest, chatUpstreamTimeoutMs, buildFallbackCandidates,
  *   hasWorkersAiBinding, buildSystemPrompt, availableSkillIds,
  *   loadSkillSection, runTool, extractAssistantReply, parseAgentToolCall,
- *   findTool, availableToolNames, describeToolCall, summarizeToolResult.
+ *   findTool, availableToolNames, describeToolCall, summarizeToolResult,
+ *   normalizeAgentAttachments, buildAttachmentContent.
  */
 export async function handleAgentTurn(request, url, env, deps) {
   if (!sameOriginRequest(request, url)) {
@@ -57,6 +59,12 @@ export async function handleAgentTurn(request, url, env, deps) {
     .map((message) => ({ role: message.role, content: message.content.slice(0, 12_000) }));
   if (!messages.length) return Response.json({ error: 'Pesan kosong' }, { status: 400 });
 
+  // Lampiran: klien sudah memvalidasi 100MB, tetapi klien bisa dimanipulasi.
+  // Yang diperiksa di sini hanya batas jumlah dan keaslian URL (bucket BLEA,
+  // milik user ini) — Worker tidak bisa memeriksa ukuran byte tanpa mengunduh.
+  const attachments = deps.normalizeAgentAttachments(body.attachments, user.id);
+  if (attachments.error) return Response.json({ error: attachments.error }, { status: 400 });
+
   const provider = String(body.provider || 'unorouter').trim().toLowerCase();
   const requestedModel = String(body.model || '').trim();
   if (!requestedModel) return Response.json({ error: 'Model belum dipilih' }, { status: 400 });
@@ -64,6 +72,15 @@ export async function handleAgentTurn(request, url, env, deps) {
   const pinnedSkill = String(body.skill || '').trim();
   const pinnedResource = String(body.resource || '').trim();
   const blueprint = typeof body.blueprint === 'string' ? body.blueprint.slice(0, 4_000) : '';
+  // Digest analisis video dari browser (lihat src/lib/videoAnalysis.js). Ini
+  // data yang dikirim klien, jadi diperlakukan sebagai input tak tepercaya:
+  // hanya dipakai sebagai konteks teks, tidak pernah sebagai perintah.
+  const videoAnalysis = deps.normalizeVideoAnalysis(body.videoAnalysis);
+  // Transkrip ASR opsional dari klien. Diperlakukan sama seperti analisis:
+  // data tak tepercaya yang hanya masuk sebagai konteks teks.
+  const videoTranscript = deps.normalizeVideoTranscript
+    ? deps.normalizeVideoTranscript(body.videoTranscript)
+    : { text: '', segmentCount: 0 };
 
   // Provider credentials, resolved once (failover may swap the model, never the
   // provider list).
@@ -120,16 +137,26 @@ export async function handleAgentTurn(request, url, env, deps) {
     if (charged > 0) await deps.refundCredits(env, user.id, charged, chargeId, 'Refund agen: giliran gagal');
   };
 
+  // Lampiran hanya menempel pada pesan pengguna terakhir: mengulanginya di
+  // setiap giliran akan menggandakan biaya token untuk gambar yang sama.
+  const withAttachments = attachments.items.length
+    ? messages.map((message, index) => (
+      index === messages.length - 1 && message.role === 'user'
+        ? { role: 'user', content: deps.buildAttachmentContent(message.content, attachments.items) }
+        : message
+    ))
+    : messages;
+
   const turnMessages = [
     {
       role: 'system',
       content: deps.buildSystemPrompt({
         skillIds: deps.availableSkillIds,
-        workspace: { blueprint },
+        workspace: { blueprint, videoAnalysis: videoAnalysis.text, videoTranscript: videoTranscript.text },
         pinnedSection,
       }),
     },
-    ...messages,
+    ...withAttachments,
   ];
 
   let activeModel = requestedModel;
@@ -145,7 +172,13 @@ export async function handleAgentTurn(request, url, env, deps) {
       let stopReason = 'final';
 
       try {
-        emit({ type: 'meta', model: activeModel, provider: activeProvider, credits: charged });
+        emit({
+          type: 'meta',
+          model: activeModel,
+          provider: activeProvider,
+          credits: charged,
+          attachments: attachments.items.map((item) => ({ name: item.name, kind: item.kind })),
+        });
         if (pinnedSection) emit({ type: 'skill', id: pinnedSkill, resource: pinnedResource, source: 'anthropics/skills' });
 
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
@@ -254,6 +287,18 @@ export async function handleAgentTurn(request, url, env, deps) {
           const summary = deps.summarizeToolResult(call.name, result, call.arguments);
           actions.push({ tool: call.name, ok, summary });
           emit({ type: 'step', index: round, label: `Menjalankan ${call.name}`, status: ok ? 'done' : 'error', detail: summary });
+
+          if (call.name === 'propose_clips' && ok) {
+            const proposal = deps.normalizeClipProposal(call.arguments, { durationSec: videoAnalysis.durationSec });
+            if (!proposal.error) {
+              emit({
+                type: 'clips',
+                clips: proposal.clips,
+                durationSec: videoAnalysis.durationSec,
+                sourceUrl: attachments.items.find((item) => item.kind === 'video')?.url || '',
+              });
+            }
+          }
 
           if (call.name === 'load_skill' && ok) {
             const skillId = String(call.arguments.skill || '');

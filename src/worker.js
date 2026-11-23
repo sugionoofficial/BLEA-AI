@@ -72,12 +72,18 @@ import {
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import { handleAgentTurn } from './agent/agentRoute.js';
+import { handleTranscribe } from './agent/transcribeRoute.js';
 import { buildAgentSystemPrompt } from './agent/prompts.js';
 import { availableSkills, loadSkillSection } from './agent/skills/loadSkill.js';
 import {
   AGENT_TOOL_DEFINITIONS,
   AGENT_TOOL_NAMES,
+  buildAttachmentContent,
   findAgentTool,
+  normalizeAgentAttachments,
+  normalizeClipProposal,
+  normalizeVideoAnalysis,
+  normalizeVideoTranscript,
   parseAgentToolCall,
   stripAgentToolCalls,
 } from './agent/tools.js';
@@ -4838,6 +4844,10 @@ async function handleApi(request, url, env) {
       });
     }
 
+    if (path === 'agent/transcribe' && method === 'POST') {
+      return handleTranscribe(request, env, { getUser });
+    }
+
     if (path === 'agent' && method === 'POST') {
       return handleAgentTurn(request, url, env, {
         getUser,
@@ -4864,6 +4874,11 @@ async function handleApi(request, url, env) {
         availableToolNames: AGENT_TOOL_NAMES,
         describeToolCall: (name, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.describe(args) || '',
         summarizeToolResult: (name, result, args) => AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.summarize(result, args) || '',
+        normalizeAgentAttachments,
+        normalizeClipProposal,
+        normalizeVideoAnalysis,
+        normalizeVideoTranscript,
+        buildAttachmentContent,
         // Harga giliran opsional (credit_model_prices, modality 'agent_turn').
         chargeCredits: (envRef, userId, amount, description, generationId) => creditRpc(envRef, 'spend_credits', {
           p_user_id: userId,

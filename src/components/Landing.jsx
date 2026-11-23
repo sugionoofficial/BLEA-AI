@@ -16,14 +16,14 @@ const navItems = [
 
 const heroStats = [
   ['10', 'model AI aktif'],
-  ['30MB', 'upload per pesan'],
+  ['100MB', 'upload per pesan'],
   ['500', 'pesan tersimpan'],
   ['0', 'kartu kredit'],
 ];
 
 const stats = [
   ['10', 'Model AI aktif · UnoRouter'],
-  ['30MB', 'Batas upload per pesan'],
+  ['100MB', 'Batas upload per pesan'],
   ['500', 'Pesan tersimpan per percakapan'],
   ['100%', 'Riwayat privat milik akun'],
 ];
@@ -40,7 +40,7 @@ const works = [
 const disciplines = [
   ['01 / AI Studio', 'Chat dengan AI tentang idemu, naskah, atau apa pun. Riwayat tersimpan di akunmu — bukan di cloud yang hilang.', 'Sparkles'],
   ['02 / Generate Video', 'Ubah teks, gambar, video, dan audio menjadi video AI dengan pilihan rasio, resolusi, dan durasi lengkap.', 'Layers3'],
-  ['03 / Upload', 'Kirim foto, video, atau file — PDF, DOCX, ZIP, sampai 30MB per pesan. AI melihat apa yang kamu kirim.', 'Upload'],
+  ['03 / Upload', 'Kirim foto, video, atau file — PDF, DOCX, ZIP, sampai 100MB per pesan. AI melihat apa yang kamu kirim.', 'Upload'],
   ['04 / Riwayat', 'Setiap percakapan dan generasi video tersimpan privat. Hanya kamu yang bisa mengakses di ruang kerjamu.', 'ShieldCheck'],
   ['05 / Model', 'Pilih model AI chat maupun video dari berbagai provider. Ganti model kapan saja sesuai kebutuhan karyamu.', 'Cpu'],
 ];

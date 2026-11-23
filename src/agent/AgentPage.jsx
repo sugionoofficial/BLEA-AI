@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  ArrowUpRight, BookOpen, Check, ChevronDown, CircleAlert, Coins, Copy, Cpu, Globe,
-  ListChecks, Loader2, Send, Sparkles, Square, Trash2, Wrench, X,
+  ArrowUpRight, BookOpen, Check, ChevronDown, CircleAlert, Coins, Copy, Cpu, FileText,
+  Clapperboard, Globe, Image as ImageIcon, ListChecks, Loader2, Music, Paperclip, Send, Sparkles,
+  Square, Trash2, Video, Wrench, X,
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { fetchEnabledModelItems } from '../api/unorouter';
 import { fetchAgentSkills, runAgentTurn } from '../agent/agentClient';
 import { resolveAgentModel } from '../agent/modelRouting';
 import { StudioMessageBody } from '../auth/AIStudio';
+import { supabase } from '../lib/supabase';
+import { analyzeVideo, isAnalysisSupported } from '../lib/videoAnalysis';
+import { ClipPlanPanel } from './ClipPlanPanel';
+import { SubtitlePanel } from './SubtitlePanel';
+import { transcribeMedia } from './transcribeClient';
 import { useAuth } from '../auth/AuthProvider';
+import {
+  MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, UPLOAD_ACCEPT, formatBytes, oversizeMessage,
+  partitionBySize, uploadAttachments,
+} from '../lib/uploads';
 import './agent.css';
 
 const STORAGE_KEY = 'blea-agent-thread-v1';
@@ -114,6 +124,30 @@ function SkillCard({ skills, catalog, onPin }) {
   );
 }
 
+const KIND_ICON = { image: ImageIcon, video: Video, audio: Music, file: FileText };
+
+function AttachmentChip({ attachment, onRemove, compact = false }) {
+  const Icon = KIND_ICON[attachment.kind] || FileText;
+  return (
+    <div className={`agent-attachment ${compact ? 'is-compact' : ''}`}>
+      {attachment.kind === 'image' ? (
+        <img src={attachment.url} alt="" />
+      ) : (
+        <span className="agent-attachment-icon"><Icon size={13} /></span>
+      )}
+      <span className="agent-attachment-name">
+        <b>{attachment.name}</b>
+        <small>{attachment.kind} · {formatBytes(attachment.size)}</small>
+      </span>
+      {onRemove && (
+        <button type="button" onClick={() => onRemove(attachment.id)} aria-label={`Hapus ${attachment.name}`}>
+          <X size={11} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AgentPage() {
   const { user } = useAuth();
   const stored = useMemo(loadStoredThread, []);
@@ -131,6 +165,16 @@ export function AgentPage() {
   const [model, setModel] = useState('');
   const [modelOpen, setModelOpen] = useState(false);
   const [copiedId, setCopiedId] = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState(0);
+  const [transcript, setTranscript] = useState(null);
+  const [transcribeStatus, setTranscribeStatus] = useState('idle');
+  const [transcribeProgress, setTranscribeProgress] = useState(0);
+  const [subtitleTemplate, setSubtitleTemplate] = useState('boxed');
+  const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const endRef = useRef(null);
   const composerRef = useRef(null);
@@ -160,6 +204,21 @@ export function AgentPage() {
     } catch { /* kuota penuh: riwayat sesi tetap jalan di memori */ }
   }, [messages, skills]);
 
+  // Digest analisis hanya valid untuk video yang sedang dilampirkan.
+  const attachedVideo = attachments.find((attachment) => attachment.kind === 'video');
+  useEffect(() => {
+    if (!attachedVideo || (analysis && analysis.url !== attachedVideo.url)) setAnalysis(null);
+  }, [attachedVideo, analysis]);
+
+  // Transkrip terikat pada berkas: mengganti lampiran membuang transkrip lama,
+  // karena timestamp-nya milik video yang berbeda.
+  useEffect(() => {
+    if (!attachedVideo || (transcript && transcript.url !== attachedVideo.url)) {
+      setTranscript(null);
+      setTranscribeStatus('idle');
+    }
+  }, [attachedVideo, transcript]);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
   }, [messages, steps, running]);
@@ -171,9 +230,13 @@ export function AgentPage() {
 
   const send = useCallback(async (text) => {
     const content = String(text ?? '').trim();
-    if (!content || running) return;
+    if ((!content && !attachments.length) || running) return;
     if (!activeModelMeta.model) {
       setError('Pilih model terlebih dulu.');
+      return;
+    }
+    if (uploading) {
+      setError('Tunggu unggahan selesai sebelum mengirim.');
       return;
     }
 
@@ -181,20 +244,44 @@ export function AgentPage() {
     setDraft('');
     setSteps([]);
     setTickCount(0);
-    const userMessage = { id: `u-${Date.now()}`, role: 'user', content, at: new Date().toISOString() };
+    const sentAttachments = attachments;
+    const sentAnalysis = analysis;
+    const userMessage = {
+      id: `u-${Date.now()}`,
+      role: 'user',
+      content,
+      attachments: sentAttachments,
+      at: new Date().toISOString(),
+    };
     const history = [...messages, userMessage].map(({ role, content: body }) => ({ role, content: body }));
     setMessages((current) => [...current, userMessage]);
+    setAttachments([]);
     setRunning(true);
     const controller = new AbortController();
     abortRef.current = controller;
 
     const liveSteps = [];
+    let pendingClipPlan = null;
     const result = await runAgentTurn({
       messages: history,
       model: activeModelMeta.model,
       provider: activeModelMeta.provider,
       skill: pinnedSkill,
       blueprint: '',
+      attachments: sentAttachments.map(({ url, name, kind, type, size }) => ({ url, name, kind, type, size })),
+      videoAnalysis: sentAnalysis
+        ? {
+          durationSec: sentAnalysis.durationSec,
+          width: sentAnalysis.width,
+          height: sentAnalysis.height,
+          truncated: sentAnalysis.truncated,
+          sceneCuts: sentAnalysis.sceneCuts,
+          audio: sentAnalysis.audio,
+        }
+        : null,
+      videoTranscript: transcript && transcript.url === sentAttachments.find((item) => item.kind === 'video')?.url
+        ? { segments: transcript.segments }
+        : null,
       signal: controller.signal,
       onMeta: (meta) => {
         if (meta.fallback) setError(`Model utama sibuk, jawaban dialihkan ke ${meta.model}.`);
@@ -216,6 +303,7 @@ export function AgentPage() {
           ? current
           : [...current, { id: skill.id, resource: skill.resource || '', at: new Date().toISOString() }]));
       },
+      onClips: (event) => { pendingClipPlan = event; },
       onDelta: () => { /* teks final ditambahkan dari onDone agar tidak dobel */ },
     });
 
@@ -238,12 +326,13 @@ export function AgentPage() {
       content: result.data.reply || '',
       actions: result.data.actions || [],
       credits: Number(result.data.credits) || 0,
+      clipPlan: pendingClipPlan,
       model: result.data.model,
       stopReason: result.data.stopReason,
       at: new Date().toISOString(),
     }]);
     setSteps([]);
-  }, [activeModelMeta, messages, pinnedSkill, running]);
+  }, [activeModelMeta, attachments, messages, pinnedSkill, running, uploading, transcript]);
 
   function stop() {
     abortRef.current?.abort();
@@ -251,9 +340,79 @@ export function AgentPage() {
     setRunning(false);
   }
 
+  async function analyzeAttachedVideo() {
+    if (!attachedVideo || analyzing) return;
+    if (!isAnalysisSupported()) {
+      setError('Analisis video hanya bisa dijalankan di browser.');
+      return;
+    }
+    setAnalyzing(true);
+    setAnalyzeProgress(0);
+    setError('');
+    try {
+      const result = await analyzeVideo(attachedVideo.url, { onProgress: setAnalyzeProgress });
+      setAnalysis({ ...result, url: attachedVideo.url, name: attachedVideo.name });
+    } catch (err) {
+      // Gagal analisis bukan kegagalan fatal: pengguna masih bisa bertanya
+      // tentang video tanpa digest sinyal.
+      setError(`Analisis video gagal: ${err?.message || err}. Kamu masih bisa mengirim video tanpa analisis.`);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  async function transcribeAttachedVideo() {
+    if (!attachedVideo || transcribeStatus === 'running') return;
+    setTranscribeStatus('running');
+    setTranscribeProgress(0);
+    setError('');
+    try {
+      const result = await transcribeMedia(attachedVideo.url, {
+        language: 'id',
+        onProgress: setTranscribeProgress,
+      });
+      setTranscript({ ...result, url: attachedVideo.url, name: attachedVideo.name });
+      setTranscribeStatus('done');
+    } catch (err) {
+      setTranscript({ url: attachedVideo.url, name: attachedVideo.name, segments: [], error: String(err?.message || err) });
+      setTranscribeStatus('error');
+    }
+  }
+
+  async function onFilesPicked(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length || !user?.id) return;
+    setError('');
+
+    const room = Math.max(0, 6 - attachments.length);
+    if (!room) {
+      setError('Maksimal 6 lampiran per pesan.');
+      return;
+    }
+    const { accepted, rejected } = partitionBySize(files.slice(0, room), MAX_UPLOAD_BYTES);
+    if (rejected.length) setError(oversizeMessage(rejected, MAX_UPLOAD_BYTES));
+    if (!accepted.length) return;
+
+    setUploading(true);
+    try {
+      const { uploaded, failures } = await uploadAttachments({ client: supabase, files: accepted, userId: user.id, folder: 'agent' });
+      if (uploaded.length) setAttachments((current) => [...current, ...uploaded].slice(0, 6));
+      if (failures.length) setError(`Gagal mengunggah ${failures.map((item) => item.name).join(', ')}: ${failures[0].error}`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeAttachment(id) {
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  }
+
   function onSubmit(event) {
     event.preventDefault();
-    send(draft);
+    // Dengan lampiran tapi tanpa teks, tetap beri instruksi minimal supaya
+    // model tahu apa yang harus dilakukan terhadap berkasnya.
+    send(draft.trim() || (attachments.length ? 'Tolong periksa lampiran ini.' : ''));
   }
 
   function clearThread() {
@@ -330,12 +489,30 @@ export function AgentPage() {
                 {message.role === 'assistant' ? (
                   <StudioMessageBody content={message.content} isTyping={false} copiedCodeKey="" onCopyCode={() => {}} />
                 ) : (
-                  <p className="agent-user-text">{message.content}</p>
+                  <>
+                    <p className="agent-user-text">{message.content}</p>
+                    {message.attachments?.length > 0 && (
+                      <div className="agent-message-attachments">
+                        {message.attachments.map((attachment) => (
+                          <AttachmentChip key={attachment.id || attachment.url} attachment={attachment} compact />
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
                 {Number(message.credits) > 0 && (
                   <div className="agent-action-row">
                     <span className="agent-action is-cost"><Coins size={10} /> {message.credits} kredit untuk giliran ini</span>
                   </div>
+                )}
+                {message.clipPlan?.clips?.length > 0 && (
+                  <ClipPlanPanel
+                    plan={message.clipPlan}
+                    client={supabase}
+                    userId={user?.id}
+                    videoName={message.clipPlan.sourceUrl?.split('/').pop()}
+                    transcript={transcript && transcript.url === message.clipPlan.sourceUrl ? transcript.segments : []}
+                  />
                 )}
                 {message.actions?.length > 0 && (
                   <div className="agent-action-row">
@@ -370,6 +547,52 @@ export function AgentPage() {
           )}
 
           <form className="agent-composer" onSubmit={onSubmit}>
+            {attachedVideo && (
+              <div className="agent-analysis">
+                {analyzing ? (
+                  <span className="agent-analysis-status">
+                    <Loader2 size={12} className="agent-spin" /> Menganalisis video… {Math.round(analyzeProgress * 100)}%
+                    <small>diproses di browser, video tidak diunggah ke server analisis</small>
+                  </span>
+                ) : analysis ? (
+                  <span className="agent-analysis-status is-done">
+                    <Check size={12} /> Teranalisis · {analysis.sceneCuts.length} scene cut
+                    {analysis.audio ? ` · ${analysis.audio.peaks.length} lonjakan audio` : ' · audio tidak terbaca'}
+                  </span>
+                ) : (
+                  <button type="button" className="agent-analysis-trigger" onClick={analyzeAttachedVideo}>
+                    <Clapperboard size={12} /> Analisis video untuk cari hook
+                  </button>
+                )}
+              </div>
+            )}
+            {attachedVideo && (
+              <div className="agent-analysis">
+                <SubtitlePanel
+                  source={attachedVideo}
+                  transcript={transcript}
+                  onTranscript={(next) => setTranscript(next)}
+                  status={transcribeStatus}
+                  progress={transcribeProgress}
+                  onTranscribe={transcribeAttachedVideo}
+                  template={subtitleTemplate}
+                  onTemplate={setSubtitleTemplate}
+                />
+              </div>
+            )}
+            {(attachments.length > 0 || uploading) && (
+              <div className="agent-attachments">
+                {attachments.map((attachment) => (
+                  <AttachmentChip key={attachment.id} attachment={attachment} onRemove={removeAttachment} />
+                ))}
+                {uploading && (
+                  <div className="agent-attachment is-uploading">
+                    <span className="agent-attachment-icon"><Loader2 size={13} className="agent-spin" /></span>
+                    <span className="agent-attachment-name"><b>Mengunggah…</b><small>mohon tunggu</small></span>
+                  </div>
+                )}
+              </div>
+            )}
             <textarea
               ref={composerRef}
               value={draft}
@@ -386,6 +609,24 @@ export function AgentPage() {
               aria-label="Tulis tugas untuk agen"
             />
             <div className="agent-composer-bar">
+              <button
+                type="button"
+                className="agent-upload"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={running || uploading}
+                aria-label="Unggah foto, video, audio, atau berkas"
+                title={`Unggah berkas (maks ${MAX_UPLOAD_LABEL} per berkas)`}
+              >
+                <Paperclip size={14} />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="agent-file-input"
+                accept={UPLOAD_ACCEPT}
+                onChange={onFilesPicked}
+              />
               <div className="agent-model-wrap">
                 <button
                   type="button"
@@ -419,12 +660,12 @@ export function AgentPage() {
                 )}
               </div>
               <span className="agent-composer-hint">
-                <Globe size={11} /> pencarian web · <BookOpen size={11} /> skill · <ListChecks size={11} /> langkah
+                <Paperclip size={11} /> maks {MAX_UPLOAD_LABEL} · <Globe size={11} /> pencarian web · <ListChecks size={11} /> langkah
               </span>
               {running ? (
                 <button type="button" className="agent-stop" onClick={stop}><Square size={11} /> Hentikan</button>
               ) : (
-                <button type="submit" className="agent-send" disabled={!draft.trim()}><span>Kerjakan</span><Send size={13} /></button>
+                <button type="submit" className="agent-send" disabled={(!draft.trim() && !attachments.length) || uploading}><span>Kerjakan</span><Send size={13} /></button>
               )}
             </div>
           </form>

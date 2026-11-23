@@ -162,6 +162,20 @@ export const AGENT_TOOL_DEFINITIONS = [
     summarize: (result, args) => (String(result).startsWith('Alat gagal') ? 'gagal' : `${String(result).length} karakter dari ${String(args?.url || 'halaman')}`),
   },
   {
+    // Tanpa eksekusi: hanya mengusulkan. Halaman menampilkan tombol konfirmasi.
+    name: 'propose_clips',
+    description: 'Usulkan rentang klip dari video yang sudah dianalisis. Butuh konfirmasi pengguna.',
+    run: async (args) => {
+      const result = normalizeClipProposal(args);
+      if (result.error) return `Alat gagal: ${result.error}`;
+      return `Rencana klip tersimpan (menunggu konfirmasi pengguna):\n${result.clips
+        .map((clip) => `${clip.index}. ${clip.startSec}–${clip.endSec}s${clip.title ? ` — ${clip.title}` : ''}${clip.reason ? ` (${clip.reason})` : ''}`)
+        .join('\n')}`;
+    },
+    describe: (args) => `${Array.isArray(args?.clips) ? args.clips.length : 0} klip`,
+    summarize: (result, args) => `${Array.isArray(args?.clips) ? args.clips.length : 0} klip diusulkan`,
+  },
+  {
     name: 'load_skill',
     description: 'Muat panduan skill pihak ketiga yang tersedia.',
     run: runLoadSkill,
@@ -199,4 +213,166 @@ export function stripAgentToolCalls(text) {
     .replace(/```tool\s*[\s\S]*?```/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+// ---------------------------------------------------------------- lampiran
+//
+// Lampiran dari /agent dan /studio masuk ke prompt sebagai URL. Worker tidak
+// bisa menakar ukuran byte tanpa mengunduh berkasnya (mahal dan tanpa manfaat),
+// jadi yang divalidasi adalah hal-hal yang bisa dipalsukan dan berdampak:
+// jumlah, bentuk URL, dan kepemilikan path di bucket BLEA. Batas 100MB adalah
+// urusan klien saat mengunggah; lihat src/lib/uploads.js.
+export const MAX_ATTACHMENTS = 6;
+// Path public bucket BLEA. Tidak ada allowlist host: proyek bisa memakai domain
+// kustom atau lokal, dan batas keamanan yang sebenarnya adalah path bucket +
+// prefiks user di bawah ini, bukan nama host.
+const ATTACHMENT_BUCKET_PATH = '/storage/v1/object/public/ai-studio-uploads/';
+
+export function normalizeAgentAttachments(raw, userId = '') {
+  if (!Array.isArray(raw) || !raw.length) return { items: [] };
+  if (raw.length > MAX_ATTACHMENTS) {
+    return { error: `Maksimal ${MAX_ATTACHMENTS} lampiran per pesan.` };
+  }
+  const items = [];
+  for (const entry of raw) {
+    const url = String(entry?.url || '').trim();
+    if (!isHttpUrl(url)) return { error: 'Lampiran harus berupa URL https yang sah.' };
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { error: 'Lampiran harus berupa URL https yang sah.' };
+    }
+    if (isPrivateHost(parsed.hostname)) return { error: 'Lampiran tidak boleh menunjuk jaringan privat.' };
+    // Wajib berada di bucket unggahan BLEA: mencegah agen dijadikan proxy untuk
+    // menyuruh provider mengambil URL sembarangan.
+    if (!parsed.pathname.includes(ATTACHMENT_BUCKET_PATH)) {
+      return { error: 'Lampiran harus berkas yang diunggah lewat BLEA.' };
+    }
+    // Path per pengguna (migrasi 20261111000006): <user_id>/<...>. Path milik
+    // akun lain ditolak supaya tidak bisa dipakai membaca unggahan orang lain.
+    if (userId) {
+      const objectPath = decodeURIComponent(parsed.pathname.split(ATTACHMENT_BUCKET_PATH)[1] || '');
+      if (!objectPath.startsWith(`${userId}/`)) return { error: 'Lampiran bukan milik akun ini.' };
+    }
+    items.push({
+      name: String(entry?.name || 'lampiran').slice(0, 120),
+      kind: ['image', 'video', 'audio'].includes(entry?.kind) ? entry.kind : 'file',
+      type: String(entry?.type || '').slice(0, 120),
+      size: Number(entry?.size) || 0,
+      url,
+    });
+  }
+  return { items };
+}
+
+export function buildAttachmentContent(text, attachments = []) {
+  const parts = [{ type: 'text', text }];
+  for (const attachment of attachments) {
+    if (!attachment?.url) continue;
+    if (attachment.kind === 'image') {
+      parts.push({ type: 'image_url', image_url: { url: attachment.url } });
+    } else {
+      const size = attachment.size ? `, ${Math.round(attachment.size / 1024)} KB` : '';
+      parts.push({ type: 'text', text: `[Lampiran ${attachment.kind}: ${attachment.name}${size}](${attachment.url})` });
+    }
+  }
+  return parts;
+}
+
+// ---------------------------------------------------------------- klip video
+//
+// Alat ini TIDAK memotong apa pun. Ia hanya menyimpan rencana klip (rentang
+// waktu + alasan) sebagai event agar halaman bisa menampilkan tombol konfirmasi.
+// Pemotongan berjalan di browser (src/lib/mediaTrim.js) setelah pengguna setuju,
+// karena Worker tidak punya ffmpeg dan tidak bisa men-decode video.
+const CLIP_TOOL_MAX = 6;
+
+export function normalizeClipProposal(args, { durationSec } = {}) {
+  const clips = Array.isArray(args?.clips) ? args.clips : [];
+  if (!clips.length) return { error: 'Rencana klip kosong.' };
+  const duration = Number(durationSec) || Number(args?.durationSec) || 0;
+  const cleaned = [];
+  for (const clip of clips.slice(0, CLIP_TOOL_MAX)) {
+    const start = Number(clip?.startSec);
+    const end = Number(clip?.endSec);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return { error: 'Rentang klip harus berupa angka detik.' };
+    if (start < 0 || end <= start) return { error: `Klip ${cleaned.length + 1} punya rentang tidak sah.` };
+    if (duration && start >= duration) return { error: `Klip ${cleaned.length + 1} mulai di luar durasi video.` };
+    const safeEnd = duration ? Math.min(end, duration) : end;
+    if (safeEnd - start < 2) return { error: `Klip ${cleaned.length + 1} terlalu pendek (< 2 detik).` };
+    if (safeEnd - start > 60) return { error: `Klip ${cleaned.length + 1} lebih dari 60 detik.` };
+    cleaned.push({
+      index: cleaned.length + 1,
+      startSec: Math.round(start * 100) / 100,
+      endSec: Math.round(safeEnd * 100) / 100,
+      durationSec: Math.round((safeEnd - start) * 100) / 100,
+      title: String(clip?.title || '').slice(0, 80),
+      reason: String(clip?.reason || '').slice(0, 200),
+    });
+  }
+  return { clips: cleaned };
+}
+
+export function describeClipProposal(clips) {
+  if (!clips?.length) return 'tidak ada klip';
+  return clips.map((clip) => `${clip.startSec}-${clip.endSec}s`).join(', ');
+}
+
+/**
+ * Digest analisis video dikirim oleh browser, jadi bentuknya diperiksa ketat
+ * sebelum masuk system prompt. Nilai yang tidak masuk akal dibuang; teks bebas
+ * dibatasi panjangnya supaya tidak bisa dipakai menyelipkan instruksi.
+ */
+export const MAX_VIDEO_ANALYSIS_CHARS = 1_800;
+
+/**
+ * Transkrip dikirim klien, jadi diperlakukan sebagai DATA, bukan instruksi:
+ * hanya timestamp+teks yang diteruskan, dan setiap baris dipotong. Ini yang
+ * membuat model bisa memilih hook berdasarkan kalimat yang benar-benar diucapkan
+ * — sebelumnya ia hanya tahu di detik berapa ada scene cut.
+ */
+export const MAX_TRANSCRIPT_CHARS = 3_500;
+export const MAX_TRANSCRIPT_LINES = 120;
+
+export function normalizeVideoTranscript(raw) {
+  const segments = Array.isArray(raw?.segments) ? raw.segments : [];
+  const lines = [];
+  for (const segment of segments.slice(0, MAX_TRANSCRIPT_LINES)) {
+    const text = String(segment?.text || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+    const start = Number(segment?.startSec);
+    if (!text || !Number.isFinite(start) || start < 0) continue;
+    lines.push(`[${Math.round(start * 10) / 10}s] ${text}`);
+  }
+  const text = lines.join('\n').slice(0, MAX_TRANSCRIPT_CHARS);
+  return { text, segmentCount: lines.length };
+}
+
+export function normalizeVideoAnalysis(raw) {
+  if (!raw || typeof raw !== 'object') return { text: '', durationSec: 0 };
+  const durationSec = Number(raw.durationSec);
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return { text: '', durationSec: 0 };
+
+  const nums = (list, limit) => (Array.isArray(list) ? list : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 86_400)
+    .slice(0, limit);
+
+  const sceneCuts = nums(raw.sceneCuts, 40);
+  const peaks = nums(raw.audio?.peaks, 24);
+  const silence = nums(raw.audio?.silence, 16);
+
+  const lines = [
+    `Durasi video: ${Math.round(durationSec * 100) / 100} detik`,
+    raw.width && raw.height ? `Resolusi: ${Number(raw.width)}x${Number(raw.height)}` : '',
+    `Scene cut (detik): ${sceneCuts.length ? sceneCuts.join(', ') : 'tidak terdeteksi'}`,
+    peaks.length ? `Lonjakan energi audio (detik): ${peaks.join(', ')}` : 'Lonjakan audio: tidak terdeteksi',
+    silence.length ? `Bagian hening (detik): ${silence.slice(0, 12).join(', ')}` : '',
+    raw.truncated ? `Catatan: hanya bagian awal video yang dianalisis.` : '',
+  ].filter(Boolean);
+
+  return {
+    text: lines.join('\n').slice(0, MAX_VIDEO_ANALYSIS_CHARS),
+    durationSec: Math.round(durationSec * 100) / 100,
+  };
 }

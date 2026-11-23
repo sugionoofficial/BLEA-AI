@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase';
 import { chatCompletionStream, fetchConnectedRepos, fetchEnabledModelItems, fetchFreeModels, fetchProviderStatus, githubLogout, githubStart, githubStatus } from '../api/unorouter';
 import { splitThinkingContent, thinkingStageLabel } from '../lib/chatStream';
 import { useAuth } from './AuthProvider';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, UPLOAD_ACCEPT, formatBytes, oversizeMessage, partitionBySize, uploadAttachments } from '../lib/uploads';
 
 const prompts = [
   'Bantu aku mencari arah untuk ide baru',
@@ -13,13 +14,8 @@ const prompts = [
   'Pecah rencana besar jadi langkah kecil yang nyata',
 ];
 
-const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
+// Batas unggahan dipusatkan di src/lib/uploads.js (100MB, sama dengan /agent).
 
-function formatBytes(size) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
 
 // Konten pesan multimodal: teks + gambar (image_url) + tautan file.
 function buildMessageContent(text, attachments) {
@@ -541,32 +537,15 @@ export function AIStudio() {
     event.target.value = '';
     if (!files.length) return;
     setError('');
-    const oversized = files.filter((file) => file.size > MAX_UPLOAD_BYTES);
-    if (oversized.length) {
-      setError(`${oversized.map((file) => file.name).join(', ')} melebihi batas 30MB.`);
-    }
-    const uploads = files.filter((file) => file.size <= MAX_UPLOAD_BYTES);
-    if (!uploads.length) return;
+    // Batas 100MB per berkas; berkas yang terlalu besar dilaporkan, bukan
+    // dipotong diam-diam.
+    const { accepted, rejected } = partitionBySize(files, MAX_UPLOAD_BYTES);
+    if (rejected.length) setError(oversizeMessage(rejected, MAX_UPLOAD_BYTES));
+    if (!accepted.length) return;
     setUploading(true);
     try {
-      const uploaded = [];
-      for (const file of uploads) {
-        const safeName = file.name.replace(/[^a-z0-9._-]/gi, '_').slice(0, 80);
-        const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
-        const { data, error: uploadError } = await supabase.storage.from('ai-studio-uploads').upload(path, file, { contentType: file.type || 'application/octet-stream' });
-        if (uploadError) {
-          setError(`"${file.name}" gagal diunggah: ${uploadError.message}`);
-          continue;
-        }
-        const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
-        uploaded.push({
-          id: data.path,
-          name: file.name,
-          size: file.size,
-          type: file.type || '',
-          url: pub.publicUrl,
-        });
-      }
+      const { uploaded, failures } = await uploadAttachments({ client: supabase, files: accepted, userId: user.id, folder: 'studio' });
+      if (failures.length) setError(`"${failures[0].name}" gagal diunggah: ${failures[0].error}`);
       if (uploaded.length) setAttachments((current) => [...current, ...uploaded]);
     } finally {
       setUploading(false);
@@ -1103,7 +1082,7 @@ export function AIStudio() {
                 </div>)}
               </div>
             )}
-            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya apa saja...' : 'Tulis ide atau prompt...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading || Boolean(liveReply)} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /><span className="studio-model-pill-name">{selectedModel}</span><ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif` : `${models.length} model gratis`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{(modelItems.length ? modelItems : availableModels.map((id) => ({ id, provider: 'unorouter' }))).map((item) => <option key={`${item.provider}:${item.id}`} value={item.id}>{item.provider && item.provider !== 'unorouter' ? `${item.id} (${item.provider})` : item.id}</option>)}</select></div>}</div>}<span className="studio-composer-note">{providerStatus?.configured ? 'Enter kirim · maks 30MB' : 'Mode pratinjau'}</span></span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> <span className="studio-composer-tool-label">Koneksi</span></button>{(sending || liveReply) ? <button type="button" className="studio-stop-button" onClick={stopGeneration} aria-label="Hentikan respons AI"><Square size={12} /> <span>Hentikan</span></button> : <button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></button>}</div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept="image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" onChange={attachFiles} /></form>
+            <form className="studio-composer" onSubmit={saveMessage}><textarea ref={draftRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={providerStatus?.configured ? 'Tanya apa saja...' : 'Tulis ide atau prompt...'} rows={1} maxLength={20000} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} aria-label="Tulis pesan" /><div className="studio-composer-bottom"><span className="studio-composer-hint"><button type="button" className="studio-upload-button" onClick={() => fileInputRef.current?.click()} disabled={sending || uploading || Boolean(liveReply)} aria-label="Unggah foto, video, atau file"><Paperclip size={15} /></button>{providerStatus?.configured && <div className="studio-model-wrap"><button type="button" className={`studio-model-pill ${modelOpen ? 'is-open' : ''}`} onClick={() => setModelOpen((open) => !open)} aria-label="Pilih model" aria-expanded={modelOpen}><Cpu size={13} /><span className="studio-model-pill-name">{selectedModel}</span><ChevronDown size={12} /></button>{modelOpen && <div className="studio-model-popover"><div className="studio-model-popover-head"><b>Model tersedia</b><small>{enabledModels.length ? `${enabledModels.length} model aktif` : `${models.length} model gratis`}</small></div><select value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); setModelOpen(false); }} aria-label="Pilih model">{(modelItems.length ? modelItems : availableModels.map((id) => ({ id, provider: 'unorouter' }))).map((item) => <option key={`${item.provider}:${item.id}`} value={item.id}>{item.provider && item.provider !== 'unorouter' ? `${item.id} (${item.provider})` : item.id}</option>)}</select></div>}</div>}<span className="studio-composer-note">{providerStatus?.configured ? `Enter kirim · maks ${MAX_UPLOAD_LABEL}` : 'Mode pratinjau'}</span></span><button type="button" className={`studio-composer-tool ${connectionsOpen ? 'is-on' : ''}`} onClick={() => setConnectionsOpen((open) => !open)} aria-label="Koneksi agen" aria-expanded={connectionsOpen}><Network size={14} /> <span className="studio-composer-tool-label">Koneksi</span></button>{(sending || liveReply) ? <button type="button" className="studio-stop-button" onClick={stopGeneration} aria-label="Hentikan respons AI"><Square size={12} /> <span>Hentikan</span></button> : <button type="submit" disabled={(!draft.trim() && !attachments.length) || sending} aria-label={providerStatus?.configured ? 'Kirim pesan' : 'Simpan pesan'}><span>{providerStatus?.configured ? 'Kirim' : 'Simpan'}</span><Send size={14} /></button>}</div><input ref={fileInputRef} type="file" multiple className="studio-file-input" accept={UPLOAD_ACCEPT} onChange={attachFiles} /></form>
             {connectionsOpen && <div className="studio-connections">
               <div className="studio-connections-head">
                 <span>Koneksi agen</span>

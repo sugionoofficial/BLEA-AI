@@ -20,6 +20,32 @@ export function buildAgentSystemPrompt({ skillIds = [], workspace = {}, pinnedSe
     '- Kode, perintah, dan konfigurasi selalu di blok kode dengan nama bahasa.',
   ];
 
+  if (workspace.videoAnalysis || workspace.videoTranscript) {
+    lines.push('');
+    if (workspace.videoAnalysis) {
+      lines.push(
+        '## ANALISIS VIDEO LAMPIRAN',
+        'Angka di bawah diukur di browser (pergantian gambar + energi audio), bukan tebakan model.',
+        workspace.videoAnalysis,
+      );
+    }
+    if (workspace.videoTranscript) {
+      lines.push(
+        '## TRANSKRIP UCAPAN (ASR Whisper, timestamp detik)',
+        'Teks ini hasil mesin ASR: bisa salah pada slang, nama merek, dan istilah campur bahasa. Kutipan dari sini boleh dipakai sebagai judul atau alasan klip, tetapi JANGAN mengarang kalimat yang tidak ada di daftar.',
+        workspace.videoTranscript,
+      );
+    } else if (workspace.videoAnalysis) {
+      lines.push('Tidak ada transkrip: kamu TIDAK mendengar ucapan, jadi jangan mengarang isi pembicaraan.');
+    }
+    lines.push(
+      '',
+      workspace.videoTranscript
+        ? 'Aturan memilih klip: utamakan kalimat yang berdiri sendiri dan memancing rasa penasaran (pertanyaan, angka, klaim mengejutkan) dari transkrip; setiap klip 3-45 detik; jangan tumpang tindih; tulis alasan berbasis kalimat yang benar-benar ada beserta detiknya.'
+        : 'Aturan memilih klip: prioritaskan momen dengan pergantian gambar dan/atau lonjakan audio; setiap klip 3-45 detik; jangan tumpang tindih; tulis alasan berbasis sinyal yang terlihat (mis. "pergantian gambar di 12s"), bukan klaim tentang isi ucapan.',
+    );
+  }
+
   if (workspace.blueprint) {
     lines.push('', '## Rencana kerja yang sudah disetujui pengguna', workspace.blueprint);
   }
@@ -34,6 +60,7 @@ export function buildAgentSystemPrompt({ skillIds = [], workspace = {}, pinnedSe
     'Setelah blok itu, sistem menjalankan alat dan mengembalikan hasilnya. Jangan menebak hasilnya lebih dulu. Jika tidak perlu alat, jawab langsung tanpa blok `tool`.',
     '- `web_search` — {"query":"kata kunci spesifik"} — cari informasi terkini.',
     '- `read_url` — {"url":"https://..."} — ambil isi satu halaman publik.',
+    '- `propose_clips` — {"clips":[{"startSec":0,"endSec":15,"title":"...","reason":"..."}]} — usulkan potongan klip dari video yang dilampirkan. Hanya mengusulkan; pengguna yang menekan tombol potong.',
   );
 
   for (const skill of skills) {
