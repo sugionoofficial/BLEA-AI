@@ -107,7 +107,7 @@ export function clearPendingAttempt() {
  * Mulai login: daftarkan attempt (state/nonce/PKCE disimpan server), lalu buka
  * halaman izin OpenAI di tab yang sama. Return value hanya untuk UI.
  */
-export async function beginChatGptSignIn() {
+export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '' } = {}) {
   const port = window.location.port || '1455';
   const redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`;
   const state = randomString(32);
@@ -128,9 +128,13 @@ export async function beginChatGptSignIn() {
     }));
   } catch { /* localStorage diblokir: state tetap divalidasi server */ }
 
+  // Panduan OpenAI: registrasi pertama memakai `dynamic_agent_client` +
+  // `agent_name_hint`; login BERIKUTNYA memakai `client_id` terbitan dan
+  // TIDAK mengirim `agent_name_hint`. Ini juga yang membuat `invalid_grant`
+  // tidak berulang: id terbitan dipertahankan, bukan didaftarkan ulang.
+  const reauth = Boolean(issuedClientId && issuedClientId !== DYNAMIC_CLIENT_ID);
   const params = new URLSearchParams({
-    client_id: DYNAMIC_CLIENT_ID,
-    agent_name_hint: AGENT_NAME_HINT,
+    client_id: reauth ? issuedClientId : DYNAMIC_CLIENT_ID,
     ext_agent_host_id: `urn:uuid:${hostId()}`,
     response_type: 'code',
     redirect_uri: redirectUri,
@@ -140,6 +144,8 @@ export async function beginChatGptSignIn() {
     nonce,
     code_challenge_method: 'S256',
     code_challenge: codeChallenge,
+    ...(reauth ? {} : { agent_name_hint: AGENT_NAME_HINT }),
+    ...(reauth && loginHint ? { login_hint: loginHint } : {}),
   });
   window.location.assign(`${AUTHORIZE_ENDPOINT}?${params.toString()}`);
   return { ok: true };
