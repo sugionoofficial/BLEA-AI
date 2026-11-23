@@ -538,3 +538,43 @@ test('/api/chatgpt-oauth/complete menolak 401 tanpa sesi BLEA', async () => {
   assert.equal(res.status, 401);
   assert.match((await res.json()).error, /Login diperlukan/);
 });
+
+// Regresi penempatan JSX: blok "Sudah menyetujui di ChatGPT?" dulu tidak
+// sengaja tersisip di cabang `if (callbackPage)`, sehingga kolomnya hanya
+// muncul di halaman 127.0.0.1 — bukan di halaman Akun ChatGPT tempat pengguna
+// mencarinya. Tes ini merender halaman yang sebenarnya.
+test('kolom tempel URL callback muncul di halaman Akun ChatGPT', async () => {
+  const { createServer } = await import('vite');
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  if (!globalThis.localStorage) {
+    const store = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, String(v)),
+      removeItem: (k) => store.delete(k),
+    };
+  }
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    logLevel: 'silent',
+    resolve: {
+      alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }],
+    },
+  });
+  try {
+    const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+    const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+    const { ChatGptAccountsPage } = await vite.ssrLoadModule('/src/studio/ChatGptAccountsPage.jsx');
+    const html = renderToStaticMarkup(
+      React.createElement(MemoryRouter, null,
+        React.createElement(AuthProvider, { initialSession: null }, React.createElement(ChatGptAccountsPage))),
+    );
+    assert.ok(html.includes('Sudah menyetujui di ChatGPT?'), 'judul kolom harus ada di halaman Akun ChatGPT');
+    assert.ok(html.includes('aria-label="URL callback ChatGPT"'), 'input URL harus dirender');
+    assert.ok(html.includes('Continue with ChatGPT'), 'tombol mulai login tetap ada');
+  } finally {
+    await vite.close();
+  }
+});
