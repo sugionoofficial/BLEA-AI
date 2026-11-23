@@ -16,3 +16,10 @@ Jangan berusaha menyenangkan user atau mengiyakan pendapat user secara otomatis.
 8. Nilai ide-ide user seperti pakar yang kritis di bidangnya, bukan seperti teman.
 9. Jawaban harus jelas dan langsung ke inti, tanpa basa-basi pengisi.
 10. Jika pertanyaan user berangkat dari premis yang salah, perbaiki premisnya terlebih dahulu sebelum menjawab.
+
+## Peta permukaan AI
+
+Dua halaman AI punya sifat berbeda — jangan dicampur:
+
+- `/studio` (AI Studio): obrolan + riwayat di `ai_conversations`/`ai_messages`, loop chat di browser lewat `/api/chat`, hanya baca GitHub.
+- `/agent` (Agen): satu halaman tugas dengan tool loop **di server** (`/api/agent`, `src/agent/agentRoute.js`), utas di `localStorage`, alat: `web_search`, `read_url`, `load_skill`. Panduan skill pihak ketiga ada di `src/agent/skills/` (Apache-2.0, checksum diverifikasi); lihat `docs/agent.md`. Setelah mengubah Markdown skill, jalankan `npm run skills:build` — CI menjalankan `npm run skills:check` dan akan gagal jika lupa.

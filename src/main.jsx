@@ -21,8 +21,10 @@ const FreebeatPage = lazy(() => import('./auth/FreebeatPage').then((module) => (
 const AdminPage = lazy(() => import('./auth/AdminPage').then((module) => ({ default: module.AdminPage })));
 const TempMailPage = lazy(() => import('./auth/TempMailPage').then((module) => ({ default: module.TempMailPage })));
 const AIStudio = lazy(() => import('./auth/AIStudio').then((module) => ({ default: module.AIStudio })));
+const AgentPage = lazy(() => import('./agent/AgentPage').then((module) => ({ default: module.AgentPage })));
 import './dropx/dropx.css';
 import './auth/studio.css';
+import './agent/agent.css';
 import './auth/studio-fallback.css';
 import './auth/auth.css';
 import './auth/settings.css';
@@ -58,6 +60,7 @@ function App() {
             <Route path="/credits/history" element={<CreditHistoryPage />} />
             <Route path="/projects" element={<Navigate to="/generate" replace />} />
             <Route path="/studio" element={<StudioErrorBoundary><AIStudio /></StudioErrorBoundary>} />
+            <Route path="/agent" element={<StudioErrorBoundary><AgentPage /></StudioErrorBoundary>} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />
