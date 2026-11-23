@@ -318,7 +318,10 @@ export function scoreVerificationMessage(message, request = {}) {
  *   • ragu → kembalikan kosong, jangan menebak.
  */
 export function extractVerificationCode({ subject = '', bodyText = '', bodyHtml = '' } = {}) {
-  const plain = String(bodyText || '')
+  // Subjek ikut dibaca: sebagian email menaruh kodenya di subjek, dan subjek
+  // juga memberi kata kunci ("verification code") untuk menilai kandidat.
+  const plain = String(subject || '')
+    .concat(' ', String(bodyText || ''))
     .concat(' ', String(bodyHtml || '').replace(/<[^>]+>/g, ' '))
     .replace(/&nbsp;|&#160;/gi, ' ')
     .replace(/\s+/g, ' ');
@@ -326,15 +329,17 @@ export function extractVerificationCode({ subject = '', bodyText = '', bodyHtml 
 
   const KEYWORD_RE = /(kode|code|verifikasi|verification|verifikasi|one[- ]?time|otp|masuk|sign[- ]?in)/i;
   const found = new Map();
-  // Kode OpenAI 6 digit, kadang ditulis berkelompok ("483-920"). Kelompok
-  // bertanda hubung digabung lebih dulu, lalu deret 6–8 digit yang tidak
-  // menempel pada huruf/angka lain.
-  const pattern = /(?<![A-Za-z0-9])(\d{3}-\d{3}|\d{6,8})(?![A-Za-z0-9])/g;
+  // Kode OpenAI 6 digit, kadang ditulis berkelompok ("483-920", "604 217").
+  // Kelompok digabung lebih dulu, lalu deret 6–8 digit yang tidak menempel
+  // pada huruf/angka lain. Bentuk berspasi hanya diterima bila ada kata kunci
+  // di sekitarnya, supaya dua angka acak yang berdampingan tidak dianggap kode.
+  const pattern = /(?<![A-Za-z0-9])(\d{3}-\d{3}|\d{3} \d{3}|\d{6,8})(?![A-Za-z0-9])/g;
   let match;
   while ((match = pattern.exec(plain)) !== null) {
-    const code = match[1].replace(/-/g, '');
+    const code = match[1].replace(/[\s-]/g, '');
     const start = Math.max(0, match.index - 60);
     const context = plain.slice(start, match.index + match[1].length + 60);
+    if (/\s/.test(match[1]) && !/kode|code|otp|verifikasi|verification/i.test(context)) continue;
     // Buang angka yang jelas bukan kode: tahun, nominal, kuota, ukuran.
     if (/^(19|20)\d{2}$/.test(code) && !/kode|code|otp|verifikasi|verification/i.test(context)) continue;
     if (/(rp|idr|usd|\$|kuota|quota|harga|price|jumlah|total)\s*[:.]?\s*$/i.test(plain.slice(start, match.index))) continue;
