@@ -123,6 +123,7 @@ import {
 } from './agent/tools.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
 import { handleChatgptSignup } from './lib/chatgptSignupRoute.js';
+import { buildUserscriptResponse } from './lib/chatgptSignupUserscript.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
 import {
   handleMetadataContent,
@@ -2946,6 +2947,25 @@ async function handleApi(request, url, env) {
     // pendaftaran otomatis melanggar ToS OpenAI. Rute ini menyiapkan URL daftar
     // resmi berisi `login_hint` = email TempMail, mencatat langkah manual, dan
     // mencocokkan email verifikasi di inbox TempMail. Detail: chatgptSignup.js
+    // ---- /chatgpt-signup/userscript: unduh userscript pengisi email ----
+    // Tampermonkey memasang langsung dari URL ini; pengguna tidak perlu
+    // menyalin-tempel skrip (itu titik gagal yang membuat panel terasa rusak).
+    if (path === 'chatgpt-signup/userscript' && method === 'GET') {
+      if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan.' }, 401, { 'cache-control': 'no-store' });
+      if (user.app_metadata?.role !== 'admin') return jsonResponse({ error: 'Pemasangan userscript hanya untuk admin.' }, 403, { 'cache-control': 'no-store' });
+      const aliasRes = await servicePostgrest(env, `/tempmail_user_aliases?select=email&user_id=eq.${encodeURIComponent(user.id)}&limit=1`).catch(() => null);
+      const alias = aliasRes?.ok ? (await aliasRes.json().catch(() => []))?.[0] : null;
+      const email = String(url.searchParams.get('email') || alias?.email || '').trim();
+      try {
+        return buildUserscriptResponse(email, url.origin);
+      } catch (error) {
+        return jsonResponse({ error: error?.message || 'Userscript tidak bisa dibuat.' }, Number(error?.status) || 400);
+      }
+    }
+
     if (path === 'chatgpt-signup') {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       if (!['GET', 'POST'].includes(method)) return jsonResponse({ error: 'Method tidak diizinkan.' }, 405);

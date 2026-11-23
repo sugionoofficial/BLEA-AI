@@ -27,6 +27,26 @@ async function request(path, { method = 'GET', body } = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
+/**
+ * Unduh userscript sebagai teks. Tidak bisa lewat <a href> karena rute itu
+ * memerlukan header Authorization, jadi diambil dengan fetch lalu disajikan
+ * sebagai Blob ke pengguna.
+ */
+export async function fetchAutofillUserscript(email = '') {
+  const token = await getAccessToken();
+  const query = email ? `?email=${encodeURIComponent(email)}` : '';
+  const res = await fetch(`/api/chatgpt-signup/userscript${query}`, {
+    method: 'GET',
+    cache: 'no-store',
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    return { ok: false, error: data?.error || `Userscript tidak bisa diunduh (HTTP ${res.status}).` };
+  }
+  return { ok: true, text: await res.text() };
+}
+
 export const chatGptSignupApi = {
   status: () => request('/chatgpt-signup'),
   prepare: (email, authSessionLoggingId = '') => request('/chatgpt-signup', {

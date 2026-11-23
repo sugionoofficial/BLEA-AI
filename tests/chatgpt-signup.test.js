@@ -325,3 +325,69 @@ test('bootstrap menyertakan bookmarklet dan langkah yang tidak mengklaim otomati
   assert.ok(bootstrap.steps.some((line) => /bookmarklet|tempel/i.test(line)));
   assert.ok(bootstrap.steps.some((line) => /BLEA tidak pernah menekan/i.test(line)));
 });
+
+// Userscript harus benar-benar mengisi kolom di DOM halaman ChatGPT palsu —
+// bukan cuma lolos pemeriksaan string. Kolom telepon (type=tel) tidak boleh
+// dipilih, dan skrip tidak boleh menekan tombol apa pun.
+test('userscript mengisi kolom email di DOM tiruan chatgpt.com tanpa menekan tombol', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { buildAutofillUserscript } = globalThis.__signup;
+  const email = 'sugionoofficial88+1@gmail.com';
+  const source = buildAutofillUserscript(email, { origin: BASE });
+
+  const html = `<!doctype html><html><body>
+    <div><button type="button">Lanjutkan dengan Google</button></div>
+    <form>
+      <div><input type="tel" name="phone" placeholder="Nomor telepon"></div>
+      <div><input type="email" name="email" placeholder="Alamat email" autocomplete="username"></div>
+      <button type="submit" id="submit-btn">Lanjutkan</button>
+    </form></body></html>`;
+  const dom = new JSDOM(html, { url: 'https://chatgpt.com/auth/login', runScripts: 'outside-only' });
+  const { window } = dom;
+  let clicks = 0;
+  let submits = 0;
+  window.document.querySelectorAll('button').forEach((btn) => btn.addEventListener('click', () => { clicks += 1; }));
+  window.document.querySelector('form').addEventListener('submit', (event) => { submits += 1; event.preventDefault(); });
+
+  window.eval(source.trim());
+
+  const emailInput = window.document.querySelector('input[type=email]');
+  const telInput = window.document.querySelector('input[type=tel]');
+  assert.equal(emailInput.value, email, 'kolom email harus terisi');
+  assert.equal(telInput.value, '', 'kolom telepon tidak boleh disentuh');
+  assert.equal(window.document.activeElement, emailInput, 'fokus harus pindah ke kolom email');
+  assert.equal(clicks, 0, 'userscript tidak boleh menekan tombol');
+  assert.equal(submits, 0, 'userscript tidak boleh mengirim formulir');
+  assert.ok(window.document.getElementById('blea-autofill-mark'), 'harus ada penanda kecil bahwa skrip berjalan');
+
+  // Tidak ada akses kredensial atau jaringan dari userscript.
+  const body = source.slice(source.indexOf('==/UserScript=='));
+  assert.ok(!/cookie|localStorage|sessionStorage|fetch\(|XMLHttpRequest|\.submit\(/.test(body));
+  assert.ok(!/document\.cookie/.test(body));
+});
+
+test('/api/chatgpt-signup/userscript hanya untuk admin dan menyajikan berkas .user.js', async () => {
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm' }]);
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup/userscript'), ENV);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/javascript/);
+    assert.match(res.headers.get('content-disposition') || '', /\.user\.js/);
+    const text = await res.text();
+    assert.ok(text.startsWith('// ==UserScript=='));
+    assert.ok(text.includes('"kotak@mail.tm"'), 'email alias aktif harus dipakai');
+    assert.ok(text.includes('@match        https://chatgpt.com/*'));
+
+    const bad = await worker.fetch(request('/chatgpt-signup/userscript?email=bukan-email'), ENV);
+    assert.equal(bad.status, 400);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
