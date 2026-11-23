@@ -169,38 +169,6 @@ export function ChatGptOAuthPanel({ onLinked }) {
           <p className="oauth-note"><Loader2 size={14} className="agent-spin" /> Menukar kode otorisasi dengan token, lalu menyegelnya di server.</p>
         )}
         {notice && <p className="oauth-ok"><CircleCheck size={14} /> {notice}</p>}
-        {/* Kolom tempel URL SELALU tampil, di origin mana pun.
-          Alasan: kalau halaman callback 127.0.0.1 terbuka, penyelesaiannya
-          berhenti di 401 (tidak ada sesi BLEA di origin itu). Sebelumnya blok
-          ini disembunyikan di origin non-loopback berdasarkan asumsi yang
-          salah ("di 127.0.0.1 semuanya otomatis"), sehingga pengguna tidak
-          punya jalan sama sekali. */}
-      {(
-        <div className="oauth-manual">
-          <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
-          <p>
-            OpenAI mengirim hasil login ke <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>, dan
-            alamat itu sering berakhir sebagai halaman “tidak bisa diakses”. Salin <b>seluruh</b> alamat
-            dari bilah browser (yang memuat <code>?code=…&amp;state=…</code>) dan tempel di sini — kalau
-            tersalin sebagai <code>&amp;amp;</code>, tetap terbaca. Kode ditukar di server, tidak disimpan
-            di browser.
-          </p>
-          <form onSubmit={completeFromUrl}>
-            <input
-              type="url"
-              value={pasteUrl}
-              onChange={(event) => setPasteUrl(event.target.value)}
-              placeholder="http://127.0.0.1:1455/auth/callback?code=…&state=…"
-              aria-label="URL callback ChatGPT"
-            />
-            <button type="submit" disabled={pasteBusy || !pasteUrl.trim()}>
-              {pasteBusy ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Selesaikan
-            </button>
-          </form>
-          {hasPending && <small>Sesi login terbuka di tab ini — tempel URL-nya sebelum 15 menit.</small>}
-        </div>
-      )}
-
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
         {callbackState !== 'working' && (
           <>
@@ -252,6 +220,36 @@ export function ChatGptOAuthPanel({ onLinked }) {
           <li key={line}><ShieldCheck size={13} /> {line}</li>
         ))}
       </ul>
+
+      {/* Kolom tempel URL callback. Dulu blok ini tidak sengaja tersisip di
+          cabang `if (callbackPage)` — jadi ia hanya muncul di halaman
+          127.0.0.1, dan justru TIDAK ADA di halaman Akun ChatGPT tempat
+          pengguna mencarinya. Sekarang tempatnya benar: panel utama. */}
+      <div className="oauth-manual">
+        <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
+        <p>
+          OpenAI mengirim hasil login ke <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>, dan
+          alamat itu biasanya berakhir sebagai halaman “tidak bisa diakses”. Salin <b>seluruh</b> alamat
+          dari bilah browser (yang memuat <code>?code=…&amp;state=…</code>) lalu tempel di sini — kalau
+          tersalin sebagai <code>&amp;amp;</code>, tetap terbaca. Kode ditukar di server, tidak disimpan
+          di browser.
+        </p>
+        <form onSubmit={completeFromUrl}>
+          <input
+            type="text"
+            inputMode="url"
+            spellCheck={false}
+            value={pasteUrl}
+            onChange={(event) => setPasteUrl(event.target.value)}
+            placeholder="http://127.0.0.1:1455/auth/callback?code=…&state=…"
+            aria-label="URL callback ChatGPT"
+          />
+          <button type="submit" disabled={pasteBusy || !pasteUrl.trim()}>
+            {pasteBusy ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Selesaikan
+          </button>
+        </form>
+        {hasPending && <small>Sesi login terbuka di tab ini — tempel URL-nya sebelum 30 menit.</small>}
+      </div>
 
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
       {notice && (
