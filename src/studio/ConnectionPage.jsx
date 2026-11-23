@@ -3,12 +3,33 @@ import { Link } from 'react-router-dom';
 import { Check, CircleAlert, Loader2, Plug, ShieldAlert } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
+import { chatGptOAuthApi } from './chatgptOAuthClient';
 import './connection.css';
 
 async function getAccessToken() {
   const { data, error } = await supabase.auth.getSession();
   if (error || !data?.session?.access_token) throw new Error('Sesi login tidak tersedia. Masuk ulang dulu.');
   return data.session.access_token;
+}
+
+// Ringkasan pool akun (dibaca server, tanpa kredensial). Endpoint ini admin-only,
+// jadi pengguna biasa akan menerima 403 — itu ditampilkan sebagai "tidak diukur",
+// bukan sebagai "terputus".
+async function fetchPoolSummary() {
+  try {
+    const token = await getAccessToken();
+    const res = await fetch('/api/chatgpt-accounts/summary', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 403) return { restricted: true };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: data?.error || `HTTP ${res.status}` };
+    return { total: Number(data?.total) || 0, usable: Number(data?.usable) || 0 };
+  } catch (error) {
+    return { error: String(error?.message || error) };
+  }
 }
 
 // TempMail yang sudah ada dipakai sebagai bukti kesiapan saluran email. Endpoint
@@ -31,14 +52,14 @@ const PROVIDERS = [
   {
     id: 'unorouter',
     label: 'Unorouter / model chat aktif',
-    note: 'Sudah terhubung lewat kunci provider yang dipasang admin.',
-    state: 'connected',
+    note: 'Kunci provider dipasang admin. Status di sini tidak diukur dari server, jadi jangan dibaca sebagai bukti.',
+    state: 'unknown',
   },
   {
     id: 'cloudflare',
     label: 'Cloudflare Workers AI',
     note: 'Dipakai untuk Whisper (transkrip) dan pemindaian metadata vision.',
-    state: 'connected',
+    state: 'unknown',
   },
   {
     id: 'freebeat',
@@ -49,8 +70,11 @@ const PROVIDERS = [
   {
     id: 'chatgpt',
     label: 'ChatGPT (Continue with ChatGPT, tanpa API key)',
-    note: 'OAuth resmi OpenAI: satu tombol, izin di browser, lalu kuota paket ChatGPT dipakai untuk chat & agen. Dikelola di Studio → Akun ChatGPT.',
-    state: 'connected',
+    note: 'OAuth resmi OpenAI: satu tombol, izin di browser, lalu kuota paket ChatGPT dipakai untuk chat & agen.',
+    // Statusnya TIDAK ditulis di sini. Label "Tersambung" hanya muncul kalau
+    // server melaporkan ada tautan yang benar-benar berstatus linked.
+    state: 'unknown',
+    check: 'oauth',
   },
   {
     id: 'chatgpt-api',
@@ -83,19 +107,43 @@ const PROVIDERS = [
 export function ConnectionPage() {
   const [checking, setChecking] = useState(true);
   const [emailReady, setEmailReady] = useState(null);
+  const [oauthState, setOauthState] = useState(null);
+  const [poolState, setPoolState] = useState(null);
   const [error, setError] = useState('');
 
   const check = useCallback(async () => {
     setChecking(true);
     setError('');
     try {
-      const data = await tempmailRequest('status');
-      // Alias belum tentu dibuat; yang penting endpoint-nya hidup dan akun bisa
-      // membuat alias. `alias: null` tetap berarti saluran siap.
-      setEmailReady(Boolean(data?.ok));
-    } catch (err) {
-      setEmailReady(false);
-      setError(String(err?.message || err));
+      // Saluran email: satu-satunya provider yang endpoint statusnya sudah lama
+      // ada. Kegagalan di sini tidak boleh menggagalkan pembacaan status lain.
+      try {
+        const data = await tempmailRequest('status');
+        setEmailReady(Boolean(data?.ok));
+      } catch (err) {
+        setEmailReady(false);
+        setError(String(err?.message || err));
+      }
+
+      // ChatGPT: dibaca dari server. "Tersambung" hanya berarti tautan OAuth
+      // benar-benar berstatus linked — bukan sekadar tombolnya ada.
+      const oauth = await chatGptOAuthApi.status();
+      if (oauth.ok) {
+        const links = Array.isArray(oauth.data?.links) ? oauth.data.links : [];
+        const linked = links.filter((link) => link.status === 'linked');
+        setOauthState({
+          linked: linked.length,
+          pending: links.filter((link) => link.status === 'pending').length,
+          planUsage: linked.some((link) => link.plan_usage),
+          email: linked[0]?.email || '',
+        });
+      } else {
+        setOauthState({ error: oauth.data?.error || 'Status ChatGPT tidak bisa dibaca.' });
+      }
+
+      // Pool akun (API key) — dipakai tool gambar/video.
+      const summary = await fetchPoolSummary();
+      setPoolState(summary);
     } finally {
       setChecking(false);
     }
@@ -116,10 +164,11 @@ export function ConnectionPage() {
       <div className="studio-connection">
         <section className="studio-connection-hero">
           <span className="studio-connection-badge"><Plug size={12} /> Koneksi</span>
-          <h1>Satu form, satu tombol.</h1>
+          <h1>Status dari server, bukan label di halaman ini.</h1>
           <p>
-            Tekan <b>Periksa koneksi</b> untuk memastikan semua saluran yang dipakai Studio siap.
-            BLEA hanya memakai koneksi resmi: API key provider dan OAuth pemilik akun.
+            Tekan <b>Periksa koneksi</b> untuk membaca keadaan sebenarnya: berapa akun ChatGPT yang
+            benar-benar siap dipakai pool, dan apakah saluran email hidup. BLEA hanya memakai
+            koneksi resmi: OAuth pemilik akun dan API key provider.
           </p>
           <button type="button" className="studio-connection-cta" onClick={check} disabled={checking}>
             {checking ? 'Memeriksa…' : 'CONNECTION'}
@@ -133,7 +182,32 @@ export function ConnectionPage() {
         <ul className="studio-connection-list">
           {PROVIDERS.map((provider) => {
             const isEmail = provider.id === 'tempmail';
-            const state = isEmail && emailReady === false ? 'degraded' : provider.state;
+            let state = provider.state;
+            let detail = '';
+            if (isEmail) {
+              state = emailReady === false ? 'degraded' : (emailReady ? 'connected' : 'unknown');
+            } else if (provider.check === 'oauth') {
+              if (!oauthState) state = 'unknown';
+              else if (oauthState.error) { state = 'unknown'; detail = oauthState.error; }
+              else if (oauthState.linked > 0) {
+                state = 'connected';
+                detail = `${oauthState.linked} akun tertaut${oauthState.planUsage ? ' · izin paket aktif' : ' · izin paket belum dicentang'}${oauthState.email ? ` · ${oauthState.email}` : ''}`;
+              } else {
+                state = 'degraded';
+                detail = oauthState.pending > 0
+                  ? `${oauthState.pending} percobaan login belum selesai — tempel URL callback di halaman Akun ChatGPT.`
+                  : 'Belum ada akun yang benar-benar tertaut. Tekan Continue with ChatGPT di halaman Akun ChatGPT.';
+              }
+            } else if (provider.id === 'chatgpt-api') {
+              if (!poolState || poolState.restricted) state = 'unknown';
+              else if (poolState.error) { state = 'unknown'; detail = poolState.error; }
+              else if (poolState.usable > 0) { state = 'connected'; detail = `${poolState.usable} akun ber-API key siap (dari ${poolState.total}).`; }
+              else { state = 'degraded'; detail = `Ada ${poolState.total} akun, tidak ada yang siap.`; }
+            }
+            const label = state === 'connected' ? 'Tersambung'
+              : state === 'degraded' ? 'Belum tersambung'
+                : state === 'restricted' ? 'Tidak diukur'
+                  : 'Belum diperiksa';
             return (
               <li key={provider.id} className={`studio-connection-item is-${state}`}>
                 <span className="studio-connection-dot" aria-hidden="true">
@@ -142,11 +216,9 @@ export function ConnectionPage() {
                 <div>
                   <b>{provider.label}</b>
                   <small>{provider.note}</small>
-                  {isEmail && emailReady === null && checking && <small>Memeriksa saluran email…</small>}
+                  {detail && <small className="studio-connection-detail">{detail}</small>}
                 </div>
-                <span className="studio-connection-state">
-                  {state === 'connected' ? 'Tersambung' : 'Terbatas'}
-                </span>
+                <span className={`studio-connection-state is-${state}`}>{label}</span>
               </li>
             );
           })}

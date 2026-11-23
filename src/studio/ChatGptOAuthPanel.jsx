@@ -119,6 +119,20 @@ export function ChatGptOAuthPanel({ onLinked }) {
     onLinked?.();
   }
 
+  // Setelah login berhasil, pool di server berubah. `load()` dipanggil ulang
+  // supaya daftar akun di bawah tidak tertinggal menampilkan keadaan lama.
+  async function refreshStatus() {
+    setBusy('status');
+    const res = await chatGptOAuthApi.status();
+    setBusy('');
+    if (res.ok && Array.isArray(res.data?.links)) {
+      setLinks(res.data.links);
+      setNotice('Status diperbarui dari server.');
+    } else {
+      setError(res.data?.error || 'Status tidak bisa dimuat ulang.');
+    }
+  }
+
   async function completeFromUrl(event) {
     event.preventDefault();
     setPasteBusy(true);
@@ -155,10 +169,13 @@ export function ChatGptOAuthPanel({ onLinked }) {
           <p className="oauth-note"><Loader2 size={14} className="agent-spin" /> Menukar kode otorisasi dengan token, lalu menyegelnya di server.</p>
         )}
         {notice && <p className="oauth-ok"><CircleCheck size={14} /> {notice}</p>}
-        {/* Domain publik tidak bisa menerima callback loopback, jadi login
-          diselesaikan dengan menempel URL callback. Di 127.0.0.1 alur ini
-          otomatis dan blok di bawah tidak perlu. */}
-      {!autoCallback && (
+        {/* Kolom tempel URL SELALU tampil, di origin mana pun.
+          Alasan: kalau halaman callback 127.0.0.1 terbuka, penyelesaiannya
+          berhenti di 401 (tidak ada sesi BLEA di origin itu). Sebelumnya blok
+          ini disembunyikan di origin non-loopback berdasarkan asumsi yang
+          salah ("di 127.0.0.1 semuanya otomatis"), sehingga pengguna tidak
+          punya jalan sama sekali. */}
+      {(
         <div className="oauth-manual">
           <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
           <p>
@@ -219,10 +236,15 @@ export function ChatGptOAuthPanel({ onLinked }) {
             lalu Studio memakai paket ChatGPT itu. Tidak ada API key yang perlu ditempel.
           </p>
         </div>
-        <button type="button" className="oauth-start" onClick={start} disabled={busy === 'start'}>
-          {busy === 'start' ? <Loader2 size={14} className="agent-spin" /> : <Link2 size={14} />}
-          {busy === 'start' ? 'Membuka ChatGPT…' : 'Continue with ChatGPT'}
-        </button>
+        <div className="oauth-head-actions">
+          <button type="button" className="oauth-start" onClick={start} disabled={busy === 'start'}>
+            {busy === 'start' ? <Loader2 size={14} className="agent-spin" /> : <Link2 size={14} />}
+            {busy === 'start' ? 'Membuka ChatGPT…' : 'Continue with ChatGPT'}
+          </button>
+          <button type="button" className="oauth-refresh" onClick={refreshStatus} disabled={busy === 'status'}>
+            {busy === 'status' ? <Loader2 size={13} className="agent-spin" /> : <RefreshCw size={13} />} Perbarui status
+          </button>
+        </div>
       </header>
 
       <ul className="oauth-limits">

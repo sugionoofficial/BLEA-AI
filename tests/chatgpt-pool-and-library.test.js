@@ -322,3 +322,35 @@ test('halaman Hasil & Unduhan serta Akun ChatGPT bisa dirender tanpa navigasi se
     await vite.close();
   }
 });
+
+// Regresi: halaman Koneksi pernah menulis "Tersambung" untuk ChatGPT padahal
+// tidak ada satu pun akun OAuth di server — klaim tanpa bukti. Sekarang label
+// itu hanya muncul bila server melaporkan tautan berstatus linked.
+test('halaman Koneksi tidak mengklaim ChatGPT tersambung tanpa bukti', async () => {
+  const { createServer } = await import('vite');
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    logLevel: 'silent',
+    resolve: {
+      alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }],
+    },
+  });
+  try {
+    const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+    const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+    const { ConnectionPage } = await vite.ssrLoadModule('/src/studio/ConnectionPage.jsx');
+    const html = renderToStaticMarkup(
+      React.createElement(MemoryRouter, null,
+        React.createElement(AuthProvider, { initialSession: null }, React.createElement(ConnectionPage))),
+    );
+    // Sebelum diperiksa, status tidak boleh diklaim.
+    assert.ok(!/ChatGPT[\s\S]{0,400}Tersambung/.test(html), 'tidak boleh ada klaim Tersambung untuk ChatGPT sebelum diukur');
+    assert.ok(html.includes('Status dari server, bukan label di halaman ini.'));
+    assert.ok(html.includes('Belum diperiksa'));
+  } finally {
+    await vite.close();
+  }
+});
