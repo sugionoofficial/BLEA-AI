@@ -169,15 +169,11 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
   // Hanya pesan yang masuk SETELAH permintaan ini dibuat yang isinya dibaca
   // penuh. Tanpanya, email lama (termasuk surat pribadi di inbox admin) ikut
   // dipindai dan kode acak di dalamnya bisa tersaji seolah kode verifikasi.
-  // Patokan waktu diambil dari jejak langkah terakhir (updated_at), bukan hanya
-  // saat baris dibuat: permintaan bisa dibuat berjam-jam lalu, sehingga jendela
-  // berbasis created_at saja akan ikut memindai surat pribadi yang datang
-  // setelahnya.
-  const stepAt = Math.max(
-    Date.parse(row.created_at || '') || 0,
-    Date.parse(row.updated_at || '') || 0,
-  );
-  const startedAt = stepAt || Number.NaN;
+  // Patokan = awal ronde (created_at), BUKAN updated_at. `prepare` selalu
+  // menulis ulang created_at saat ronde baru dimulai, jadi ini memang awal
+  // ronde. Memakai updated_at salah: setiap verify memperbarui updated_at,
+  // sehingga percobaan ulang justru mengecualikan email yang sedang dicari.
+  const startedAt = Date.parse(row.created_at || '') || Number.NaN;
   const candidatesToRead = scored.filter((message) => {
     if (!message?.id) return false;
     const receivedAt = Date.parse(message.createdAt || '');
