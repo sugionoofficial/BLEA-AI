@@ -128,6 +128,93 @@ export function buildAutofillBookmarklet(email) {
   return `javascript:${encodeURIComponent(script)}`;
 }
 
+/**
+ * Userscript (Tampermonkey/Violentmonkey) untuk pengisian OTOMATIS.
+ *
+ * Kenapa jalur ini ada: bookmarklet hanya jalan bila pengguna berhasil menyeret
+ * tautannya ke bilah bookmark, dan Chrome membuang awalan `javascript:` saat
+ * ditempel — dua titik gagal yang tidak bisa dikendalikan dari halaman BLEA.
+ * Userscript dipasang sekali, lalu berjalan sendiri setiap halaman login
+ * ChatGPT dibuka: tidak ada seret, tidak ada tempel.
+ *
+ * Batasannya tetap sama: hanya mengisi kolom email, tidak menekan "Lanjutkan",
+ * tidak mengirim formulir, tidak membaca cookie/token, tidak mengirim data ke
+ * mana pun. Pengguna tetap menekan tombolnya sendiri.
+ */
+export function buildAutofillUserscript(email, { origin = '' } = {}) {
+  const address = cleanText(email, 320).toLowerCase();
+  if (!isSignupEmail(address) || /["'\\`<>]/.test(address)) {
+    throw fail('Email tidak aman untuk dijadikan userscript.', 400);
+  }
+  const from = cleanText(origin, 200);
+  return `// ==UserScript==
+// @name         BLEA — isi email ChatGPT
+// @namespace    blea-ai
+// @version      1.0
+// @description  Mengisi kolom email di halaman login/daftar ChatGPT dengan email TempMail. Tidak menekan Lanjutkan.
+// @match        https://chatgpt.com/*
+// @match        https://auth.openai.com/*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+(function () {
+  'use strict';
+  var EMAIL = ${JSON.stringify(address)};
+  var SRC = ${JSON.stringify(from || 'BLEA AI')};
+  var SELECTORS = ${JSON.stringify(EMAIL_INPUT_SELECTORS)};
+
+  function pickInput() {
+    for (var i = 0; i < SELECTORS.length; i += 1) {
+      var el = document.querySelector(SELECTORS[i]);
+      if (el && !el.disabled && el.type !== 'tel' && !el.readOnly) return el;
+    }
+    return null;
+  }
+
+  function fill(el) {
+    if (!el || el.value === EMAIL) return el && el.value === EMAIL;
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, EMAIL);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.focus();
+    if (el.value !== EMAIL) el.value = EMAIL;
+    return el.value === EMAIL;
+  }
+
+  function attempt() {
+    var el = pickInput();
+    if (!el) return false;
+    if (!fill(el)) return false;
+    // Penanda kecil supaya terlihat skrip ini benar-benar berjalan.
+    if (!document.getElementById('blea-autofill-mark')) {
+      var mark = document.createElement('div');
+      mark.id = 'blea-autofill-mark';
+      mark.textContent = 'Email diisi oleh ' + SRC;
+      mark.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:2147483647;padding:6px 10px;border-radius:8px;background:#111;color:#d7d7ff;font:12px system-ui;opacity:.85;pointer-events:none';
+      document.body.appendChild(mark);
+      setTimeout(function () { mark.remove(); }, 4000);
+    }
+    return true;
+  }
+
+  if (attempt()) return;
+  // Halaman ini merender formulir belakangan (React hydrate): coba beberapa kali.
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    if (attempt() || tries > 40) clearInterval(timer);
+  }, 250);
+  // Kalau kolom muncul lagi setelah navigasi internal, isi ulang.
+  var observer = new MutationObserver(function () {
+    var el = pickInput();
+    if (el && el.value !== EMAIL) fill(el);
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+})();
+`;
+}
+
 export function buildSigninBootstrap(email) {
   const address = cleanText(email, 320).toLowerCase();
   return {
@@ -143,6 +230,8 @@ export function buildSigninBootstrap(email) {
     // Bookmarklet = satu-satunya cara sah mengisi kolom lintas-origin:
     // dijalankan di halaman chatgpt.com atas klik pengguna.
     autofill_bookmarklet: buildAutofillBookmarklet(address),
+    // Jalur otomatis tanpa seret/tempel: dipasang sekali di Tampermonkey.
+    autofill_userscript: buildAutofillUserscript(address),
     steps: [
       'Isi kolom "Alamat email" di ChatGPT: tempel manual, atau seret tombol "Isi email otomatis" di panel ke bilah bookmark lalu klik di tab ChatGPT.',
       'Tekan "Lanjutkan" di tab ChatGPT (BLEA tidak pernah menekan tombol itu untuk Anda).',

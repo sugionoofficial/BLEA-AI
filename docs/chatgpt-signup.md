@@ -53,7 +53,16 @@ Jalan yang tersedia (dan memang disediakan panel):
 |---|---|---|
 | Tempel manual | tidak | selalu bisa |
 | Tombol **Salin email** | semi | fallback `execCommand` bila Clipboard API ditolak |
-| **Bookmarklet "Isi email otomatis"** | ya, sekali klik | dijalankan DI halaman `chatgpt.com` atas klik pengguna |
+| **Userscript** (`/api/chatgpt-signup/userscript`) | **ya, tanpa klik** | dipasang sekali di Tampermonkey; mengisi sendiri setiap `/auth/login` dibuka |
+| **Bookmarklet** | ya, sekali klik | tanpa ekstensi; Chrome membuang awalan `javascript:` kalau ditempel, jadi harus **diseret** |
+
+Userscript adalah jalur yang disarankan karena dua titik gagal sebelumnya
+(menyeret tautan, menempel skrip) hilang. Isinya: pilih `input` email, isi
+`value` lewat setter native + event `input`/`change`, fokus, tampilkan penanda
+kecil 4 detik, ulangi tiap 250 ms sampai 10 detik (React hydrate) dan lewat
+`MutationObserver` bila kolom dirender ulang. Tidak menekan `Lanjutkan`, tidak
+`submit()`, tidak menyentuh cookie/`localStorage`/jaringan — ada tes yang
+menjalankannya di DOM tiruan `chatgpt.com` dan memeriksa semuanya.
 
 Bookmarklet (`buildAutofillBookmarklet`) hanya: memilih `input` email
 (bukan `type=tel`), mengisi `value` lewat setter native + event `input`/`change`,

@@ -3,6 +3,7 @@ import {
   CircleAlert,
   CircleCheck,
   ClipboardCopy,
+  Download,
   ExternalLink,
   Loader2,
   MailSearch,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   chatGptSignupApi,
+  fetchAutofillUserscript,
   newLoggingId,
   SIGNUP_STEP_META,
 } from './chatgptSignupClient';
@@ -59,6 +61,8 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [returnAnalysis, setReturnAnalysis] = useState(null);
   const [copied, setCopied] = useState('');
   const [bookmarklet, setBookmarklet] = useState('');
+  const [userscriptBusy, setUserscriptBusy] = useState(false);
+  const [userscriptText, setUserscriptText] = useState('');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -137,6 +141,39 @@ export function ChatGptSignupPanel({ onVerified }) {
       setError('Browser memblokir tab baru. Buka URL di blok "URL yang dibuka" di bawah secara manual.');
     }
     await load();
+  }
+
+  /**
+   * Ambil userscript dari server, lalu:
+   *   • unduh sebagai file `blea-chatgpt-autofill.user.js` (Tampermonkey
+   *     menawarkan "Install" saat file itu dibuka), dan
+   *   • tampilkan isinya di kotak teks sebagai cadangan bila unduhan diblokir.
+   */
+  async function downloadUserscript() {
+    setUserscriptBusy(true);
+    setError('');
+    setNotice('');
+    const res = await fetchAutofillUserscript(email);
+    setUserscriptBusy(false);
+    if (!res.ok) {
+      setError(res.error || 'Userscript tidak bisa diunduh.');
+      return;
+    }
+    setUserscriptText(res.text);
+    try {
+      const blob = new Blob([res.text], { type: 'text/javascript' });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = 'blea-chatgpt-autofill.user.js';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 10_000);
+      setNotice('Berkas userscript diunduh. Buka berkas itu → Tampermonkey menawarkan Install → setelah itu kolom email terisi otomatis setiap halaman login ChatGPT dibuka.');
+    } catch {
+      setError('Unduhan diblokir browser. Salin isi skrip dari kotak di bawah ke userscript baru di Tampermonkey.');
+    }
   }
 
   async function confirmReturnUrl() {
@@ -290,30 +327,46 @@ export function ChatGptSignupPanel({ onVerified }) {
             di bawah (Anda yang mengklik di tab ChatGPT).
           </small>
           <div className="cga-signup-bookmarklet">
-            <b>Isi email otomatis (opsional)</b>
+            <b>Isi email otomatis</b>
             <p>
-              Seret tombol ini ke bilah bookmark, lalu buka tab ChatGPT dan klik bookmark itu —
-              kolom email akan terisi. Tidak ada yang dikirim, disimpan, atau diklik otomatis;
-              tombol <b>Lanjutkan</b> tetap Anda yang tekan.
+              Ada dua jalur. <b>Jalur A</b> dipasang sekali di Tampermonkey lalu berjalan sendiri
+              setiap halaman login ChatGPT dibuka — tidak perlu seret atau tempel apa pun.
+              <b> Jalur B</b> (bookmarklet) tidak perlu ekstensi, tetapi harus diklik tiap kali.
+              Keduanya hanya mengisi kolom email: <b>Lanjutkan</b> tetap Anda yang tekan.
             </p>
             <div className="cga-signup-bookmarklet-row">
+              <button type="button" className="cga-signup-userscript" onClick={downloadUserscript} disabled={userscriptBusy || !email.trim()}>
+                {userscriptBusy ? <Loader2 size={12} className="agent-spin" /> : <Download size={12} />} Unduh userscript (disarankan)
+              </button>
               <a
                 className="cga-signup-drag"
                 href={bookmarklet}
-                title="Seret ke bilah bookmark, atau klik kalau panel ini dibuka di tab BLEA sendiri"
+                title="Seret ke bilah bookmark, lalu klik di tab ChatGPT"
                 onClick={(event) => {
-                  // Klik di sini tidak akan jalan (eksekusi `javascript:` diblokir
-                  // di konteks BLEA), jadi beri arahan menyeret.
                   event.preventDefault();
-                  setError('Seret tombol itu ke bilah bookmark (jangan diklik di halaman BLEA), lalu klik bookmark-nya di tab ChatGPT.');
+                  setError('Seret tombol ini ke bilah bookmark (jangan diklik di halaman BLEA), lalu klik bookmark-nya di tab ChatGPT. Chrome membuang awalan javascript: kalau ditempel — seret, jangan tempel.');
                 }}
               >
-                <ClipboardCopy size={12} /> Isi email otomatis
+                <ClipboardCopy size={12} /> Seret: Isi email otomatis
               </a>
               <button type="button" onClick={() => copyText(bookmarklet, 'bookmarklet')}>
-                {copied === 'bookmarklet' ? 'Skrip disalin' : 'Salin skrip'}
+                {copied === 'bookmarklet' ? 'Skrip disalin' : 'Salin skrip bookmarklet'}
               </button>
             </div>
+            <ol className="cga-signup-userscript-steps">
+              <li>Pasang ekstensi <b>Tampermonkey</b> (Chrome/Edge/Firefox).</li>
+              <li>Tekan <b>Unduh userscript</b> di atas, lalu buka berkasnya → pilih <b>Install</b>.</li>
+              <li>Buka lagi <i>Siapkan &amp; buka daftar</i>: kolom email terisi sendiri, muncul penanda kecil “Email diisi oleh BLEA AI”.</li>
+            </ol>
+            {userscriptText && (
+              <div className="cga-signup-userscript-fallback">
+                <small>Cadangan: isi skrip userscript (salin ke Tampermonkey → Create a new script).</small>
+                <textarea readOnly value={userscriptText} rows={8} spellCheck={false} />
+                <button type="button" onClick={() => copyText(userscriptText, 'userscript')}>
+                  {copied === 'userscript' ? 'Skrip userscript disalin' : 'Salin skrip userscript'}
+                </button>
+              </div>
+            )}
           </div>
         </label>
         <div className="cga-signup-links">

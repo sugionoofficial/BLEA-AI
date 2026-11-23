@@ -430,3 +430,23 @@
   font: inherit; font-size: 12px; padding: 7px 11px; border-radius: 8px;
   color: inherit; background: transparent; border: 1px solid var(--cga-line, #26262b);
 }
+
+.cga-signup-bookmarklet-row button.cga-signup-userscript {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600; padding: 7px 12px; border-radius: 8px;
+  color: #fff; background: var(--cga-accent, #8b8bff); border: 0;
+}
+.cga-signup-bookmarklet-row button.cga-signup-userscript:disabled { opacity: .55; cursor: progress; }
+.cga-signup-userscript-steps { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 11.5px; opacity: .85; }
+.cga-signup-userscript-fallback { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.cga-signup-userscript-fallback small { font-size: 11.5px; opacity: .75; }
+.cga-signup-userscript-fallback textarea {
+  width: 100%; resize: vertical; padding: 9px 11px; border-radius: 9px;
+  font: 11.5px/1.5 ui-monospace, monospace; color: inherit;
+  background: var(--cga-block-2, #1b1b1f); border: 1px solid var(--cga-line, #26262b);
+}
+.cga-signup-userscript-fallback button {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font: inherit; font-size: 12px; padding: 7px 11px; border-radius: 8px;
+  color: inherit; background: transparent; border: 1px solid var(--cga-line, #26262b);
+}
