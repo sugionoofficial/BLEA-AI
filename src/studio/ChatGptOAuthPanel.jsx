@@ -10,6 +10,7 @@ import {
   oauthAutoCallbackSupported,
   readPendingAttempt,
 } from './chatgptOAuthClient';
+import { explainOAuthError, resolveOAuthRedirectUri } from '../lib/chatgptSignup';
 
 const STATUS_META = {
   pending: { label: 'Menunggu persetujuan', tone: 'warn' },
@@ -53,6 +54,14 @@ export function ChatGptOAuthPanel({ onLinked }) {
   const [pasteUrl, setPasteUrl] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
   const [hasPending, setHasPending] = useState(() => Boolean(readPendingAttempt()));
+  // Nilai redirect_uri yang BENAR-BENAR dipakai, ditampilkan supaya bisa
+  // dicocokkan dengan URL di bilah alamat saat OAuth gagal (invalid_state).
+  const redirectInfo = resolveOAuthRedirectUri({
+    hostname: typeof window === 'undefined' ? '' : window.location.hostname,
+    port: typeof window === 'undefined' ? '' : window.location.port,
+  });
+  const [diag, setDiag] = useState(null);
+  const [errorCodeInput, setErrorCodeInput] = useState('');
 
   const load = useCallback(async () => {
     if (callbackPage) return;
@@ -138,6 +147,24 @@ export function ChatGptOAuthPanel({ onLinked }) {
     } else {
       setError(res.data?.error || 'Status tidak bisa dimuat ulang.');
     }
+  }
+
+  /**
+   * Diagnosa kegagalan OAuth dari kode error OpenAI.
+   *
+   * `invalid_state` terjadi di auth.openai.com SEBELUM callback kita, jadi
+   * tidak ada yang bisa diperiksa di server. Yang bisa dilakukan: jelaskan
+   * sebabnya dan tampilkan `redirect_uri` yang dipakai, supaya bisa dicocokkan
+   * dengan URL di bilah alamat.
+   */
+  function diagnose(rawCode) {
+    const code = String(rawCode || '').trim();
+    if (!code) return;
+    setDiag(explainOAuthError({
+      error: code,
+      detail: '',
+      hasPendingAttempt: Boolean(readPendingAttempt()),
+    }));
   }
 
   async function completeFromUrl(event) {
@@ -262,6 +289,44 @@ export function ChatGptOAuthPanel({ onLinked }) {
           </button>
         </form>
         {hasPending && <small>Sesi login terbuka di tab ini — tempel URL-nya sebelum 30 menit.</small>}
+      </div>
+
+      {/* Diagnosa kegagalan OAuth. OpenAI mengembalikan halaman error dengan
+          kode seperti invalid_state SEBELUM callback kita, jadi tidak ada
+          baris server yang bisa diperiksa — penjelasan ini yang menggantikannya. */}
+      <div className="oauth-manual">
+        <b><ShieldCheck size={13} /> Gagal dengan kode error?</b>
+        <p>
+          Kalau halaman OpenAI menampilkan <code>error_code</code>, salin kodenya di sini untuk
+          penjelasan sebab + langkah perbaikannya. Nilai <code>redirect_uri</code> yang dikirim:{' '}
+          <code>{redirectInfo.redirect_uri}</code>
+          {redirectInfo.auto_callback
+            ? ' (callback otomatis: BLEA dibuka dari 127.0.0.1).'
+            : ' (bukan 127.0.0.1, jadi callback diselesaikan dengan menempel URL).'}
+        </p>
+        <form onSubmit={(event) => { event.preventDefault(); diagnose(diag?.code || errorCodeInput); }}>
+          <input
+            type="text"
+            spellCheck={false}
+            value={errorCodeInput}
+            onChange={(event) => { setErrorCodeInput(event.target.value); setDiag(null); }}
+            placeholder="invalid_state, invalid_grant, access_denied…"
+            aria-label="Kode error OAuth dari OpenAI"
+          />
+          <button type="submit" disabled={!errorCodeInput.trim()}>
+            <CircleAlert size={13} /> Jelaskan
+          </button>
+          <button type="button" onClick={() => { setErrorCodeInput('invalid_state'); diagnose('invalid_state'); }}>
+            <ShieldCheck size={13} /> invalid_state
+          </button>
+        </form>
+        {diag && (
+          <div className="oauth-diag" role="status">
+            <b>{diag.code}</b>
+            <small>Sebab: {diag.cause}</small>
+            <small>Perbaikan: {diag.fix}</small>
+          </div>
+        )}
       </div>
 
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}

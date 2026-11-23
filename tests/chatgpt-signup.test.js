@@ -1028,3 +1028,45 @@ test('panel menyimpan akses lewat OAuth resmi, bukan cookie sesi', async () => {
   assert.match(panel, /1 jam/);
   assert.match(panel, /refresh/);
 });
+
+// Diagnosa kegagalan OAuth: halaman error `invalid_state` dari auth.openai.com
+// terjadi SEBELUM callback kita, jadi tidak ada baris DB yang bisa diperiksa.
+// Panel harus menjelaskan sebab yang paling mungkin, bukan menampilkan kode
+// mentah tanpa arti.
+test('pesan invalid_state menjelaskan sebab dan langkah konkret', () => {
+  const { explainOAuthError } = globalThis.__signup;
+  const notFound = explainOAuthError({ error: 'invalid_state', detail: '', hasPendingAttempt: false });
+  assert.equal(notFound.code, 'invalid_state');
+  assert.match(notFound.cause, /percobaan OAuth yang sah/i);
+  assert.match(notFound.fix, /Continue with ChatGPT/i);
+
+  const mismatch = explainOAuthError({ error: 'invalid_state', detail: '', hasPendingAttempt: true });
+  assert.match(mismatch.cause, /tidak cocok|beda/i);
+
+  // Error lain tidak boleh "dipaksa" jadi invalid_state.
+  const other = explainOAuthError({ error: 'invalid_grant', detail: 'refresh ditolak' });
+  assert.equal(other.code, 'invalid_grant');
+  assert.match(other.fix, /ulangi|ulang/i);
+  assert.equal(explainOAuthError({}).code, 'unknown');
+});
+
+// redirect_uri: port hanya boleh berubah; skema/host/path tetap. Di domain
+// publik tidak ada yang mendengarkan, jadi callback diselesaikan tempel-URL.
+test('resolveOAuthRedirectUri mengikuti aturan loopback OpenAI', () => {
+  const { resolveOAuthRedirectUri } = globalThis.__signup;
+  const local = resolveOAuthRedirectUri({ hostname: '127.0.0.1', port: '5173' });
+  assert.equal(local.redirect_uri, 'http://127.0.0.1:5173/auth/callback');
+  assert.equal(local.auto_callback, true);
+
+  const noPort = resolveOAuthRedirectUri({ hostname: '127.0.0.1', port: '' });
+  assert.equal(noPort.redirect_uri, 'http://127.0.0.1:80/auth/callback');
+
+  const remote = resolveOAuthRedirectUri({ hostname: 'blea.ai', port: '443' });
+  assert.equal(remote.auto_callback, false);
+  assert.match(remote.redirect_uri, /^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/);
+  const port = Number(remote.redirect_uri.split(':')[2].split('/')[0]);
+  assert.ok(port >= 1024 && port <= 65535, `port di luar rentang: ${port}`);
+  // `localhost` tidak boleh dipakai: OpenAI menolaknya.
+  assert.ok(!/localhost/.test(remote.redirect_uri));
+  assert.ok(!/\/callback\?/.test(remote.redirect_uri));
+});
