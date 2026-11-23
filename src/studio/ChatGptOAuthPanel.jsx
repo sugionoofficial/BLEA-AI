@@ -41,6 +41,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
   const callbackPage = isOAuthCallbackPage();
   const [callbackUrl, setCallbackUrl] = useState(() => (typeof window === 'undefined' ? '' : window.location.href));
   const [needsLogin, setNeedsLogin] = useState(false);
+  const [retained, setRetained] = useState(null);
   const [links, setLinks] = useState([]);
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(!callbackPage);
@@ -60,6 +61,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
     if (res.ok) {
       setLinks(Array.isArray(res.data?.links) ? res.data.links : []);
       setConfig(res.data?.config || null);
+      setRetained(res.data?.retained_client || null);
     } else {
       setError(res.data?.error || 'Status tautan ChatGPT tidak bisa dimuat.');
     }
@@ -92,7 +94,12 @@ export function ChatGptOAuthPanel({ onLinked }) {
     setBusy('start');
     setError('');
     setNotice('');
-    const res = await beginChatGptSignIn();
+    // Login ulang memakai client_id terbitan yang dipertahankan (bukan
+    // mendaftar ulang), sesuai panduan OpenAI untuk pemulihan invalid_grant.
+    const res = await beginChatGptSignIn({
+      issuedClientId: retained?.client_id || '',
+      loginHint: retained?.email || '',
+    });
     // Kalau berhasil, halaman langsung dialihkan ke OpenAI; tidak ada state lagi.
     if (!res.ok) {
       setBusy('');
@@ -214,6 +221,12 @@ export function ChatGptOAuthPanel({ onLinked }) {
           </button>
         </div>
       </header>
+
+      {retained?.client_id && (
+        <p className="oauth-note">
+          Mendaftar ulang tidak diperlukan: client <code>{retained.client_id}</code> sudah terbit untuk akun ini dan akan dipakai lagi.
+        </p>
+      )}
 
       <ul className="oauth-limits">
         {PLAN_LIMITS.map((line) => (

@@ -20,7 +20,7 @@ import {
 } from '../src/lib/chatgptOAuth.js';
 import { sendOAuthResponses, pickChatGptAccountsFor } from '../src/lib/chatgptPool.js';
 import { parseCallbackInput } from '../src/studio/oauthCallbackUrl.js';
-import { listOAuthLinks } from '../src/lib/chatgptOAuth.js';
+import { listOAuthLinks, retainedClientId } from '../src/lib/chatgptOAuth.js';
 import { sealChatGptToken } from '../src/lib/chatgptPool.js';
 
 const ENC_KEY = 'test-encryption-key-for-oauth-suite-32b';
@@ -656,7 +656,7 @@ test('invalid_grant: pesan yang jelas + jejak teknis tersimpan', async () => {
       completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
         attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-2', client_id: 'oaiapp_X',
       }),
-      /invalid_grant: kode otorisasi tidak diterima/,
+      /invalid_grant\) dan tidak menjelaskan sebabnya/,
     );
     const failed = stub.state.patches.find((patch) => patch.status === 'failed');
     assert.ok(failed, 'kegagalan harus dicatat');
@@ -697,5 +697,54 @@ test('state yang tidak cocok ditolak sebelum memanggil OpenAI', async () => {
     assert.equal(stub.state.tokenCalls.length, 0);
   } finally {
     stub.restore();
+  }
+});
+
+// ---- Klien terbitan dipertahankan setelah gagal ---------------------------
+// Panduan OpenAI: bila penukaran kode gagal, "discard that code and start a
+// fresh authorization with the issued client ID retained". Dulu id terbitan
+// dibuang, sehingga setiap percobaan ulang mendaftar lagi sebagai
+// dynamic_agent_client dan gagal dengan cara yang sama.
+test('issued client_id tetap tersimpan walau penukaran kode gagal', async () => {
+  const attempt = baseAttempt();
+  const stub = oauthEnvWith({
+    attempt,
+    tokenResponses: [
+      { status: 400, body: { error: 'invalid_grant' } },
+      { status: 400, body: { error: 'invalid_grant' } },
+    ],
+  });
+  try {
+    await assert.rejects(completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+      attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-9', client_id: 'oaiapp_RETAIN',
+    }));
+    const failed = stub.state.patches.find((patch) => patch.status === 'failed');
+    assert.equal(failed.issued_client_id, 'oaiapp_RETAIN', 'client_id terbitan harus dipertahankan');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('retainedClientId mengembalikan id terbitan terakhir, bukan dynamic_agent_client', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/rest/v1/chatgpt_oauth_links?')) {
+      return Response.json([{ issued_client_id: 'oaiapp_LAST', account_email: 'me@example.com' }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const kept = await retainedClientId(createEnv(), { id: 'user-1' });
+    assert.equal(kept.client_id, 'oaiapp_LAST');
+    assert.equal(kept.email, 'me@example.com');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  globalThis.fetch = async () => Response.json([{ issued_client_id: 'dynamic_agent_client' }]);
+  try {
+    assert.equal(await retainedClientId(createEnv(), { id: 'user-1' }), null, 'dynamic_agent_client bukan id terbitan');
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

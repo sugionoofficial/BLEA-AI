@@ -90,6 +90,7 @@ import {
   createOAuthAttempt,
   disconnectOAuthLink,
   listOAuthLinks,
+  retainedClientId,
   OPENAI_AGENT_NAME_HINT,
   OPENAI_DYNAMIC_CLIENT_ID,
   OPENAI_LOOPBACK_PATH,
@@ -3891,6 +3892,8 @@ async function handleApi(request, url, env) {
             ok: true,
             enabled: true,
             links: await listOAuthLinks(env, user),
+            // Id terbitan yang harus dipakai pada login berikutnya (kalau ada).
+            retained_client: await retainedClientId(env, user),
             config: {
               authorize_endpoint: 'https://auth.openai.com/api/accounts/authorize',
               token_endpoint: 'https://auth.openai.com/api/accounts/oauth/token',

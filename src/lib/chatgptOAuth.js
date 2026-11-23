@@ -263,6 +263,12 @@ export async function completeOAuthAttempt(env, user, input = {}) {
       prefer: 'return=minimal',
       body: {
         status: 'failed',
+        // OpenAI: "If code exchange returns invalid_grant, discard that code and
+        // start a fresh authorization WITH the issued client ID retained."
+        // Dulu id terbitan ini dibuang saat gagal, sehingga setiap percobaan
+        // berikutnya mendaftar ulang sebagai `dynamic_agent_client` dan
+        // berakhir dengan invalid_grant yang sama, berulang tanpa akhir.
+        issued_client_id: clientId,
         // Jejak teknis (tanpa token/kode) supaya penyebab bisa dibaca nanti.
         error_message: cleanText(`client=${clientId} verify=${codeFingerprint} status=${result.status} body=${text.slice(0, 160)}${result.attempts ? ` | retry(${result.attempts[1].status})=${result.attempts[1].text.slice(0, 80)}` : ''}`, 900),
         updated_at: new Date().toISOString(),
@@ -271,7 +277,11 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     const detail = token?.error_description || token?.error || text.slice(0, 200) || `HTTP ${result.status}`;
     if (token?.error === 'invalid_grant') {
       throw fail(
-        'OpenAI menjawab invalid_grant: kode otorisasi tidak diterima (biasanya sudah terpakai, kedaluwarsa, atau halaman 127.0.0.1 dimuat dua kali sehingga kode terpakai lebih dulu). Ulangi login lalu tempel URL-nya SEKALI.',
+        'OpenAI menolak pertukaran kode (invalid_grant) dan tidak menjelaskan sebabnya. Tiga penyebab yang paling sering: '
+        + '(1) paket ChatGPT akun itu tidak bisa dipakai aplikasi lain — perlu Plus/Pro pada akun pribadi, bukan Free/Go atau workspace kerja; '
+        + '(2) kode sudah terpakai karena halaman 127.0.0.1 dimuat dua kali; '
+        + '(3) izin pemakaian paket tidak dicentang saat menyetujui. '
+        + 'Client yang sudah terbit disimpan, jadi menekan Continue with ChatGPT lagi tidak mendaftar ulang.',
         400,
       );
     }
@@ -372,6 +382,26 @@ export async function refreshOAuthLink(env, id) {
   if (data.refresh_token) patch.sealed_refresh_token = await sealChatGptToken(env, data.refresh_token);
   await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', prefer: 'return=minimal', body: patch });
   return { ok: true, expires_at: patch.access_expires_at };
+}
+
+/**
+ * `client_id` terbitan OpenAI terakhir untuk pengguna ini.
+ *
+ * Dipakai saat memulai login lagi: kalau sudah pernah terbit, percobaan baru
+ * memakai id itu (tanpa `agent_name_hint`) sesuai panduan OpenAI, bukan
+ * mendaftar ulang sebagai `dynamic_agent_client`. Baris `failed` ikut dibaca
+ * karena exactly kasus itu (gagal tukar kode) yang paling butuh diulang dengan
+ * id yang dipertahankan.
+ */
+export async function retainedClientId(env, user) {
+  const rows = await dbJson(
+    env,
+    `${TABLE}?select=issued_client_id,account_email&user_id=eq.${encodeURIComponent(user.id)}&issued_client_id=not.is.null&order=created_at.desc&limit=1`,
+  ).catch(() => null);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  const clientId = cleanText(row?.issued_client_id, 120);
+  if (!clientId || clientId === OPENAI_DYNAMIC_CLIENT_ID) return null;
+  return { client_id: clientId, email: cleanText(row?.account_email, 320) || '' };
 }
 
 /** Daftar tautan ChatGPT milik satu pengguna (tanpa token). */
