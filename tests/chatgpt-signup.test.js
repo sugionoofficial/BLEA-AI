@@ -415,3 +415,83 @@ test('alur manual tetap utama dan bingkai otomatis dilipat sebagai opsional', as
   // Label lama yang menonjolkan unduhan sebagai "disarankan" tidak boleh kembali.
   assert.ok(!/Unduh userscript \(disarankan\)/.test(source));
 });
+
+// Email OpenAI berisi KODE (bukan tautan yang cukup diklik). Ekstraksi harus
+// konservatif: jangan sampai salah ambil tahun/nominal/ID.
+test('extractVerificationCode mengambil kode 6 digit dan menolak angka lain', () => {
+  const { extractVerificationCode } = globalThis.__signup;
+  assert.equal(extractVerificationCode({ bodyText: 'Kode verifikasi Anda adalah 483920. Kode berlaku 10 menit.' }).code, '483920');
+  assert.equal(extractVerificationCode({ bodyText: 'Kode: 483-920' }).code, '483920');
+  assert.equal(extractVerificationCode({ bodyHtml: '<p>Kode: <b>774411</b></p>' }).code, '774411');
+  assert.equal(extractVerificationCode({ bodyText: 'Your verification code is 918273. Dikirim 2026' }).code, '918273');
+  // Negatif: tahun saja, dua kandidat tanpa kata kunci, dan tanpa kode.
+  assert.equal(extractVerificationCode({ bodyText: 'Selamat tahun 2026 dari OpenAI' }).code, '');
+  assert.equal(extractVerificationCode({ bodyText: 'Pesanan 123456 dikirim, resi 998877' }).code, '');
+  assert.equal(extractVerificationCode({ bodyText: 'Terima kasih sudah mendaftar.' }).code, '');
+  // Nominal/harga tidak boleh dianggap kode.
+  assert.equal(extractVerificationCode({ bodyText: 'Total Rp 1250000 dibayar' }).code, '');
+});
+
+test('/api/chatgpt-signup verify membaca isi email dan mengembalikan kode', async () => {
+  const oldFetch = globalThis.fetch;
+  const attempt = {
+    id: '33333333-3333-4333-8333-333333333333',
+    user_id: 'admin-1',
+    email: 'kotak@mail.tm',
+    step: 'email_dikirim',
+    signup_url: '',
+    note: '',
+    verification_message_id: '',
+    verification_code: '',
+    verified_at: null,
+    created_at: '2026-11-23T10:00:00Z',
+    updated_at: '2026-11-23T10:00:00Z',
+  };
+  let patched = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(String(init.body));
+        return Response.json([{ ...attempt, ...patched }]);
+      }
+      return Response.json([attempt]);
+    }
+    if (target.includes('api.mail.tm/messages/msg-9')) {
+      return Response.json({
+        id: 'msg-9',
+        subject: 'Verifikasi email Anda',
+        from: { address: 'noreply@tm.openai.com' },
+        text: 'Masukkan kode berikut untuk melanjutkan: 483920',
+        html: ['<p>Kode: <b>483920</b></p>'],
+        createdAt: '2026-11-23T10:00:30Z',
+      });
+    }
+    if (target.includes('api.mail.tm/messages')) {
+      // Inbox: snippet tidak memuat kode.
+      return Response.json({ 'hydra:member': [{
+        id: 'msg-9',
+        subject: 'Verifikasi email Anda',
+        from: { address: 'noreply@tm.openai.com' },
+        to: [{ address: 'kotak@mail.tm' }],
+        intro: 'Silakan verifikasi email Anda',
+        createdAt: '2026-11-23T10:00:30Z',
+      }] });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.matched, true);
+    assert.equal(body.code, '483920', 'kode harus diambil dari isi email, bukan snippet');
+    assert.equal(patched.verification_code, '483920');
+    assert.equal(patched.step, 'terverifikasi');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});

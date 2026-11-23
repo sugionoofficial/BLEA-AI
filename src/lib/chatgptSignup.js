@@ -302,6 +302,57 @@ export function scoreVerificationMessage(message, request = {}) {
   return { score: Math.max(0, Math.min(100, score)), matched: score >= 50, reasons };
 }
 
+/**
+ * Ambil kode verifikasi dari isi email.
+ *
+ * Kenapa ini perlu: email verifikasi OpenAI berisi KODE (bukan tautan yang
+ * cukup diklik), dan kode itu harus ditempel kembali di tab ChatGPT. Snippet
+ * inbox tidak selalu memuat kodenya, jadi isi lengkap perlu dibaca.
+ *
+ * Aturan pemilihan sengaja konservatif supaya tidak salah ambil angka:
+ *   • utamakan deret 6–8 digit (bentuk kode OpenAI);
+ *   • abaikan angka yang menempel pada tahun (`2026`), harga/kuota, atau
+ *     bagian dari kata/angka lebih panjang;
+ *   • kalau ada beberapa kandidat, ambil yang berada dekat kata kunci
+ *     (`kode`, `code`, `verifikasi`, `verification`);
+ *   • ragu → kembalikan kosong, jangan menebak.
+ */
+export function extractVerificationCode({ subject = '', bodyText = '', bodyHtml = '' } = {}) {
+  const plain = String(bodyText || '')
+    .concat(' ', String(bodyHtml || '').replace(/<[^>]+>/g, ' '))
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/\s+/g, ' ');
+  if (!plain.trim()) return { code: '', candidates: [] };
+
+  const KEYWORD_RE = /(kode|code|verifikasi|verification|verifikasi|one[- ]?time|otp|masuk|sign[- ]?in)/i;
+  const found = new Map();
+  // Kode OpenAI 6 digit, kadang ditulis berkelompok ("483-920"). Kelompok
+  // bertanda hubung digabung lebih dulu, lalu deret 6–8 digit yang tidak
+  // menempel pada huruf/angka lain.
+  const pattern = /(?<![A-Za-z0-9])(\d{3}-\d{3}|\d{6,8})(?![A-Za-z0-9])/g;
+  let match;
+  while ((match = pattern.exec(plain)) !== null) {
+    const code = match[1].replace(/-/g, '');
+    const start = Math.max(0, match.index - 60);
+    const context = plain.slice(start, match.index + match[1].length + 60);
+    // Buang angka yang jelas bukan kode: tahun, nominal, kuota, ukuran.
+    if (/^(19|20)\d{2}$/.test(code) && !/kode|code|otp|verifikasi|verification/i.test(context)) continue;
+    if (/(rp|idr|usd|\$|kuota|quota|harga|price|jumlah|total)\s*[:.]?\s*$/i.test(plain.slice(start, match.index))) continue;
+    const score = (KEYWORD_RE.test(context) ? 2 : 0) + (code.length === 6 ? 1 : 0);
+    const existing = found.get(code);
+    if (!existing || score > existing.score) {
+      found.set(code, { code, score, context: context.trim().slice(0, 160) });
+    }
+  }
+  const candidates = [...found.values()].sort((a, b) => b.score - a.score).slice(0, 5);
+  // Tanpa kata kunci di sekitar, hanya terima bila kandidatnya tunggal.
+  const best = candidates[0];
+  if (!best) return { code: '', candidates: [] };
+  const hasKeyword = candidates.filter((item) => item.score >= 2).length === 1;
+  if (!hasKeyword && candidates.length > 1) return { code: '', candidates };
+  return { code: best.code, candidates };
+}
+
 export function normalizeSignupRequest(row) {
   if (!row || typeof row !== 'object') return null;
   return {
@@ -311,6 +362,7 @@ export function normalizeSignupRequest(row) {
     step: row.step || 'dibuka',
     note: row.note || '',
     verification_message_id: row.verification_message_id || '',
+    verification_code: row.verification_code || '',
     verified_at: row.verified_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,

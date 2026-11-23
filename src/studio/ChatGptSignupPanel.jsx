@@ -63,6 +63,7 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [bookmarklet, setBookmarklet] = useState('');
   const [userscriptBusy, setUserscriptBusy] = useState(false);
   const [userscriptText, setUserscriptText] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -222,8 +223,13 @@ export function ChatGptSignupPanel({ onVerified }) {
       return;
     }
     setCandidates(Array.isArray(res.data?.candidates) ? res.data.candidates : []);
+    setVerificationCode(String(res.data?.code || ''));
     if (res.data?.matched) {
-      setNotice(`Email verifikasi ditemukan: “${res.data?.best?.subject || '(tanpa subjek)'}”. Klik tautannya di halaman TempMail untuk menyelesaikan verifikasi.`);
+      // Email OpenAI berisi KODE, bukan tautan. Instruksi "klik tautan" dulu
+      // salah dan membuat pengguna buntu.
+      setNotice(res.data?.code
+        ? `Email verifikasi ditemukan: “${res.data?.best?.subject || '(tanpa subjek)'}”. Kodenya sudah diambil — salin lalu tempel di tab ChatGPT.`
+        : `Email verifikasi ditemukan: “${res.data?.best?.subject || '(tanpa subjek)'}”, tetapi kodenya tidak terbaca otomatis. Buka pesan di TempMail dan salin kodenya.`);
       onVerified?.();
     } else {
       setNotice(res.data?.hint || 'Belum ada pesan verifikasi yang cocok.');
@@ -480,6 +486,21 @@ export function ChatGptSignupPanel({ onVerified }) {
                   Lewati alamat ini
                 </button>
               </div>
+              {(verificationCode || active.verification_code) && (
+                <div className="cga-signup-code">
+                  <b>Kode verifikasi</b>
+                  <div className="cga-signup-code-row">
+                    <code className="cga-signup-code-value">{verificationCode || active.verification_code}</code>
+                    <button type="button" onClick={() => copyText(verificationCode || active.verification_code, 'code')}>
+                      <ClipboardCopy size={12} /> {copied === 'code' ? 'Kode disalin' : 'Salin kode'}
+                    </button>
+                  </div>
+                  <small>
+                    Tempelkan di kolom kode pada tab ChatGPT, lalu tekan tombol lanjut di sana.
+                    Kode ini sekali pakai dan berumur pendek — jangan disimpan lama.
+                  </small>
+                </div>
+              )}
               {active.note && <small>{active.note}</small>}
               {candidates.length > 0 && (
                 <ul className="cga-signup-candidates">

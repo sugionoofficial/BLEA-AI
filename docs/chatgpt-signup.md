@@ -111,16 +111,46 @@ diam-diam gagal.
      **diterima**. OpenAI/Auth0 tidak membawa email di URL lanjutan — hanya
      `state=` — jadi menuntut email terlihat adalah syarat yang mustahil
      dipenuhi (ini bug versi sebelumnya yang sudah diperbaiki).
-5. Tunggu email OpenAI masuk; tekan **Cari email verifikasi**. Panel menampilkan
-   pesan yang cocok beserta skornya. Buka pesan itu di TempMail dan klik
-   tautan verifikasinya sendiri.
-6. Akun yang sudah jadi dimasukkan ke pool lewat **Continue with ChatGPT**
+5. Tunggu email OpenAI masuk; tekan **Cari email verifikasi**. Panel membaca
+   pesan yang cocok (maksimal 3 teratas, isi lengkap — bukan cuma snippet),
+   mengambil **kode verifikasi** dari isinya, lalu menampilkannya besar-besar
+   dengan tombol **Salin kode**.
+6. Tempel kode itu di kolom kode pada tab ChatGPT, lalu tekan tombol lanjut di
+   sana. OpenAI mengirim **kode**, bukan tautan yang cukup diklik; kode bersifat
+   sekali pakai dan berumur pendek, jadi jangan menutup tab di tengah jalan.
+7. Akun yang sudah jadi dimasukkan ke pool lewat **Continue with ChatGPT**
    (OAuth resmi) atau **Tambah akun manual** (API key).
 
 Kalau halaman login tetap menampilkan error, buka panel *"Email tidak terbawa /
 halaman error?"*: di sana ada langkah mengambil `csrfToken` sendiri
 (`GET /api/auth/csrf`) dan formulir `POST` yang sah. Token itu diambil browser
 pada saat itu juga — BLEA tidak pernah menyimpan atau mengirimkannya.
+
+## Verifikasi berupa kode, bukan tautan
+
+Email verifikasi OpenAI berisi **kode 6 digit** (kadang ditulis `483-920`), bukan
+tautan yang cukup diklik. Versi panel sebelumnya menyuruh "klik tautannya di
+TempMail" — instruksi itu **salah** dan sudah dihapus.
+
+Yang berubah:
+
+- `extractVerificationCode()` di `src/lib/chatgptSignup.js` menarik kode dari
+  **isi lengkap** pesan (teks + HTML), karena snippet inbox sering memotongnya.
+  Aturannya konservatif: utamakan 6–8 digit, dukung bentuk `483-920`, abaikan
+  tahun (`2026`), nominal/harga, dan deret yang menempel pada angka/huruf lain.
+  Bila ada beberapa kandidat tanpa kata kunci di sekitarnya, hasilnya kosong —
+  lebih baik kosong daripada salah tempel.
+- Rute `verify` membaca sampai 3 pesan teratas lewat `tempmailMessageReader`
+  (pemeriksaan pemilik alias sama seperti `/api/tempmail`), menyimpan
+  `verification_code`, dan mengembalikan `code` + `code_from_message_id` ke UI.
+- Panel menampilkan kode + **Salin kode**, dengan peringatan sekali pakai.
+- Kolom DB `chatgpt_signup_attempts.verification_code` (migrasi
+  `20261213000002_chatgpt_signup_verification_code.sql`). Isinya **bukan**
+  kredensial login — hanya bukti sekali pakai dari inbox milik admin sendiri.
+
+Kalau panel menampilkan pesan cocok tetapi kodenya kosong, buka pesan itu di
+TempMail dan salin kodenya manual; jangan mengarang kode dari potongan yang
+tidak jelas.
 
 ## Email verifikasi tidak muncul di TempMail (alias Gmail `+tag`)
 
