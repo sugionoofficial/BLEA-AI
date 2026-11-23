@@ -467,6 +467,84 @@ export function sessionCheckGuide() {
   };
 }
 
+/**
+ * Terjemahkan error OAuth "Continue with ChatGPT" menjadi sebab + langkah.
+ *
+ * Kenapa perlu: `error_code: invalid_state` di halaman auth.openai.com terjadi
+ * SEBELUM callback kita, jadi BLEA bahkan tidak menerima parameter apa pun
+ * (tidak ada baris DB yang bisa diperiksa). Menampilkan kode mentah hanya
+ * membuat pengguna menebak.
+ *
+ * Fakta vs dugaan: yang PASTI hanya bahwa OpenAI tidak mengenali `state` pada
+ * URL kembali. Sebab paling umum pada alur kita: `redirect_uri` berisi port
+ * yang berbeda dari saat authorize — port disusun dari halaman BLEA yang
+ * sedang dibuka (`window.location.port`), dan nilai itu memang boleh berbeda
+ * antar percobaan menurut dokumen OpenAI, tetapi harus SAMA dalam satu
+ * percobaan.
+ */
+export function explainOAuthError({ error = '', detail = '', hasPendingAttempt = false } = {}) {
+  const code = String(error || '').trim() || 'unknown';
+  const extra = String(detail || '').trim();
+  if (code === 'invalid_state') {
+    return {
+      code,
+      cause: hasPendingAttempt
+        ? 'OpenAI mengembalikan state yang tidak cocok dengan percobaan login yang dikirim dari perangkat ini — biasanya karena halaman OAuth dibuka ulang/duplikat, atau callback diselesaikan di perangkat/tab lain.'
+        : 'OpenAI tidak mengenali state itu, dan tidak ada percobaan OAuth yang sah dari perangkat ini. URL authorize dibuka tanpa percobaan yang tercatat (mis. URL lama dari riwayat, bookmark, atau tab hasil duplikat), atau percobaannya sudah lebih dari 30 menit.',
+      fix: hasPendingAttempt
+        ? 'Tutup tab ChatGPT/OAuth yang lama, lalu tekan Continue with ChatGPT SEKALI dan selesaikan di tab itu sampai kembali ke BLEA.'
+        : 'Tekan Continue with ChatGPT sampai halaman izin OpenAI terbuka, jangan menyimpan atau membuka ulang URL-nya, dan jangan menekan tombol itu dua kali (dua percobaan = dua state).',
+      detail: extra,
+    };
+  }
+  if (code === 'access_denied') {
+    return { code, cause: 'Izin di halaman ChatGPT tidak diberikan (tombol batal/ditolak).', fix: 'Ulangi dan setujui izinnya.', detail: extra };
+  }
+  if (code === 'invalid_grant' || code === 'invalid_refresh_token' || code === 'refresh_token_expired'
+    || code === 'refresh_token_invalidated' || code === 'refresh_token_reused') {
+    return {
+      code,
+      cause: 'Kode otorisasi/token sudah dipakai atau sudah mati saat ditukar.',
+      fix: 'Ulangi OAuth dari tombol Continue with ChatGPT. Jangan memuat ulang halaman callback berkali-kali; satu kode hanya boleh ditukar sekali.',
+      detail: extra,
+    };
+  }
+  return { code, cause: extra || 'OpenAI tidak memberi penjelasan tambahan.', fix: 'Ulangi OAuth dari tombol Continue with ChatGPT.', detail: extra };
+}
+
+/**
+ * Port & redirect_uri yang DIPAKAI untuk OAuth "Continue with ChatGPT".
+ *
+ * Dipakai UI untuk menampilkan nilai persis yang dikirim, supaya pengguna bisa
+ * mencocokkannya dengan URL di bilah alamat saat `invalid_state` terjadi —
+ * tanpa itu, pesan error hanya jadi tebakan.
+ */
+export const OAUTH_LOOPBACK_PATH = '/auth/callback';
+
+export function resolveOAuthRedirectUri({ hostname = '', port = '' } = {}) {
+  const isLoopbackHost = String(hostname || '') === '127.0.0.1';
+  const digits = /^\d+$/.test(String(port || '')) ? String(port) : '';
+  const chosen = isLoopbackHost ? (digits || '80') : String(randomLoopbackPort());
+  return {
+    hostname: '127.0.0.1',
+    port: Number(chosen),
+    redirect_uri: `http://127.0.0.1:${chosen}${OAUTH_LOOPBACK_PATH}`,
+    // Di domain publik tidak ada yang mendengarkan di port itu, jadi callback
+    // harus diselesaikan dengan menempel URL.
+    auto_callback: isLoopbackHost,
+  };
+}
+
+function randomLoopbackPort() {
+  const buffer = new Uint16Array(1);
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj?.getRandomValues) {
+    cryptoObj.getRandomValues(buffer);
+    return 1024 + (buffer[0] % (65535 - 1024 + 1));
+  }
+  return 1024 + Math.floor(Math.random() * (65535 - 1024 + 1));
+}
+
 export function normalizeSignupRequest(row) {
   if (!row || typeof row !== 'object') return null;
   return {

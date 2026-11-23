@@ -9,6 +9,7 @@
 
 import { getAccessToken } from '../api/client';
 import { parseCallbackInput } from './oauthCallbackUrl';
+import { resolveOAuthRedirectUri } from '../lib/chatgptSignup';
 
 const AUTHORIZE_ENDPOINT = 'https://auth.openai.com/api/accounts/authorize';
 const SCOPES = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
@@ -108,8 +109,23 @@ export function clearPendingAttempt() {
  * halaman izin OpenAI di tab yang sama. Return value hanya untuk UI.
  */
 export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '' } = {}) {
-  const port = window.location.port || '1455';
-  const redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`;
+  // Port callback: pakai port halaman HANYA bila BLEA memang dibuka dari
+  // 127.0.0.1 (di situ ada server yang mendengarkan, jadi callback mendarat
+  // otomatis). Di domain publik tidak ada yang mendengarkan di perangkat
+  // pengguna, jadi dipilih port acak dan URL callback diselesaikan lewat
+  // tempel-URL.
+  //
+  // Dokumen OpenAI hanya mengizinkan PORT berubah antar percobaan; skema,
+  // host, dan path harus tetap (`localhost` tidak boleh menggantikan 127.0.0.1).
+  //
+  // CATATAN JUJUR: pemilihan port ini HIPOTESIS untuk `invalid_state`, belum
+  // terbukti. `state` dikirim apa adanya; yang membuat OpenAI tidak
+  // mengenalinya kemungkinan besar percobaan yang tidak ada/berbeda di server.
+  const redirectInfo = resolveOAuthRedirectUri({
+    hostname: typeof window === 'undefined' ? '' : window.location.hostname,
+    port: typeof window === 'undefined' ? '' : window.location.port,
+  });
+  const redirectUri = redirectInfo.redirect_uri;
   const state = randomString(32);
   const nonce = randomString(24);
   const codeVerifier = randomString(64);

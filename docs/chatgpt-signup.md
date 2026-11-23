@@ -314,3 +314,35 @@ itu sudah dihapus dan diganti panduan manual 30 detik.
   ON CONFLICT specification"`. Migrasi `20261213000001_fix_chatgpt_signup_on_conflict.sql`
   memperbaikinya (idempoten, aman dijalankan berulang).
 - Tes: `node --test tests/chatgpt-signup.test.js`.
+
+## `invalid_state` dari auth.openai.com (belum tuntas)
+
+Gejalanya: setelah menekan **Continue with ChatGPT**, OpenAI berhenti di
+halaman *Auth login details* dengan `error_code: invalid_state`. Halaman itu
+dimiliki OpenAI dan muncul **sebelum** `http://127.0.0.1:<port>/auth/callback`,
+jadi BLEA tidak menerima `code`/`state` sama sekali — tidak ada baris DB yang
+bisa diperiksa untuk kejadian itu. Karena itulah panel sekarang punya kotak
+**“Gagal dengan kode error?”**: tempel kodenya dan BLEA menjelaskan sebab yang
+paling mungkin plus langkah perbaikannya (`explainOAuthError`).
+
+Yang **pasti** (dokumen OpenAI *Sign in with ChatGPT*):
+
+- `redirect_uri` wajib `http://127.0.0.1:<port>/auth/callback`; hanya **port**
+  yang boleh berubah antar percobaan; skema, host, dan path tetap.
+- `state` harus nilai acak segar per percobaan, dan `state` di URL authorize
+  harus sama dengan yang dipakai saat menukar kode.
+- Nama variabel di dokumen adalah `error_code`; nilai yang dikirim ke
+  `redirect_uri`/`state` tidak boleh ditambahi apa pun oleh BLEA.
+
+Yang **belum terbukti** — sengaja tidak diklaim sebagai penyebab:
+
+| Dugaan | Cara memastikan |
+|---|---|
+| Percobaan OAuth tidak ada/berbeda di server (tombol ditekan dua kali, tab lama dari riwayat) | Kotak diagnosa membedakan “ada percobaan pending” vs “tidak ada” |
+| Port callback bertabrakan dengan layanan lain di perangkat | Panel menampilkan `redirect_uri` persis yang dikirim |
+| `state` terpakai dua kali (callback dibuka ulang) | Baris `chatgpt_oauth_links.status` tidak lagi `pending` |
+
+Perubahan port: `resolveOAuthRedirectUri()` (`src/lib/chatgptSignup.js`)
+memakai port halaman **hanya** bila BLEA dibuka dari `127.0.0.1`; di domain
+publik dipilih port acak 1024–65535 dan callback diselesaikan dengan menempel
+URL. Ini tetap hipotesis, bukan bukti.
