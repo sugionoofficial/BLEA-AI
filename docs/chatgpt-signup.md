@@ -146,8 +146,11 @@ Yang berubah:
 - Rute `verify` membaca sampai 3 pesan teratas lewat `tempmailMessageReader`
   (pemeriksaan pemilik alias sama seperti `/api/tempmail`), menyimpan
   `verification_code`, dan mengembalikan `code` + `code_from_message_id` ke UI.
-  Yang dibaca penuh hanya pesan yang masuk **setelah** permintaan pendaftaran
-  dibuat (toleransi 5 menit untuk selisih jam pengirim). Tanpa batas ini, surat
+  Yang dibaca penuh hanya pesan yang masuk **setelah** ronde dimulai
+  (`created_at`, yang selalu ditulis ulang oleh `prepare` saat ronde baru;
+  toleransi 5 menit untuk selisih jam pengirim). Patokan `updated_at` **salah**
+  dan pernah dicoba: setiap verify memperbarui `updated_at`, sehingga percobaan
+  ulang justru mengecualikan email yang sedang dicari. Tanpa batas ini, surat
   lama di inbox admin ikut dipindai dan angka 6 digit di dalamnya bisa tersaji
   seolah kode verifikasi.
 - Panel menampilkan kode + **Salin kode**, dengan peringatan sekali pakai.
