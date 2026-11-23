@@ -111,3 +111,10 @@
   font-size: 11.5px; padding: 1px 5px; border-radius: 5px;
   background: rgba(255, 255, 255, .08); word-break: break-word;
 }
+
+/* Status yang bisa dibuktikan: "Tersambung" hanya muncul bila server
+   melaporkan tautan/akun yang benar-benar siap. */
+.studio-connection-state.is-unknown { opacity: .5; }
+.studio-connection-state.is-restricted { opacity: .5; }
+.studio-connection-detail { opacity: .95; }
+.studio-connection-item.is-unknown .studio-connection-dot { opacity: .45; }
