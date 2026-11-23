@@ -726,3 +726,58 @@ test('halaman TempMail menampilkan kode + Salin kode dari isi pesan', async () =
   // Kode harus dari isi pesan yang dibuka, bukan ditebak di klien lain.
   assert.match(page, /selectedMessage\.bodyText/);
 });
+
+// Privasi: email lama di inbox admin tidak boleh dipindai isinya hanya karena
+// kebetulan memuat angka 6 digit.
+test('verify tidak membaca isi email lama sebelum pendaftaran dimulai', async () => {
+  const oldFetch = globalThis.fetch;
+  const attempt = {
+    id: '88888888-8888-4888-8888-888888888888',
+    user_id: 'admin-1',
+    email: 'kotak@mail.tm',
+    step: 'menunggu_verifikasi',
+    signup_url: '',
+    note: '',
+    verification_message_id: '',
+    verification_code: '',
+    verification_code_at: null,
+    verified_at: null,
+    // Pendaftaran dimulai jam 10:00; pesan lama jam 08:00.
+    created_at: '2026-11-23T10:00:00Z',
+    updated_at: '2026-11-23T10:00:00Z',
+  };
+  const detailFetches = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      if ((init.method || 'GET') === 'PATCH') return Response.json([attempt]);
+      return Response.json([attempt]);
+    }
+    if (target.includes('api.mail.tm/messages/')) {
+      detailFetches.push(target);
+      return Response.json({ id: 'msg-lama', subject: 'Kode gudang', text: 'Kode: 112233', createdAt: '2026-11-23T08:00:00Z' });
+    }
+    if (target.includes('api.mail.tm/messages')) {
+      return Response.json({ 'hydra:member': [{
+        id: 'msg-lama',
+        subject: 'Kode gudang',
+        from: { address: 'gudang@contoh.invalid' },
+        to: [{ address: 'kotak@mail.tm' }],
+        intro: 'Kode: 112233',
+        createdAt: '2026-11-23T08:00:00Z',
+      }] });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const body = await res.json();
+    assert.equal(body.code, '', 'kode dari email lama tidak boleh diambil');
+    assert.equal(detailFetches.length, 0, 'isi email lama tidak boleh dibaca sama sekali');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});

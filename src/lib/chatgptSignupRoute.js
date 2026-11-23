@@ -161,10 +161,24 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
   // lengkap (dengan pemeriksaan pemilik alias yang sama) sebelum menyimpulkan.
   let verificationCode = '';
   let codeSource = '';
-  const depth = typeof readMessage === 'function' ? Math.min(scored.length, 3) : 0;
+  // Hanya pesan yang masuk SETELAH permintaan ini dibuat yang isinya dibaca
+  // penuh. Tanpanya, email lama (termasuk surat pribadi di inbox admin) ikut
+  // dipindai dan kode acak di dalamnya bisa tersaji seolah kode verifikasi.
+  const startedAt = Date.parse(row.created_at || '');
+  const candidatesToRead = scored.filter((message) => {
+    if (!message?.id) return false;
+    const receivedAt = Date.parse(message.createdAt || '');
+    if (!Number.isFinite(receivedAt) || !Number.isFinite(startedAt)) return true;
+    // Toleransi 5 menit: jam server pengirim bisa sedikit berbeda.
+    return receivedAt >= startedAt - 5 * 60 * 1000;
+  });
+  const depth = typeof readMessage === 'function' ? Math.min(candidatesToRead.length, 3) : 0;
   for (let index = 0; index < depth; index += 1) {
-    const candidate = scored[index];
+    const candidate = candidatesToRead[index];
     if (!candidate?.id) continue;
+    // `scored` tetap dipakai untuk daftar kandidat; tulis balik hasil perkayaan
+    // ke posisi aslinya supaya urutan skor tidak berubah.
+    const position = scored.indexOf(candidate);
     let full = null;
     try {
       full = await readMessage(row.email, candidate.id);
@@ -186,7 +200,7 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
       preview: String(full?.bodyText || candidate.preview || '').replace(/\s+/g, ' ').trim().slice(0, 180),
       match: scoreVerificationMessage({ ...candidate, subject: full?.subject || candidate.subject, from: full?.from || candidate.from }, row),
     };
-    scored[index] = enriched;
+    if (position >= 0) scored[position] = enriched;
     if (!best || enriched.match.matched) best = enriched.match.matched ? enriched : best;
     if (verificationCode) break;
   }
