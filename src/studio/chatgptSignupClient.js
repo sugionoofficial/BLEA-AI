@@ -55,6 +55,8 @@ export const chatGptSignupApi = {
   }),
   mark: (id, step, note = '') => request('/chatgpt-signup', { method: 'POST', body: { action: 'mark', id, step, note } }),
   verify: (id) => request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id } }),
+  // Baca ulang kode yang sudah tersimpan (tanpa panggilan Gmail baru).
+  code: (id) => request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id } }),
   // Bukti langkah: URL setelah pengguna menekan "Lanjutkan" di halaman ChatGPT.
   confirm: (id, url) => request('/chatgpt-signup', { method: 'POST', body: { action: 'confirm', id, url } }),
 };

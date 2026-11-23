@@ -533,3 +533,50 @@ test('kode di subjek email tetap ditemukan', () => {
   const { extractVerificationCode } = globalThis.__signup;
   assert.equal(extractVerificationCode({ subject: 'Your OpenAI verification code: 552310', bodyText: '' }).code, '552310');
 });
+
+// Kode harus tetap bisa dilihat setelah panel dimuat ulang, tanpa memanggil
+// Gmail lagi dan tanpa me-reset verified_at.
+test('/api/chatgpt-signup action=code membaca kode tersimpan tanpa menyentuh inbox', async () => {
+  const oldFetch = globalThis.fetch;
+  const attempt = {
+    id: '44444444-4444-4444-8444-444444444444',
+    user_id: 'admin-1',
+    email: 'kotak@mail.tm',
+    step: 'terverifikasi',
+    signup_url: '',
+    note: '',
+    verification_message_id: 'msg-9',
+    verification_code: '483920',
+    verified_at: '2026-11-23T10:00:30Z',
+    created_at: '2026-11-23T10:00:00Z',
+    updated_at: '2026-11-23T10:00:30Z',
+  };
+  const visited = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    visited.push(`${init.method || 'GET'} ${target}`);
+    if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
+    if (target.includes('/profiles')) return Response.json([]);
+    if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
+    if (target.includes('/chatgpt_signup_attempts')) {
+      if (target.includes('id=eq.55555555-5555-4555-8555-555555555555')) return Response.json([]);
+      return Response.json([attempt]);
+    }
+    return new Response('not found', { status: 404 });
+  };
+  try {
+    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id: attempt.id } }), ENV);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.code, '483920');
+    assert.equal(body.verification_message_id, 'msg-9');
+    // Tidak boleh ada panggilan ke provider email maupun PATCH.
+    assert.ok(!visited.some((line) => line.includes('mail.tm') || line.includes('gmail') || line.startsWith('PATCH')), visited.join('\n'));
+
+    // Permintaan milik user lain tidak boleh membocorkan kode.
+    const other = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id: '55555555-5555-4555-8555-555555555555' } }), ENV);
+    assert.equal(other.status, 404);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
