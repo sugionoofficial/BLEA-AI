@@ -289,7 +289,7 @@ test('panel tidak menjanjikan autofill email dan menyediakan salin email dengan 
   assert.ok(source.includes('Salin email'), 'harus ada tombol salin email');
   assert.ok(!/login_hint\. Ketik email itu/.test(source), 'janji autofill lama tidak boleh kembali');
   // Klaim baru: autofill hanya lewat bookmarklet yang diklik pengguna.
-  assert.ok(source.includes('Isi email otomatis'));
+  assert.ok(source.includes('Opsional: isi otomatis'));
   assert.ok(source.includes('same-origin'));
   assert.ok(source.includes('bookmarklet'));
   // Fallback wajib: navigator.clipboard sering ditolak di iframe/preview.
@@ -390,4 +390,17 @@ test('/api/chatgpt-signup/userscript hanya untuk admin dan menyajikan berkas .us
   } finally {
     globalThis.fetch = oldFetch;
   }
+});
+
+// Panel tidak boleh terasa "wajib pasang sesuatu". Alur manual adalah jalur
+// utama; bingkai otomatis hanya opsi di dalam <details> yang tertutup.
+test('alur manual tetap utama dan bingkai otomatis dilipat sebagai opsional', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('isi email manual'));
+  assert.ok(source.includes('Cukup tempel manual'));
+  assert.ok(/<details className="cga-signup-optional">/.test(source), 'bingkai otomatis harus di dalam <details>');
+  assert.ok(source.includes('Opsional: isi otomatis (tidak wajib)'));
+  // Label lama yang menonjolkan unduhan sebagai "disarankan" tidak boleh kembali.
+  assert.ok(!/Unduh userscript \(disarankan\)/.test(source));
 });

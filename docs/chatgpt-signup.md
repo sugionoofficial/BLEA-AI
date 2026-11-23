@@ -56,8 +56,13 @@ Jalan yang tersedia (dan memang disediakan panel):
 | **Userscript** (`/api/chatgpt-signup/userscript`) | **ya, tanpa klik** | dipasang sekali di Tampermonkey; mengisi sendiri setiap `/auth/login` dibuka |
 | **Bookmarklet** | ya, sekali klik | tanpa ekstensi; Chrome membuang awalan `javascript:` kalau ditempel, jadi harus **diseret** |
 
-Userscript adalah jalur yang disarankan karena dua titik gagal sebelumnya
-(menyeret tautan, menempel skrip) hilang. Isinya: pilih `input` email, isi
+**Alur manual adalah jalur utama, bukan bingkai otomatis.** Tempel email dengan
+tangan sudah benar dan paling cepat; tidak ada yang wajib dipasang. Userscript
+hanya opsi untuk yang malas mengetik ulang, dan di panel ia sengaja dilipat di
+dalam `<details>` berlabel "Opsional: isi otomatis (tidak wajib)".
+
+Userscript menghilangkan dua titik gagal sebelumnya (menyeret tautan, menempel
+skrip). Isinya: pilih `input` email, isi
 `value` lewat setter native + event `input`/`change`, fokus, tampilkan penanda
 kecil 4 detik, ulangi tiap 250 ms sampai 10 detik (React hydrate) dan lewat
 `MutationObserver` bila kolom dirender ulang. Tidak menekan `Lanjutkan`, tidak
