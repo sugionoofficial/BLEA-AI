@@ -36,6 +36,13 @@ formulir daftar, dan email TempMail tidak pernah terkirim.
 Sekarang `buildSignupUrl` mengembalikan **halaman** `https://chatgpt.com/auth/login`
 (bisa dibuka dengan GET), tetap membawa `login_hint` = email TempMail.
 
+**Batas kedua yang terbukti dari percobaan nyata:** halaman `/auth/login`
+mengabaikan `login_hint` — kolom "Alamat email" tetap kosong. Jadi UI tidak
+menjanjikan isian otomatis; ia menyediakan tombol **Salin email** (dengan
+fallback `execCommand` bila Clipboard API ditolak) dan instruksi menempel
+manual. `login_hint` tetap dibawa karena berpotensi dipakai pada tahap
+berikutnya (mis. `auth.openai.com`), tetapi tidak diandalkan.
+
 ## Kenapa server tetap tidak mem-POST endpoint itu
 
 1. **Diblokir di runtime.** Cloudflare Workerd menolak permintaan keluar ke
@@ -60,8 +67,9 @@ diam-diam gagal.
    `chatgpt.com/auth/login` dengan email TempMail sebagai `login_hint`. Tab
    dibuka *sebelum* permintaan ke server karena `window.open` setelah `await`
    diblokir popup blocker; bila tetap diblokir, pakai tautan **Buka di tab baru**.
-4. Di tab itu ketik/konfirmasi email TempMail, tekan **Lanjutkan**, lalu salin
-   URL halaman berikutnya dan tempel di panel → **Periksa URL**.
+4. Di tab itu tekan **Salin email** di panel, tempel di kolom **Alamat email**
+   ChatGPT (kolom itu **tidak** terisi otomatis), tekan **Lanjutkan**, lalu
+   salin URL halaman berikutnya dan tempel di panel → **Periksa URL**.
    - URL halaman error (`/auth/error`, `error=…`) ditolak dengan alasan jelas.
    - URL di luar domain OpenAI ditolak.
    - Langkah baru ditandai `email_dikirim` bila email TempMail benar-benar
