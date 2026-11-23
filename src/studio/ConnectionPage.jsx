@@ -48,8 +48,14 @@ const PROVIDERS = [
   },
   {
     id: 'chatgpt',
-    label: 'Akun ChatGPT / OpenAI (pool manual)',
-    note: 'Dikelola admin di Studio → Akun ChatGPT: prioritas, kuota harian, cooldown, lalu lanjut akun berikutnya.',
+    label: 'ChatGPT (Continue with ChatGPT, tanpa API key)',
+    note: 'OAuth resmi OpenAI: satu tombol, izin di browser, lalu kuota paket ChatGPT dipakai untuk chat & agen. Dikelola di Studio → Akun ChatGPT.',
+    state: 'connected',
+  },
+  {
+    id: 'chatgpt-api',
+    label: 'ChatGPT API key (untuk gambar & video)',
+    note: 'Jalur cadangan admin. Izin OAuth hanya berlaku untuk teks, jadi tool gambar/video tetap butuh API key di pool yang sama.',
     state: 'degraded',
   },
   {
@@ -147,7 +153,28 @@ export function ConnectionPage() {
         </ul>
 
         <section className="studio-connection-explain">
-          <h2>Kenapa tidak ada tombol “daftarkan akun ChatGPT otomatis”</h2>
+          <h2>“Koneksikan seperti freebeat, tanpa API key” — sudah ada</h2>
+          <p>
+            Sejak OpenAI membuka <b>Sign in with ChatGPT</b>, akun ChatGPT bisa disambungkan lewat
+            OAuth resmi: tidak ada API key, tidak ada client secret, dan kuota yang terpakai adalah
+            paket ChatGPT pemilik akun. Tombolnya ada di
+            <b> Studio → Akun ChatGPT → Continue with ChatGPT</b>.
+          </p>
+          <ol>
+            <li>Tekan tombol, lalu setujui di halaman ChatGPT. BLEA mendaftarkan client-nya sendiri saat login pertama.</li>
+            <li>Izin yang diminta: <code>openid profile email offline_access resource.invoke chatgpt.tokens.use.direct</code>.</li>
+            <li>Akses hanya untuk chat &amp; agen (Responses API teks). Gambar, video, audio, dan unggah berkas tidak tercakup izin ini.</li>
+            <li>Token disimpan tersegel di server; koneksi bisa diputus kapan saja di halaman yang sama atau di ChatGPT → Settings → Apps.</li>
+          </ol>
+          <p>
+            Satu catatan teknis yang perlu diketahui: OpenAI mewajibkan hasil login dikirim ke
+            <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>. Kalau BLEA dibuka dari domain
+            publik (blea.ai), alamat itu tidak bisa dibuka otomatis — tempel URL callback-nya di
+            halaman Akun ChatGPT, atau jalankan BLEA di mesin sendiri lewat 127.0.0.1 agar selesai
+            otomatis. Domain publik butuh client ID partner dari OpenAI (formulir Sign in with ChatGPT).
+          </p>
+
+          <h2>Yang tetap tidak dilakukan: mendaftarkan akun otomatis</h2>
           <p>
             Permintaan itu berarti BLEA membuat email sekali pakai, mendaftarkannya ke akun
             ChatGPT, lalu mengambil kode verifikasi secara otomatis. Itu tidak saya bangun, dan
@@ -159,17 +186,13 @@ export function ConnectionPage() {
             <li>Akun beremail sekali pakai biasanya dinonaktifkan, dan yang menanggung risikonya adalah pemilik akun BLEA.</li>
             <li>Kredensial akun pihak ketiga yang dikumpulkan otomatis adalah risiko keamanan untuk pengguna BLEA sendiri.</li>
           </ol>
-          <p>
-            Jalur yang benar dan sudah tersedia: pakai API key milikmu sendiri, atau hubungkan lewat
-            OAuth resmi. Kalau kamu mau menambahkan provider baru, admin bisa menambahkannya di
-            Panel Admin → Model beserta harga kreditnya.
-          </p>
           <h2>Jalur yang tersedia sekarang</h2>
           <p>
-            Untuk ChatGPT/OpenAI: admin menambahkan akun sendiri (email + kunci resmi) di halaman
-            <b> Studio → Akun ChatGPT</b>. Halaman itu menampilkan prioritas, sisa kuota harian, dan
-            status cooldown tiap akun; bila kuota akun pertama habis, permintaan otomatis pindah ke
-            akun berikutnya. Hasil semua tool bisa diambil di <b>Studio → Hasil</b>.
+            <b>Continue with ChatGPT</b> (OAuth, tanpa API key) dan <b>API key admin</b> masuk ke pool
+            yang sama di <b>Studio → Akun ChatGPT</b>. Halaman itu menampilkan prioritas, sisa kuota
+            harian, status cooldown, dan sumber kredensial tiap akun; bila akun pertama tidak bisa
+            dipakai, permintaan otomatis pindah ke akun berikutnya. Hasil semua tool bisa diambil di
+            <b> Studio → Hasil</b>.
           </p>
           <p className="studio-connection-links">
             <Link className="studio-connection-link" to="/studio/chatgpt-accounts">Kelola akun ChatGPT</Link>

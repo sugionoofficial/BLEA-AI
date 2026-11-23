@@ -78,12 +78,25 @@ import {
   deleteChatGptAccount,
   listChatGptAccounts,
   pickChatGptAccountsFor,
+  sendOAuthResponses,
   sendWithChatGptPool,
   testChatGptAccount,
   updateChatGptAccount,
 } from './lib/chatgptPool.js';
 import { agentToolsForStudioTool, capabilityForApiPath, toolCapabilityViolation } from './lib/toolCapabilities.js';
 import { studioModelItems } from './lib/openaiModels.js';
+import {
+  completeOAuthAttempt,
+  createOAuthAttempt,
+  disconnectOAuthLink,
+  listOAuthLinks,
+  OPENAI_AGENT_NAME_HINT,
+  OPENAI_DYNAMIC_CLIENT_ID,
+  OPENAI_LOOPBACK_PATH,
+  OPENAI_RESOURCE,
+  OPENAI_SCOPES,
+  refreshOAuthLink,
+} from './lib/chatgptOAuth.js';
 import {
   generateStudioImage,
   generateStudioVideo,
@@ -1157,7 +1170,8 @@ async function probeChatStreamAttempt(attempt) {
   if (attempt.data) {
     const reply = extractAssistantReply(attempt.data);
     const msg = attempt.data?.choices?.[0]?.message;
-    const reasoning = String(msg?.reasoning_content || msg?.reasoning || '').trim();
+    // Akun OAuth (Responses API) menaruh ringkasan penalaran di field sendiri.
+    const reasoning = String(msg?.reasoning_content || msg?.reasoning || attempt.data?.blea_reasoning || '').trim();
     if (!reply && !reasoning) {
       return {
         ok: false,
@@ -3551,9 +3565,9 @@ async function handleApi(request, url, env) {
         models,
         modelItems: models,
         pool: summary,
-        source: 'pool akun ChatGPT manual (/studio/chatgpt-accounts)',
+        source: 'pool akun ChatGPT: OAuth Continue with ChatGPT + API key (/studio/chatgpt-accounts)',
         ...(ready ? {} : {
-          hint: 'Belum ada akun ChatGPT yang siap. Admin perlu menambahkan API key resmi di Studio → Akun ChatGPT.',
+          hint: 'Belum ada akun ChatGPT yang siap. Buka Studio → Akun ChatGPT lalu tekan “Continue with ChatGPT” (tanpa API key); API key hanya perlu untuk tool gambar/video.',
         }),
       };
       if (path === 'studio/ping') {
@@ -3855,6 +3869,59 @@ async function handleApi(request, url, env) {
         return jsonResponse({ models });
       } catch (e) {
         return jsonResponse({ error: String(e) }, 502);
+      }
+    }
+
+    // ---- /chatgpt-oauth: "Continue with ChatGPT" (TANPA API key) ----
+    //
+    // Alur resmi Sign in with ChatGPT. OAuth diselesaikan di browser pengguna
+    // (redirect_uri wajib http://127.0.0.1:<port>/auth/callback, PKCE, tanpa
+    // client secret), lalu tokennya dikirim sekali ke sini untuk disegel dan
+    // didaftarkan ke pool. Browser tidak pernah menyimpan token; yang hidup di
+    // klien hanya `state`, `nonce`, dan `code_verifier` sementara.
+    if (path === 'chatgpt-oauth' || path.startsWith('chatgpt-oauth/')) {
+      if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
+      const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+      const user = token ? await getUser(env, token) : null;
+      if (!user) return jsonResponse({ error: 'Login diperlukan.' }, 401, { 'cache-control': 'no-store' });
+      const action = path.slice('chatgpt-oauth'.length).replace(/^\//, '');
+      try {
+        if (!action && method === 'GET') {
+          return jsonResponse({
+            ok: true,
+            enabled: true,
+            links: await listOAuthLinks(env, user),
+            config: {
+              authorize_endpoint: 'https://auth.openai.com/api/accounts/authorize',
+              token_endpoint: 'https://auth.openai.com/api/accounts/oauth/token',
+              scopes: OPENAI_SCOPES,
+              resource: OPENAI_RESOURCE,
+              callback_path: OPENAI_LOOPBACK_PATH,
+              client_id_first_time: OPENAI_DYNAMIC_CLIENT_ID,
+              agent_name_hint: OPENAI_AGENT_NAME_HINT,
+              note: 'Tanpa API key. Kuota mengikuti paket ChatGPT pemilik akun; hanya untuk chat & agen (Responses API teks).',
+            },
+          }, 200, { 'cache-control': 'no-store' });
+        }
+        if (action === 'start' && method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          return jsonResponse({ ok: true, ...(await createOAuthAttempt(env, user, body)) }, 201, { 'cache-control': 'no-store' });
+        }
+        if (action === 'complete' && method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          return jsonResponse({ ok: true, ...(await completeOAuthAttempt(env, user, body)) }, 200, { 'cache-control': 'no-store' });
+        }
+        if (action === 'refresh' && method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          return jsonResponse({ ok: true, ...(await refreshOAuthLink(env, String(body.id || ''))) }, 200, { 'cache-control': 'no-store' });
+        }
+        if (action === 'disconnect' && method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          return jsonResponse({ ok: true, ...(await disconnectOAuthLink(env, user, String(body.id || ''))) }, 200, { 'cache-control': 'no-store' });
+        }
+        return jsonResponse({ error: 'Aksi OAuth ChatGPT tidak dikenal.' }, 404);
+      } catch (error) {
+        return jsonResponse({ error: error?.message || 'Alur Continue with ChatGPT gagal.' }, error?.status || 500, { 'cache-control': 'no-store' });
       }
     }
 
@@ -5254,6 +5321,8 @@ async function handleApi(request, url, env) {
         servicePostgrest,
         webSearch,
         sendChatCompletionRequest,
+        // Dipakai agen saat akun pool berupa OAuth (tanpa API key).
+        sendOAuthResponses,
         chatUpstreamTimeoutMs,
         // Studio memakai model ChatGPT (pool akun manual). Ruang lain tetap
         // memakai katalog provider seperti sebelumnya.
@@ -5422,6 +5491,7 @@ async function handleApi(request, url, env) {
         let activeModel = requestedModel;
         let activeApiKey = primaryApiKey;
         let activeBaseUrl = primaryKeyRow?.base_url || '';
+        let activeIsOAuth = false;
         let fallbackFrom = '';
         let fallbackReason = '';
         let cachedDbModels = null;
@@ -5449,6 +5519,10 @@ async function handleApi(request, url, env) {
               if (pooled.account) {
                 activeApiKey = pooled.account.apiKey;
                 activeBaseUrl = `${pooled.account.apiBase}/v1`;
+                // Akun OAuth hanya boleh lewat Responses API; jangan sampai
+                // tokennya ikut terkirim ke /chat/completions pada putaran
+                // riset di bawah.
+                activeIsOAuth = Boolean(pooled.account.oauth);
               }
             }
           }
@@ -5538,11 +5612,18 @@ async function handleApi(request, url, env) {
                     { role: 'assistant', content: stripSearchBlocks(probed.reply) || 'Saya perlu memeriksa beberapa sumber sebelum menjawab.' },
                     { role: 'user', content: formatResearchContext(researchResults, query) },
                   ];
-                  const researched = await sendChatCompletionRequest({
-                    provider: activeProvider, model: activeModel, apiKey: activeApiKey,
-                    baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
-                    timeoutMs: chatUpstreamTimeoutMs(activeProvider), env,
-                  });
+                  const researched = activeIsOAuth
+                    ? await sendOAuthResponses({
+                      accessToken: activeApiKey,
+                      model: activeModel,
+                      payload: { ...fetchBody, messages: researchMessages },
+                      timeoutMs: chatUpstreamTimeoutMs(activeProvider),
+                    })
+                    : await sendChatCompletionRequest({
+                      provider: activeProvider, model: activeModel, apiKey: activeApiKey,
+                      baseUrl: activeBaseUrl, payload: { ...fetchBody, messages: researchMessages },
+                      timeoutMs: chatUpstreamTimeoutMs(activeProvider), env,
+                    });
                   if (researched.ok) {
                     const researchedReply = extractAssistantReply(researched.data);
                     if (researchedReply) probed = { ok: true, mode: 'json', reply: stripSearchBlocks(researchedReply), reasoning: probed.reasoning || '' };

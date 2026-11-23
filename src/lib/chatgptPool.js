@@ -21,10 +21,19 @@
 // (chat / agent / image / video / audio / metadata). Jadi akun untuk chat tidak
 // akan pernah "kebetulan" dipakai tool gambar.
 
+import {
+  buildResponsesBody,
+  extractResponsesText,
+  isSubscriptionLimitError,
+  parseResponsesEvent,
+} from './openaiResponses.js';
+
 const TABLE = '/chatgpt_accounts';
 const DEFAULT_API_BASE = 'https://api.openai.com';
 export const CHATGPT_CAPABILITIES = ['chat', 'agent', 'image', 'video', 'audio', 'music', 'metadata'];
-export const CHATGPT_CREDENTIAL_KINDS = ['api_key', 'session'];
+// 'oauth' = hasil "Continue with ChatGPT" (Sign in with ChatGPT): tidak ada API
+// key sama sekali, token hanya bisa dipakai ke Responses API teks.
+export const CHATGPT_CREDENTIAL_KINDS = ['api_key', 'session', 'oauth'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const encoder = new TextEncoder();
@@ -138,6 +147,11 @@ async function readRows(env) {
 }
 
 // ---- Normalisasi & tampilan ------------------------------------------------
+function credentialKindOf(row) {
+  const kind = String(row?.credential_kind || 'api_key').toLowerCase();
+  return CHATGPT_CREDENTIAL_KINDS.includes(kind) ? kind : 'api_key';
+}
+
 function normalizeCapabilities(value) {
   const list = Array.isArray(value) ? value : String(value || '').replace(/[{}"]/g, ',').split(',');
   const clean = list.map((item) => String(item || '').trim().toLowerCase()).filter((item) => CHATGPT_CAPABILITIES.includes(item));
@@ -169,12 +183,13 @@ export function sanitizeChatGptAccount(row, now = Date.now()) {
   const limit = Number.isFinite(Number(row.daily_limit)) ? Number(row.daily_limit) : 0;
   const cooling = isCoolingDown(row, now);
   const exhausted = quotaExhausted(row, today);
-  const credentialKind = CHATGPT_CREDENTIAL_KINDS.includes(row.credential_kind) ? row.credential_kind : 'api_key';
+  const credentialKind = credentialKindOf(row);
   const enabled = row.enabled !== false;
-  const usable = enabled && !cooling && !exhausted && credentialKind === 'api_key';
+  const enabledKind = credentialKind === 'api_key' || credentialKind === 'oauth';
+  const usable = enabled && !cooling && !exhausted && enabledKind;
   let state = 'siap';
   if (!enabled) state = 'nonaktif';
-  else if (credentialKind !== 'api_key') state = 'tidak-bisa-dipanggil';
+  else if (!enabledKind) state = 'tidak-bisa-dipanggil';
   else if (cooling) state = 'cooldown';
   else if (exhausted) state = 'kuota-habis';
   return {
@@ -287,7 +302,10 @@ export function validateChatGptAccountInput(input, { requireToken = false } = {}
     const token = typeof input.token === 'string' ? input.token.trim() : '';
     if (!token && requireToken) throw fail('Kunci/Token akun wajib diisi.', 400);
     if (token) {
-      if (token.length < 12 || token.length > 4000) throw fail('Kunci/Token akun harus 12–4000 karakter.', 400);
+      // Token OAuth (Continue with ChatGPT) panjangnya tidak diatur BLEA, jadi
+      // hanya batas atas yang ditegakkan. API key tetap 12–4000 karakter.
+      const minLength = String(out.credential_kind || input.credential_kind || '').toLowerCase() === 'oauth' ? 1 : 12;
+      if (token.length < minLength || token.length > 4000) throw fail(`Kunci/Token akun harus ${minLength}–4000 karakter.`, 400);
       out.token = token;
     }
   } else if (requireToken) {
@@ -315,6 +333,12 @@ export async function createChatGptAccount(env, input, userId = null) {
     daily_limit: 200,
     ...clean,
     sealed_token,
+    // Metadata OAuth (hanya bila akun ini hasil Continue with ChatGPT).
+    ...(clean.credential_kind === 'oauth' ? {
+      oauth_client_id: typeof input.oauth_client_id === 'string' ? input.oauth_client_id.slice(0, 120) : null,
+      oauth_expires_at: input.oauth_expires_at || null,
+      oauth_refresh_sealed: typeof input.oauth_refresh_sealed === 'string' ? input.oauth_refresh_sealed.slice(0, 6000) : null,
+    } : {}),
     token_hint: tokenHint(String(input?.token || '')),
     used_today: 0,
     quota_date: jakartaDate(),
@@ -375,6 +399,208 @@ export async function deleteChatGptAccount(env, id) {
 }
 
 // ---- Pemilihan akun (round-robin + kuota + cooldown) ----------------------
+// ---- OAuth "Continue with ChatGPT" -----------------------------------------
+// Access token OAuth hanya 1 jam; refresh token 30 hari bergulir. Baris akun
+// menyimpan `oauth_client_id` (client_id terbitan OpenAI untuk akun itu) dan
+// `oauth_expires_at`. Refresh dilakukan saat token hampir habis, bukan setiap
+// permintaan, supaya tidak memutar refresh token tanpa perlu.
+const OAUTH_TOKEN_URL = 'https://auth.openai.com/api/accounts/oauth/token';
+const OAUTH_RESOURCE = 'https://api.openai.com/v1';
+const OAUTH_EXPIRY_SKEW_MS = 60_000;
+
+function isOAuthAccessExpired(row, now = Date.now()) {
+  const expires = row?.oauth_expires_at ? Date.parse(row.oauth_expires_at) : NaN;
+  if (!Number.isFinite(expires)) return false;
+  return expires - OAUTH_EXPIRY_SKEW_MS <= now;
+}
+
+/**
+ * Putar refresh token untuk satu akun OAuth dan simpan token baru (disegel).
+ * Mengembalikan access token yang siap dipakai, atau string kosong bila gagal.
+ * Refresh token lama dianggap mati begitu OpenAI mengembalikan yang baru.
+ */
+async function refreshOAuthAccessToken(env, row) {
+  if (!row?.oauth_client_id) return '';
+  const refreshToken = await unsealChatGptToken(env, row.oauth_refresh_sealed);
+  if (!refreshToken) return '';
+  let res;
+  try {
+    res = await fetch(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: String(row.oauth_client_id),
+        refresh_token: refreshToken,
+        resource: OAUTH_RESOURCE,
+      }).toString(),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    return '';
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.access_token) {
+    // Refresh ditolak → akun butuh login ulang. Cooldown panjang, jangan
+    // menandai "kunci salah" karena ini bukan masalah API key.
+    await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(row.id)}`, {
+      method: 'PATCH',
+      prefer: 'return=minimal',
+      body: {
+        cooldown_until: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+        last_error: 'OAuth: refresh token ditolak, sambungkan ulang lewat Continue with ChatGPT.',
+        updated_at: new Date().toISOString(),
+      },
+    }).catch(() => {});
+    return '';
+  }
+  const sealedAccess = await sealChatGptToken(env, data.access_token);
+  const patch = {
+    sealed_token: sealedAccess,
+    oauth_expires_at: new Date(Date.now() + (Number(data.expires_in) || 3600) * 1000).toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if (data.refresh_token) patch.oauth_refresh_sealed = await sealChatGptToken(env, data.refresh_token);
+  await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(row.id)}`, {
+    method: 'PATCH',
+    prefer: 'return=minimal',
+    body: patch,
+  }).catch(() => {});
+  return data.access_token;
+}
+
+/**
+ * Kirim payload gaya Chat Completions ke Responses API memakai access token
+ * OAuth. Karena jalur ini WAJIB streaming, hasilnya dikumpulkan penuh lalu
+ * dikembalikan dalam bentuk balasan Chat Completions — jadi pemanggil (chat &
+ * agen) tidak perlu tahu bedanya.
+ *
+ * `store:false` dan `stream:true` selalu dipasang oleh buildResponsesBody.
+ */
+export async function sendOAuthResponses({ accessToken, model, payload, timeoutMs = 180_000 }) {
+  const body = buildResponsesBody(payload, { model });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${DEFAULT_API_BASE}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken}`, accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    const timedOut = error?.name === 'AbortError' || error?.name === 'TimeoutError';
+    return {
+      ok: false,
+      status: timedOut ? 504 : 502,
+      errorInfo: {
+        message: timedOut
+          ? `Paket ChatGPT tidak merespons dalam ${Math.round(timeoutMs / 1000)} detik.`
+          : `Tidak dapat terhubung ke OpenAI: ${String(error?.message || error).slice(0, 160)}`,
+        rawDetail: String(error?.message || error),
+      },
+    };
+  }
+  if (!res.ok) {
+    clearTimeout(timer);
+    const text = await res.text().catch(() => '');
+    return {
+      ok: false,
+      status: res.status,
+      errorInfo: { message: `OpenAI menolak permintaan (HTTP ${res.status}).`, rawDetail: text.slice(0, 400) },
+    };
+  }
+
+  // Konsumsi SSE Responses → kumpulkan teks + function_call + error.
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    clearTimeout(timer);
+    return { ok: false, status: 502, errorInfo: { message: 'Stream OpenAI tidak tersedia.', rawDetail: '' } };
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  let thinking = '';
+  let failed = null;
+  let finalResponse = null;
+  const toolCalls = [];
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+      } else {
+        buffer += decoder.decode(value, { stream: true });
+      }
+      const lines = buffer.split(/\r?\n/);
+      buffer = done ? '' : (lines.pop() || '');
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const chunk = line.slice(5).trim();
+        if (!chunk || chunk === '[DONE]') continue;
+        let parsed;
+        try { parsed = JSON.parse(chunk); } catch { continue; }
+        const event = parseResponsesEvent(parsed);
+        for (const item of event.events) {
+          if (item.type === 'delta') text += item.text;
+          if (item.type === 'thinking') thinking += item.text;
+        }
+        if (parsed?.type === 'response.output_item.done' && parsed.item?.type === 'function_call') {
+          toolCalls.push({
+            id: parsed.item.call_id || parsed.item.id || `call_${toolCalls.length}`,
+            type: 'function',
+            function: { name: String(parsed.item.name || ''), arguments: String(parsed.item.arguments || '{}') },
+          });
+        }
+        if (event.response) finalResponse = event.response;
+        if (event.failed) failed = event.failed;
+        if (event.done) break;
+      }
+      if (done || failed) break;
+      if (finalResponse) break;
+    }
+  } catch (error) {
+    clearTimeout(timer);
+    await reader.cancel().catch(() => {});
+    return { ok: false, status: 502, errorInfo: { message: `Stream OpenAI terputus: ${String(error?.message || error).slice(0, 160)}`, rawDetail: '' } };
+  }
+  clearTimeout(timer);
+  await reader.cancel().catch(() => {});
+
+  if (failed) {
+    return {
+      ok: false,
+      status: isSubscriptionLimitError(failed.code, failed.message) ? 429 : 502,
+      errorInfo: { message: failed.message, rawDetail: `${failed.code} ${failed.message}` },
+    };
+  }
+  const finalText = text || extractResponsesText(finalResponse);
+  if (!finalText && !toolCalls.length) {
+    return { ok: false, status: 502, errorInfo: { message: 'Model mengembalikan respons kosong.', rawDetail: '' } };
+  }
+  return {
+    ok: true,
+    status: res.status,
+    data: {
+      id: finalResponse?.id || '',
+      model: finalResponse?.model || model,
+      choices: [{
+        index: 0,
+        finish_reason: toolCalls.length ? 'tool_calls' : 'stop',
+        message: {
+          role: 'assistant',
+          content: finalText,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+      }],
+      ...(thinking ? { blea_reasoning: thinking } : {}),
+    },
+  };
+}
+
 /**
  * Akun berikutnya yang boleh dipakai untuk `capability`.
  * Urutan: prioritas naik → paling sedikit dipakai hari ini → paling lama dibuat.
@@ -392,7 +618,7 @@ export async function pickChatGptAccount(env, { capability = 'chat', exclude = [
   try {
     rows = await dbJson(
       env,
-      `${TABLE}?select=id,account_email,account_label,credential_kind,api_base,model_default,sealed_token,capabilities,enabled,priority,daily_limit,used_today,quota_date,cooldown_until,consecutive_failures&enabled=eq.true&order=priority.asc,created_at.asc&limit=100`,
+      `${TABLE}?select=id,account_email,account_label,credential_kind,api_base,model_default,sealed_token,oauth_expires_at,oauth_client_id,oauth_refresh_sealed,capabilities,enabled,priority,daily_limit,used_today,quota_date,cooldown_until,consecutive_failures&enabled=eq.true&order=priority.asc,created_at.asc&limit=100`,
     );
   } catch {
     return null;
@@ -402,7 +628,7 @@ export async function pickChatGptAccount(env, { capability = 'chat', exclude = [
   const today = jakartaDate(new Date(now));
   const skip = new Set(exclude);
   const candidates = rows
-    .filter((row) => row.credential_kind === 'api_key')
+    .filter((row) => ['api_key', 'oauth'].includes(credentialKindOf(row)))
     .filter((row) => !skip.has(row.id))
     .filter((row) => (Array.isArray(row.capabilities) ? row.capabilities : normalizeCapabilities(row.capabilities)).includes(cap))
     .filter((row) => !isCoolingDown(row, now))
@@ -415,8 +641,13 @@ export async function pickChatGptAccount(env, { capability = 'chat', exclude = [
       return Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0);
     });
   for (const row of candidates) {
-    const token = await unsealChatGptToken(env, row.sealed_token);
+    let token = await unsealChatGptToken(env, row.sealed_token);
     if (!token) continue;
+    // Token OAuth kedaluwarsa (1 jam) → putar refresh token sebelum dipakai.
+    if (credentialKindOf(row) === 'oauth' && isOAuthAccessExpired(row)) {
+      token = await refreshOAuthAccessToken(env, row).catch(() => '');
+      if (!token) continue;
+    }
     return {
       id: row.id,
       accountEmail: row.account_email || '',
@@ -425,6 +656,9 @@ export async function pickChatGptAccount(env, { capability = 'chat', exclude = [
       apiBase: String(row.api_base || DEFAULT_API_BASE).replace(/\/+$/, ''),
       model: String(row.model_default || ''),
       capability: cap,
+      // Akun OAuth (Continue with ChatGPT) tidak memakai API key/platform: token
+      // hanya sah untuk Responses API teks dengan store:false & stream:true.
+      oauth: credentialKindOf(row) === 'oauth',
     };
   }
   return null;
@@ -470,17 +704,26 @@ export async function sendWithChatGptPool({
   let lastAttempt = null;
   let lastAccount = null;
   for (const account of accounts) {
-    const attempt = await send({
-      provider: 'openai',
-      model: model || account.model || 'gpt-4o-mini',
-      apiKey: account.apiKey,
-      baseUrl: `${account.apiBase}/v1`,
-      payload,
-      timeoutMs,
-      env,
-      stream,
-    });
-    const detail = attempt?.errorInfo?.rawDetail || '';
+    // Akun OAuth tidak punya API key dan hanya boleh memanggil Responses API
+    // (store:false, stream:true). Akun API key tetap ke /chat/completions.
+    const attempt = account.oauth
+      ? await sendOAuthResponses({
+        accessToken: account.apiKey,
+        model: model || account.model || 'gpt-5.1',
+        payload,
+        timeoutMs,
+      })
+      : await send({
+        provider: 'openai',
+        model: model || account.model || 'gpt-4o-mini',
+        apiKey: account.apiKey,
+        baseUrl: `${account.apiBase}/v1`,
+        payload,
+        timeoutMs,
+        env,
+        stream,
+      });
+    const detail = [attempt?.errorInfo?.rawDetail, attempt?.errorInfo?.message].filter(Boolean).join(' ');
     if (attempt?.ok) {
       await recordChatGptUsage(env, account.id, { ok: true, status: attempt.status, counted: true });
       return { attempted: true, accounts: accounts.length, attempt, account };
@@ -566,8 +809,31 @@ export async function testChatGptAccount(env, id) {
     }).catch(() => {});
     return { ok, message, status };
   };
-  if (row.credential_kind !== 'api_key') {
-    return await finish(false, 'Akun berjenis token sesi ChatGPT tidak bisa diuji lewat API resmi. Tambahkan API key dari platform.openai.com untuk memakai akun ini sebagai pool.', null);
+  if (credentialKindOf(row) === 'session') {
+    return await finish(false, 'Akun berjenis token sesi ChatGPT tidak bisa diuji lewat API resmi. Pakai tombol Continue with ChatGPT (OAuth) atau API key platform.openai.com.', null);
+  }
+  if (credentialKindOf(row) === 'oauth') {
+    // Uji jalur OAuth dengan /v1/models memakai access token; sekaligus
+    // memastikan token belum kedaluwarsa (kalau ya, refresh dulu).
+    let token = await unsealChatGptToken(env, row.sealed_token);
+    if (!token) return await finish(false, 'Token OAuth tidak bisa dibuka (kunci enkripsi Worker berubah). Sambungkan ulang akun.', null);
+    if (isOAuthAccessExpired(row)) token = await refreshOAuthAccessToken(env, row).catch(() => '');
+    if (!token) return await finish(false, 'Token OAuth kedaluwarsa dan refresh gagal. Sambungkan ulang akun ChatGPT.', 401);
+    let res;
+    try {
+      res = await fetch('https://api.openai.com/v1/models', {
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      return await finish(false, `Tidak bisa menghubungi OpenAI: ${String(error?.message || error).slice(0, 160)}`, null);
+    }
+    if (res.ok) {
+      await res.body?.cancel?.().catch?.(() => {});
+      return await finish(true, 'Token OAuth ChatGPT diterima (Responses API teks).', res.status);
+    }
+    const text = await res.text().catch(() => '');
+    return await finish(false, `OpenAI menolak token OAuth (HTTP ${res.status}). ${text.slice(0, 200)}`.trim(), res.status);
   }
   const token = await unsealChatGptToken(env, row.sealed_token);
   if (!token) return await finish(false, 'Kredensial akun tidak bisa dibuka (kunci enkripsi Worker berubah). Masukkan ulang kunci.', null);
