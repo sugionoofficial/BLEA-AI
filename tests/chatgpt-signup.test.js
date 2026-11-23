@@ -273,3 +273,19 @@ test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-ema
     globalThis.fetch = oldFetch;
   }
 });
+
+// Fakta terverifikasi dari percobaan nyata: /auth/login membuka halaman dengan
+// kolom "Alamat email" KOSONG — OpenAI mengabaikan login_hint di sana. UI tidak
+// boleh lagi menjanjikan isian otomatis, dan harus menyediakan penyalinan email
+// satu klik (dengan fallback bila Clipboard API ditolak).
+test('panel tidak menjanjikan autofill email dan menyediakan salin email dengan fallback', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('tidak terisi otomatis'), 'harus menyatakan kolom email tidak terisi otomatis');
+  assert.ok(source.includes('mengabaikan') && source.includes('login_hint'));
+  assert.ok(source.includes('Salin email'), 'harus ada tombol salin email');
+  assert.ok(!/login_hint\. Ketik email itu/.test(source), 'janji autofill lama tidak boleh kembali');
+  // Fallback wajib: navigator.clipboard sering ditolak di iframe/preview.
+  assert.ok(source.includes('execCommand'), 'harus ada fallback execCommand');
+  assert.ok(source.includes('Clipboard tidak tersedia di browser ini'));
+});

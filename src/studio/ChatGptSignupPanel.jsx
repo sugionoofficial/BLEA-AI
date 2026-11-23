@@ -56,6 +56,7 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [signin, setSignin] = useState(null);
   const [returnUrl, setReturnUrl] = useState('');
   const [returnAnalysis, setReturnAnalysis] = useState(null);
+  const [copied, setCopied] = useState('');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -112,8 +113,8 @@ export function ChatGptSignupPanel({ onVerified }) {
     setReturnUrl('');
     setReturnAnalysis(null);
     setNotice(res.data?.plus_address
-      ? 'URL disiapkan, tetapi alamat ini memakai +tag. Sebagian formulir OpenAI menolak tanda +; siapkan alamat TempMail tanpa + bila pendaftaran ditolak.'
-      : 'Halaman login ChatGPT dibuka dengan email TempMail sebagai login_hint. Ketik email itu di kolom "Alamat email" lalu tekan Lanjutkan, kemudian tempel URL hasilnya di bawah.');
+      ? 'Halaman login ChatGPT dibuka, tetapi alamat ini memakai +tag dan sebagian formulir OpenAI menolak tanda +. Tempel emailnya di kolom "Alamat email" (login_hint diabaikan OpenAI), lalu tekan Lanjutkan.'
+      : 'Halaman login ChatGPT dibuka. Tempel email TempMail di kolom "Alamat email" (OpenAI mengabaikan login_hint, jadi kolom itu kosong), tekan Lanjutkan, lalu tempel URL hasilnya di bawah.');
     if (url && pendingTab) {
       pendingTab.location.replace(url);
     } else if (url) {
@@ -179,15 +180,39 @@ export function ChatGptSignupPanel({ onVerified }) {
     await load();
   }
 
-  async function copyUrl() {
-    if (!lastUrl) return;
+  /**
+   * Salin ke clipboard dengan fallback. navigator.clipboard bisa ditolak
+   * (bukan https, iframe tanpa izin, atau kebijakan browser), jadi ada jalur
+   * textarea + execCommand sebagai cadangan.
+   */
+  async function copyText(value, label) {
+    const text = String(value || '');
+    if (!text) return false;
     try {
-      await navigator.clipboard.writeText(lastUrl);
-      setNotice('URL pendaftaran disalin.');
-    } catch {
-      setError('Clipboard tidak tersedia di browser ini.');
-    }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setCopied(label);
+        setError('');
+        return true;
+      }
+    } catch { /* lanjut ke fallback */ }
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(area);
+      if (ok) { setCopied(label); setError(''); return true; }
+    } catch { /* jatuh ke pesan error di bawah */ }
+    setError('Clipboard tidak tersedia di browser ini. Salin manual dari kotak URL/email di atas.');
+    return false;
   }
+
+  const copyUrl = () => copyText(lastUrl, 'url');
 
   return (
     <section className="oauth-panel cga-signup" id="cga-signup">
@@ -196,10 +221,11 @@ export function ChatGptSignupPanel({ onVerified }) {
           <span className="oauth-badge"><UserPlus size={12} /> Email TempMail</span>
           <h2>Daftar ChatGPT dengan email TempMail</h2>
           <p>
-            Satu tombol membuka halaman daftar resmi ChatGPT dengan email TempMail sebagai
-            <code>login_hint</code>. Setelah Anda menekan <b>Lanjutkan</b> di sana, tempel URL
-            hasilnya di sini supaya langkahnya terbukti — lalu panel memantau inbox untuk email
-            verifikasi. Pendaftaran dikirim dari browser Anda, bukan dari server BLEA.
+            Satu tombol membuka halaman login/daftar resmi ChatGPT. Email TempMail disalin dengan
+            satu klik karena kolom email di ChatGPT tidak terisi otomatis. Setelah menekan
+            <b> Lanjutkan</b>, tempel URL hasilnya di sini supaya langkahnya terbukti — lalu panel
+            memantau inbox untuk email verifikasi. Pendaftaran dikirim dari browser Anda, bukan
+            dari server BLEA.
           </p>
         </div>
         <div className="oauth-head-actions">
@@ -225,10 +251,28 @@ export function ChatGptSignupPanel({ onVerified }) {
             autoComplete="off"
             maxLength={320}
           />
-          <small>
-            {tempEmail
-              ? <>Alamat aktif di TempMail: <code>{tempEmail}</code>. Mengubah kolom ini tidak mengubah alias TempMail.</>
-              : 'Belum ada alias TempMail aktif. Buat dulu di halaman TempMail supaya email verifikasi bisa dibaca.'}
+          <div className="cga-signup-copy-row">
+            <button
+              type="button"
+              className="cga-signup-copy"
+              onClick={() => copyText(email, 'email')}
+              disabled={!email.trim()}
+            >
+              <ClipboardCopy size={12} /> {copied === 'email' ? 'Email disalin' : 'Salin email'}
+            </button>
+            <small>
+              {tempEmail
+                ? <>Alamat aktif di TempMail: <code>{tempEmail}</code>.</>
+                : 'Belum ada alias TempMail aktif. Buat dulu di halaman TempMail supaya email verifikasi bisa dibaca.'}
+            </small>
+          </div>
+          {/* Fakta yang sudah terbukti dari percobaan: parameter login_hint
+              diabaikan halaman /auth/login, kolom "Alamat email" tetap kosong.
+              Jangan menjanjikan isian otomatis. */}
+          <small className="cga-signup-hint">
+            Kolom <b>Alamat email</b> di ChatGPT <b>tidak terisi otomatis</b> — OpenAI mengabaikan
+            <code>login_hint</code> di halaman ini. Tekan <b>Salin email</b>, tempel di sana, lalu
+            tekan <b>Lanjutkan</b>.
           </small>
         </label>
         <div className="cga-signup-links">
@@ -245,7 +289,7 @@ export function ChatGptSignupPanel({ onVerified }) {
             <a className="cga-signup-open" href={lastUrl} target="_blank" rel="noopener noreferrer">
               Buka di tab baru <ExternalLink size={12} />
             </a>
-            <button type="button" onClick={copyUrl}>Salin URL</button>
+            <button type="button" onClick={copyUrl}>{copied === 'url' ? 'URL disalin' : 'Salin URL'}</button>
           </div>
         </div>
       )}
