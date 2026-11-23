@@ -265,7 +265,7 @@ export function signupConfig() {
       'Cloudflare Worker juga diblokir ke domain OpenAI, jadi POST dari server tidak akan pernah berhasil.',
       'Pendaftaran akun otomatis melanggar Terms of Use OpenAI dan akunnya biasanya dinonaktifkan.',
     ],
-    verification_note: 'Verifikasi email tetap diklik manusia. BLEA hanya membaca inbox TempMail dan menandai pesan verifikasi yang cocok.',
+    verification_note: 'Verifikasi tetap dikerjakan manusia. BLEA membaca inbox TempMail, mengambil kode verifikasinya, lalu Anda menempelkan kode itu di tab ChatGPT — tidak ada verifikasi otomatis.',
   };
 }
 
