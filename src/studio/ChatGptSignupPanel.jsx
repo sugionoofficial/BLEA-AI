@@ -272,11 +272,11 @@ export function ChatGptSignupPanel({ onVerified }) {
           <span className="oauth-badge"><UserPlus size={12} /> Email TempMail</span>
           <h2>Daftar ChatGPT dengan email TempMail</h2>
           <p>
-            Satu tombol membuka halaman login/daftar resmi ChatGPT. Email TempMail disalin dengan
-            satu klik karena kolom email di ChatGPT tidak terisi otomatis. Setelah menekan
-            <b> Lanjutkan</b>, tempel URL hasilnya di sini supaya langkahnya terbukti — lalu panel
-            memantau inbox untuk email verifikasi. Pendaftaran dikirim dari browser Anda, bukan
-            dari server BLEA.
+            Jalur utamanya sederhana: <b>isi email manual</b>. Satu tombol membuka halaman
+            login/daftar ChatGPT, Anda salin-tempel email TempMail, tekan <b>Lanjutkan</b>, lalu
+            tempel URL hasilnya di sini supaya langkahnya terbukti — panel memantau inbox untuk
+            email verifikasi. Bingkai otomatis (userscript/bookmarklet) hanya opsi tambahan,
+            tidak wajib. Pendaftaran dikirim dari browser Anda, bukan dari server BLEA.
           </p>
         </div>
         <div className="oauth-head-actions">
@@ -323,20 +323,19 @@ export function ChatGptSignupPanel({ onVerified }) {
           <small className="cga-signup-hint">
             Kolom <b>Alamat email</b> di ChatGPT <b>tidak terisi otomatis</b>: halaman BLEA tidak
             boleh menyentuh DOM <code>chatgpt.com</code> (same-origin policy), dan OpenAI mengabaikan
-            <code>login_hint</code>. Pilih salah satu: tempel manual, atau pakai tombol bookmarklet
-            di bawah (Anda yang mengklik di tab ChatGPT).
+            <code>login_hint</code>. <b>Cukup tempel manual</b> — itu sudah benar dan paling cepat.
           </small>
-          <div className="cga-signup-bookmarklet">
-            <b>Isi email otomatis</b>
+          <details className="cga-signup-optional">
+            <summary>Opsional: isi otomatis (tidak wajib)</summary>
             <p>
-              Ada dua jalur. <b>Jalur A</b> dipasang sekali di Tampermonkey lalu berjalan sendiri
-              setiap halaman login ChatGPT dibuka — tidak perlu seret atau tempel apa pun.
-              <b> Jalur B</b> (bookmarklet) tidak perlu ekstensi, tetapi harus diklik tiap kali.
-              Keduanya hanya mengisi kolom email: <b>Lanjutkan</b> tetap Anda yang tekan.
+              Tempel manual sudah cukup. Bagian ini hanya untuk yang malas mengetik ulang:
+              <b> Jalur A</b> userscript Tampermonkey (mengisi sendiri tiap halaman dibuka),
+              <b> Jalur B</b> bookmarklet (tanpa ekstensi, diklik tiap kali). Keduanya hanya
+              mengisi kolom email — <b>Lanjutkan</b> tetap Anda yang tekan.
             </p>
             <div className="cga-signup-bookmarklet-row">
               <button type="button" className="cga-signup-userscript" onClick={downloadUserscript} disabled={userscriptBusy || !email.trim()}>
-                {userscriptBusy ? <Loader2 size={12} className="agent-spin" /> : <Download size={12} />} Unduh userscript (disarankan)
+                {userscriptBusy ? <Loader2 size={12} className="agent-spin" /> : <Download size={12} />} Unduh userscript
               </button>
               <a
                 className="cga-signup-drag"
@@ -347,27 +346,26 @@ export function ChatGptSignupPanel({ onVerified }) {
                   setError('Seret tombol ini ke bilah bookmark (jangan diklik di halaman BLEA), lalu klik bookmark-nya di tab ChatGPT. Chrome membuang awalan javascript: kalau ditempel — seret, jangan tempel.');
                 }}
               >
-                <ClipboardCopy size={12} /> Seret: Isi email otomatis
+                <ClipboardCopy size={12} /> Seret: bookmarklet
               </a>
               <button type="button" onClick={() => copyText(bookmarklet, 'bookmarklet')}>
                 {copied === 'bookmarklet' ? 'Skrip disalin' : 'Salin skrip bookmarklet'}
               </button>
             </div>
             <ol className="cga-signup-userscript-steps">
-              <li>Pasang ekstensi <b>Tampermonkey</b> (Chrome/Edge/Firefox).</li>
-              <li>Tekan <b>Unduh userscript</b> di atas, lalu buka berkasnya → pilih <b>Install</b>.</li>
-              <li>Buka lagi <i>Siapkan &amp; buka daftar</i>: kolom email terisi sendiri, muncul penanda kecil “Email diisi oleh BLEA AI”.</li>
+              <li>Untuk Jalur A: pasang <b>Tampermonkey</b>, tekan <b>Unduh userscript</b>, buka berkasnya → <b>Install</b>.</li>
+              <li>Untuk Jalur B: seret tombol bookmarklet ke bilah bookmark, lalu klik di tab ChatGPT.</li>
             </ol>
             {userscriptText && (
               <div className="cga-signup-userscript-fallback">
-                <small>Cadangan: isi skrip userscript (salin ke Tampermonkey → Create a new script).</small>
+                <small>Cadangan: salin skrip userscript ke Tampermonkey → Create a new script.</small>
                 <textarea readOnly value={userscriptText} rows={8} spellCheck={false} />
                 <button type="button" onClick={() => copyText(userscriptText, 'userscript')}>
                   {copied === 'userscript' ? 'Skrip userscript disalin' : 'Salin skrip userscript'}
                 </button>
               </div>
             )}
-          </div>
+          </details>
         </label>
         <div className="cga-signup-links">
           <a href="/tempmail" target="_blank" rel="noreferrer">Buka halaman TempMail <ExternalLink size={12} /></a>

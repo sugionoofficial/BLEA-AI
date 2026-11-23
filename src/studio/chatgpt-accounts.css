@@ -450,3 +450,11 @@
   font: inherit; font-size: 12px; padding: 7px 11px; border-radius: 8px;
   color: inherit; background: transparent; border: 1px solid var(--cga-line, #26262b);
 }
+
+/* Bingkai otomatis bersifat opsional: dilipat agar alur manual tetap utama. */
+.cga-signup-optional {
+  margin-top: 6px; padding: 10px 12px; border-radius: 10px;
+  border: 1px dashed var(--cga-line, #26262b);
+}
+.cga-signup-optional > summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.cga-signup-optional > p { margin: 8px 0; font-size: 11.5px; line-height: 1.55; opacity: .82; }
