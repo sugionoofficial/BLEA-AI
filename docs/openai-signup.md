@@ -202,6 +202,33 @@ berhenti di situ: ia memanggil satu kali `POST /v1/responses`
 (`store:false`, `stream:true`) untuk membuktikan izinnya. Batas pemakaian
 dilaporkan sebagai "sedang kena batas", bukan sebagai akun rusak.
 
+## Model, kunci project, dan cara membaca hasil Uji
+
+Tiga hal ini sering tertukar saat mendiagnosis "API key tidak bisa":
+
+| Gejala | Arti sebenarnya |
+|---|---|
+| `429 credit_balance_exhausted` | saldo API organisasi nol — isi kredit di Billing |
+| `404 model_not_found` | kunci sah, **model** tidak ada/diizinkan pada organisasi project itu |
+| `401 invalid_api_key` | kunci salah, dicabut, atau milik project lain |
+
+Kunci berawalan `sk-proj-…` terikat ke **project** di dalam organisasi. Model yang
+tersedia untuk kunci itu adalah model yang diizinkan pada project tersebut
+(Project → Limits), bukan seluruh katalog OpenAI. Karena itu `model_default`
+harus model yang benar-benar ada di akun itu.
+
+Tombol **Uji** karena sebab itu memakai urutan ini:
+
+1. `GET /v1/models` — membuktikan kunci diterima;
+2. `POST /v1/chat/completions` dengan **model akun** (`model_default`), karena
+   itulah yang dipakai chat BLEA;
+3. bila balasannya `404 model_not_found`, diulang sekali dengan model cadangan
+   murah (`gpt-4o-mini`);
+4. bila model cadangan pun tidak ada, hasilnya menyebut **model**, bukan kredit.
+
+Tanpa langkah 3–4, akun yang modelnya tidak ada tampil "berhasil diuji" padahal
+setiap chat akan gagal.
+
 ## Nama internal & database
 
 Istilah lama "chatgpt" sudah dihapus dari kode, label, dokumen, dan nama objek
