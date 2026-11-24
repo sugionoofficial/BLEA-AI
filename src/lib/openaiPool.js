@@ -62,36 +62,111 @@ function unb64(value) {
   return Uint8Array.from(atob(s + '='.repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
 }
 
-async function credentialKey(env) {
+// Parameter AES-GCM. HARUS tetap seperti ini: token yang sudah tersegel di
+// database hanya bisa dibuka dengan kunci + additionalData yang sama persis.
+// `v1` dan `AAD_V1` sengaja dipertahankan supaya akun lama tidak perlu diisi
+// ulang; format baru pakai `v2` + `AAD_V2`.
+const KEY_INFO_V1 = 'blea-openai-pool-v1';
+const KEY_INFO_V2 = 'blea-openai-pool-v2';
+const AAD_V1 = 'openai-credential';
+const AAD_V2 = 'blea:openai:credential:v2';
+// Derivation string SEBELUM rename produk. Nilainya tidak boleh diubah: token
+// yang disegel sebelum rename hanya bisa dibuka dengan ini. Disimpan sebagai
+// base64 karena isinya nama lama, bukan rahasia. Setiap kali berhasil dibuka,
+// segelnya ditulis ulang ke format sekarang (readOpenAiSealedField), jadi
+// konstanta ini hanya dipakai sekali per baris dan bisa dihapus setelah tidak
+// ada lagi baris berformat lama.
+const KEY_INFO_V0 = atob('YmxlYS1jaGF0Z3B0LXBvb2wtdjE=');
+const AAD_V0 = atob('Y2hhdGdwdC1jcmVkZW50aWFs');
+
+async function importCredentialKey(secret, info) {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(`${info}:${secret}`));
+  return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+function encryptionSecret(env) {
   const secret = String(env.PROVIDER_CREDENTIAL_ENCRYPTION_KEY || '').trim();
   if (!secret) throw fail('Secret PROVIDER_CREDENTIAL_ENCRYPTION_KEY belum tersedia pada Worker.', 503);
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(`blea-openai-pool-v1:${secret}`));
-  return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return secret;
 }
 
 export async function sealOpenAiToken(env, token) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, additionalData: encoder.encode('openai-credential') },
-    await credentialKey(env),
+    { name: 'AES-GCM', iv, additionalData: encoder.encode(AAD_V2) },
+    await importCredentialKey(encryptionSecret(env), KEY_INFO_V2),
     encoder.encode(String(token)),
   );
   return `${b64(iv)}.${b64(ciphertext)}`;
 }
 
+/**
+ * Buka token tersegel. Menerima format sekarang (v2) DAN format lama (v1) —
+ * urutan percobaan: v2/AAD_V2 → v1/AAD_V1 → v1/AAD_V2.
+ *
+ * Kenapa tiga percobaan: ciphertext lama terikat pada kunci dan additionalData
+ * saat disegel. Bila salah satu berubah tanpa jalur baca lama, hasilnya string
+ * kosong — dan gejalanya menyesatkan ("API key belum dikonfigurasi") padahal
+ * akun ada. Membaca lama lalu menulis ulang ke format sekarang membuat satu
+ * kali gagal-baca pun tidak menghilangkan kredensial.
+ */
 export async function unsealOpenAiToken(env, sealed) {
+  const parts = String(sealed || '').split('.');
+  if (parts.length !== 2 || String(sealed).length > 6000) return '';
+  const secret = String(env.PROVIDER_CREDENTIAL_ENCRYPTION_KEY || '').trim();
+  if (!secret) return '';
+  let iv;
+  let data;
   try {
-    const parts = String(sealed || '').split('.');
-    if (parts.length !== 2 || String(sealed).length > 6000) return '';
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: unb64(parts[0]), additionalData: encoder.encode('openai-credential') },
-      await credentialKey(env),
-      unb64(parts[1]),
-    );
-    return new TextDecoder().decode(plaintext);
+    iv = unb64(parts[0]);
+    data = unb64(parts[1]);
   } catch {
     return '';
   }
+  const attempts = [
+    { info: KEY_INFO_V2, aad: AAD_V2 },
+    { info: KEY_INFO_V1, aad: AAD_V1 },
+    { info: KEY_INFO_V1, aad: AAD_V2 },
+    { info: KEY_INFO_V0, aad: AAD_V0 },
+  ];
+  for (const attempt of attempts) {
+    try {
+      const plaintext = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv, additionalData: encoder.encode(attempt.aad) },
+        await importCredentialKey(secret, attempt.info),
+        data,
+      );
+      return new TextDecoder().decode(plaintext);
+    } catch {
+      // Coba format berikutnya. Gagal semua = segel tidak bisa dibuka dengan
+      // secret ini (mis. secret Worker diganti).
+    }
+  }
+  return '';
+}
+
+/**
+ * Baca token sekaligus menaikkan segel lama ke format sekarang. `id` + kolom
+ * tujuan opsional: bila penguraian berhasil lewat format lama, baris diperbarui
+ * supaya pemanggilan berikutnya tidak lagi mencoba jalur kompatibilitas.
+ */
+export async function readOpenAiSealedField(env, sealed, { table, id, column } = {}) {
+  const token = await unsealOpenAiToken(env, sealed);
+  if (!token || !table || !id || !column) return token;
+  try {
+    const resealed = await sealOpenAiToken(env, token);
+    if (resealed !== sealed) {
+      await dbJson(env, `${table}?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        prefer: 'return=minimal',
+        body: { [column]: resealed },
+      });
+    }
+  } catch {
+    // Naik-format bersifat pemeliharaan: kegagalannya tidak boleh menggagalkan
+    // permintaan yang tokennya sudah berhasil dibuka.
+  }
+  return token;
 }
 
 // Empat karakter terakhir saja, supaya admin bisa membedakan dua kunci tanpa
@@ -243,6 +318,78 @@ export async function openAiPoolSummary(env) {
   }
 }
 
+/**
+ * Diagnosa kenapa sebuah kapabilitas tidak bisa dipakai. Hanya menghitung,
+ * tidak membuka token, jadi aman dipanggil saat menyusun pesan error.
+ * `sealed_missing` menandakan segel ada di DB tetapi tidak bisa dibuka dengan
+ * secret Worker sekarang — kasus yang dulu menyamar sebagai "belum
+ * dikonfigurasi".
+ */
+export async function openAiPoolDiagnostic(env, capability = 'chat') {
+  const cap = String(capability || 'chat').toLowerCase();
+  let rows;
+  try {
+    rows = await readRows(env);
+  } catch {
+    return { readable: false, total: 0, match_capability: 0, enabled: 0, unsupported_kind: 0, cooling: 0, quota_exhausted: 0, sealed_missing: 0, usable: 0 };
+  }
+  const now = Date.now();
+  const today = jakartaDate(new Date(now));
+  const counts = { readable: true, total: rows.length, match_capability: 0, enabled: 0, unsupported_kind: 0, cooling: 0, quota_exhausted: 0, sealed_missing: 0, usable: 0 };
+  for (const row of rows) {
+    const caps = Array.isArray(row.capabilities) ? row.capabilities : normalizeCapabilities(row.capabilities);
+    if (!caps.includes(cap)) continue;
+    counts.match_capability += 1;
+    if (row.enabled !== true) continue;
+    counts.enabled += 1;
+    // Sama seperti pickOpenAiAccount: hanya kredensial yang bisa dipanggil.
+    if (!['api_key', 'oauth'].includes(credentialKindOf(row))) { counts.unsupported_kind += 1; continue; }
+    if (isCoolingDown(row, now)) { counts.cooling += 1; continue; }
+    if (quotaExhausted(row, today)) { counts.quota_exhausted += 1; continue; }
+    if (!row.sealed_token) { counts.sealed_missing += 1; continue; }
+    // Uji apakah segel bisa dibuka dengan secret sekarang.
+    const token = await unsealOpenAiToken(env, row.sealed_token);
+    if (!token) { counts.sealed_missing += 1; continue; }
+    // Akun OAuth: access token berumur 1 jam, jadi yang menentukan bisa
+    // dipakai adalah refresh token-nya. Kalau itu pun tak terbuka, akun akan
+    // dilewati `pickOpenAiAccount` dan pesan error harus menyebutkannya.
+    if (credentialKindOf(row) === 'oauth' && isOAuthAccessExpired(row, now)) {
+      const refresh = await unsealOpenAiToken(env, row.oauth_refresh_sealed);
+      if (!refresh) { counts.sealed_missing += 1; continue; }
+    }
+    counts.usable += 1;
+  }
+  return counts;
+}
+
+/**
+ * Pesan penolakan untuk pool yang tidak bisa melayani `capability`.
+ * Dipakai `/api/agent` dan `/api/chat` supaya keduanya tidak lagi menjawab
+ * "API key belum dikonfigurasi" ketika akunnya sebenarnya ada tetapi terhalang
+ * (nonaktif, cooldown, kuota habis, atau segel tak terbuka).
+ * Mengembalikan null bila pool benar-benar kosong — pemanggil memakai pesan
+ * "belum ada akun" yang lebih tepat.
+ */
+export async function openAiPoolBlockedMessage(env, capability = 'chat') {
+  const cap = String(capability || 'chat').toLowerCase();
+  const pool = await openAiPoolDiagnostic(env, cap).catch(() => null);
+  if (!pool || !pool.total) return null;
+  const label = cap === 'agent' ? 'Agen' : cap.charAt(0).toUpperCase() + cap.slice(1);
+  const blockers = [];
+  if (pool.match_capability === 0) blockers.push(`tidak ada akun dengan kapabilitas "${label}" dicentang`);
+  if (pool.match_capability > 0 && pool.enabled === 0) blockers.push('semua akun yang cocok sedang nonaktif');
+  if (pool.unsupported_kind) blockers.push(`${pool.unsupported_kind} akun memakai jenis kredensial yang tidak bisa dipanggil`);
+  if (pool.cooling) blockers.push(`${pool.cooling} akun sedang cooldown`);
+  if (pool.quota_exhausted) blockers.push(`${pool.quota_exhausted} akun sudah habis kuota harian`);
+  if (pool.sealed_missing) blockers.push(`${pool.sealed_missing} akun tersegel dengan secret lain — simpan ulang API key-nya`);
+  return {
+    status: 503,
+    code: 'openai_pool_not_usable',
+    error: `Akun OpenAI ada ${pool.total} di pool, ${pool.usable} siap dipakai: ${blockers.join('; ') || 'tidak ada yang lolos penyaringan pool'}.`,
+    pool,
+  };
+}
+
 // ---- Validasi input --------------------------------------------------------
 function cleanText(value, max, label) {
   if (value === undefined || value === null) return '';
@@ -335,7 +482,9 @@ export async function createOpenAiAccount(env, input, userId = null) {
     daily_limit: 200,
     ...clean,
     sealed_token,
-    // Metadata OAuth (hanya bila akun ini hasil login OAuth OpenAI).
+    // Metadata OAuth (hanya bila akun ini hasil login OAuth OpenAI). Refresh
+    // token disegel disimpan di sini; kolomnya harus ada di tabel yang
+    // di-migrasikan, kalau tidak seluruh penyimpanan akun ditolak PostgREST.
     ...(clean.credential_kind === 'oauth' ? {
       oauth_client_id: typeof input.oauth_client_id === 'string' ? input.oauth_client_id.slice(0, 120) : null,
       oauth_expires_at: input.oauth_expires_at || null,
@@ -423,7 +572,7 @@ function isOAuthAccessExpired(row, now = Date.now()) {
  */
 async function refreshOAuthAccessToken(env, row) {
   if (!row?.oauth_client_id) return '';
-  const refreshToken = await unsealOpenAiToken(env, row.oauth_refresh_sealed);
+  const refreshToken = await readOpenAiSealedField(env, row.oauth_refresh_sealed, { table: TABLE, id: row.id, column: 'oauth_refresh_sealed' });
   if (!refreshToken) return '';
   let res;
   try {
@@ -643,7 +792,9 @@ export async function pickOpenAiAccount(env, { capability = 'chat', exclude = []
       return Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0);
     });
   for (const row of candidates) {
-    let token = await unsealOpenAiToken(env, row.sealed_token);
+    // `readOpenAiSealedField` membaca format lama maupun baru, lalu menulis
+    // ulang ke format sekarang (lihat unsealOpenAiToken).
+    let token = await readOpenAiSealedField(env, row.sealed_token, { table: TABLE, id: row.id, column: 'sealed_token' });
     if (!token) continue;
     // Token OAuth kedaluwarsa (1 jam) → putar refresh token sebelum dipakai.
     if (credentialKindOf(row) === 'oauth' && isOAuthAccessExpired(row)) {
@@ -817,7 +968,7 @@ export async function testOpenAiAccount(env, id) {
   if (credentialKindOf(row) === 'oauth') {
     // Uji jalur OAuth dengan /v1/models memakai access token; sekaligus
     // memastikan token belum kedaluwarsa (kalau ya, refresh dulu).
-    let token = await unsealOpenAiToken(env, row.sealed_token);
+    let token = await readOpenAiSealedField(env, row.sealed_token, { table: TABLE, id: row.id, column: 'sealed_token' });
     if (!token) return await finish(false, 'Token OAuth tidak bisa dibuka (kunci enkripsi Worker berubah). Sambungkan ulang akun.', null);
     if (isOAuthAccessExpired(row)) token = await refreshOAuthAccessToken(env, row).catch(() => '');
     if (!token) return await finish(false, 'Token OAuth kedaluwarsa dan refresh gagal. Sambungkan ulang akun lewat tombol Connect.', 401);
@@ -837,7 +988,7 @@ export async function testOpenAiAccount(env, id) {
     const text = await res.text().catch(() => '');
     return await finish(false, `OpenAI menolak token OAuth (HTTP ${res.status}). ${text.slice(0, 200)}`.trim(), res.status);
   }
-  const token = await unsealOpenAiToken(env, row.sealed_token);
+  const token = await readOpenAiSealedField(env, row.sealed_token, { table: TABLE, id: row.id, column: 'sealed_token' });
   if (!token) return await finish(false, 'Kredensial akun tidak bisa dibuka (kunci enkripsi Worker berubah). Masukkan ulang kunci.', null);
   const base = String(row.api_base || DEFAULT_API_BASE).replace(/\/+$/, '');
   let res;
