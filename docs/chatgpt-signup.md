@@ -441,3 +441,53 @@ Catatan operasional: port di `redirect_uri` dipilih saat percobaan dibuat
 (mis. `46721` di PC hanya acak). Alamat yang harus ditempel adalah alamat yang
 **benar-benar** muncul di bilah alamat setelah menyetujui izin — panel
 menampilkan nilai yang diharapkan sebagai pembanding, bukan sebagai syarat.
+
+## `invalid_grant` saat menukar kode (bukti nyata 2026-11-24)
+
+Catatan lapangan dari tabel `chatgpt_oauth_links`:
+
+```
+id=5fc01ffc… status=failed  redirect_uri=http://127.0.0.1:65034/auth/callback
+issued_client_id=oaiapp_HECJRHhVjPW5XpdKFBxQHdeNf
+exchanged_code_fingerprint terisi  ← kode SUDAH ditukar (pernah)
+scopes=[]  plan_usage=false
+error_message: client=oaiapp_HEC… status=400 body={"error":"invalid_grant"}
+```
+
+Yang bisa dibuktikan dari baris ini:
+
+- **Bukan salah URL.** `redirect_uri` berbentuk `http://127.0.0.1:<port>/auth/callback`
+  dan port-nya milik percobaan itu sendiri (dipilih saat percobaan dibuat).
+- **Bukan salah client.** Server memakai client terbitan (`oaiapp_…`), bukan
+  `dynamic_agent_client`.
+- **Kode memang sudah dipakai.** Penanda klaim (`exchanged_code_fingerprint`)
+  terisi, artinya percobaan itu sampai ke tahap penukaran. Penukaran kedua
+  untuk kode yang sama selalu `invalid_grant`.
+
+Penyebab paling umum untuk kasus ini: alamat `127.0.0.1:<port>/auth/callback`
+**dimuat dua kali** (klik ganda, tab duplikat, atau halaman di-reload). Penukaran
+pertama berhasil memakai kodenya, yang kedua ditolak. Karena itu urutan
+pemeriksaan sekarang: **lihat daftar akun dulu** — kalau akunnya sudah muncul,
+tidak ada yang perlu diulang.
+
+Dua dugaan lain tetap dicatat, tetapi **belum terbukti**:
+
+| Dugaan | Cara memastikan |
+|---|---|
+| Izin "gunakan paket ChatGPT saya" tidak dicentang | Lihat `scopes` hasil token: tanpa `chatgpt.tokens.use.direct`, akun tersambung identitas saja |
+| Paket akun bukan Plus/Pro pribadi (Free/Go/workspace) | Sama — muncul saat penukaran BERHASIL tetapi `scopes` tidak memuat izin paket |
+
+Keduanya baru bisa dibedakan **setelah** penukaran berhasil: `invalid_grant`
+tidak membawa `scopes` sama sekali, jadi paket belum tentu penyebabnya.
+
+### Perbaikan pada PR ini
+
+- Pesan `invalid_grant` disusun berurutan (bukan tiga kemungkinan setara):
+  periksa daftar akun → jangan buka dua kali → centang izin → paket Plus/Pro.
+- Jejak kegagalan kini menyimpan `mode=issued|dynamic`, `redirect=<uri>`,
+  `verify=<sidik kode>`, dan `resource=1`, supaya kegagalan berikutnya bisa
+  dianalisis tanpa menebak.
+- Client terbitan dicatat **sejak penukaran dimulai** (`requested_client_id`),
+  bukan hanya saat gagal — pengulangan memakai client yang sama, bukan
+  mendaftar ulang.
+- Panel menampilkan pesan tindakan; jejak teknis dipindah ke `<details>`.
