@@ -1,18 +1,42 @@
-# Daftar ChatGPT & simpan aksesnya
+# Daftar akun OpenAI & simpan aksesnya
 
 Halaman: **Studio → Akun ChatGPT** (`/studio/chatgpt-accounts`).
 
-## Alur tiga langkah (yang dilihat pengguna)
+## Dua jalur (pilih di panel, default = platform)
+
+| | **OpenAI Platform** (default) | **ChatGPT (OAuth)** |
+|---|---|---|
+| Titik masuk | `https://platform.openai.com/login` | `https://chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup` |
+| Yang didapat | akun **API**: API key + billing per token | sesi ChatGPT: access token 1 jam + refresh |
+| Syarat paket | tidak perlu paket ChatGPT | perlu **Plus/Pro pada akun pribadi** (Free/Go/workspace tidak bisa) |
+| Cara masuk pool | salin API key → **Tambah akun manual** | **Continue with ChatGPT** → tempel URL callback |
+| Risiko utama | saldo billing kosong → API key tidak bisa dipanggil | `invalid_grant` (lihat bagian audit di bawah) |
+
+Kedua jalur sama-sama: email TempMail → **Continue** → kode 6 digit dari inbox.
+Kolom email **tidak** terisi otomatis di kedua jalur (halaman OpenAI tidak memakai
+`login_hint`), jadi tempel manual adalah jalur utama.
+
+### Kenapa `/login` sah dibuka dengan GET
+
+Diuji langsung ke server OpenAI: `/home`, `/api-keys`, dan
+`/settings/organization/billing/overview` semuanya mengarah ke
+`/login?next=…` bila belum masuk. Jadi `/login` adalah halaman, bukan endpoint
+POST — aman dibuka browser.
+
+`next` dibatasi daftar tetap (`/home`, `/api-keys`,
+`/settings/organization/billing/overview`) di `buildPlatformSignupUrl`, sehingga
+tidak bisa dipakai sebagai open redirect.
+
+### Alur tiga langkah (jalur platform)
 
 | Langkah | Tombol | Yang terjadi |
 |---|---|---|
-| 1. Buat akun | **Siapkan & buka daftar** | Tab OpenAI terbuka di formulir "Create an account"; email TempMail ditempel manual, lalu Continue. |
-| 2. Ambil kode | **Cari email verifikasi** | BLEA membaca inbox TempMail, mengambil kode 6 digit; Anda menempelnya di tab OpenAI. |
-| 3. Simpan akses | **Simpan aksesnya ke pool** | Halaman izin OAuth terbuka; setelah disetujui, tempel alamat `127.0.0.1:<port>/auth/callback?code=…` di panel. Akun masuk pool. |
+| 1. Buat akun | **Siapkan & buka daftar** | Tab `platform.openai.com/login` terbuka; email TempMail ditempel, Continue, lalu kode 6 digit. |
+| 2. Ambil kode | **Cari email verifikasi** | BLEA membaca inbox TempMail dan menampilkan kode; Anda menempelnya di tab platform. |
+| 3. Simpan | **Tambah akun manual** | API key (`sk-…`) disimpan tersegel sebagai akun pool. |
 
-Penjelasan panjang (riwayat URL yang gagal, alasan teknis, deep link aplikasi,
-"Session ended") ada di bagian **“Kalau ada masalah”** yang tertutup. Semua
-catatan lengkap juga disimpan di dokumen ini — bukan di layar.
+Penjelasan panjang ada di bagian **“Kalau ada masalah”** (tertutup) di panel dan
+di dokumen ini.
 
 | Bagian | Berkas |
 |---|---|
@@ -20,7 +44,7 @@ catatan lengkap juga disimpan di dokumen ini — bukan di layar.
 | Rute API `/api/chatgpt-signup` | `src/lib/chatgptSignupRoute.js` + `src/worker.js` |
 | UI pendaftaran (langkah 1–3) | `src/studio/ChatGptSignupPanel.jsx` |
 | UI simpan akses (OAuth) | `src/studio/ChatGptOAuthPanel.jsx`, `src/studio/chatgptOAuthClient.js` |
-| Tabel jejak | `supabase/migrations/20261213000000_chatgpt_signup_attempts.sql` |
+| Pool akun | `src/lib/chatgptPool.js` |
 | Uji | `tests/chatgpt-signup.test.js`, `tests/chatgpt-oauth.test.js` |
 
 ## Kesalahan yang sudah diperbaiki: URL endpoint POST dibuka dengan GET

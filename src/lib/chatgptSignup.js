@@ -68,6 +68,54 @@ export const SIGNUP_PAGE_URL = 'https://chatgpt.com/auth/login';
  *     (di `/auth/login` parameter itu baik-baik saja — beda halaman, beda
  *     perilaku). Keduanya diuji langsung ke server OpenAI.
  */
+// ---- Jalur OpenAI Platform (BUKAN ChatGPT) -------------------------------
+//
+// Diminta pengguna: daftar/masuk lewat `platform.openai.com`, bukan lewat
+// `chatgpt.com`. Alurnya sama bentuknya: email → Continue → kode 6 digit dari
+// inbox → masuk ke `platform.openai.com/home`.
+//
+// Bedanya dengan jalur ChatGPT, dan ini yang harus jujur disampaikan:
+//   • Yang didapat dari platform adalah akun **API** (API key + billing),
+//     bukan sesi ChatGPT. Untuk dipakai BLEA, API key-nya ditempel lewat
+//     "Tambah akun manual" — bukan lewat OAuth "Continue with ChatGPT".
+//   • Jalur ini TIDAK perlu langganan ChatGPT Plus/Pro dan tidak terkena
+//     `invalid_grant` yang membelit alur OAuth.
+//   • Sebaliknya, pemakaian API ditagih per token dari saldo billing platform;
+//     tanpa saldo, API key tetap tidak bisa dipanggil.
+//
+// Semua halaman platform mengarah ke `/login` bila belum masuk (diuji langsung
+// ke server OpenAI: /home, /api-keys, /settings/organization/billing/overview
+// semuanya 302 → /login?next=…). Karena itu `/login` adalah titik masuk yang
+// sah dan bisa dibuka dengan GET.
+export const PLATFORM_BASE = 'https://platform.openai.com';
+export const PLATFORM_LOGIN_URL = `${PLATFORM_BASE}/login`;
+export const PLATFORM_HOME_URL = `${PLATFORM_BASE}/home`;
+export const PLATFORM_API_KEYS_URL = `${PLATFORM_BASE}/api-keys`;
+export const PLATFORM_BILLING_URL = `${PLATFORM_BASE}/settings/organization/billing/overview`;
+// Tujuan setelah login. Daftar tetap (bukan dari input pengguna) supaya
+// parameter `next` tidak bisa dipakai mengarahkan ke domain lain.
+export const PLATFORM_NEXT_PATHS = ['/home', '/api-keys', '/settings/organization/billing/overview'];
+
+/**
+ * URL login/daftar platform untuk sebuah email.
+ *
+ * `email` sengaja tidak dikirim sebagai parameter: halaman login platform tidak
+ * memakai `login_hint` (sama seperti formulir Auth0 ChatGPT), dan parameter
+ * karangan bisa memicu error. Kolom email tetap diisi manual.
+ */
+export function buildPlatformSignupUrl(_email, { next = '' } = {}) {
+  const target = PLATFORM_NEXT_PATHS.includes(next) ? next : '';
+  return target ? `${PLATFORM_LOGIN_URL}?next=${encodeURIComponent(target)}` : PLATFORM_LOGIN_URL;
+}
+
+/** Langkah yang dilihat pengguna setelah memakai jalur platform. */
+export const PLATFORM_STEPS = [
+  'Klik "Buka login platform", lalu tempel email TempMail di kolom Email address dan tekan Continue.',
+  'Buka halaman TempMail, salin kode 6 digit dari email OpenAI, tempel di halaman platform, lalu lanjutkan.',
+  'Setelah masuk ke platform.openai.com/home, buka "API keys" → Create new secret key, lalu salin key-nya (diawali sk-).',
+  'Kembali ke panel ini → "Tambah akun manual" → tempel key itu sebagai API key. Akun langsung bisa dipakai BLEA.',
+];
+
 export const SIGNUP_FORM_ORIGIN = 'https://chatgpt.com';
 export const SIGNUP_ENTRY_PATH = '/auth/login_with';
 export const SIGNUP_FORM_URL = `${SIGNUP_FORM_ORIGIN}${SIGNUP_ENTRY_PATH}?callback_path=/&screen_hint=signup`;

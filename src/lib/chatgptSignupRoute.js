@@ -15,8 +15,10 @@ import {
   analyzeReturnUrl,
   describeStoredCode,
   extractVerificationCode,
+  buildPlatformSignupUrl,
   buildSigninBootstrap,
   buildSignupUrl,
+  PLATFORM_STEPS,
   normalizeSignupRequest,
   scoreVerificationMessage,
   signupConfig,
@@ -84,9 +86,19 @@ async function activeTempEmail(env, userId) {
   return row ? { email: String(row.email || ''), provider: String(row.provider || '') } : null;
 }
 
+// Jalur mana yang dipakai: `platform` (platform.openai.com → akun API) atau
+// `chatgpt` (chatgpt.com → sesi ChatGPT + OAuth). Default `platform` karena itu
+// yang diminta dan satu-satunya jalur yang tidak bergantung pada paket ChatGPT.
+function normalizeRoute(input) {
+  return String(input?.route || '').toLowerCase() === 'chatgpt' ? 'chatgpt' : 'platform';
+}
+
 async function saveAttempt(env, userId, input) {
   const { email, auth_session_logging_id, plus_address } = validateSignupInput(input);
-  const signupUrl = buildSignupUrl(email, { authSessionLoggingId: auth_session_logging_id });
+  const route = normalizeRoute(input);
+  const signupUrl = route === 'platform'
+    ? buildPlatformSignupUrl(email, { next: String(input.next || '') })
+    : buildSignupUrl(email, { authSessionLoggingId: auth_session_logging_id });
   const now = new Date().toISOString();
   // Upsert per (user_id, lower(email)): mengulang alamat yang sama memperbarui
   // satu baris, bukan membuat riwayat pendaftaran ganda.
@@ -98,7 +110,10 @@ async function saveAttempt(env, userId, input) {
       email,
       signup_url: signupUrl,
       step: 'dibuka',
-      note: plus_address ? 'Alamat +tag Gmail: sebagian formulir OpenAI menolak tanda +.' : '',
+      note: [
+        route === 'platform' ? 'Jalur platform.openai.com (akun API).' : 'Jalur chatgpt.com (sesi ChatGPT/OAuth).',
+        plus_address ? 'Alamat +tag Gmail: sebagian formulir OpenAI menolak tanda +.' : '',
+      ].filter(Boolean).join(' '),
       // Upsert per (user_id, email): tanpa pengosongan eksplisit, kode dan id
       // pesan dari ronde sebelumnya tetap menempel dan tampil seolah milik
       // permintaan yang baru — lalu ditempel ke ChatGPT dan gagal.
@@ -119,8 +134,12 @@ async function saveAttempt(env, userId, input) {
   return {
     attempt: normalizeSignupRequest(row),
     url: signupUrl,
+    route,
     plus_address,
-    signin: buildSigninBootstrap(email),
+    // Langkah manual hanya relevan untuk jalur ChatGPT. Untuk jalur platform,
+    // langkahnya tetap dan tidak butuh bootstrap NextAuth apa pun.
+    signin: route === 'chatgpt' ? buildSigninBootstrap(email) : null,
+    platform_steps: route === 'platform' ? PLATFORM_STEPS : null,
   };
 }
 

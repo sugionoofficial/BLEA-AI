@@ -196,9 +196,9 @@ export function ChatGptAccountsPage() {
           <span className="cga-badge"><KeyRound size={12} /> Admin · Koneksi</span>
           <h1>ChatGPT disambungkan seperti freebeat.</h1>
           <p>
-            Ada dua cara menambah akun ke pool. <b>Otomatis (disarankan):</b> daftar akun baru
-            dengan email TempMail, lalu simpan aksesnya lewat <b>Continue with ChatGPT</b>.
-            <b> Manual:</b> tempel API key Anda sendiri untuk tool media.
+            Jalur utama: daftar akun lewat <b>platform.openai.com</b> dengan email TempMail,
+            lalu tempel <b>API key</b>-nya di “Tambah akun manual”. Jalur ChatGPT (OAuth) tetap
+            tersedia bila akun Anda punya paket Plus/Pro.
           </p>
           <ul className="cga-stats">
             <li><b>{summary.total}</b><small>akun di pool</small></li>
@@ -207,9 +207,9 @@ export function ChatGptAccountsPage() {
             <li><b>{summary.cooling}</b><small>cooldown</small></li>
           </ul>
           <ol className="cga-flow">
-            <li><b>1. Buat akun</b><small>Buka formulir OpenAI dengan email TempMail, lalu tempel kodenya.</small></li>
-            <li><b>2. Simpan akses</b><small>Tekan “Continue with ChatGPT”, setujui izin, tempel alamat callback.</small></li>
-            <li><b>3. Selesai</b><small>Akun muncul di daftar bawah dan dipakai otomatis oleh BLEA.</small></li>
+            <li><b>1. Buat akun</b><small>Buka platform.openai.com/login dengan email TempMail, lalu masukkan kode 6 digit.</small></li>
+            <li><b>2. Buat API key</b><small>Di menu API keys platform, salin key yang diawali sk-.</small></li>
+            <li><b>3. Simpan</b><small>Tempel key itu lewat “Tambah akun manual”. Akun langsung dipakai BLEA.</small></li>
           </ol>
           <div className="cga-hero-actions">
             <button type="button" className="cga-primary" onClick={() => setFormOpen((open) => !open)}>

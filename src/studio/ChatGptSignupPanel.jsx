@@ -25,7 +25,13 @@ import {
   buildAutofillBookmarklet,
   sessionCheckGuide,
 } from '../lib/chatgptSignup';
-import { SIGNUP_FORM_URL } from '../lib/chatgptSignup';
+import {
+  PLATFORM_API_KEYS_URL,
+  PLATFORM_BILLING_URL,
+  PLATFORM_LOGIN_URL,
+  PLATFORM_STEPS,
+  SIGNUP_FORM_URL,
+} from '../lib/chatgptSignup';
 
 const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi'];
 
@@ -78,6 +84,9 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [codeExpired, setCodeExpired] = useState(false);
   const [codeNote, setCodeNote] = useState('');
   const [codeUnverified, setCodeUnverified] = useState(false);
+  // Jalur default: platform.openai.com (akun API). Jalur chatgpt.com tetap
+  // tersedia untuk siapa pun yang memang punya paket ChatGPT Plus/Pro.
+  const [route, setRoute] = useState('platform');
 
   const load = useCallback(async () => {
     const res = await chatGptSignupApi.status();
@@ -146,7 +155,7 @@ export function ChatGptSignupPanel({ onVerified }) {
 
     let res;
     try {
-      res = await chatGptSignupApi.prepare(email, newLoggingId());
+      res = await chatGptSignupApi.prepare(email, newLoggingId(), { route, next: '/api-keys' });
     } catch (requestError) {
       closePendingTab();
       setBusy('');
@@ -165,9 +174,12 @@ export function ChatGptSignupPanel({ onVerified }) {
     setActiveId(res.data?.attempt?.id || '');
     setReturnUrl('');
     setReturnAnalysis(null);
-    setNotice(res.data?.plus_address
-      ? 'Formulir OpenAI dibuka. Alamat ini memakai +tag, dan sebagian formulir OpenAI menolak tanda + — kalau ditolak, ganti alias tanpa + di TempMail. Tempel emailnya di kolom "Email address", lalu tekan Continue.'
-      : 'Formulir OpenAI dibuka. Tempel email TempMail di kolom "Email address", lalu tekan Continue. Kalau yang tampil "Welcome back", tekan tautan "Sign up" di bawah tombol Continue lebih dulu.');
+    const plusWarning = res.data?.plus_address
+      ? ' Alamat ini memakai +tag; sebagian formulir OpenAI menolak tanda + — kalau ditolak, ganti alias tanpa + di TempMail.'
+      : '';
+    setNotice((res.data?.route === 'platform'
+      ? 'Halaman login platform.openai.com dibuka. Tempel email TempMail, tekan Continue, lalu masukkan kode 6 digit dari inbox. Setelah masuk, buat API key di menu API keys.'
+      : 'Formulir OpenAI dibuka. Tempel email TempMail di kolom "Email address", lalu tekan Continue. Kalau yang tampil "Welcome back", tekan tautan "Sign up" di bawah tombol Continue lebih dulu.') + plusWarning);
     if (url && pendingTab) {
       pendingTab.location.replace(url);
     } else if (url) {
@@ -304,19 +316,20 @@ export function ChatGptSignupPanel({ onVerified }) {
   const copyUrl = () => copyText(lastUrl, 'url');
 
   const activeCode = verificationCode || active?.verification_code || '';
-  // Formulir resmi OpenAI. `lastUrl` dipakai bila sudah pernah disiapkan.
-  const signupPageUrl = lastUrl || SIGNUP_FORM_URL;
+  // Halaman tujuan tombol. Jalur platform memakai login platform (default),
+  // jalur ChatGPT memakai formulir daftar yang sudah terbukti.
+  const signupPageUrl = lastUrl || (route === 'platform' ? PLATFORM_LOGIN_URL : SIGNUP_FORM_URL);
 
   return (
     <section className="oauth-panel cga-signup" id="cga-signup">
       <header className="oauth-head">
         <div>
           <span className="oauth-badge"><UserPlus size={12} /> Langkah 1 · Buat akun</span>
-          <h2>Daftar ChatGPT dengan email TempMail</h2>
+          <h2>Daftar lewat OpenAI Platform</h2>
           <p>
-            Tiga langkah: <b>buat akun</b>, <b>ambil kode verifikasi</b>, lalu <b>simpan aksesnya</b>.
-            Panel ini hanya membantu membaca inbox dan mencatat langkahnya — pendaftaran tetap
-            dikirim dari browser Anda.
+            Jalur utama: <b>platform.openai.com</b> — email TempMail, Continue, kode 6 digit, lalu masuk.
+            Setelah itu buat <b>API key</b> di menu API keys dan tempel di “Tambah akun manual”.
+            Tidak perlu paket ChatGPT dan tidak terkena masalah OAuth.
           </p>
         </div>
         <div className="oauth-head-actions">
@@ -333,6 +346,20 @@ export function ChatGptSignupPanel({ onVerified }) {
       {/* LANGKAH 1 — email + buka formulir. */}
       <div className="cga-step">
         <b className="cga-step-title"><span>1</span> Isi email, buka formulir</b>
+        <div className="cga-route">
+          <label>
+            <input type="radio" name="cga-route" checked={route === 'platform'} onChange={() => setRoute('platform')} />
+            <span>
+              <b>OpenAI Platform</b> <small>platform.openai.com → API key. Tidak perlu paket ChatGPT.</small>
+            </span>
+          </label>
+          <label>
+            <input type="radio" name="cga-route" checked={route === 'chatgpt'} onChange={() => setRoute('chatgpt')} />
+            <span>
+              <b>ChatGPT (OAuth)</b> <small>chatgpt.com → sesi ChatGPT. Butuh Plus/Pro pribadi.</small>
+            </span>
+          </label>
+        </div>
         <div className="cga-signup-grid">
           <label>
             <span>Email dari halaman TempMail</span>
@@ -366,7 +393,7 @@ export function ChatGptSignupPanel({ onVerified }) {
                 Buka TempMail <ExternalLink size={12} />
               </a>
               <a className="cga-signup-open" href={signupPageUrl} target="_blank" rel="noreferrer">
-                Buka formulir OpenAI <ExternalLink size={12} />
+                {route === 'platform' ? 'Buka login platform' : 'Buka formulir ChatGPT'} <ExternalLink size={12} />
               </a>
             </div>
           </label>
@@ -413,6 +440,11 @@ export function ChatGptSignupPanel({ onVerified }) {
             Tekan <b>Cari email verifikasi</b> setelah formulir OpenAI meminta kode. Kodenya muncul di sini.
           </small>
         )}
+        {route === 'platform' && (
+          <ol className="cga-signup-session-steps">
+            {PLATFORM_STEPS.map((line) => <li key={line}>{line}</li>)}
+          </ol>
+        )}
       </div>
 
       {/* LANGKAH 3 tidak diduplikasi di sini: panel "Continue with ChatGPT" di
@@ -420,16 +452,36 @@ export function ChatGptSignupPanel({ onVerified }) {
           fungsi sama membuat bingung. */}
       <div className="cga-step">
         <b className="cga-step-title"><span>3</span> Simpan aksesnya ke pool</b>
-        <p className="cga-step-note">
-          Setelah masuk ke ChatGPT (halaman chat, bukan halaman verifikasi), lanjut ke panel
-          <b> Continue with ChatGPT</b> di bawah dan tekan <b>Simpan aksesnya ke pool</b>.
-          Yang disimpan access token ±1 jam + refresh token yang diperbarui otomatis, bukan cookie sesi.
-        </p>
-        <div className="cga-item-actions">
-          <a className="cga-primary cga-jump" href="#cga-oauth">
-            <PlugZap size={12} /> Ke langkah 3 di bawah
-          </a>
-        </div>
+        {route === 'platform' ? (
+          <>
+            <p className="cga-step-note">
+              Di platform.openai.com buka <b>API keys</b> → <b>Create new secret key</b>, salin key-nya
+              (diawali <code>sk-</code>), lalu tempel lewat tombol <b>Tambah akun manual</b> di atas.
+              Pemakaian API ditagih dari saldo billing platform, bukan dari paket ChatGPT.
+            </p>
+            <div className="cga-item-actions">
+              <a className="cga-primary cga-jump" href={PLATFORM_API_KEYS_URL} target="_blank" rel="noopener noreferrer">
+                <PlugZap size={12} /> Buka API keys
+              </a>
+              <a className="cga-signup-open" href={PLATFORM_BILLING_URL} target="_blank" rel="noopener noreferrer">
+                Cek saldo billing <ExternalLink size={12} />
+              </a>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="cga-step-note">
+              Setelah masuk ke ChatGPT (halaman chat, bukan halaman verifikasi), lanjut ke panel
+              <b> Continue with ChatGPT</b> di bawah dan tekan <b>Simpan aksesnya ke pool</b>.
+              Yang disimpan access token ±1 jam + refresh token yang diperbarui otomatis, bukan cookie sesi.
+            </p>
+            <div className="cga-item-actions">
+              <a className="cga-primary cga-jump" href="#cga-oauth">
+                <PlugZap size={12} /> Ke langkah 3 di bawah
+              </a>
+            </div>
+          </>
+        )}
       </div>
 
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
