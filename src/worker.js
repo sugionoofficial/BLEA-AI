@@ -5682,6 +5682,7 @@ async function handleApi(request, url, env) {
         // JANGAN langsung menyerah: provider utama memang tidak bisa dipakai,
         // tetapi provider lain mungkin sehat. Tanpa ini, pengguna dengan akun
         // OpenAI bermasalah tidak pernah sampai ke fallback (mis. alibaba).
+        let rescueFailures = [];
         if (body.autoFallback !== false) {
           const rescue = await tryFallbackWithoutPrimary({
             env,
@@ -5699,21 +5700,29 @@ async function handleApi(request, url, env) {
             userId: user.id,
             reason: blocked?.code || (primaryProvider === 'openai' ? 'openai_pool_empty' : 'provider_not_configured'),
           });
-          if (rescue) return jsonResponse(rescue, 200, { 'cache-control': 'no-store' });
+          if (rescue.ok) return jsonResponse(rescue.payload, 200, { 'cache-control': 'no-store' });
+          rescueFailures = rescue.failures || [];
         }
+        // `triedDetails` ikut dikirim walau provider utama tidak punya kunci:
+        // tanpa itu layar hanya menampilkan sebab provider utama dan
+        // menyembunyikan fakta bahwa cadangan sudah dicoba lalu gagal.
+        const rescueNote = rescueFailures.length
+          ? { primaryProvider, triedDetails: rescueFailures, triedModels: rescueFailures.map((f) => f.model) }
+          : {};
         if (blocked) {
           // `hint` diteruskan: untuk kasus paket OAuth, satu-satunya jalan
           // keluar berbeda (API key berbayar), dan UI membutuhkannya tanpa
           // harus menebak dari kalimat.
-          return jsonResponse({ error: blocked.error, code: blocked.code, hint: blocked.hint, pool: blocked.pool }, blocked.status);
+          return jsonResponse({ error: blocked.error, code: blocked.code, hint: blocked.hint, pool: blocked.pool, ...rescueNote }, blocked.status);
         }
         if (primaryProvider === 'openai') {
           return jsonResponse({
             error: 'Belum ada akun OpenAI di pool. Tambahkan API key di Studio → Akun OpenAI.',
             code: 'openai_pool_empty',
+            ...rescueNote,
           }, 400);
         }
-        return jsonResponse({ error: `API key untuk provider "${primaryProvider}" belum dikonfigurasi.` }, 400);
+        return jsonResponse({ error: `API key untuk provider "${primaryProvider}" belum dikonfigurasi.`, ...rescueNote }, 400);
       }
 
       const repository = typeof body.repository === 'string' && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(body.repository) ? body.repository : '';
@@ -5931,6 +5940,9 @@ async function handleApi(request, url, env) {
               status: finalStatus,
               retryAfterSec: bestRetryAfter,
               detail: errInfo.rawDetail,
+              // `primaryProvider` dipakai UI untuk memisahkan sebab utama dari
+              // provider cadangan yang ikut gagal, tanpa menebak dari kalimat.
+              primaryProvider,
               triedModels,
               triedDetails,
               ...(poolFailures.length ? { poolFailures } : {}),
@@ -6093,7 +6105,14 @@ async function handleApi(request, url, env) {
                 userId: user.id,
                 reason: blocked.code,
               });
-              if (rescue) return jsonResponse(rescue, 200, { 'cache-control': 'no-store' });
+              if (rescue.ok) return jsonResponse(rescue.payload, 200, { 'cache-control': 'no-store' });
+              // Kegagalan cadangan digabung ke `triedDetails` supaya pesan pool
+              // di bawah tetap menyebut provider mana saja yang sudah dicoba
+              // beserta kode yang dikembalikannya.
+              for (const failure of rescue.failures || []) {
+                triedDetails.push(failure);
+                if (!triedModels.includes(failure.model)) triedModels.push(failure.model);
+              }
             }
           }
           // Sama seperti jalur streaming: untuk pool OpenAI, sebut sebabnya.
@@ -6112,6 +6131,9 @@ async function handleApi(request, url, env) {
               status: finalStatus,
               retryAfterSec: bestRetryAfter,
               detail: errInfo.rawDetail,
+              // `primaryProvider` dipakai UI untuk memisahkan sebab utama dari
+              // provider cadangan yang ikut gagal, tanpa menebak dari kalimat.
+              primaryProvider,
               triedModels,
               triedDetails,
               ...(poolFailures.length ? { poolFailures } : {}),
@@ -6268,6 +6290,7 @@ async function tryFallbackWithoutPrimary({
     env,
     poolByProvider,
   });
+  const failures = [];
   for (const cand of candidates) {
     const alt = await sendChatCompletionRequest({
       provider: cand.provider,
@@ -6278,9 +6301,31 @@ async function tryFallbackWithoutPrimary({
       timeoutMs: 18_000,
       env,
     });
-    if (!alt.ok) continue;
+    if (!alt.ok) {
+      // Kegagalan cadangan HARUS dilaporkan ke pemanggil. Dulu tiap kandidat
+      // hanya `continue`, sehingga pesan akhir ke pengguna berbunyi seolah
+      // tidak ada provider lain yang dicoba — dan penyebabnya mustahil
+      // didiagnosis dari layar.
+      failures.push({
+        provider: cand.provider,
+        model: cand.model,
+        status: alt.status ?? 0,
+        code: alt.errorInfo?.code || `http_${alt.status ?? 0}`,
+        detail: alt.errorInfo?.rawDetail || '',
+      });
+      continue;
+    }
     const reply = extractAssistantReply(alt.data) || '';
-    if (!reply) continue;
+    if (!reply) {
+      failures.push({
+        provider: cand.provider,
+        model: cand.model,
+        status: alt.status ?? 0,
+        code: 'empty_reply',
+        detail: 'Provider menjawab tanpa isi.',
+      });
+      continue;
+    }
     // Simpan pesan asisten supaya riwayat percakapan tetap utuh, sama seperti
     // jalur normal.
     const insertRes = await servicePostgrest(env, '/ai_messages', {
@@ -6300,16 +6345,25 @@ async function tryFallbackWithoutPrimary({
     }
     return {
       ok: true,
-      reply,
-      messageId,
-      model: cand.model,
-      provider: cand.provider,
-      fallbackFrom: requestedModel,
-      fallbackReason: reason,
-      note: `Provider utama (${primaryProvider}) tidak bisa dipakai; jawaban ini berasal dari ${cand.provider}.`,
+      payload: {
+        ok: true,
+        reply,
+        messageId,
+        model: cand.model,
+        provider: cand.provider,
+        fallbackFrom: requestedModel,
+        fallbackReason: reason,
+        note: `Provider utama (${primaryProvider}) tidak bisa dipakai; jawaban ini berasal dari ${cand.provider}.`,
+      },
     };
   }
-  return null;
+  // Tidak ada kandidat sama sekali juga merupakan informasi: `failures` kosong
+  // berarti tidak ada provider lain yang terkonfigurasi (`no_fallback_candidates`).
+  return {
+    ok: false,
+    failures,
+    reason: candidates.length ? 'fallback_all_failed' : 'no_fallback_candidates',
+  };
 }
 
 async function pollVideoGenerationRow(env, row) {

@@ -263,20 +263,68 @@ const OPENAI_ERROR_HINTS = {
   openai_pool_not_usable: 'permanent',
 };
 
-function formatChatErrorMessage(chatData, status) {
+/**
+ * Ringkasan provider yang DICOBA sebagai cadangan.
+ *
+ * Kenapa perlu: ketika provider utama tidak bisa dipakai, pengguna hanya
+ * membaca pesan OpenAI dan menyimpulkan "BLEA tidak bisa chat", padahal
+ * fallback sempat berjalan dan gagal. Tanpa daftar ini, kegagalan cadangan
+ * tidak pernah terlihat sehingga tidak bisa didiagnosis dari layar.
+ */
+export function fallbackAttemptSummary(chatData) {
+  const details = Array.isArray(chatData?.triedDetails) ? chatData.triedDetails : [];
+  if (!details.length) return '';
+  const primary = String(chatData?.primaryProvider || '').trim().toLowerCase();
+  // Satu baris per provider cadangan, bukan per model: sepuluh model alibaba
+  // yang sama-sama 401 tetap satu masalah (kunci/base URL), bukan sepuluh.
+  const byProvider = new Map();
+  for (const item of details) {
+    const provider = String(item?.provider || '').trim().toLowerCase();
+    // Provider utama sudah dijelaskan kalimat utama; mengulanginya di sini
+    // hanya menambah kebisingan.
+    if (!provider || provider === primary) continue;
+    const entry = byProvider.get(provider) || { models: 0, status: 0, code: '', detail: '' };
+    entry.models += 1;
+    if (!entry.status && item?.status) entry.status = Number(item.status) || 0;
+    if (!entry.code && item?.code) entry.code = String(item.code);
+    if (!entry.detail && item?.detail) entry.detail = String(item.detail).replace(/\s+/g, ' ').trim().slice(0, 120);
+    byProvider.set(provider, entry);
+  }
+  if (!byProvider.size) return '';
+  const lines = [];
+  for (const [provider, entry] of byProvider) {
+    const bits = [];
+    if (entry.models > 1) bits.push(`${entry.models} model`);
+    if (entry.status) bits.push(`HTTP ${entry.status}`);
+    if (entry.code && entry.code !== `http_${entry.status}`) bits.push(entry.code);
+    if (entry.detail) bits.push(`"${entry.detail}"`);
+    lines.push(bits.length ? `${provider} (${bits.join(', ')})` : provider);
+  }
+  return `Provider cadangan juga gagal dicoba: ${lines.join('; ')}. `
+    + 'Periksa kunci/base URL provider itu di Admin → Provider & API Key, '
+    + 'atau ganti model ke model yang providernya sehat.';
+}
+
+export function formatChatErrorMessage(chatData, status) {
   // Server sudah menyusun kalimat yang tepat untuk pool OpenAI (batas laju vs
   // billing vs kunci ditolak). Jangan ditimpa lagi di klien.
   if (chatData?.code && OPENAI_ERROR_HINTS[chatData.code]) {
-    return chatData?.error || 'Respons AI gagal. Coba lagi sebentar.';
+    const base = chatData?.error || 'Respons AI gagal. Coba lagi sebentar.';
+    const fallbackNote = fallbackAttemptSummary(chatData);
+    // Pesan pool menjelaskan provider UTAMA; tanpa catatan ini pengguna tidak
+    // tahu bahwa provider lain sudah dicoba dan ikut gagal.
+    return fallbackNote ? `${base} ${fallbackNote}` : base;
   }
+  const fallbackNote = fallbackAttemptSummary(chatData);
+  const withNote = (text) => (fallbackNote ? `${text} ${fallbackNote}` : text);
   const retrySec = Number(chatData?.retryAfterSec) || null;
   const raw = String(chatData?.detail || chatData?.error || '');
   if (status === 429 || chatData?.code === 'rate_limit_exceeded' || /rate_limit_exceeded|429/i.test(raw)) {
-    return retrySec
+    return withNote(retrySec
       ? `Batas permintaan model tercapai (429). Coba lagi dalam ${retrySec} detik atau langsung ganti ke model lain.`
-      : 'Batas permintaan model tercapai (429). Tunggu sebentar atau langsung ganti ke model lain.';
+      : 'Batas permintaan model tercapai (429). Tunggu sebentar atau langsung ganti ke model lain.');
   }
-  return chatData?.error || 'Respons AI gagal. Coba lagi sebentar.';
+  return withNote(chatData?.error || 'Respons AI gagal. Coba lagi sebentar.');
 }
 
 export function AIStudio() {
