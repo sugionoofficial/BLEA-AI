@@ -56,12 +56,14 @@ export function ChatGptOAuthPanel({ onLinked }) {
   const [hasPending, setHasPending] = useState(() => Boolean(readPendingAttempt()));
   // Nilai redirect_uri yang BENAR-BENAR dipakai, ditampilkan supaya bisa
   // dicocokkan dengan URL di bilah alamat saat OAuth gagal (invalid_state).
+  const pendingHint = readPendingAttempt();
   const redirectInfo = resolveOAuthRedirectUri({
     hostname: typeof window === 'undefined' ? '' : window.location.hostname,
     port: typeof window === 'undefined' ? '' : window.location.port,
   });
   const [diag, setDiag] = useState(null);
   const [errorCodeInput, setErrorCodeInput] = useState('');
+  const [errorUrlInput, setErrorUrlInput] = useState('');
 
   const load = useCallback(async () => {
     if (callbackPage) return;
@@ -157,12 +159,14 @@ export function ChatGptOAuthPanel({ onLinked }) {
    * sebabnya dan tampilkan `redirect_uri` yang dipakai, supaya bisa dicocokkan
    * dengan URL di bilah alamat.
    */
-  function diagnose(rawCode) {
+  function diagnose(rawCode, detail = '') {
     const code = String(rawCode || '').trim();
     if (!code) return;
     setDiag(explainOAuthError({
       error: code,
-      detail: '',
+      // Detail dipakai untuk membedakan `invalid_state` milik alur daftar
+      // (auth_page) dari milik OAuth BLEA (authorize).
+      detail,
       hasPendingAttempt: Boolean(readPendingAttempt()),
     }));
   }
@@ -288,7 +292,12 @@ export function ChatGptOAuthPanel({ onLinked }) {
             {pasteBusy ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Selesaikan
           </button>
         </form>
-        {hasPending && <small>Sesi login terbuka di tab ini — tempel URL-nya sebelum 30 menit.</small>}
+        {hasPending && (
+          <small>
+            Sesi login terbuka di tab ini — tempel URL-nya sebelum 30 menit.
+            {pendingHint?.redirect_uri ? ` Yang dicari: alamat yang dimulai dengan ${pendingHint.redirect_uri}` : ''}
+          </small>
+        )}
       </div>
 
       {/* Diagnosa kegagalan OAuth. OpenAI mengembalikan halaman error dengan
@@ -304,7 +313,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
             ? ' (callback otomatis: BLEA dibuka dari 127.0.0.1).'
             : ' (bukan 127.0.0.1, jadi callback diselesaikan dengan menempel URL).'}
         </p>
-        <form onSubmit={(event) => { event.preventDefault(); diagnose(diag?.code || errorCodeInput); }}>
+        <form onSubmit={(event) => { event.preventDefault(); diagnose(diag?.code || errorCodeInput, errorUrlInput); }}>
           <input
             type="text"
             spellCheck={false}
@@ -313,16 +322,25 @@ export function ChatGptOAuthPanel({ onLinked }) {
             placeholder="invalid_state, invalid_grant, access_denied…"
             aria-label="Kode error OAuth dari OpenAI"
           />
+          <input
+            type="text"
+            spellCheck={false}
+            value={errorUrlInput}
+            onChange={(event) => { setErrorUrlInput(event.target.value); setDiag(null); }}
+            placeholder="Opsional: tempel URL halaman error-nya (agar tahapnya tepat)"
+            aria-label="URL halaman error OpenAI"
+          />
           <button type="submit" disabled={!errorCodeInput.trim()}>
             <CircleAlert size={13} /> Jelaskan
           </button>
-          <button type="button" onClick={() => { setErrorCodeInput('invalid_state'); diagnose('invalid_state'); }}>
+          <button type="button" onClick={() => { setErrorCodeInput('invalid_state'); setErrorUrlInput(''); diagnose('invalid_state'); }}>
             <ShieldCheck size={13} /> invalid_state
           </button>
         </form>
         {diag && (
           <div className="oauth-diag" role="status">
             <b>{diag.code}</b>
+            {diag.stage && <small>Langkah: {diag.stage}</small>}
             <small>Sebab: {diag.cause}</small>
             <small>Perbaikan: {diag.fix}</small>
           </div>

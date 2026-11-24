@@ -241,12 +241,17 @@ async function runExchange(params) {
   // dan pengguna sering menyelesaikannya dari tab/domain lain (blea.ai) yang
   // localStorage-nya berbeda. Karena PKCE verifier juga disimpan server,
   // penukaran kode tetap sah dari perangkat mana pun milik pengguna yang sama.
-  if (pending && pending.state !== returnedState) {
-    return { ok: false, error: 'state OAuth tidak cocok dengan sesi di browser ini. Mulai lagi dari tombol Continue with ChatGPT.' };
-  }
+  // Kalau localStorage memuat percobaan LAIN (mis. URL callback diselesaikan
+  // di perangkat/tab lain dari tempat OAuth dimulai — persis yang terjadi saat
+  // pengguna pindah dari HP ke PC), jangan langsung menolak. `attempt_id` tidak
+  // dikirim, dan server mencari barisnya lewat `state` yang hanya berlaku
+  // sekali. Menolak di sini dulu membuat tempelan URL yang benar-benar sah
+  // gagal dengan pesan yang menyesatkan.
+  const pendingMatches = Boolean(pending && pending.state === returnedState);
+  const pendingAttemptId = pendingMatches ? pending.attemptId : '';
   if (params.get('error')) {
     const res = await chatGptOAuthApi.complete({
-      ...(pending ? { attempt_id: pending.attemptId } : {}),
+      ...(pendingAttemptId ? { attempt_id: pendingAttemptId } : {}),
       state: returnedState,
       error: params.get('error'),
       error_description: params.get('error_description') || '',
@@ -257,7 +262,7 @@ async function runExchange(params) {
   if (!code) return { ok: false, error: 'Kode otorisasi tidak ada di URL callback.' };
 
   const res = await chatGptOAuthApi.complete({
-    ...(pending ? { attempt_id: pending.attemptId } : {}),
+    ...(pendingAttemptId ? { attempt_id: pendingAttemptId } : {}),
     state: returnedState,
     code,
     client_id: params.get('client_id') || '',

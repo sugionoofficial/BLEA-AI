@@ -486,8 +486,16 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
   const code = String(error || '').trim() || 'unknown';
   const extra = String(detail || '').trim();
   if (code === 'invalid_state') {
+    // `invalid_state` muncul di DUA tempat berbeda dan obatnya berbeda. Pada
+    // halaman daftar/verifikasi (auth_page=…) itu milik sesi tab OpenAI; pada
+    // /api/accounts/authorize itu milik percobaan OAuth BLEA. Menyamakan
+    // keduanya pernah membuat saran perbaikan salah sasaran.
+    const stage = /authorize/.test(String(detail || ''))
+      ? 'OAuth BLEA (/api/accounts/authorize)'
+      : 'halaman daftar/verifikasi OpenAI (auth_page)';
     return {
       code,
+      stage,
       cause: hasPendingAttempt
         ? 'OpenAI mengembalikan state yang tidak cocok dengan percobaan login yang dikirim dari perangkat ini — biasanya karena halaman OAuth dibuka ulang/duplikat, atau callback diselesaikan di perangkat/tab lain.'
         : 'Tidak ada percobaan OAuth yang sah dari perangkat ini, jadi state ini bukan milik BLEA. Pada halaman daftar/verifikasi (mis. /email-verification?auth_page=…) state itu milik sesi tab OpenAI sendiri: tab ditutup lalu dipulihkan dari riwayat, formulir dibuka dua kali, atau sesinya sudah kedaluwarsa. Pada halaman authorize, kemungkinan URL lama dibuka lagi atau percobaannya sudah lewat 30 menit.',

@@ -408,3 +408,24 @@ ditampilkan di panel sebelum tombol ditekan (`describeOAuthCallbackPath`).
 Satu hal yang tidak berubah dan tetap penting: kode verifikasi 6 digit diulang
 setiap login email biasa. Itu normal. Kode baru setelah login ulang bukan tanda
 kegagalan.
+
+## Menyelesaikan alur dari perangkat lain (HP → PC)
+
+Masalah nyata: OAuth dimulai di HP, halaman izin disetujui, lalu callback
+`http://127.0.0.1:<port>/auth/callback` dibuka di **PC**. Dua hal yang dulu
+menghalangi:
+
+1. Klien menolak lebih dulu dengan “state OAuth tidak cocok dengan sesi di
+   browser ini” karena localStorage PC tidak memuat percobaan dari HP.
+   Sekarang klien tidak memutuskan sendiri: `attempt_id` hanya dikirim bila
+   `state`-nya memang cocok, dan server mencari baris lewat `state` (berlaku
+   30 menit, satu kali pakai). PKCE verifier ada di server, jadi penukaran kode
+   tetap sah dari perangkat mana pun milik pengguna yang sama.
+2. Kotak “Gagal dengan kode error?” tidak bisa membedakan `invalid_state` milik
+   halaman daftar (`auth_page=…`) dari milik `/api/accounts/authorize`. Sekarang
+   kolom kedua bisa diisi URL halaman error, dan hasilnya menyebut **tahapnya**.
+
+Catatan operasional: port di `redirect_uri` dipilih saat percobaan dibuat
+(mis. `46721` di PC hanya acak). Alamat yang harus ditempel adalah alamat yang
+**benar-benar** muncul di bilah alamat setelah menyetujui izin — panel
+menampilkan nilai yang diharapkan sebagai pembanding, bukan sebagai syarat.
