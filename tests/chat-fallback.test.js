@@ -1291,3 +1291,77 @@ test('/api/chat tetap menemukan kandidat cadangan walau katalog didominasi provi
   assert.equal(data.provider, 'alibaba');
   assert.deepEqual(sentModels, ['qwen-plus']);
 });
+
+// Regresi: jalur yang dipakai web BLEA adalah `stream: true`. Dulu status
+// fallback streaming hanya [400,404,429,502,503,504], sehingga kunci provider
+// utama yang ditolak (401) atau kredit habis (402/403) TIDAK pernah dialihkan
+// ke provider lain — chat tampak mati padahal alibaba sehat.
+test('/api/chat stream:true dialihkan ke provider lain saat provider utama 401', async () => {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  const encoder = new TextEncoder();
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'openai', api_key: 'sk-openai-dead', base_url: 'https://api.openai.com' },
+        { provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+      ]);
+    }
+    if (url.includes('/rest/v1/openai_accounts')) {
+      // Pool OpenAI kosong → provider utama memakai kunci di provider_api_keys.
+      return Response.json([]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) {
+      return Response.json([{ id: 'k1', provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', enabled: true, priority: 10, consecutive_failures: 0 }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([
+        { provider: 'openai', model: 'gpt-4o-mini' },
+        { provider: 'alibaba', model: 'qwen-plus' },
+      ]);
+    }
+    if (url === 'https://api.openai.com/v1/chat/completions') {
+      sent.push('openai');
+      return new Response(JSON.stringify({ error: { message: 'Incorrect API key provided.', code: 'invalid_api_key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.startsWith('https://dashscope-intl.aliyuncs.com/') && url.endsWith('/chat/completions')) {
+      sent.push('alibaba');
+      return new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'Halo dari qwen.' } }] })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-stream-1' }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let res;
+  let text;
+  try {
+    res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-stream-401',
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        stream: true,
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    text = await res.text();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 200, text.slice(0, 300));
+  assert.deepEqual(sent, ['openai', 'alibaba'], 'cadangan harus benar-benar dipanggil setelah 401');
+  assert.match(text, /qwen-plus/, 'meta stream harus menyebut model cadangan');
+  assert.match(text, /fallbackFrom/);
+  assert.match(text, /Halo dari qwen\./);
+});
