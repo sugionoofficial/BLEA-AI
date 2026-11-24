@@ -184,8 +184,14 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   const clientId = cleanText(input.client_id, 120) || attempt.requested_client_id || '';
   if (!code) throw fail('Kode otorisasi tidak ada di callback.', 400);
   // Client baru: callback WAJIB memberi client_id terbitan (oaiapp_…).
+  // Reauthorization boleh tanpa `client_id` di callback (dokumen OpenAI), dalam
+  // hal itu `requested_client_id` dari baris percobaan yang dipakai.
   if (!clientId || clientId === OPENAI_DYNAMIC_CLIENT_ID) {
-    throw fail('Callback tidak memuat client_id terbitan OpenAI. Registrasi belum selesai; ulangi login.', 400);
+    throw fail(
+      'Callback tidak memuat client_id terbitan OpenAI. Registrasi belum selesai. '
+      + 'Ulangi dari tombol "Simpan aksesnya ke pool" — jangan menyelesaikan URL callback lama.',
+      400,
+    );
   }
 
   // `state` WAJIB cocok dengan baris percobaan. Tanpa ini, callback dari
@@ -193,6 +199,17 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   // PKCE tidak cocok, dan OpenAI menjawab `invalid_grant` tanpa penjelasan.
   if (returnedState && attempt.state && returnedState !== attempt.state) {
     throw fail('state callback tidak cocok dengan sesi login yang tersimpan. Mulai lagi dari tombol Continue with ChatGPT.', 409);
+  }
+
+  // Percobaan dibuat SEBELUM client terbitan diketahui (pendaftaran pertama),
+  // jadi server baru bisa mencatatnya sekarang. Inilah yang membuat pengulangan
+  // memakai client yang sama, bukan mendaftar ulang.
+  if (!attempt.requested_client_id) {
+    await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(attemptId)}`, {
+      method: 'PATCH',
+      prefer: 'return=minimal',
+      body: { requested_client_id: clientId, updated_at: new Date().toISOString() },
+    }).catch(() => {});
   }
 
   // Satu kode hanya boleh ditukar sekali. Kalau tidak, penukaran kedua
@@ -270,18 +287,35 @@ export async function completeOAuthAttempt(env, user, input = {}) {
         // berakhir dengan invalid_grant yang sama, berulang tanpa akhir.
         issued_client_id: clientId,
         // Jejak teknis (tanpa token/kode) supaya penyebab bisa dibaca nanti.
-        error_message: cleanText(`client=${clientId} verify=${codeFingerprint} status=${result.status} body=${text.slice(0, 160)}${result.attempts ? ` | retry(${result.attempts[1].status})=${result.attempts[1].text.slice(0, 80)}` : ''}`, 900),
+        // Jejak ini yang membuat percobaan berikutnya bisa dianalisis: tanpa
+        // `redirect`, tidak mungkin dibuktikan apakah `redirect_uri` saat tukar
+        // kode sama dengan saat authorize (syarat eksplisit OpenAI), dan tanpa
+        // `mode`, tidak jelas apakah percobaan ini memakai client terbitan atau
+        // `dynamic_agent_client`.
+        error_message: cleanText(
+          `client=${clientId} mode=${clientId === OPENAI_DYNAMIC_CLIENT_ID ? 'dynamic' : 'issued'}`
+          + ` redirect=${attempt.redirect_uri} verify=${codeFingerprint}`
+          + ` resource=1 status=${result.status} body=${text.slice(0, 160)}`
+          + (result.attempts ? ` | retry(no resource, ${result.attempts[1].status})=${result.attempts[1].text.slice(0, 80)}` : ''),
+          900,
+        ),
         updated_at: new Date().toISOString(),
       },
     }).catch(() => {});
     const detail = token?.error_description || token?.error || text.slice(0, 200) || `HTTP ${result.status}`;
     if (token?.error === 'invalid_grant') {
+      // Yang benar-benar bisa dibuktikan dari jawaban OpenAI hanya satu: kode
+      // ini ditolak. Penyebabnya TIDAK disebut, jadi pesan ini disusun sebagai
+      // dugaan berurutan yang masing-masing bisa diperiksa — bukan tiga
+      // kemungkinan setara tanpa petunjuk mana yang harus dicek dulu.
       throw fail(
-        'OpenAI menolak pertukaran kode (invalid_grant) dan tidak menjelaskan sebabnya. Tiga penyebab yang paling sering: '
-        + '(1) paket ChatGPT akun itu tidak bisa dipakai aplikasi lain — perlu Plus/Pro pada akun pribadi, bukan Free/Go atau workspace kerja; '
-        + '(2) kode sudah terpakai karena halaman 127.0.0.1 dimuat dua kali; '
-        + '(3) izin pemakaian paket tidak dicentang saat menyetujui. '
-        + 'Client yang sudah terbit disimpan, jadi menekan Continue with ChatGPT lagi tidak mendaftar ulang.',
+        'OpenAI menolak penukaran kode (invalid_grant) dan tidak menyebut sebabnya. Yang PASTI: kode ini sudah tidak berlaku. '
+        + 'Periksa berurutan: '
+        + '(1) paling sering — alamat 127.0.0.1:<port>/auth/callback terbuka DUA kali. Penukaran pertama memakai kodenya, yang kedua ditolak. '
+        + 'Abaikan hasil penukaran pertama dan lihat daftar akun di panel ini dulu; kalau akunnya sudah muncul, tidak ada yang perlu diulang. '
+        + '(2) izin "gunakan paket ChatGPT saya" tidak dicentang saat menyetujui. '
+        + '(3) paket akun tidak bisa dipakai aplikasi lain: perlu Plus/Pro pada akun pribadi, bukan Free/Go atau akun workspace kerja. '
+        + 'Client terbitan (' + clientId + ') sudah disimpan, jadi mengulang tidak mendaftar ulang.',
         400,
       );
     }

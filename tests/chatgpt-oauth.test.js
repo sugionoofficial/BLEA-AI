@@ -656,13 +656,19 @@ test('invalid_grant: pesan yang jelas + jejak teknis tersimpan', async () => {
       { status: 400, body: { error: 'invalid_grant' } },
     ],
   });
+  let message = '';
   try {
     await assert.rejects(
       completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
         attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-2', client_id: 'oaiapp_X',
-      }),
-      /invalid_grant\) dan tidak menjelaskan sebabnya/,
+      }).catch((error) => { message = String(error?.message || error); throw error; }),
+      /invalid_grant\) dan tidak menyebut sebabnya/,
     );
+    // Pesan harus menyebut urutan pemeriksaan, bukan tiga tebakan setara:
+    // dugaan pertama (dua pemuatan halaman) paling sering dan paling mudah
+    // diperiksa lewat daftar akun yang sudah ada.
+    assert.match(message, /dua kali|DUA kali/i);
+    assert.match(message, /lihat daftar akun/);
     const failed = stub.state.patches.find((patch) => patch.status === 'failed');
     assert.ok(failed, 'kegagalan harus dicatat');
     assert.match(failed.error_message, /client=oaiapp_X/);
@@ -751,5 +757,33 @@ test('retainedClientId mengembalikan id terbitan terakhir, bukan dynamic_agent_c
     assert.equal(await retainedClientId(createEnv(), { id: 'user-1' }), null, 'dynamic_agent_client bukan id terbitan');
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+// Client terbitan harus tetap dipakai pada pengulangan. Dulu `issued_client_id`
+// hanya diisi saat GAGAL, sehingga percobaan berikutnya masih terlihat seperti
+// pendaftaran pertama (requested_client_id null) dan panel tidak punya id
+// terbitan untuk `retained_client`.
+test('client terbitan dicatat sejak penukaran kode dimulai', async () => {
+  const attempt = baseAttempt({ requested_client_id: null, issued_client_id: null });
+  const stub = oauthEnvWith({
+    attempt,
+    tokenResponses: [{ status: 400, body: { error: 'invalid_grant' } }, { status: 400, body: { error: 'invalid_grant' } }],
+  });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-9', client_id: 'oaiapp_KEEP',
+      }),
+    );
+    const recorded = stub.state.patches.find((patch) => patch.requested_client_id === 'oaiapp_KEEP');
+    assert.ok(recorded, 'client terbitan harus dicatat di baris percobaan');
+    // Jejak kegagalan harus menyebut redirect_uri dan mode, supaya penyebab
+    // invalid_grant berikutnya bisa dianalisis (bukan ditebak).
+    const failed = stub.state.patches.find((patch) => patch.status === 'failed');
+    assert.match(failed.error_message, /mode=issued/);
+    assert.match(failed.error_message, /redirect=http:\/\/127\.0\.0\.1:/);
+  } finally {
+    stub.restore();
   }
 });

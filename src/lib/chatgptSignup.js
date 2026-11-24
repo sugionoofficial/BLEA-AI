@@ -508,12 +508,25 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
   if (code === 'access_denied') {
     return { code, cause: 'Izin di halaman ChatGPT tidak diberikan (tombol batal/ditolak).', fix: 'Ulangi dan setujui izinnya.', detail: extra };
   }
-  if (code === 'invalid_grant' || code === 'invalid_refresh_token' || code === 'refresh_token_expired'
+  if (code === 'invalid_grant') {
+    return {
+      code,
+      stage: 'penukaran kode (token endpoint)',
+      cause: 'Kode otorisasi ditolak, dan OpenAI tidak menyebut sebabnya. Kode itu hanya bisa ditukar SEKALI.',
+      fix: 'Periksa berurutan: (1) apakah akun sudah muncul di daftar di bawah — kalau sudah, tidak ada yang perlu diulang; '
+        + '(2) jangan membuka atau memuat ulang alamat 127.0.0.1:<port>/auth/callback dua kali; '
+        + '(3) centang izin "gunakan paket ChatGPT saya" saat menyetujui; '
+        + '(4) paket akun harus Plus/Pro pada akun pribadi, bukan Free/Go atau akun workspace kerja.',
+      detail: extra,
+    };
+  }
+  if (code === 'invalid_refresh_token' || code === 'refresh_token_expired'
     || code === 'refresh_token_invalidated' || code === 'refresh_token_reused') {
     return {
       code,
-      cause: 'Kode otorisasi/token sudah dipakai atau sudah mati saat ditukar.',
-      fix: 'Ulangi OAuth dari tombol Continue with ChatGPT. Jangan memuat ulang halaman callback berkali-kali; satu kode hanya boleh ditukar sekali.',
+      stage: 'refresh token',
+      cause: 'Refresh token sudah mati atau dicabut (bisa dicabut dari ChatGPT → Settings → Apps).',
+      fix: 'Sambungkan ulang akun lewat "Simpan aksesnya ke pool". Client terbitan disimpan, jadi ini tidak mendaftar ulang.',
       detail: extra,
     };
   }

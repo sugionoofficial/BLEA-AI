@@ -573,3 +573,13 @@
   padding: 7px 12px; border-radius: 10px; font-size: 12px; text-decoration: none;
   background: var(--accent, #6ea8fe); color: #0b1020; font-weight: 600;
 }
+
+/* Jejak teknis kegagalan OAuth: dilipat, bukan memenuhi kartu akun. */
+.oauth-link-trace { margin-top: 4px; }
+.oauth-link-trace > summary { cursor: pointer; font-size: 11.5px; opacity: .85; }
+.oauth-link-trace p { margin: 6px 0; font-size: 11.5px; line-height: 1.55; opacity: .9; }
+.oauth-link-trace .oauth-link-error {
+  display: block; margin-top: 4px; padding: 8px 10px; border-radius: 8px;
+  font: 10.5px/1.5 ui-monospace, monospace; word-break: break-word;
+  background: rgba(255, 255, 255, .04);
+}

@@ -360,7 +360,26 @@ export function ChatGptOAuthPanel({ onLinked }) {
                   {link.client_id ? `client ${link.client_id.slice(0, 14)}…` : 'client belum terbit'}
                   {link.access_expires_at ? ` · akses s/d ${new Date(link.access_expires_at).toLocaleString('id-ID')}` : ''}
                 </small>
-                {link.error && <small className="oauth-link-error">{link.error}</small>}
+                {link.error && (
+                  // Jejak teknis dipisah dari pesan yang harus dibaca: yang
+                  // penting "apa yang harus dilakukan", bukan potongan JSON.
+                  <details className="oauth-link-trace">
+                    <summary>
+                      {link.status === 'failed'
+                        ? 'Pertukaran kode ditolak — apa yang harus dilakukan'
+                        : 'Jejak teknis'}
+                    </summary>
+                    {link.status === 'failed' && (
+                      <p>
+                        Kode sudah terpakai atau ditolak. Periksa daftar di bawah dulu: kalau akunnya
+                        sudah muncul, tidak ada yang perlu diulang. Kalau belum, tekan
+                        <b> Simpan aksesnya ke pool</b> lagi — client terbitan tetap dipakai, jadi
+                        tidak mendaftar ulang.
+                      </p>
+                    )}
+                    <small className="oauth-link-error">{link.error}</small>
+                  </details>
+                )}
                 {link.status === 'expired' && (
                   <form className="oauth-inline-form" onSubmit={completeFromUrl}>
                     <input
