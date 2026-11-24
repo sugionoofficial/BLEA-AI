@@ -59,6 +59,10 @@ const BILLING_STALE_FAILURES = 1;
 // Model termurah untuk uji saldo. Override lewat env bila akun tidak punya akses
 // ke model ini, supaya "Uji" tidak menjadi palsu-gagal.
 const PROBE_MODEL = 'gpt-4o-mini';
+// Model probe yang TIDAK ADA di akun menjawab 404 `model_not_found`, bukan
+// kredit habis. Dulu hasil itu diabaikan dan Uji tetap melaporkan "berhasil"
+// walau chat-nya sendiri gagal. Sekarang model akun dicoba lebih dulu.
+const MODEL_MISSING_RE = /model_not_found|does not exist|unsupported_model|unknown model|invalid model|not have access to model/i;
 const AUTH_STALE_FAILURES = 3;
 
 function supabaseBase(env) {
@@ -1378,7 +1382,9 @@ export async function testOpenAiAccount(env, id) {
   // /v1/models tidak memotong kredit, jadi ia membuktikan KUNCI saja. Untuk
   // menjawab "bisa dipakai atau tidak", satu panggilan termurah ke
   // /v1/chat/completions adalah bukti billing yang sebenarnya.
-  const completion = await probeOpenAiCredit({ base, token });
+  // Urutan model: model_default akun lebih dulu (itu yang benar-benar dipakai
+  // chat BLEA), lalu PROBE_MODEL sebagai cadangan termurah.
+  const completion = await probeOpenAiCredit({ base, token, model: String(row.model_default || '') });
   if (completion && !completion.ok) {
     if (completion.kind === 'billing') {
       return await finish(
@@ -1391,6 +1397,18 @@ export async function testOpenAiAccount(env, id) {
       // Batas laju bukan tanda akun rusak, jadi jangan dilaporkan sebagai gagal.
       return await finish(true, 'Kunci diterima dan saldo tersedia (sedang kena batas laju sesaat).', completion.status);
     }
+    // Bukan soal kredit: model yang diminta tidak ada di akun ini. Menyebut
+    // "berhasil" di sini membuat Uji hijau padahal chat-nya akan gagal, jadi
+    // yang dilaporkan adalah apa yang harus diganti.
+    if (completion.kind === 'model_missing') {
+      return await finish(
+        false,
+        `Kunci diterima, tetapi model \"${completion.model}\" tidak tersedia di akun ini. `
+        + 'Ganti model akun (Ubah → model) ke model yang ada di akun itu; '
+        + 'daftar model resmi: platform.openai.com → Settings → Project → Limits, atau GET /v1/models dengan kunci ini.',
+        404,
+      );
+    }
   }
   return await finish(true, completion?.ok ? 'Kunci diterima dan kredit OpenAI tersedia.' : 'Kunci diterima API OpenAI.', res.status);
 }
@@ -1399,29 +1417,49 @@ export async function testOpenAiAccount(env, id) {
  * Satu panggilan chat termurah untuk membuktikan saldo. Best-effort: kalau
  * endpoint chat tidak bisa dihubungi, hasil `null` dan akun tidak dihukum.
  */
-async function probeOpenAiCredit({ base, token }) {
-  try {
-    const res = await fetch(`${base}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: PROBE_MODEL,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (res.ok) {
-      await res.body?.cancel?.().catch?.(() => {});
-      return { ok: true, status: res.status };
-    }
+async function probeOpenAiCredit({ base, token, model = '' }) {
+  const preferred = String(model || '').trim();
+  const probe = (chosen) => fetch(`${base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: chosen,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const readFailure = async (res) => {
     const text = await res.text().catch(() => '');
     let detail = text;
     try {
       const parsed = JSON.parse(text);
       detail = parsed?.error?.message || parsed?.message || text;
     } catch { /* teks mentah sudah cukup */ }
-    return { ok: false, status: res.status, kind: classifyOpenAiFailure(res.status, detail), detail };
+    return { status: res.status, detail };
+  };
+  try {
+    let chosen = preferred || PROBE_MODEL;
+    let res = await probe(chosen);
+    if (!res.ok) {
+      const failure = await readFailure(res);
+      if (MODEL_MISSING_RE.test(failure.detail) && chosen !== PROBE_MODEL) {
+        // Model akun tidak ada di kunci ini; jangan simpulkan "kredit".
+        chosen = PROBE_MODEL;
+        res = await probe(chosen);
+        if (!res.ok) {
+          const retry = await readFailure(res);
+          const kind = MODEL_MISSING_RE.test(retry.detail) ? 'model_missing' : classifyOpenAiFailure(retry.status, retry.detail);
+          return { ok: false, status: retry.status, kind, detail: retry.detail, model: chosen };
+        }
+      } else if (MODEL_MISSING_RE.test(failure.detail)) {
+        return { ok: false, status: failure.status, kind: 'model_missing', detail: failure.detail, model: chosen };
+      } else {
+        return { ok: false, status: failure.status, kind: classifyOpenAiFailure(failure.status, failure.detail), detail: failure.detail, model: chosen };
+      }
+    }
+    await res.body?.cancel?.().catch?.(() => {});
+    return { ok: true, status: res.status, model: chosen };
   } catch (error) {
     return { ok: false, status: 0, kind: 'other', detail: String(error?.message || error).slice(0, 160) };
   }

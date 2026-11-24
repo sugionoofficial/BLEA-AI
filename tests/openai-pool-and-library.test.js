@@ -1253,3 +1253,106 @@ test('probeOAuthPlanUsage: batas paket bukan kegagalan kredensial', async () => 
 });
 
 const PLAN_MODEL_LIST = { models: [{ slug: 'gpt-6.2-sol', visibility: 'list' }] };
+
+test('Uji memakai model akun lebih dulu, dan model tidak ada bukan "kredit habis"', async () => {
+  const row = {
+    id: '44444444-4444-4444-8444-444444444444',
+    account_email: 'proj@example.com',
+    credential_kind: 'api_key',
+    enabled: true,
+    capabilities: ['chat'],
+    daily_limit: 0,
+    used_today: 0,
+    quota_date: jakartaDate(),
+    // Model yang tercatat di akun bisa saja tidak ada di kunci ini (mis. kunci
+    // project baru sementara model_default diisi dari percobaan curl manual).
+    model_default: 'gpt-6-luna',
+    api_base: 'https://api.openai.com',
+    sealed_token: await sealOpenAiToken(ENV, 'sk-proj-uji-model'),
+  };
+  const realFetch = globalThis.fetch;
+  const sentModels = [];
+  let patched = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/rest/v1/openai_accounts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(init.body);
+        return new Response(null, { status: 204 });
+      }
+      return Response.json([row]);
+    }
+    if (url.endsWith('/v1/models')) return Response.json({ data: [] });
+    if (url.endsWith('/v1/chat/completions')) {
+      const body = JSON.parse(init.body);
+      sentModels.push(body.model);
+      if (body.model !== PROBE_FALLBACK) {
+        return new Response(JSON.stringify({ error: { code: 'model_not_found', message: 'The model does not exist or you do not have access to it' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: { code: 'credit_balance_exhausted', message: 'You have no credits remaining.' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let result;
+  try {
+    result = await testOpenAiAccount(ENV, row.id);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  // Model akun dicoba lebih dulu; itulah yang benar-benar dipakai chat BLEA.
+  assert.deepEqual(sentModels, ['gpt-6-luna', PROBE_FALLBACK]);
+  // Yang dilaporkan adalah sebab SETELAH model cadangan dicoba: kredit habis.
+  assert.equal(result.ok, false);
+  assert.match(result.message, /kredit OpenAI habis/i);
+  assert.equal(patched.last_test_ok, false);
+});
+
+test('model yang tidak ada di akun dilaporkan sebagai model, bukan kredit', async () => {
+  const row = {
+    id: '55555555-5555-4555-8555-555555555555',
+    account_email: 'model@example.com',
+    credential_kind: 'api_key',
+    enabled: true,
+    capabilities: ['chat'],
+    daily_limit: 0,
+    used_today: 0,
+    quota_date: jakartaDate(),
+    model_default: 'model-yang-tidak-ada',
+    api_base: 'https://api.openai.com',
+    sealed_token: await sealOpenAiToken(ENV, 'sk-proj-uji-model-2'),
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/rest/v1/openai_accounts')) {
+      if ((init.method || 'GET') === 'PATCH') return new Response(null, { status: 204 });
+      return Response.json([row]);
+    }
+    if (url.endsWith('/v1/models')) return Response.json({ data: [] });
+    if (url.endsWith('/v1/chat/completions')) {
+      // Kedua model (akun maupun cadangan) tidak ada di kunci ini.
+      return new Response(JSON.stringify({ error: { code: 'model_not_found', message: 'The model does not exist or you do not have access to it' } }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let result;
+  try {
+    result = await testOpenAiAccount(ENV, row.id);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(result.ok, false, 'model yang tidak ada TIDAK boleh dilaporkan berhasil');
+  assert.match(result.message, /tidak tersedia di akun ini/i);
+  assert.doesNotMatch(result.message, /kredit OpenAI habis/i, 'jangan salahkan kredit bila modelnya yang tidak ada');
+});
+
+const PROBE_FALLBACK = 'gpt-4o-mini';
