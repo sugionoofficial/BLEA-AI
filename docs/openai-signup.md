@@ -165,6 +165,23 @@ Akun yang kena `not_eligible` ditandai `paket-tidak-boleh` dan **berhenti
 dicoba** (bukan "cooldown"), karena mengulang login tidak mengubah keputusan
 OpenAI.
 
+### Pesan 401 bukan penolakan OpenAI
+
+Tombol **Connect** memanggil `/api/openai-oauth/start` yang butuh sesi BLEA.
+Bila sesi itu tidak ada atau sudah kedaluwarsa, jawabannya `401`
+`auth_required` — dan **OpenAI belum dilibatkan sama sekali** (tidak ada satu
+pun baris `openai_oauth_links`). Pesan lama "Login diperlukan." mudah dibaca
+sebagai "OpenAI menolak", jadi sekarang dibedakan:
+
+| Keadaan | Pesan |
+|---|---|
+| permintaan tanpa token | "Halaman ini belum login (atau sesinya baru kedaluwarsa) — masuk dulu" |
+| token ada, ditolak Supabase | "Sesi BLEA tidak diterima server … Ini belum menyentuh OpenAI sama sekali." |
+
+Cara membedakan dari data: kalau tombol benar-benar sudah memulai alur,
+`openai_oauth_links` berisi satu baris `pending` (ditulis SEBELUM browser
+dibuka). Nol baris = permintaan tidak pernah lolos autentikasi.
+
 ### Model dipilih dari katalog akun, bukan ditebak
 
 Jalur paket memakai katalog **per akun**: `GET /v1/models` dengan access token

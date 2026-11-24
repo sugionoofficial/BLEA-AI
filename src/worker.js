@@ -4031,7 +4031,19 @@ async function handleApi(request, url, env) {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const user = token ? await getUser(env, token) : null;
-      if (!user) return jsonResponse({ error: 'Login diperlukan.' }, 401, { 'cache-control': 'no-store' });
+      if (!user) {
+        // 401 di sini SELALU soal sesi BLEA, bukan OpenAI — tetapi pesan lama
+        // ("Login diperlukan.") dibaca pengguna sebagai "OpenAI menolak".
+        // Dua keadaan dibedakan supaya tidak ada yang menebak: token tidak
+        // terkirim (halaman belum/login kedaluwarsa di perangkat ini), atau
+        // token terkirim tetapi tidak diterima Supabase.
+        return jsonResponse({
+          error: token
+            ? 'Sesi BLEA tidak diterima server (token kedaluwarsa atau akun tidak aktif). Muat ulang halaman; bila tetap, keluar lalu masuk lagi. Ini belum menyentuh OpenAI sama sekali.'
+            : 'Permintaan tidak membawa token sesi BLEA. Halaman ini belum login (atau sesinya baru kedaluwarsa) — masuk dulu, lalu tekan tombol Connect lagi.',
+          code: 'auth_required',
+        }, 401, { 'cache-control': 'no-store' });
+      }
       const action = path.slice('openai-oauth'.length).replace(/^\//, '');
       try {
         if (!action && method === 'GET') {
