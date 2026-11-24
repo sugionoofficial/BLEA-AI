@@ -422,6 +422,28 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
   if (code === 'access_denied') {
     return { code, cause: 'Izin di halaman persetujuan OpenAI tidak diberikan (tombol batal/ditolak).', fix: 'Ulangi dan setujui izinnya.', detail: extra };
   }
+  if (code === 'subscription_sharing_user_not_eligible') {
+    return {
+      code,
+      stage: 'pemakaian paket (Responses API)',
+      cause: 'Login berhasil, tetapi OpenAI menolak membagikan paket akun ini ke aplikasi lain. '
+        + 'Ini keputusan di sisi OpenAI untuk akun/workspace tersebut, bukan kesalahan kode atau token.',
+      fix: 'Pakai akun dengan paket Plus/Pro (akun pribadi, bukan workspace kerja), atau '
+        + 'tambahkan API key dengan saldo prabayar di Studio → Akun OpenAI. '
+        + 'Mengulangi tombol Connect tidak akan mengubahnya.',
+      detail: extra,
+    };
+  }
+  if (code === 'subscription_sharing_usage_limit_exceeded') {
+    return {
+      code,
+      stage: 'pemakaian paket (Responses API)',
+      cause: 'Batas pemakaian paket untuk aplikasi ini sudah tercapai. Ini batas sementara, bukan kredensial rusak.',
+      fix: 'Tunggu sampai jendela pemakaian pulih, atau tambahkan akun lain ke pool. '
+        + 'Sisa pemakaian bisa dilihat di pengaturan Usage akun OpenAI Anda.',
+      detail: extra,
+    };
+  }
   if (code === 'invalid_grant') {
     return {
       code,

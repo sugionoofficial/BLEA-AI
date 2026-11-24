@@ -26,8 +26,15 @@ import {
   buildResponsesBody,
   extractResponsesText,
   isSubscriptionLimitError,
+  openAiResponsesModelCatalog,
   parseResponsesEvent,
+  planModelFromCatalog,
+  planUsageFailure,
 } from './openaiResponses.js';
+
+// Dipakai juga saat pendaftaran OAuth (openaiOAuth.js) untuk memilih model dari
+// katalog akun, dan oleh Uji. Diekspor ulang supaya hanya ada satu sumber.
+export { openAiResponsesModelCatalog, planModelFromCatalog, planUsageFailure };
 
 const TABLE = '/openai_accounts';
 const DEFAULT_API_BASE = 'https://api.openai.com';
@@ -266,14 +273,21 @@ function effectiveUsedToday(row, today = jakartaDate()) {
  */
 export function stalePoolBlock(row, now = Date.now()) {
   if (withinCooldownWindow(row, now)) return null; // masih cooldown biasa, itu sebabnya
-  const kind = classifyOpenAiFailure(429, row?.last_error);
   if (!row?.last_error) return null;
+  const message = String(row.last_error).slice(0, 300);
   const failures = Number(row?.consecutive_failures) || 0;
+  // Jalur paket akun (OAuth): `not_eligible` berarti akun/workspace ini tidak
+  // boleh membagikan paketnya. Sekali saja sudah cukup — mengulang login tidak
+  // mengubah keputusan OpenAI, jadi menunggu cooldown juga tidak ada gunanya.
+  if (classifyOpenAiFailure(403, row.last_error) === 'plan_not_eligible') {
+    return { kind: 'plan_not_eligible', reason: 'plan_not_eligible', message };
+  }
+  const kind = classifyOpenAiFailure(429, row.last_error);
   if (kind === 'billing' && failures >= BILLING_STALE_FAILURES) {
-    return { kind, reason: 'billing', message: String(row.last_error).slice(0, 300) };
+    return { kind, reason: 'billing', message };
   }
   if (kind === 'auth' && failures >= AUTH_STALE_FAILURES) {
-    return { kind, reason: 'auth', message: String(row.last_error).slice(0, 300) };
+    return { kind, reason: 'auth', message };
   }
   return null;
 }
@@ -322,6 +336,7 @@ export function sanitizeOpenAiAccount(row, now = Date.now()) {
   else if (exhausted) state = 'kuota-habis';
   else if (blocked?.kind === 'billing') state = 'kredit-habis';
   else if (blocked?.kind === 'auth') state = 'kunci-ditolak';
+  else if (blocked?.kind === 'plan_not_eligible') state = 'paket-tidak-boleh';
   else if (cooling) state = 'cooldown';
   return {
     id: row.id,
@@ -343,6 +358,8 @@ export function sanitizeOpenAiAccount(row, now = Date.now()) {
     // Penghalang permanen: UI memakainya untuk menampilkan sebab + tombol
     // perbaikan, bukan sekadar "cooldown".
     blocked_reason: blocked?.reason || null,
+    // Akun OAuth: pakai katalog milik akun, bukan tebakan. `api_key` false.
+    oauth: credentialKind === 'oauth',
     last_error: typeof row.last_error === 'string' && row.last_error ? row.last_error : null,
     last_ok_at: row.last_ok_at || null,
     last_test_at: row.last_test_at || null,
@@ -416,7 +433,7 @@ export async function openAiPoolDiagnostic(env, capability = 'chat') {
     readable: true, total: rows.length, match_capability: 0, enabled: 0,
     unsupported_kind: 0, cooling: 0, quota_exhausted: 0, sealed_missing: 0, usable: 0,
     // Penghalang yang TIDAK hilang hanya karena waktu berjalan.
-    billing: 0, unauthorized: 0,
+    billing: 0, unauthorized: 0, plan_not_eligible: 0,
     ...emptyStaleCounts(),
   };
   for (const row of rows) {
@@ -432,6 +449,7 @@ export async function openAiPoolDiagnostic(env, capability = 'chat') {
     const stale = stalePoolBlock(row, now);
     if (stale?.kind === 'billing') { counts.billing += 1; registerStale(counts, row, 'billing'); continue; }
     if (stale?.kind === 'auth') { counts.unauthorized += 1; registerStale(counts, row, 'auth'); continue; }
+    if (stale?.kind === 'plan_not_eligible') { counts.plan_not_eligible += 1; registerStale(counts, row, 'plan_not_eligible'); continue; }
     if (isCoolingDown(row, now)) { counts.cooling += 1; continue; }
     if (quotaExhausted(row, today)) { counts.quota_exhausted += 1; continue; }
     if (!row.sealed_token) { counts.sealed_missing += 1; continue; }
@@ -449,7 +467,7 @@ export async function openAiPoolDiagnostic(env, capability = 'chat') {
   }
   // Kalau satu-satunya penghalang adalah cooldown, sebutkan berapa lama lagi —
   // "tunggu sebentar" tanpa angka membuat admin menebak.
-  if (!counts.billing && !counts.unauthorized && counts.cooling) {
+  if (!counts.billing && !counts.unauthorized && !counts.plan_not_eligible && counts.cooling) {
     const waits = rows
       .filter((row) => isCoolingDown(row, now))
       .map((row) => (Date.parse(row.cooldown_until || '') - now) / 1000)
@@ -484,6 +502,14 @@ export async function openAiPoolBlockedMessage(env, capability = 'chat') {
   if (pool.unauthorized) {
     blockers.push(`${pool.unauthorized} akun ditolak OpenAI (kunci tidak valid) — ganti API key-nya, lalu tekan Uji`);
   }
+  if (pool.plan_not_eligible) {
+    // Permanen untuk akun ini: mengulang login OAuth tidak menolong.
+    blockers.push(
+      `${pool.plan_not_eligible} akun OAuth memakai paket yang tidak bisa dibagikan ke aplikasi lain `
+      + '(paket Plus/Pro pada akun pribadi saja; akun Free/Go tidak bisa, workspace Business/Enterprise perlu izin admin) '
+      + '— tambahkan API key dengan saldo atau login dengan akun Plus/Pro, bukan mengulangi tombol Connect',
+    );
+  }
   if (pool.cooling) {
     const wait = Number(pool.retry_after_sec) || 0;
     blockers.push(wait > 0
@@ -492,13 +518,16 @@ export async function openAiPoolBlockedMessage(env, capability = 'chat') {
   }
   if (pool.quota_exhausted) blockers.push(`${pool.quota_exhausted} akun sudah habis kuota harian BLEA — reset kuota atau tunggu tanggal WIB berikutnya`);
   if (pool.sealed_missing) blockers.push(`${pool.sealed_missing} akun tersegel dengan secret lain — simpan ulang API key-nya`);
-  const permanent = pool.billing || pool.unauthorized;
+  const permanent = pool.billing || pool.unauthorized || pool.plan_not_eligible;
   return {
     // Kredit habis / kunci mati tidak akan membaik dengan menunggu; kode
     // berbeda supaya klien bisa membedakan tindakannya (bukan "coba lagi").
     status: 503,
     code: permanent ? 'openai_pool_needs_attention' : 'openai_pool_not_usable',
     error: `Akun OpenAI ada ${pool.total} di pool, ${pool.usable} siap dipakai: ${blockers.join('; ') || 'tidak ada yang lolos penyaringan pool'}.`,
+    hint: pool.plan_not_eligible
+      ? 'Jalur OAuth hanya memakai paket Plus/Pro pada akun pribadi. Untuk akun Free, satu-satunya jalan adalah API key dengan saldo prabayar.'
+      : undefined,
     pool,
   };
 }
@@ -741,7 +770,7 @@ async function refreshOAuthAccessToken(env, row) {
  *
  * `store:false` dan `stream:true` selalu dipasang oleh buildResponsesBody.
  */
-export async function sendOAuthResponses({ accessToken, model, payload, timeoutMs = 180_000 }) {
+export async function sendOAuthResponses({ accessToken, model, payload, timeoutMs = 180_000, catalogFallback = true }) {
   const body = buildResponsesBody(payload, { model });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -770,6 +799,26 @@ export async function sendOAuthResponses({ accessToken, model, payload, timeoutM
   if (!res.ok) {
     clearTimeout(timer);
     const text = await res.text().catch(() => '');
+    // Model yang tidak ada di akun ini bukan "akun rusak": jalur paket memakai
+    // katalog per-akun, sedangkan `model_default` bisa saja tebakan. Baca
+    // katalog akun lalu ulangi SEKALI dengan model yang benar-benar dimiliki.
+    const modelMissing = /model_not_found|does not exist|unsupported_model|unknown model|invalid model/i.test(String(text || ''));
+    if (modelMissing && catalogFallback) {
+      const catalog = await openAiResponsesModelCatalog(accessToken);
+      const better = planModelFromCatalog({ models: catalog }, body.model);
+      if (better && better !== body.model) {
+        const retry = await sendOAuthResponses({
+          accessToken,
+          model: better,
+          payload,
+          timeoutMs,
+          catalogFallback: false,
+        });
+        // Sebut model yang dipakai supaya pesan berikutnya tidak membingungkan.
+        if (retry?.data && typeof retry.data === 'object') retry.data.model_used = better;
+        return retry;
+      }
+    }
     return {
       ok: false,
       status: res.status,
@@ -1020,6 +1069,9 @@ export async function sendWithOpenAiPool({
 // Kode yang berarti "akun ini tidak bisa dipakai sekarang" → cooldown + akun
 // berikutnya. Kode lain (400 format, 404 model) bukan salah akun.
 export function isOpenAiPoolFailure(status, detail = '') {
+  // Paket akun OAuth: `not_eligible` (403) dan batas paket (429) berarti akun
+  // INI tidak bisa dipakai, jadi pool harus lanjut ke akun berikutnya.
+  if (classifyOpenAiFailure(status, detail) === 'plan_not_eligible') return true;
   if ([401, 402, 403, 429, 503].includes(Number(status))) return true;
   return /insufficient_quota|quota|rate.?limit|billing|exceeded|deactivated|invalid_api_key/i.test(String(detail || ''));
 }
@@ -1042,6 +1094,19 @@ export function isOpenAiPoolFailure(status, detail = '') {
 export function classifyOpenAiFailure(status, detail = '') {
   const http = Number(status) || 0;
   const text = String(detail || '');
+  // Jalur paket akun (OAuth) DIPERIKSA PALING AWAL. Kode `subscription_sharing_*`
+  // mengandung kata "usage_limit", sehingga kalau urutannya di bawah, ia
+  // tertangkap pola billing → pesannya jadi "isi saldo", padahal akun OAuth
+  // tidak punya saldo sama sekali. Dulu juga jatuh ke 403 → "kunci ditolak",
+  // padahal kuncinya sehat; yang menolak adalah keputusan paket.
+  const planFailure = planUsageFailure(http, text);
+  if (planFailure) {
+    if (planFailure.reason === 'not_eligible') return 'plan_not_eligible';
+    if (planFailure.reason === 'usage_limit') return 'plan_usage_limit';
+    if (planFailure.reason === 'signin_required') return 'auth';
+    if (planFailure.reason === 'unsupported') return 'other';
+    return 'other';
+  }
   // Kode resmi OpenAI menang atas tebakan dari teks. Daftar ini dari
   // developers.openai.com/api/docs/guides/error-codes:
   //   credit_balance_exhausted   → saldo prabayar organisasi nol
@@ -1176,15 +1241,23 @@ export async function recordOpenAiUsage(env, id, { ok = false, status = 0, error
       Object.assign(patch, { consecutive_failures: 0, cooldown_until: null, last_error: null, last_ok_at: now.toISOString() });
     } else if (isOpenAiPoolFailure(status, error)) {
       const failures = (Number(row.consecutive_failures) || 0) + 1;
+      const kind = classifyOpenAiFailure(status, error);
       // Batas LAJU (429 murni) pulih dalam hitungan detik/menit. Menghukum
       // akun dengan cooldown 10–60 menit seperti kegagalan auth membuat satu
       // permintaan cepat mematikan pool selama satu jam.
-      const minutes = classifyOpenAiFailure(status, error) === 'rate_limit'
+      const minutes = kind === 'rate_limit'
         ? RATE_LIMIT_COOLDOWN_MINUTES
         : Math.min(COOLDOWN_MAX_MINUTES, COOLDOWN_BASE_MINUTES * (2 ** Math.min(failures - 1, 3)));
+      // Keadaan yang TIDAK pulih dengan menunggu (kredit habis, kunci ditolak,
+      // paket tidak boleh dipakai) langsung dianggap permanen. Dulu semuanya
+      // diberi `cooldown_until`, dan selama jendela itu `stalePoolBlock` sengaja
+      // mengembalikan null → akun tampil "cooldown" 10 menit sebelum sebab
+      // sebenarnya muncul. Itu persis keluhan yang membuat sesi ini dimulai.
+      const permanent = kind === 'billing' || kind === 'plan_not_eligible';
+      const authPermanent = kind === 'auth' && failures >= AUTH_STALE_FAILURES;
       Object.assign(patch, {
         consecutive_failures: failures,
-        cooldown_until: new Date(now.getTime() + minutes * 60_000).toISOString(),
+        cooldown_until: permanent || authPermanent ? null : new Date(now.getTime() + minutes * 60_000).toISOString(),
         last_error: String(error || `HTTP ${status}`).slice(0, 300),
       });
     } else if (error) {
@@ -1207,7 +1280,7 @@ export async function testOpenAiAccount(env, id) {
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) throw fail('Akun tidak ditemukan.', 404);
   const nowIso = new Date().toISOString();
-  const finish = async (ok, message, status = null) => {
+  const finish = async (ok, message, status = null, rawCode = '') => {
     await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(id)}`, {
       method: 'PATCH',
       prefer: 'return=minimal',
@@ -1215,6 +1288,18 @@ export async function testOpenAiAccount(env, id) {
         last_test_at: nowIso,
         last_test_ok: ok,
         ...(ok ? { last_ok_at: nowIso, consecutive_failures: 0, cooldown_until: null, last_error: null } : {}),
+        // Kegagalan yang TIDAK akan pulih dengan menunggu disimpan apa adanya,
+        // supaya pool berhenti mencobanya dan UI menyebut sebabnya. Tanpa ini,
+        // Uji hanya melaporkan merah satu kali lalu akun dicoba lagi tiap
+        // cooldown habis.
+        // Catat juga sebagai kegagalan: `stalePoolBlock` membaca
+        // `consecutive_failures` untuk memutuskan akun berhenti dicoba.
+        ...(ok ? {} : {
+          // Kode galat OpenAI ditulis DI DEPAN pesan manusia: itu yang dibaca
+          // `stalePoolBlock` untuk memutuskan akun berhenti dicoba.
+          ...(message ? { last_error: `${rawCode ? `${rawCode}: ` : ''}${String(message)}`.slice(0, 300) } : {}),
+          consecutive_failures: (Number(row.consecutive_failures) || 0) + 1,
+        }),
         updated_at: nowIso,
       },
     }).catch(() => {});
@@ -1241,7 +1326,23 @@ export async function testOpenAiAccount(env, id) {
     }
     if (res.ok) {
       await res.body?.cancel?.().catch?.(() => {});
-      return await finish(true, 'Token OAuth OpenAI diterima (Responses API teks).', res.status);
+      // 200 di sini hanya membuktikan "token sah". Izin pemakaian paket harus
+      // dibuktikan lewat satu panggilan Responses API — persis seperti Uji akun
+      // API key yang tidak berhenti di /v1/models.
+      const plan = await probeOAuthPlanUsage({ token, model: String(row.model_default || '') });
+      if (plan.ok) {
+        return await finish(true, 'Token OAuth diterima dan paket akun boleh dipakai (Responses API teks).', res.status);
+      }
+      if (plan.kind === 'plan_usage_limit' || plan.kind === 'rate_limit') {
+        // Batas pemakaian/laju bukan tanda akun rusak; jangan dilaporkan gagal.
+        return await finish(true, `Token OAuth diterima, tetapi paketnya sedang kena batas pemakaian: ${String(plan.detail || '').slice(0, 160)}`, plan.status);
+      }
+      return await finish(
+        false,
+        `Token OAuth diterima, tetapi pemakaian paket ditolak: ${String(plan.detail || '').slice(0, 220)}`,
+        plan.status,
+        plan.code,
+      );
     }
     const text = await res.text().catch(() => '');
     return await finish(false, `OpenAI menolak token OAuth (HTTP ${res.status}). ${text.slice(0, 200)}`.trim(), res.status);
@@ -1325,3 +1426,74 @@ async function probeOpenAiCredit({ base, token }) {
     return { ok: false, status: 0, kind: 'other', detail: String(error?.message || error).slice(0, 160) };
   }
 }
+
+/**
+ * Bukti bahwa akun OAuth benar-benar boleh memakai paketnya.
+ *
+ * `GET /v1/models` di jalur paket tetap 200 walau izin pemakaian paket TIDAK
+ * diberikan, jadi status 200 di situ hanya membuktikan "token sah", bukan
+ * "bisa dipakai chat". Satu permintaan teks sekecil mungkin ke
+ * `/v1/responses` (wajib `store:false` + `stream:true`) adalah buktinya.
+ * Batas laju/pemakaian dianggap bukan kegagalan kredensial.
+ */
+export async function probeOAuthPlanUsage({ token, model = '', timeoutMs = 30_000 }) {
+  // `model_default` bisa saja tidak ada di akun ini (katalog jalur paket
+  // bersifat per-akun), jadi pilihan itu tetap divalidasi ke katalog. Kalau
+  // katalognya tidak terbaca, pilihan pengguna dipakai apa adanya.
+  const catalog = await openAiResponsesModelCatalog(token);
+  const chosen = planModelFromCatalog({ models: catalog }, model) || model || 'gpt-5.1';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+      },
+      // Body seminimal mungkin: jalur paket menolak banyak field Chat
+      // Completions (`max_output_tokens`, `temperature`, …), jadi hanya field
+      // wajib yang dikirim.
+      body: JSON.stringify({
+        model: chosen,
+        input: [{ role: 'user', content: 'ping' }],
+        store: false,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    return { ok: false, status: 0, kind: 'other', detail: String(error?.message || error).slice(0, 160), model: chosen };
+  }
+  clearTimeout(timer);
+  if (res.ok) {
+    // Body tidak perlu dihabiskan: yang dibuktikan adalah izinnya, bukan teksnya.
+    await res.body?.cancel?.().catch?.(() => {});
+    return { ok: true, status: res.status, model: chosen };
+  }
+  const text = await res.text().catch(() => '');
+  let detail = text;
+  let rawCode = '';
+  try {
+    const parsed = JSON.parse(text);
+    detail = parsed?.error?.message || parsed?.message || text;
+    rawCode = String(parsed?.error?.code || parsed?.code || '');
+  } catch { /* teks mentah sudah cukup */ }
+  const planFailure = planUsageFailure(res.status, text);
+  return {
+    ok: false,
+    status: res.status,
+    kind: planFailure?.reason === 'not_eligible' ? 'plan_not_eligible'
+      : (planFailure?.reason === 'usage_limit' ? 'plan_usage_limit' : classifyOpenAiFailure(res.status, detail)),
+    detail: planFailure ? `${planFailure.title}. ${planFailure.action}` : detail,
+    // Kode mentah ikut dikembalikan: `last_error` di DB disusun dari sini, dan
+    // `stalePoolBlock` mengklasifikasi dari kode itu — kalau hilang, akun yang
+    // sudah pasti tidak bisa dipakai akan tetap dicoba lagi.
+    code: rawCode,
+    model: chosen,
+  };
+}
+

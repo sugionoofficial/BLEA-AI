@@ -154,8 +154,118 @@ export function responsesToChatCompletion(response, model = '') {
   };
 }
 
+/**
+ * Kode galat jalur paket akun (OAuth) → sebab + tindakan yang BERBEDA.
+ *
+ * Semuanya berasal dari jalur yang sama (Responses API dengan token OAuth),
+ * tetapi obatnya berbeda jauh:
+ *   • `usage_limit`     → pemakaian paket habis sementara (HTTP 429). Tunggu /
+ *                         pakai akun lain; menekan ulang memperburuk.
+ *   • `not_eligible`    → akun/workspace-nya tidak boleh membagikan paket (HTTP
+ *                         403). Ini PERMANEN untuk akun itu; mengulang OAuth
+ *                         tidak akan mengubah apa pun.
+ *   • `signin_required` → sesi OAuth tidak lagi dikenali; harus login ulang.
+ *   • `unavailable`     → layanan sedang tidak tersedia; coba lagi nanti.
+ *   • `unsupported`     → isi permintaan tidak didukung jalur ini (model/tool).
+ *
+ * Mengembalikan null bila bukan galat jalur paket.
+ */
+export function planUsageFailure(code, message = '') {
+  const clean = `${code || ''} ${message || ''}`;
+  if (/subscription_sharing_usage_limit_exceeded/i.test(clean)) {
+    return {
+      reason: 'usage_limit',
+      status: 429,
+      title: 'Batas pemakaian paket tercapai',
+      action: 'Batas ini sementara. Tunggu (atau tambah akun lain di pool); '
+        + 'sisa pemakaian bisa dilihat di pengaturan Usage akun OpenAI Anda.',
+    };
+  }
+  if (/subscription_sharing_user_not_eligible|chatpass_v2_scope_not_authorized|chatpass_v2_invalid_authorization_context/i.test(clean)) {
+    return {
+      reason: 'not_eligible',
+      status: 403,
+      title: 'Paket akun ini tidak bisa dipakai aplikasi lain',
+      action: 'Hanya paket Plus/Pro pada akun pribadi yang bisa dipakai lewat jalur OAuth. '
+        + 'Akun Free/Go tidak bisa, dan workspace Business/Enterprise perlu izin admin. '
+        + 'Mengulangi login TIDAK akan mengubahnya — tambahkan API key (dengan saldo) '
+        + 'atau login dengan akun Plus/Pro.',
+    };
+  }
+  if (/subscription_sharing_usage_unavailable|subscription_sharing_user_unavailable/i.test(clean)) {
+    return { reason: 'unavailable', status: 503, title: 'Pemakaian paket tidak bisa diperiksa', action: 'Coba lagi beberapa saat lagi.' };
+  }
+  if (/subscription_sharing_invalid_user/i.test(clean)) {
+    return { reason: 'signin_required', status: 401, title: 'Sesi OAuth tidak dikenali', action: 'Login ulang lewat tombol Connect.' };
+  }
+  if (/subscription_sharing_unsupported_capability|subscription_sharing_route_not_supported/i.test(clean)) {
+    return {
+      reason: 'unsupported',
+      status: 400,
+      title: 'Permintaan tidak didukung jalur paket',
+      action: 'Jalur OAuth hanya untuk teks (Responses API). Gambar, audio, dan alat bawaan OpenAI tidak tersedia.',
+    };
+  }
+  return null;
+}
+
 /** Error-code khusus jalur paket akun yang berarti "akun ini sedang habis". */
 export function isSubscriptionLimitError(code, message = '') {
   const clean = `${code || ''} ${message || ''}`;
   return /subscription_sharing_usage_limit_exceeded|subscription_sharing_usage_unavailable|usage_limit|rate.?limit|quota/i.test(clean);
+}
+
+/**
+ * Katalog model milik akun OAuth (`GET /v1/models` dengan access token).
+ *
+ * Bentuknya khas jalur paket: `{models:[{slug, display_name, visibility}]}`.
+ * Akun API key mendapat `{data:[{id}]}`; keduanya diterima.
+ * Best-effort: kegagalan jaringan/katalog kosong mengembalikan array kosong,
+ * karena ini hanya dipakai untuk MEMILIH, bukan untuk menolak.
+ */
+export async function openAiResponsesModelCatalog(accessToken, { timeoutMs = 15_000, fetchImpl = null } = {}) {
+  const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  if (!doFetch) return [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await doFetch('https://api.openai.com/v1/models', {
+      headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!res.ok) return [];
+    const body = await res.json().catch(() => null);
+    return Array.isArray(body?.models) ? body.models : (Array.isArray(body?.data) ? body.data : []);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Pilih model dari katalog yang BENAR-BENAR dimiliki akun OAuth.
+ *
+ * Kenapa perlu: jalur paket memakai katalog per-akun (`{models:[{slug}]}`),
+ * bukan daftar model API biasa. Dulu `model_default` OAuth diisi tebakan
+ * `gpt-5.1`; kalau akun tidak punya model itu, setiap permintaan gagal
+ * "model not found" padahal tokennya sehat. Sekarang katalog dibaca lebih dulu.
+ */
+export function planModelFromCatalog(body, preferred = '') {
+  const list = Array.isArray(body?.models) ? body.models
+    : (Array.isArray(body?.data) ? body.data : []);
+  const slugOf = (item) => String(item?.slug || item?.id || '').trim();
+  const visible = list
+    .filter((item) => item?.visibility === undefined || item?.visibility === 'list')
+    .map(slugOf)
+    .filter(Boolean);
+  const want = String(preferred || '').trim();
+  if (want && visible.includes(want)) return want;
+  // Urutan ini hanya preferensi: yang pertama tersedia di akun itu yang dipakai.
+  const preferredOrder = ['gpt-5.1', 'gpt-5', 'gpt-4o-mini', 'gpt-4o'];
+  const pick = preferredOrder.find((slug) => visible.includes(slug));
+  if (pick) return pick;
+  if (visible.length) return visible[0];
+  // Katalog tidak terbaca: jangan menukar nilai yang sudah dipilih pengguna.
+  return want;
 }

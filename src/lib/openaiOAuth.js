@@ -28,6 +28,8 @@ import {
   createOpenAiAccount,
   sealOpenAiToken,
   readOpenAiSealedField,
+  openAiResponsesModelCatalog,
+  planModelFromCatalog,
 } from './openaiPool.js';
 
 export const OPENAI_AUTH_BASE = 'https://auth.openai.com';
@@ -398,13 +400,22 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   });
 
   let account = null;
+  let modelDefault = '';
   if (planUsage) {
+    // Katalog model jalur paket bersifat PER-AKUN. Dulu `model_default` diisi
+    // tebakan `gpt-5.1`; kalau akun itu tidak punya model tersebut, setiap
+    // permintaan chat gagal `model_not_found` padahal tokennya sehat.
+    const catalog = await openAiResponsesModelCatalog(token.access_token).catch(() => []);
+    modelDefault = planModelFromCatalog(
+      { models: catalog },
+      cleanText(input.model_default, 120) || 'gpt-5.1',
+    ) || cleanText(input.model_default, 120) || 'gpt-5.1';
     account = await createOpenAiAccount(env, {
       account_email: email,
       account_label: label,
       credential_kind: 'oauth',
       api_base: 'https://api.openai.com',
-      model_default: cleanText(input.model_default, 120) || 'gpt-5.1',
+      model_default: modelDefault,
       // Hanya chat & agen: token OAuth tidak membuka gambar/video/audio.
       capabilities: ['chat', 'agent'],
       daily_limit: 0,
@@ -423,8 +434,9 @@ export async function completeOAuthAttempt(env, user, input = {}) {
       client_id: clientId,
     },
     account,
+    model_default: modelDefault,
     hint: planUsage
-      ? 'Akun OpenAI tersambung tanpa API key. Kuota mengikuti paket akun pemiliknya.'
+      ? `Akun OpenAI tersambung tanpa API key (model ${modelDefault || 'sesuai katalog akun'}). Kuota mengikuti paket akun pemiliknya.`
       : 'Identitas OpenAI tersambung, tetapi izin pemakaian paket belum dicentang saat persetujuan. Ulangi login lalu centang izin pemakaian paket akun.',
   };
 }

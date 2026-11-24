@@ -34,6 +34,7 @@ const STATE_META = {
   // Dulu keduanya tampil sebagai "Cooldown", jadi admin menunggu tanpa hasil.
   'kredit-habis': { label: 'Kredit OpenAI habis', tone: 'bad' },
   'kunci-ditolak': { label: 'Kunci ditolak OpenAI', tone: 'bad' },
+  'paket-tidak-boleh': { label: 'Paket tidak bisa dipakai aplikasi lain', tone: 'bad' },
   cooldown: { label: 'Cooldown sementara', tone: 'warn' },
   nonaktif: { label: 'Nonaktif', tone: 'muted' },
   'tidak-bisa-dipanggil': { label: 'Token sesi (tidak dipanggil)', tone: 'muted' },
@@ -50,6 +51,14 @@ const BLOCKED_ACTION = {
     note: 'Saldo kredit API nol (kode credit_balance_exhausted). Menunggu tidak memulihkannya. '
       + '“Free tier” di menu Limits bukan kredit gratis: API hanya jalan setelah ada saldo prabayar. '
       + 'Setelah menambah kredit, tekan Uji.',
+  },
+  plan_not_eligible: {
+    label: 'Paket Plus/Pro hanya pada akun pribadi',
+    href: PLATFORM_BILLING_URL,
+    note: 'Akun OAuth ini tersambung, tetapi OpenAI menolak pemakaian paketnya untuk aplikasi lain '
+      + '(kode subscription_sharing_user_not_eligible). Akun Free/Go tidak bisa; workspace '
+      + 'Business/Enterprise perlu izin admin. Mengulangi tombol Connect tidak akan mengubahnya. '
+      + 'Pilih satu: login dengan akun Plus/Pro, atau tambahkan API key dengan saldo prabayar.',
   },
   auth: {
     label: 'Ganti API key di platform.openai.com → API keys',
@@ -455,7 +464,11 @@ export function OpenAiAccountsPage() {
                     <b>{account.account_label || account.account_email || 'Akun tanpa label'}</b>
                     <small>
                       {account.account_email || 'tanpa email'} · prioritas {account.priority} ·{' '}
-                      {account.credential_kind === 'api_key' ? `kunci ${account.token_hint || '—'}` : 'token sesi'}
+                      {account.credential_kind === 'api_key'
+                        ? `kunci ${account.token_hint || '—'}`
+                        : (account.credential_kind === 'oauth'
+                          ? `OAuth · model ${account.model_default || '—'}`
+                          : 'token sesi')}
                     </small>
                   </div>
                   <span className={`cga-state is-${state.tone}`}>

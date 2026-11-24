@@ -33,6 +33,10 @@ function planGranted(link) {
 }
 
 const PLAN_LIMITS = [
+  // Batasan ini yang paling menentukan berhasil/tidak, jadi disebut pertama.
+  'Butuh paket Plus atau Pro pada akun PRIBADI. Akun Free/Go tidak bisa memakai jalur ini '
+    + '(OpenAI menolak dengan subscription_sharing_user_not_eligible), dan workspace '
+    + 'Business/Enterprise perlu izin admin. Mengulangi login tidak mengubah keputusan itu.',
   'Hanya untuk chat & agen (Responses API teks). Gambar, video, dan audio tidak tersedia lewat jalur ini.',
   'Kuota memakai paket akun OpenAI pemiliknya, bukan saldo API.',
   'Token disegel di server dan bisa diputus kapan saja dari sini atau pengaturan aplikasi akun OpenAI.',
