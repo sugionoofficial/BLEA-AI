@@ -1146,3 +1146,78 @@ test('/api/chat tetap melaporkan pesan pool bila fallback dimatikan pengguna', a
   assert.equal(data.code, 'openai_pool_needs_attention');
   assert.match(data.error, /kehabisan kredit OpenAI/);
 });
+
+// Regresi: cadangan DICOBA tetapi semuanya gagal. Dulu kegagalan itu ditelan
+// (`continue`) sehingga respons hanya berisi pesan pool OpenAI — pengguna tidak
+// bisa tahu bahwa alibaba sudah dicoba dan menolak dengan kode apa. Sekarang
+// `triedDetails` harus memuat kegagalan cadangan tersebut.
+test('/api/chat melaporkan provider cadangan yang ikut gagal saat pool OpenAI habis', async () => {
+  const realFetch = globalThis.fetch;
+  const sentModels = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+      ]);
+    }
+    if (url.includes('/rest/v1/openai_accounts')) {
+      return Response.json([{
+        id: '77777777-7777-4777-8777-777777777777',
+        account_email: 'habis@example.com',
+        credential_kind: 'api_key',
+        enabled: true,
+        capabilities: ['chat'],
+        daily_limit: 0,
+        used_today: 1,
+        quota_date: new Date().toISOString().slice(0, 10),
+        last_error: 'You have no credits remaining. Add credits to continue using the API.',
+        consecutive_failures: 1,
+        cooldown_until: null,
+      }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) {
+      return Response.json([{ id: 'k1', provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', enabled: true, priority: 10, consecutive_failures: 0 }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([{ provider: 'alibaba', model: 'qwen-plus' }]);
+    }
+    if (url.startsWith('https://dashscope-intl.aliyuncs.com/') && url.endsWith('/chat/completions')) {
+      sentModels.push(JSON.parse(init.body).model);
+      // Kunci alibaba ditolak: penyebab yang harus terbaca di layar.
+      return new Response(JSON.stringify({ error: { message: 'Invalid API-key provided.', code: 'invalid_api_key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let res;
+  let data;
+  try {
+    res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-cadangan-gagal',
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    data = await res.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 503);
+  assert.notEqual(data.ok, true);
+  // Provider utama tetap dilaporkan sebagai sebab utama…
+  assert.equal(data.code, 'openai_pool_needs_attention');
+  assert.ok(sentModels.includes('qwen-plus'), 'cadangan benar-benar dipanggil');
+  // …tetapi kegagalan cadangan TIDAK boleh hilang dari respons.
+  const alibaba = (data.triedDetails || []).filter((entry) => entry.provider === 'alibaba');
+  assert.ok(alibaba.length >= 1, `triedDetails harus memuat cadangan: ${JSON.stringify(data.triedDetails)}`);
+  assert.equal(alibaba[0].status, 401);
+  assert.match(String(alibaba[0].code), /invalid_api_key/);
+});

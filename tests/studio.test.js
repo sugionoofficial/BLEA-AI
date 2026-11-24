@@ -308,3 +308,65 @@ test('isolasi tool: rute media Studio hanya boleh dari ruang yang cocok', () => 
   assert.equal(canToolUseCapability('chat', 'image'), false);
   assert.equal(canToolUseCapability('video', 'image'), false);
 });
+
+// `AIStudio.jsx` adalah JSX: Node tidak bisa mengimpornya langsung, jadi
+// helper murni dimuat lewat Vite SSR (pola yang sama dengan tes render lain).
+async function loadAiStudioHelpers() {
+  const { createServer } = await import('vite');
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    logLevel: 'silent',
+    // react-router-dom di node_modules berbentuk CJS; alias ke build ESM-nya
+    // supaya `Link` dkk. terbaca sebagai named export (pola sama dengan
+    // tes render di openai-oauth.test.js).
+    resolve: {
+      alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }],
+    },
+  });
+  try {
+    return await vite.ssrLoadModule('/src/auth/AIStudio.jsx');
+  } finally {
+    await vite.close();
+  }
+}
+
+// --- Regresi: kegagalan fallback harus terlihat di layar --------------------
+// Cerita nyata: pengguna memilih model OpenAI, akun pool kehabisan kredit, dan
+// yang terbaca hanya pesan pool. Provider cadangan (alibaba) sudah dicoba dan
+// gagal, tetapi itu tidak pernah tampil sehingga masalahnya tidak bisa
+// didiagnosis dari layar — pengguna menyimpulkan "BLEA tidak bisa chat".
+test('pesan error menyebut provider cadangan yang ikut gagal', async () => {
+  const { formatChatErrorMessage, fallbackAttemptSummary } = await loadAiStudioHelpers();
+  const data = {
+    code: 'openai_pool_needs_attention',
+    primaryProvider: 'openai',
+    error: 'Kredit API akun OpenAI untuk model "gpt-5.6-luna" habis (1 dari 1 akun).',
+    triedDetails: [
+      { provider: 'openai', model: 'gpt-5.6-luna', status: 429, code: 'openai_pool_billing' },
+      { provider: 'alibaba', model: 'qwen3.8-max', status: 401, code: 'invalid_api_key' },
+      { provider: 'alibaba', model: 'qwen3.7-max', status: 401, code: 'invalid_api_key' },
+    ],
+  };
+  const summary = fallbackAttemptSummary(data);
+  // Satu baris per provider, bukan satu per model yang dicoba.
+  assert.match(summary, /alibaba/);
+  assert.equal(summary.match(/alibaba/g).length, 1);
+  assert.match(summary, /HTTP 401/);
+  assert.match(summary, /invalid_api_key/);
+  // Provider utama sudah dijelaskan kalimat utama — jangan diulang.
+  assert.equal(/openai \(/.test(summary), false);
+  assert.match(summary, /Admin → Provider & API Key/);
+
+  const message = formatChatErrorMessage(data, 503);
+  assert.match(message, /gpt-5\.6-luna/);
+  assert.match(message, /Provider cadangan juga gagal/);
+});
+
+test('tanpa percobaan cadangan, pesan tidak menambah kalimat palsu', async () => {
+  const { formatChatErrorMessage, fallbackAttemptSummary } = await loadAiStudioHelpers();
+  assert.equal(fallbackAttemptSummary({ code: 'openai_pool_billing' }), '');
+  assert.equal(fallbackAttemptSummary({ triedDetails: [{ provider: '', status: 500 }] }), '');
+  const plain = formatChatErrorMessage({ code: 'openai_pool_billing', error: 'Saldo API OpenAI nol.' }, 402);
+  assert.equal(plain, 'Saldo API OpenAI nol.');
+});
