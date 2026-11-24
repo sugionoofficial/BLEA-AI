@@ -1021,3 +1021,128 @@ test('/api/tempmail supports the GEN-Z.AI Gmail OAuth connect, plus-tag alias, f
     globalThis.fetch = realFetch;
   }
 });
+
+// Regresi: provider utama (pool OpenAI) ADA tetapi tidak ada akun yang bisa
+// dipanggil — mis. seluruh akun kehabisan kredit. Dulu `/api/chat` langsung
+// menjawab 503 dengan pesan pool dan TIDAK PERNAH mencoba provider lain,
+// padahal alibaba sehat. Pengguna lalu mengira chat mati total.
+test('/api/chat memakai provider lain saat pool OpenAI tidak punya akun yang bisa dipakai', async () => {
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  const saved = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      // Tidak ada kunci `openai` di tabel: provider openai bergantung pada pool.
+      return Response.json([
+        // `base_url` boleh sudah memuat /v1; resolver menormalkannya.
+        { provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+      ]);
+    }
+    if (url.includes('/rest/v1/openai_accounts')) {
+      // Akun ada, tetapi kehabisan kredit dan sudah permanen.
+      return Response.json([{
+        id: '99999999-9999-4999-8999-999999999999',
+        account_email: 'habis@example.com',
+        credential_kind: 'api_key',
+        enabled: true,
+        capabilities: ['chat'],
+        daily_limit: 0,
+        used_today: 1,
+        quota_date: new Date().toISOString().slice(0, 10),
+        last_error: 'You have no credits remaining. Add credits to continue using the API.',
+        consecutive_failures: 1,
+        cooldown_until: null,
+      }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) {
+      return Response.json([{ id: 'k1', provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', enabled: true, priority: 10, consecutive_failures: 0 }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      return Response.json([{ provider: 'alibaba', model: 'qwen-plus' }]);
+    }
+    if (url.startsWith('https://dashscope-intl.aliyuncs.com/') && url.endsWith('/chat/completions')) {
+      sent.push(JSON.parse(init.body).model);
+      return Response.json({ choices: [{ message: { content: 'Jawaban dari alibaba.' } }] });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      saved.push(JSON.parse(init.body));
+      return Response.json([{ id: 'msg-alibaba-1' }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let res;
+  let data;
+  try {
+    res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-openai-habis',
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    data = await res.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 200, `harus dijawab provider lain, bukan error pool: ${JSON.stringify(data)}`);
+  assert.equal(data.ok, true);
+  assert.equal(data.reply, 'Jawaban dari alibaba.');
+  assert.equal(data.provider, 'alibaba');
+  // Jawaban harus terbaca sebagai cadangan, bukan seolah OpenAI yang menjawab.
+  assert.equal(data.fallbackFrom, 'gpt-4o-mini');
+  assert.equal(data.fallbackReason, 'openai_pool_needs_attention');
+  assert.match(data.note, /openai/);
+  assert.deepEqual(sent, ['qwen-plus']);
+  assert.equal(saved.length, 1, 'pesan asisten tetap disimpan ke riwayat');
+  assert.equal(saved[0].conversation_id, 'conv-openai-habis');
+});
+
+test('/api/chat tetap melaporkan pesan pool bila fallback dimatikan pengguna', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope.example' }]);
+    }
+    if (url.includes('/rest/v1/openai_accounts')) {
+      return Response.json([{
+        id: '88888888-8888-4888-8888-888888888888',
+        credential_kind: 'api_key',
+        enabled: true,
+        capabilities: ['chat'],
+        daily_limit: 0,
+        used_today: 1,
+        quota_date: new Date().toISOString().slice(0, 10),
+        last_error: 'You have no credits remaining.',
+        consecutive_failures: 1,
+      }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json([]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let res;
+  let data;
+  try {
+    res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-no-fallback',
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        autoFallback: false,
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    data = await res.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 503);
+  assert.equal(data.code, 'openai_pool_needs_attention');
+  assert.match(data.error, /kehabisan kredit OpenAI/);
+});

@@ -50,6 +50,9 @@ function installMock({ status = 'active', statusMode = 'ok' } = {}) {
       seen.providerKeys += 1;
       return Response.json([]);
     }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json([]);
+    if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) return Response.json([]);
+    if (url.startsWith('https://supabase.example/rest/v1/openai_accounts')) return Response.json([]);
     if (url.startsWith('https://freebeat.ai/')) {
       seen.freebeat += 1;
       throw new Error(`Gerbang seharusnya menahan sebelum Freebeat dipanggil: ${url}`);
