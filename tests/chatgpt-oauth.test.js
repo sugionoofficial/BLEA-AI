@@ -577,7 +577,7 @@ test('kolom tempel URL callback muncul di halaman Akun ChatGPT', async () => {
     // `invalid_state` terjadi sebelum callback kita, jadi satu-satunya bantuan
     // yang bisa diberikan adalah diagnosa + redirect_uri yang benar-benar
     // dipakai. Keduanya harus tampil di halaman Akun ChatGPT.
-    assert.ok(html.includes('Gagal dengan kode error?'), 'blok diagnosa error harus dirender');
+    assert.ok(html.includes('Ada kode error di halaman OpenAI?'), 'blok diagnosa error harus dirender');
     assert.ok(html.includes('http://127.0.0.1:'), 'redirect_uri yang dipakai harus terlihat');
   } finally {
     await vite.close();

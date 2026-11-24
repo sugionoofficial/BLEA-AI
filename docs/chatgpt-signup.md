@@ -1,15 +1,27 @@
-# Daftar ChatGPT dengan email TempMail
+# Daftar ChatGPT & simpan aksesnya
 
-Fitur ini ada di **Studio → Akun ChatGPT** (`/studio/chatgpt-accounts`), panel
-*Daftar ChatGPT dengan email TempMail*. Kode:
+Halaman: **Studio → Akun ChatGPT** (`/studio/chatgpt-accounts`).
+
+## Alur tiga langkah (yang dilihat pengguna)
+
+| Langkah | Tombol | Yang terjadi |
+|---|---|---|
+| 1. Buat akun | **Siapkan & buka daftar** | Tab OpenAI terbuka di formulir "Create an account"; email TempMail ditempel manual, lalu Continue. |
+| 2. Ambil kode | **Cari email verifikasi** | BLEA membaca inbox TempMail, mengambil kode 6 digit; Anda menempelnya di tab OpenAI. |
+| 3. Simpan akses | **Simpan aksesnya ke pool** | Halaman izin OAuth terbuka; setelah disetujui, tempel alamat `127.0.0.1:<port>/auth/callback?code=…` di panel. Akun masuk pool. |
+
+Penjelasan panjang (riwayat URL yang gagal, alasan teknis, deep link aplikasi,
+"Session ended") ada di bagian **“Kalau ada masalah”** yang tertutup. Semua
+catatan lengkap juga disimpan di dokumen ini — bukan di layar.
 
 | Bagian | Berkas |
 |---|---|
 | Aturan & helper murni | `src/lib/chatgptSignup.js` |
 | Rute API `/api/chatgpt-signup` | `src/lib/chatgptSignupRoute.js` + `src/worker.js` |
-| UI panel | `src/studio/ChatGptSignupPanel.jsx`, `src/studio/chatgptSignupClient.js` |
+| UI pendaftaran (langkah 1–3) | `src/studio/ChatGptSignupPanel.jsx` |
+| UI simpan akses (OAuth) | `src/studio/ChatGptOAuthPanel.jsx`, `src/studio/chatgptOAuthClient.js` |
 | Tabel jejak | `supabase/migrations/20261213000000_chatgpt_signup_attempts.sql` |
-| Uji | `tests/chatgpt-signup.test.js` |
+| Uji | `tests/chatgpt-signup.test.js`, `tests/chatgpt-oauth.test.js` |
 
 ## Kesalahan yang sudah diperbaiki: URL endpoint POST dibuka dengan GET
 
