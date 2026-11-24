@@ -523,3 +523,53 @@
 
 /* Panduan "buka aplikasi": penyebab halaman verifikasi berputar terus. */
 .cga-signup-apphandoff { border-color: rgba(230, 120, 110, .45); background: rgba(230, 120, 110, .07); }
+
+/* Alur 3 langkah di halaman Akun ChatGPT — pengganti paragraf panjang. */
+.cga-flow {
+  display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  margin: 16px 0 0; padding: 0; list-style: none;
+}
+.cga-flow li {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  background: rgba(255, 255, 255, .02);
+}
+.cga-flow b { font-size: 12.5px; }
+.cga-flow small { font-size: 11.5px; line-height: 1.5; opacity: .78; }
+
+/* Panel langkah pada panel pendaftaran. */
+.cga-step {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 18px; padding-top: 16px;
+  border-top: 1px solid var(--line, rgba(255, 255, 255, .08));
+}
+.cga-step-title { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cga-step-title span {
+  display: grid; place-items: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--accent, #6ea8fe); color: #0b1020;
+  font: 700 11px/1 system-ui, sans-serif;
+}
+.cga-step-note { margin: 0; font-size: 11.5px; line-height: 1.55; opacity: .8; }
+
+/* Semua penjelasan panjang dilipat. */
+.cga-signup-problems, .cga-signup-advanced, .cga-explain {
+  margin-top: 18px; border-radius: 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  background: rgba(255, 255, 255, .02); padding: 0 14px;
+}
+.cga-signup-problems > summary, .cga-signup-advanced > summary, .cga-explain > summary {
+  cursor: pointer; padding: 12px 0; font-size: 12.5px; font-weight: 600;
+}
+.cga-problem { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; }
+.cga-problem p { margin: 0; font-size: 11.5px; line-height: 1.55; opacity: .85; }
+.cga-explain[open] { padding-bottom: 12px; }
+.cga-explain h2 { font-size: 13px; margin: 0; display: inline; }
+
+/* Tautan gaya tombol untuk melompat antar-langkah. */
+.cga-jump {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 10px; font-size: 12px; text-decoration: none;
+  background: var(--accent, #6ea8fe); color: #0b1020; font-weight: 600;
+}

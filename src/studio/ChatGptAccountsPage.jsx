@@ -196,12 +196,9 @@ export function ChatGptAccountsPage() {
           <span className="cga-badge"><KeyRound size={12} /> Admin · Koneksi</span>
           <h1>ChatGPT disambungkan seperti freebeat.</h1>
           <p>
-            Ada dua jalur masuk pool. <b>Pertama</b> — jalur utama, tanpa API key sama sekali:
-            <b> Continue with ChatGPT</b> di bawah memakai OAuth resmi OpenAI, jadi kuota yang
-            terpakai adalah paket ChatGPT pemilik akun. <b>Kedua</b> — jalur cadangan untuk tool
-            media: API key milik admin, karena izin OAuth hanya berlaku untuk chat & agen.
-            Keduanya masuk pool yang sama: prioritas naik, kuota harian per akun, cooldown saat
-            akun menolak, lalu lanjut ke akun berikutnya.
+            Ada dua cara menambah akun ke pool. <b>Otomatis (disarankan):</b> daftar akun baru
+            dengan email TempMail, lalu simpan aksesnya lewat <b>Continue with ChatGPT</b>.
+            <b> Manual:</b> tempel API key Anda sendiri untuk tool media.
           </p>
           <ul className="cga-stats">
             <li><b>{summary.total}</b><small>akun di pool</small></li>
@@ -209,6 +206,11 @@ export function ChatGptAccountsPage() {
             <li><b>{summary.exhausted}</b><small>kuota habis</small></li>
             <li><b>{summary.cooling}</b><small>cooldown</small></li>
           </ul>
+          <ol className="cga-flow">
+            <li><b>1. Buat akun</b><small>Buka formulir OpenAI dengan email TempMail, lalu tempel kodenya.</small></li>
+            <li><b>2. Simpan akses</b><small>Tekan “Continue with ChatGPT”, setujui izin, tempel alamat callback.</small></li>
+            <li><b>3. Selesai</b><small>Akun muncul di daftar bawah dan dipakai otomatis oleh BLEA.</small></li>
+          </ol>
           <div className="cga-hero-actions">
             <button type="button" className="cga-primary" onClick={() => setFormOpen((open) => !open)}>
               <Plus size={13} /> {formOpen ? 'Tutup form' : 'Tambah akun manual'}
@@ -217,12 +219,11 @@ export function ChatGptAccountsPage() {
           </div>
         </section>
 
-        <ChatGptOAuthPanel onLinked={load} />
-
-        {/* Pendaftaran akun baru dari email TempMail. Panel ini TIDAK mengirim
-            pendaftaran dari server (lihat src/lib/chatgptSignup.js); ia
-            menyiapkan URL resmi + memantau email verifikasi. */}
+        {/* Pendaftaran akun baru (langkah 1) lalu penyimpanan aksesnya
+            (langkah 3). Urutan ini mengikuti alur yang dipakai pengguna. */}
         <ChatGptSignupPanel onVerified={load} />
+
+        <ChatGptOAuthPanel onLinked={load} />
 
         {notice && (
           <p className={`cga-notice is-${noticeTone}`}>
@@ -427,8 +428,8 @@ export function ChatGptAccountsPage() {
           })}
         </ul>
 
-        <section className="cga-explain">
-          <h2>Bagaimana pemilihan akun bekerja</h2>
+        <details className="cga-explain">
+          <summary><h2>Bagaimana pemilihan akun bekerja</h2></summary>
           <ol>
             <li>Urut prioritas naik, lalu akun yang paling sedikit dipakai hari ini.</li>
             <li>Akun yang kuota hariannya habis dilewati otomatis; permintaan pindah ke akun berikutnya.</li>
@@ -440,7 +441,7 @@ export function ChatGptAccountsPage() {
             <b> API key</b> yang siap. Akun berjenis token sesi tetap tersimpan sebagai catatan,
             tetapi sengaja tidak dipanggil ke backend non-publik.
           </p>
-        </section>
+        </details>
       </div>
     </DropXLayout>
   );

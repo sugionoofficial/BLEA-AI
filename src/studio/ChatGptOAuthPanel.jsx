@@ -22,22 +22,14 @@ const STATUS_META = {
 };
 
 const PLAN_LIMITS = [
-  'Hanya untuk chat & agen (Responses API teks). Gambar, video, audio, dan unggah berkas tidak tersedia lewat jalur ini.',
-  'Kuota diambil dari paket ChatGPT pemilik akun (Plus/Pro/Go), bukan saldo API. Batas 5 jam dibagi dengan pemakaian ChatGPT lain.',
-  'Tidak ada API key dan tidak ada client secret: BLEA mendaftarkan client-nya sendiri saat login pertama.',
-  'Token disimpan tersegel di server dan bisa diputus kapan saja dari sini atau dari ChatGPT → Settings → Apps.',
+  'Hanya untuk chat & agen (Responses API teks). Gambar, video, dan audio tidak tersedia lewat jalur ini.',
+  'Kuota memakai paket ChatGPT pemilik akun (Plus/Pro/Go), bukan saldo API.',
+  'Token disegel di server dan bisa diputus kapan saja dari sini atau ChatGPT → Settings → Apps.',
 ];
 
-/**
- * Panel "Continue with ChatGPT".
- *
- * Tiga keadaan yang ditangani:
- *   1. Halaman callback (http://127.0.0.1:<port>/auth/callback) — OAuth hanya
- *      sah dengan redirect loopback, jadi penyelesaiannya terjadi di browser
- *      pengguna. Halaman ini mengirim kode ke Worker lalu menampilkan hasil.
- *   2. Halaman admin biasa — tombol untuk memulai login dan daftar tautan.
- *   3. Gagal/izin tidak lengkap — dijelaskan apa yang harus dicentang.
- */
+// Tiga keadaan: halaman callback 127.0.0.1, halaman admin (mulai login + daftar
+// akun), dan keadaan gagal (dijelaskan apa yang harus dicentang).
+
 export function ChatGptOAuthPanel({ onLinked }) {
   const callbackPage = isOAuthCallbackPage();
   const [callbackUrl, setCallbackUrl] = useState(() => (typeof window === 'undefined' ? '' : window.location.href));
@@ -151,14 +143,10 @@ export function ChatGptOAuthPanel({ onLinked }) {
     }
   }
 
-  /**
-   * Diagnosa kegagalan OAuth dari kode error OpenAI.
-   *
-   * `invalid_state` terjadi di auth.openai.com SEBELUM callback kita, jadi
-   * tidak ada yang bisa diperiksa di server. Yang bisa dilakukan: jelaskan
-   * sebabnya dan tampilkan `redirect_uri` yang dipakai, supaya bisa dicocokkan
-   * dengan URL di bilah alamat.
-   */
+  // `invalid_state` terjadi di auth.openai.com SEBELUM callback kita, jadi
+  // tidak ada baris server yang bisa diperiksa — hanya penjelasan yang bisa
+  // diberikan, plus redirect_uri yang dipakai untuk dicocokkan.
+
   function diagnose(rawCode, detail = '') {
     const code = String(rawCode || '').trim();
     if (!code) return;
@@ -232,20 +220,20 @@ export function ChatGptOAuthPanel({ onLinked }) {
   }
 
   return (
-    <section className="oauth-panel">
+    <section className="oauth-panel" id="cga-oauth">
       <header className="oauth-head">
         <div>
-          <span className="oauth-badge"><LogIn size={12} /> Tanpa API key</span>
+          <span className="oauth-badge"><LogIn size={12} /> Langkah 3 · Tanpa API key</span>
           <h2>Continue with ChatGPT</h2>
           <p>
-            Sambungkan akun ChatGPT seperti OAuth freebeat: satu tombol, izin di browser,
-            lalu Studio memakai paket ChatGPT itu. Tidak ada API key yang perlu ditempel.
+            Simpan akses akun ChatGPT yang sudah dibuat ke pool. Satu tombol, izin di browser,
+            lalu tempel alamat callback-nya kembali di sini.
           </p>
         </div>
         <div className="oauth-head-actions">
           <button type="button" className="oauth-start" onClick={start} disabled={busy === 'start'}>
             {busy === 'start' ? <Loader2 size={14} className="agent-spin" /> : <Link2 size={14} />}
-            {busy === 'start' ? 'Membuka ChatGPT…' : 'Continue with ChatGPT'}
+            {busy === 'start' ? 'Membuka ChatGPT…' : 'Simpan aksesnya ke pool'}
           </button>
           <button type="button" className="oauth-refresh" onClick={refreshStatus} disabled={busy === 'status'}>
             {busy === 'status' ? <Loader2 size={13} className="agent-spin" /> : <RefreshCw size={13} />} Perbarui status
@@ -259,24 +247,22 @@ export function ChatGptOAuthPanel({ onLinked }) {
         </p>
       )}
 
-      <ul className="oauth-limits">
-        {PLAN_LIMITS.map((line) => (
-          <li key={line}><ShieldCheck size={13} /> {line}</li>
-        ))}
-      </ul>
+      <details className="cga-signup-problems">
+        <summary>Batasan &amp; catatan (klik untuk membuka)</summary>
+        <ul className="oauth-limits">
+          {PLAN_LIMITS.map((line) => (
+            <li key={line}><ShieldCheck size={13} /> {line}</li>
+          ))}
+        </ul>
+      </details>
 
-      {/* Kolom tempel URL callback. Dulu blok ini tidak sengaja tersisip di
-          cabang `if (callbackPage)` — jadi ia hanya muncul di halaman
-          127.0.0.1, dan justru TIDAK ADA di halaman Akun ChatGPT tempat
-          pengguna mencarinya. Sekarang tempatnya benar: panel utama. */}
+      {/* Kolom tempel URL callback — harus ada di halaman admin, bukan di
+          cabang halaman callback. */}
       <div className="oauth-manual">
         <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
         <p>
-          OpenAI mengirim hasil login ke <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>, dan
-          alamat itu biasanya berakhir sebagai halaman “tidak bisa diakses”. Salin <b>seluruh</b> alamat
-          dari bilah browser (yang memuat <code>?code=…&amp;state=…</code>) lalu tempel di sini — kalau
-          tersalin sebagai <code>&amp;amp;</code>, tetap terbaca. Kode ditukar di server, tidak disimpan
-          di browser.
+          Tempel <b>seluruh</b> alamat halaman <code>127.0.0.1:&lt;port&gt;/auth/callback?code=…&amp;state=…</code>{' '}
+          di sini. Halaman itu memang tampil “tidak bisa diakses” — itu normal.
         </p>
         <form onSubmit={completeFromUrl}>
           <input
@@ -300,18 +286,12 @@ export function ChatGptOAuthPanel({ onLinked }) {
         )}
       </div>
 
-      {/* Diagnosa kegagalan OAuth. OpenAI mengembalikan halaman error dengan
-          kode seperti invalid_state SEBELUM callback kita, jadi tidak ada
-          baris server yang bisa diperiksa — penjelasan ini yang menggantikannya. */}
+      {/* Diagnosa kode error dari halaman OpenAI. */}
       <div className="oauth-manual">
-        <b><ShieldCheck size={13} /> Gagal dengan kode error?</b>
+        <b><ShieldCheck size={13} /> Ada kode error di halaman OpenAI?</b>
         <p>
-          Kalau halaman OpenAI menampilkan <code>error_code</code>, salin kodenya di sini untuk
-          penjelasan sebab + langkah perbaikannya. Nilai <code>redirect_uri</code> yang dikirim:{' '}
-          <code>{redirectInfo.redirect_uri}</code>
-          {redirectInfo.auto_callback
-            ? ' (callback otomatis: BLEA dibuka dari 127.0.0.1).'
-            : ' (bukan 127.0.0.1, jadi callback diselesaikan dengan menempel URL).'}
+          Salin kodenya (<code>invalid_state</code>, <code>invalid_grant</code>, …) untuk penjelasan
+          singkat. Alamat callback yang dipakai: <code>{redirectInfo.redirect_uri}</code>
         </p>
         <form onSubmit={(event) => { event.preventDefault(); diagnose(diag?.code || errorCodeInput, errorUrlInput); }}>
           <input

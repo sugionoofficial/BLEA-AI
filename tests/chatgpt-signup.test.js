@@ -1024,10 +1024,15 @@ test('panel memakai panduan sesi manual, bukan fetch lintas-origin', async () =>
 test('panel menyimpan akses lewat OAuth resmi, bukan cookie sesi', async () => {
   const { readFileSync } = await import('node:fs');
   const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  const oauth = readFileSync(new URL('../src/studio/ChatGptOAuthPanel.jsx', import.meta.url), 'utf8');
   const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
-  // Tombol penutup hanya muncul setelah langkah terverifikasi.
-  assert.match(panel, /active\.step === 'terverifikasi'/);
-  assert.match(panel, /beginChatGptSignIn/);
+  // Satu tombol penyimpan akses saja, di panel OAuth. Dulu tombol ini hanya
+  // muncul saat `step === 'terverifikasi'` (buntu tanpa penjelasan), lalu
+  // sempat terduplikasi di dua panel. Panel pendaftaran hanya menunjuk ke sana.
+  assert.ok(!/active\.step === 'terverifikasi'/.test(panel), 'tombol simpan tidak boleh disembunyikan oleh status langkah');
+  assert.ok(!/beginChatGptSignIn/.test(panel), 'panel pendaftaran tidak boleh punya tombol simpan sendiri');
+  assert.match(oauth, /Simpan aksesnya ke pool/);
+  assert.match(panel, /Continue with ChatGPT/);
   assert.match(panel, /Simpan aksesnya ke pool/);
   // Tidak boleh ada pembacaan cookie sesi chatgpt.com dari mana pun.
   for (const [name, source] of [['panel', panel], ['lib', lib]]) {
@@ -1116,8 +1121,7 @@ test('beginChatGptSignIn membuka tab baru, bukan menggantikan halaman panel', as
   const client = readFileSync(new URL('../src/studio/chatgptOAuthClient.js', import.meta.url), 'utf8');
   assert.ok(!/window\.location\.assign/.test(client), 'jangan menavigasi halaman panel ke OpenAI');
   assert.match(client, /window\.open\(authorizeUrl, '_blank'\)/);
-  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  assert.match(panel, /beginChatGptSignIn\(\{ loginHint[^}]*tab: authTab/);
+  assert.match(client, /tab = null/);
 });
 
 // Pengguna berpindah perangkat (HP → PC) di tengah alur: URL callback boleh
