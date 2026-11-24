@@ -280,7 +280,7 @@ export async function handleAgentTurn(request, url, env, deps) {
           if (!attempt.ok && !poolFailures.length) {
             poolFailures.push({
               status: Number(attempt.status) || 0,
-              detail: attempt.errorInfo?.rawDetail || attempt.errorInfo?.message || '',
+              detail: [attempt.errorInfo?.rawDetail, attempt.errorInfo?.code].filter(Boolean).join(' ') || '',
             });
           }
 

@@ -1555,7 +1555,10 @@ function parseChatUpstreamError(rawText, status, retryAfterHeader, provider = ''
     code: code || `http_${status}`,
     retryAfterSec,
     friendlyMessage,
-    rawDetail: message.slice(0, 500),
+    // `rawDetail` ikut membawa kode resmi OpenAI (mis. credit_balance_exhausted)
+    // karena `type`-nya sering hanya `insufficient_quota` — tidak cukup untuk
+    // membedakan saldo nol dari batas belanja.
+    rawDetail: [message, code && !message.includes(code) ? `code: ${code}` : ''].filter(Boolean).join(' ').slice(0, 500),
   };
 }
 

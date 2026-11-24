@@ -1040,19 +1040,60 @@ export function isOpenAiPoolFailure(status, detail = '') {
  * saldo". Pengguna lalu mencari masalah billing yang tidak ada.
  */
 export function classifyOpenAiFailure(status, detail = '') {
-  const code = Number(status) || 0;
+  const http = Number(status) || 0;
   const text = String(detail || '');
-  // Pesan asli OpenAI untuk saldo habis (HTTP 429, BUKAN 402):
+  // Kode resmi OpenAI menang atas tebakan dari teks. Daftar ini dari
+  // developers.openai.com/api/docs/guides/error-codes:
+  //   credit_balance_exhausted   → saldo prabayar organisasi nol
+  //   organization_spend_limit_exceeded / project_spend_limit_exceeded
+  //                              → batas belanja yang disetel sendiri
+  //   organization_usage_limit_exceeded → batas pemakaian dari OpenAI
+  // Semuanya HTTP 429 dengan type `insufficient_quota`, jadi `type` saja tidak
+  // cukup untuk membedakannya dari rate limit.
+  if (/credit_balance_exhausted|insufficient_quota|spend_limit_exceeded|usage_limit_exceeded/i.test(text)) return 'billing';
+  if (http === 402) return 'billing';
+  // Pesan asli untuk saldo kosong (HTTP 429, bukan 402):
   //   "You have no credits remaining. Add credits to continue using the API at
   //    https://platform.openai.com/settings/organization/billing/"
   // Dulu teks ini tidak cocok dengan pola mana pun, jatuh ke cabang 429, lalu
   // dilaporkan sebagai "batas laju" — persis gejala yang membingungkan.
-  if (/insufficient_quota|billing|no credits?|credits? remaining|add credits|credit balance|out of credits|payment/i.test(text)) return 'billing';
-  if (code === 402) return 'billing';
+  if (/\bno credits?\b|credits? remaining|add credits|credit balance|out of credits|billing/i.test(text)) return 'billing';
   if (/invalid_api_key|incorrect api key|unauthorized|deactivated/i.test(text)) return 'auth';
-  if (code === 401 || code === 403) return 'auth';
-  if (code === 429) return 'rate_limit';
+  if (http === 401 || http === 403) return 'auth';
+  // 429 tersisa = batas laju sungguhan (`rate_limit_exceeded`, `slow_down`).
+  if (http === 429) return 'rate_limit';
   return 'other';
+}
+
+/**
+ * Terjemahan kode galat OpenAI yang perlu tindakan BERBEDA. Dipakai untuk
+ * memberi kalimat yang menyebut tombol/halaman yang benar, bukan "isi saldo"
+ * untuk semua hal.
+ */
+export function openAiErrorCodeHint(detail = '') {
+  const text = String(detail || '');
+  if (/credit_balance_exhausted/i.test(text)) {
+    return {
+      reason: 'credit_balance',
+      title: 'Saldo API OpenAI nol',
+      action: 'Isi kredit API di platform.openai.com → Billing → Add credits.',
+    };
+  }
+  if (/organization_spend_limit_exceeded|project_spend_limit_exceeded/i.test(text)) {
+    return {
+      reason: 'spend_limit',
+      title: 'Batas belanja OpenAI tercapai',
+      action: 'Naikkan/hapus batas belanja di platform.openai.com → Settings → Limits.',
+    };
+  }
+  if (/organization_usage_limit_exceeded/i.test(text)) {
+    return {
+      reason: 'usage_limit',
+      title: 'Batas pemakaian dari OpenAI tercapai',
+      action: 'Minta batas lebih tinggi lewat platform.openai.com → Settings → Limits (Usage tiers).',
+    };
+  }
+  return null;
 }
 
 /**
@@ -1080,12 +1121,20 @@ export function openAiFailureMessage(details = [], { model = '' } = {}) {
     };
   }
   if (billing) {
+    // Sebut kode galatnya: itu yang membedakan "isi saldo" dari "naikkan batas".
+    const hint = list.map((item) => openAiErrorCodeHint(item.detail)).find(Boolean);
+    const specific = hint
+      ? `${hint.title}. ${hint.action}`
+      : 'Isi kredit API di platform.openai.com → Billing → Add credits.';
     return {
       code: 'openai_pool_billing',
       status: 402,
       kind: 'billing',
-      error: `Kredit/billing akun OpenAI${label} habis atau belum aktif (${billing} dari ${accounts || 1} akun). `
-        + 'Isi saldo di platform.openai.com → Billing, atau tambahkan akun lain di Studio → Akun OpenAI.',
+      // "Free tier" di halaman Limits OpenAI adalah TINGKAT BATAS LAJU, bukan
+      // kredit gratis. Kalimat ini mencegah admin mencari kredit yang tidak ada.
+      error: `Kredit API akun OpenAI${label} habis (${billing} dari ${accounts || 1} akun). ${specific} `
+        + 'Catatan: “Free tier” di platform.openai.com → Limits adalah tingkat batas laju, bukan kredit gratis — '
+        + 'API hanya jalan setelah ada saldo prabayar. Studio → Akun OpenAI juga menerima akun OAuth bila tidak ingin memakai saldo API.',
     };
   }
   if (auth) {
