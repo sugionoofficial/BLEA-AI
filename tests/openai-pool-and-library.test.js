@@ -5,8 +5,11 @@ import {
   OPENAI_CAPABILITIES,
   jakartaDate,
   sanitizeOpenAiAccount,
+  classifyOpenAiFailure,
+  openAiFailureMessage,
   openAiPoolBlockedMessage,
   openAiPoolDiagnostic,
+  recordOpenAiUsage,
   readOpenAiSealedField,
   sealOpenAiToken,
   unsealOpenAiToken,
@@ -415,8 +418,72 @@ test('halaman Hasil & Unduhan serta Akun OpenAI bisa dirender tanpa navigasi sen
     assert.ok(accountsHtml.includes('Connect OpenAI'));
     assert.ok(accountsHtml.includes('Tambah akun manual'));
     assert.ok(accountsHtml.includes('Bagaimana pemilihan akun bekerja'));
+    // Batas harian harus bisa diubah SETELAH akun tersimpan, bukan hanya saat
+    // menambah akun. Tombolnya dirender per akun, jadi SSR tanpa akun belum
+    // membuktikannya — yang diuji di sini adalah sumber komponennya.
+    const fs = await import('node:fs');
+    const accountsSource = fs.readFileSync(new URL('../src/studio/OpenAiAccountsPage.jsx', import.meta.url), 'utf8');
+    assert.ok(accountsSource.includes('beginEdit'), 'harus ada edit per akun');
+    assert.ok(accountsSource.includes('daily_limit: limit'), 'edit batas harian harus dikirim ke server');
+    assert.ok(accountsSource.includes('cga-inline-edit'), 'form edit harus punya penanda kelas');
+    assert.match(accountsSource, /Ubah batas/, 'tombol edit harus terlihat di kartu akun');
   } finally {
     await vite.close();
+  }
+});
+
+test('batas harian akun bisa diubah lewat PATCH tanpa mengirim ulang kunci', async () => {
+  const realFetch = globalThis.fetch;
+  const account = {
+    id: '11111111-1111-4111-8111-111111111111',
+    account_email: 'akun@example.com',
+    credential_kind: 'api_key',
+    enabled: true,
+    priority: 10,
+    capabilities: ['chat'],
+    daily_limit: 200,
+    used_today: 12,
+    quota_date: jakartaDate(),
+    cooldown_until: null,
+    consecutive_failures: 0,
+    api_base: 'https://api.openai.com',
+    sealed_token: await sealOpenAiToken(ENV, 'sk-uji-batas'),
+    model_default: 'gpt-4o-mini',
+  };
+  let patched = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/auth/v1/user')) {
+      return Response.json({ id: 'admin-1', email: 'admin@example.com', app_metadata: { role: 'admin' } });
+    }
+    if (url.includes('/openai_accounts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(init.body);
+        return Response.json([{ ...account, ...patched }]);
+      }
+      return Response.json([account]);
+    }
+    if (url.includes('/rest/v1/')) return Response.json([]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(
+      new Request('https://app.example/api/openai-accounts', {
+        method: 'PATCH',
+        headers: { origin: 'https://app.example', authorization: 'Bearer admin-jwt', 'content-type': 'application/json' },
+        body: JSON.stringify({ id: account.id, daily_limit: 40 }),
+      }),
+      ENV,
+    );
+    assert.equal(res.status, 200);
+    assert.equal(patched.daily_limit, 40);
+    assert.equal('sealed_token' in patched, false, 'mengubah batas tidak boleh menyentuh kredensial');
+    assert.equal('token' in patched, false);
+    const body = await res.json();
+    assert.equal(body.account.daily_limit, 40);
+    assert.equal(body.account.used_today, 12, 'pemakaian hari ini tidak boleh ikut ter-reset');
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });
 
@@ -667,6 +734,212 @@ test('pesan penolakan pool menyebut penghalang nyata dan null bila pool kosong',
   globalThis.fetch = async () => Response.json([]);
   try {
     assert.equal(await openAiPoolBlockedMessage(ENV, 'chat'), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// --- 429 OpenAI: batas laju vs billing vs kunci ditolak --------------------
+
+test('429 murni (batas laju) dipisahkan dari kuota/billing habis', () => {
+  // Bentuk galat nyata dari OpenAI: yang di atas rate limit sementara, yang di
+  // bawah billing habis. Keduanya HTTP 429, obatnya berbeda.
+  assert.equal(classifyOpenAiFailure(429, 'Rate limit reached for gpt-4o-mini on requests per min (RPM)'), 'rate_limit');
+  assert.equal(classifyOpenAiFailure(429, 'rate_limit_exceeded'), 'rate_limit');
+  assert.equal(
+    classifyOpenAiFailure(429, 'You exceeded your current quota, please check your plan and billing details. code: insufficient_quota'),
+    'billing',
+  );
+  assert.equal(classifyOpenAiFailure(402, 'payment required'), 'billing');
+  assert.equal(classifyOpenAiFailure(401, 'Incorrect API key provided'), 'auth');
+  assert.equal(classifyOpenAiFailure(500, 'internal error'), 'other');
+
+  const rate = openAiFailureMessage([{ status: 429, detail: 'rate_limit_exceeded' }], { model: 'gpt-4o-mini' });
+  assert.equal(rate.status, 429);
+  assert.equal(rate.code, 'openai_rate_limited');
+  assert.match(rate.error, /batas laju/);
+  // Jangan pernah menyalahkan kuota/billing untuk batas laju, dan jangan
+  // menyarankan "pilih model lain" — semua model OpenAI satu pool akun.
+  assert.doesNotMatch(rate.error, /tambah saldo|isi saldo|kuota harian yang habis|pilih model lain/i);
+
+  const billing = openAiFailureMessage([{ status: 429, detail: 'insufficient_quota' }]);
+  assert.equal(billing.status, 402);
+  assert.equal(billing.code, 'openai_pool_billing');
+  assert.match(billing.error, /Billing/);
+
+  const auth = openAiFailureMessage([{ status: 401, detail: 'Incorrect API key provided' }]);
+  assert.equal(auth.code, 'openai_pool_unauthorized');
+  assert.match(auth.error, /ditolak/);
+});
+
+test('batas laju tidak mengunci akun pool selama cooldown panjang', async () => {
+  // Cooldown untuk 429 harus pendek (1 menit), bukan 10–60 menit seperti
+  // kegagalan auth. Kalau salah, satu permintaan cepat mematikan pool.
+  const captured = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (init.method === 'PATCH') {
+      captured.push({ url: target, body: JSON.parse(init.body) });
+      return new Response(null, { status: 204 });
+    }
+    return Response.json([{
+      id: '11111111-1111-4111-8111-111111111111',
+      used_today: 5,
+      quota_date: jakartaDate(),
+      daily_limit: 200,
+      consecutive_failures: 0,
+    }]);
+  };
+  try {
+    await recordOpenAiUsage(ENV, '11111111-1111-4111-8111-111111111111', {
+      ok: false,
+      status: 429,
+      error: 'Rate limit reached for requests per min',
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(captured.length, 1);
+  const until = Date.parse(captured[0].body.cooldown_until);
+  const minutes = (until - Date.now()) / 60_000;
+  assert.ok(minutes > 0 && minutes <= 2, `cooldown 429 harus ±1 menit, dapat ${minutes.toFixed(1)}`);
+  assert.match(captured[0].body.last_error, /Rate limit/);
+});
+
+test('/api/chat OpenAI: 429 dilaporkan sebagai batas laju akun, bukan "pilih model lain"', async () => {
+  const realFetch = globalThis.fetch;
+  const account = {
+    id: '11111111-1111-4111-8111-111111111111',
+    account_label: 'Akun uji',
+    credential_kind: 'api_key',
+    enabled: true,
+    priority: 1,
+    capabilities: ['chat', 'agent'],
+    daily_limit: 200,
+    used_today: 0,
+    quota_date: jakartaDate(),
+    cooldown_until: null,
+    consecutive_failures: 0,
+    api_base: 'https://api.openai.com',
+    sealed_token: await sealOpenAiToken(ENV, 'sk-uji-ratelimit'),
+    model_default: 'gpt-4o-mini',
+  };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/auth/v1/user')) return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    if (url.startsWith('https://supabase.example/rest/v1/openai_accounts')) return Response.json([account]);
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([]);
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json([]);
+    if (url.includes('/v1/chat/completions')) {
+      return new Response(JSON.stringify({ error: { message: 'Rate limit reached for gpt-4o-mini on requests per min (RPM)', code: 'rate_limit_exceeded' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if ((init.method || 'GET') === 'PATCH' || (init.method || 'GET') === 'POST') return new Response(null, { status: 204 });
+    return Response.json([]);
+  };
+  try {
+    const res = await worker.fetch(
+      new Request('https://app.example/api/chat', {
+        method: 'POST',
+        headers: { origin: 'https://app.example', authorization: 'Bearer user-jwt', 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'openai', model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hai' }], stream: true }),
+      }),
+      ENV,
+    );
+    assert.equal(res.status, 429);
+    const body = await res.json();
+    assert.equal(body.code, 'openai_rate_limited');
+    assert.match(body.error, /batas laju/);
+    assert.doesNotMatch(body.error, /pilih model lain|Batas permintaan paket gratis|tambah saldo/i);
+    assert.ok(Array.isArray(body.poolFailures) && body.poolFailures.length === 1);
+    assert.equal(body.poolFailures[0].kind, 'rate_limit');
+    assert.equal(body.retryAfterSec, 60);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// --- Katalog Admin harus bisa melihat provider openai ---------------------
+
+test('/api/admin-models mendaftarkan provider openai dari pool akun', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/auth/v1/user')) return Response.json({ id: 'admin-1', email: 'admin@example.com', app_metadata: { role: 'admin' } });
+    if (url.includes('/rest/v1/openai_accounts')) return Response.json([{ id: 'acc-1', enabled: true }]);
+    if (url.includes('/rest/v1/')) return Response.json([]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(
+      new Request('https://app.example/api/admin-models', { headers: { origin: 'https://app.example', authorization: 'Bearer admin-jwt' } }),
+      ENV,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    const openai = body.providers.find((item) => item.provider === 'openai');
+    assert.ok(openai, 'provider openai tidak boleh hilang dari katalog hanya karena kuncinya ada di pool');
+    assert.ok(openai.sources.includes('pool'));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('/api/catalog openai memakai kunci dari pool akun, bukan baris kosong', async () => {
+  const realFetch = globalThis.fetch;
+  const account = {
+    id: '11111111-1111-4111-8111-111111111111',
+    account_label: 'Akun katalog',
+    credential_kind: 'api_key',
+    enabled: true,
+    priority: 1,
+    capabilities: ['chat'],
+    daily_limit: 200,
+    used_today: 0,
+    quota_date: jakartaDate(),
+    cooldown_until: null,
+    consecutive_failures: 0,
+    api_base: 'https://api.openai.com',
+    sealed_token: await sealOpenAiToken(ENV, 'sk-uji-katalog'),
+    model_default: 'gpt-4o-mini',
+  };
+  let authHeader = '';
+  let modelsUrl = '';
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/auth/v1/user')) return Response.json({ id: 'user-1', email: 'creator@example.com', app_metadata: { role: 'admin' } });
+    if (url.includes('/rest/v1/openai_accounts')) return Response.json([account]);
+    if (url.includes('/rest/v1/provider_api_keys')) return Response.json([]);
+    if (url.includes('/rest/v1/provider_key_pool')) return Response.json([]);
+    if (url.endsWith('/v1/models')) {
+      modelsUrl = url;
+      // Supabase service-role key TIDAK boleh ikut ke upstream; yang dikirim
+      // harus token pool akun yang tersegel itu.
+      authHeader = (init.headers || {}).authorization || '';
+      return Response.json({ data: [{ id: 'gpt-4o-mini', owned_by: 'openai' }, { id: 'sora-2' }] });
+    }
+    if (url.includes('/rest/v1/')) return Response.json([]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await worker.fetch(
+      new Request('https://app.example/api/catalog', {
+        method: 'POST',
+        headers: { origin: 'https://app.example', authorization: 'Bearer admin-jwt', 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'openai' }),
+      }),
+      ENV,
+    );
+    assert.equal(res.status, 200);
+    assert.equal(modelsUrl, 'https://api.openai.com/v1/models');
+    assert.equal(authHeader, 'Bearer sk-uji-katalog', 'kunci pool harus dipakai untuk memuat katalog');
+    const body = await res.json();
+    const ids = body.models.map((model) => model.id);
+    assert.ok(ids.includes('gpt-4o-mini'));
+    assert.ok(ids.includes('sora-2'));
   } finally {
     globalThis.fetch = realFetch;
   }

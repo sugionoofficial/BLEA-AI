@@ -1013,7 +1013,28 @@ export function AdminPage({ initialTab = null } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerKeys]);
 
-  const displayedProviderRows = providerKeys;
+  // Provider yang kredensialnya dikelola di tempat lain tetap ditampilkan di
+  // sini supaya tidak "hilang" dari Admin: OpenAI memakai pool akun di
+  // Studio → Akun OpenAI, jadi kunci API-nya tidak pernah ada di
+  // provider_api_keys. Baris semu ini tidak bisa dihapus dari sini (menghapusnya
+  // berarti menghapus akun pool, dan itu punya halamannya sendiri).
+  const displayedProviderRows = useMemo(() => {
+    const rows = [...providerKeys];
+    const hasOpenAi = rows.some((row) => String(row.provider || '').toLowerCase() === 'openai');
+    const poolOpenAi = registeredProviders.some((item) => String(item.provider || '').toLowerCase() === 'openai');
+    if (!hasOpenAi && poolOpenAi) {
+      rows.push({
+        provider: 'openai',
+        label: PROVIDER_PRESETS.openai?.label || 'OpenAI',
+        api_key: '',
+        base_url: PROVIDER_PRESETS.openai?.baseUrl || 'https://api.openai.com',
+        key_version: null,
+        min_verified_at: null,
+        managedInPool: true,
+      });
+    }
+    return rows;
+  }, [providerKeys, registeredProviders]);
 
   const navCounts = {
     users: profiles.length,
@@ -1306,11 +1327,21 @@ export function AdminPage({ initialTab = null } = {}) {
                             <small>{provider.provider}</small>
                           </div>
                           <span className={`admin-api-state ${provider.api_key ? '' : 'is-empty'}`}>
-                            {provider.provider === 'cloudflare' && provider.api_key === 'binding:AI'
-                              ? 'Workers AI Binding (env.AI)'
-                              : (provider.api_key ? 'Terhubung' : 'Belum terhubung')}
+                            {provider.managedInPool
+                              ? 'Dikelola di Akun OpenAI'
+                              : provider.provider === 'cloudflare' && provider.api_key === 'binding:AI'
+                                ? 'Workers AI Binding (env.AI)'
+                                : (provider.api_key ? 'Terhubung' : 'Belum terhubung')}
                           </span>
                         </div>
+
+                        {provider.managedInPool && (
+                          <p className="admin-api-note">
+                            Kunci OpenAI disimpan terenkripsi di pool akun, bukan di tabel ini.
+                            Katalog di bawah memakai akun pool yang siap; tambah/ganti akun lewat{' '}
+                            <a className="admin-api-link" href="/studio/openai-accounts">Studio → Akun OpenAI</a>.
+                          </p>
+                        )}
 
                         <div className="admin-api-quota" role="status">
                           <Gauge size={13} aria-hidden="true" />
@@ -1365,6 +1396,16 @@ export function AdminPage({ initialTab = null } = {}) {
                           </p>
                         )}
 
+                        {provider.managedInPool ? (
+                          // Menyimpan kunci di sini akan membuat baris
+                          // provider_api_keys kedua untuk OpenAI, dan pool akun
+                          // tetap yang dipakai saat chat. Jadi tombolnya
+                          // diarahkan ke pengelola akun, bukan dipalsukan.
+                          <div className="admin-api-input-row">
+                            <LockKeyhole size={14} />
+                            <a className="admin-api-link" href="/studio/openai-accounts">Kelola akun &amp; API key OpenAI →</a>
+                          </div>
+                        ) : (
                         <div className="admin-api-input-row">
                           <LockKeyhole size={14} />
                           <div className="admin-secret-wrap">
@@ -1438,6 +1479,7 @@ export function AdminPage({ initialTab = null } = {}) {
                             </button>
                           </div>
                         </div>
+                        )}
                         {keyNotices[provider.provider] && (
                           <div className={`admin-api-notice is-${keyNotices[provider.provider].type}`}>{keyNotices[provider.provider].text}</div>
                         )}

@@ -248,7 +248,22 @@ export function StudioMessageBody({ content, reasoning = '', thinkingDurationSec
   return parts;
 }
 
+// Kode galat pool OpenAI → saran yang masuk akal. Semua model OpenAI memakai
+// akun yang sama, jadi "ganti model" hanya berguna untuk batas LAJU (limit
+// memang per model), tidak untuk billing atau kunci yang ditolak.
+const OPENAI_ERROR_HINTS = {
+  openai_rate_limited: 'rate_limit',
+  openai_pool_billing: 'billing',
+  openai_pool_unauthorized: 'auth',
+  openai_pool_failed: 'other',
+};
+
 function formatChatErrorMessage(chatData, status) {
+  // Server sudah menyusun kalimat yang tepat untuk pool OpenAI (batas laju vs
+  // billing vs kunci ditolak). Jangan ditimpa lagi di klien.
+  if (chatData?.code && OPENAI_ERROR_HINTS[chatData.code]) {
+    return chatData?.error || 'Respons AI gagal. Coba lagi sebentar.';
+  }
   const retrySec = Number(chatData?.retryAfterSec) || null;
   const raw = String(chatData?.detail || chatData?.error || '');
   if (status === 429 || chatData?.code === 'rate_limit_exceeded' || /rate_limit_exceeded|429/i.test(raw)) {
@@ -717,7 +732,12 @@ export function AIStudio() {
 
     setLiveReply(null);
     const waitSec = Number(chatData?.retryAfterSec) || 0;
-    setRetryState({ conversationId, history, failedModel: targetModel });
+    setRetryState({
+      conversationId,
+      history,
+      failedModel: targetModel,
+      kind: OPENAI_ERROR_HINTS[chatData?.code] || '',
+    });
     setRetryCountdown(waitSec);
     setError(formatChatErrorMessage(chatData, chatStatus));
   }, [selectedModel, resolveProviderForModel, githubConnected?.connected, selectedRepo, webSearchEnabled]);
@@ -1101,14 +1121,16 @@ export function AIStudio() {
             <div className="studio-error" role="alert">
               <div className="studio-error-copy">
                 <span>{error}</span>
-                {retryCountdown > 0 && <small>Tunggu {retryCountdown} detik sebelum mencoba ulang model yang sama, atau langsung ganti model.</small>}
+                {retryCountdown > 0 && (retryState?.kind === 'rate_limit'
+                  ? <small>Tunggu {retryCountdown} detik, atau ganti model — batas laju dihitung per model.</small>
+                  : <small>Perbaiki akun OpenAI di Studio → Akun OpenAI, lalu coba lagi.</small>)}
               </div>
               {retryState && (
                 <div className="studio-error-actions">
                   <button type="button" className="studio-error-retry" onClick={() => retryLastCompletion()} disabled={sending || retryCountdown > 0}>
                     <RefreshCw size={12} /> {retryCountdown > 0 ? `Coba lagi (${retryCountdown}d)` : 'Coba Lagi'}
                   </button>
-                  {pickAlternativeModel(selectedModel) && (
+                  {pickAlternativeModel(selectedModel) && retryState?.kind !== 'billing' && retryState?.kind !== 'auth' && (
                     <button type="button" className="studio-error-switch" onClick={() => retryLastCompletion(pickAlternativeModel(selectedModel))} disabled={sending}>
                       Ganti ke {pickAlternativeModel(selectedModel).split(':')[0]}
                     </button>

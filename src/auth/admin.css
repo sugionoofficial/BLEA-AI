@@ -752,6 +752,12 @@
   margin: 0 0 14px;
 }
 
+.admin-api-link {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .admin-api-note code {
   padding: 1px 5px;
   border-radius: var(--radius-sm);

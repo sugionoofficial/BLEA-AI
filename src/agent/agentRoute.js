@@ -218,6 +218,10 @@ export async function handleAgentTurn(request, url, env, deps) {
   let activeModel = requestedModel;
   let activeProvider = provider;
   let activeApiKey = apiKey;
+  // Kegagalan per akun pool (bila ada). Semua model OpenAI memakai pool
+  // kredensial yang sama, jadi "pilih model lain" bukan saran yang berguna;
+  // sebab sebenarnya (batas laju / billing / kunci ditolak) yang ditampilkan.
+  const poolFailures = [];
   let activeBaseUrl = keyRow?.base_url || '';
   // Akun pertama dari pool: kalau OAuth, seluruh giliran agen memakai
   // Responses API (bukan /chat/completions).
@@ -273,6 +277,12 @@ export async function handleAgentTurn(request, url, env, deps) {
             timeoutMs: deps.chatUpstreamTimeoutMs(activeProvider),
             env,
           }).finally(() => clearInterval(ticker));
+          if (!attempt.ok && !poolFailures.length) {
+            poolFailures.push({
+              status: Number(attempt.status) || 0,
+              detail: attempt.errorInfo?.rawDetail || attempt.errorInfo?.message || '',
+            });
+          }
 
           if (isRateLimited(attempt)) {
             const alt = deps.buildFallbackCandidates({
@@ -306,11 +316,16 @@ export async function handleAgentTurn(request, url, env, deps) {
 
           if (!attempt.ok) {
             const info = attempt.errorInfo || {};
+            // Pesan pool OpenAI memakai helper yang sama dengan /api/chat,
+            // supaya kedua jalur menyebut sebab yang sama.
+            const pooled = provider === 'openai' && typeof deps.poolFailureMessage === 'function'
+              ? deps.poolFailureMessage(poolFailures, { model: activeModel })
+              : null;
             emit({ type: 'step', index: round, label: readLabel, status: 'error' });
             emit({
               type: 'error',
-              error: info.friendlyMessage || 'Model tidak bisa dihubungi.',
-              code: info.code || `http_${attempt.status || 0}`,
+              error: pooled?.error || info.friendlyMessage || 'Model tidak bisa dihubungi.',
+              code: pooled?.code || info.code || `http_${attempt.status || 0}`,
             });
             await refundTurn();
             return;

@@ -41,6 +41,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const encoder = new TextEncoder();
 const COOLDOWN_BASE_MINUTES = 10;
 const COOLDOWN_MAX_MINUTES = 60;
+// Cooldown untuk 429 = batas laju, bukan kunci mati. Cukup untuk melewati
+// jendela rate limit, tanpa membuat akun tampak "kuota habis" selama sejam.
+const RATE_LIMIT_COOLDOWN_MINUTES = 1;
 
 function supabaseBase(env) {
   return (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
@@ -853,9 +856,12 @@ export async function sendWithOpenAiPool({
   maxAccounts = 4,
 }) {
   const accounts = await pickOpenAiAccountsFor(env, { capability, limit: maxAccounts });
-  if (!accounts.length) return { attempted: false, accounts: 0, attempt: null, account: null };
+  if (!accounts.length) return { attempted: false, accounts: 0, attempt: null, account: null, failures: [] };
   let lastAttempt = null;
   let lastAccount = null;
+  // Kegagalan per akun, supaya pemanggil bisa menyebut SEBAB yang benar
+  // (batas laju vs billing vs kunci ditolak) alih-alih satu kalimat generik.
+  const failures = [];
   for (const account of accounts) {
     // Akun OAuth tidak punya API key dan hanya boleh memanggil Responses API
     // (store:false, stream:true). Akun API key tetap ke /chat/completions.
@@ -879,10 +885,17 @@ export async function sendWithOpenAiPool({
     const detail = [attempt?.errorInfo?.rawDetail, attempt?.errorInfo?.message].filter(Boolean).join(' ');
     if (attempt?.ok) {
       await recordOpenAiUsage(env, account.id, { ok: true, status: attempt.status, counted: true });
-      return { attempted: true, accounts: accounts.length, attempt, account };
+      return { attempted: true, accounts: accounts.length, attempt, account, failures };
     }
     lastAttempt = attempt;
     lastAccount = account;
+    failures.push({
+      id: account.id,
+      label: account.accountLabel || account.accountEmail || account.id.slice(0, 8),
+      status: Number(attempt?.status) || 0,
+      detail: detail || `HTTP ${attempt?.status || 0}`,
+      kind: classifyOpenAiFailure(attempt?.status, detail),
+    });
     await recordOpenAiUsage(env, account.id, {
       ok: false,
       status: attempt?.status || 0,
@@ -891,7 +904,7 @@ export async function sendWithOpenAiPool({
     });
     if (!isOpenAiPoolFailure(attempt?.status, detail)) break;
   }
-  return { attempted: true, accounts: accounts.length, attempt: lastAttempt, account: lastAccount };
+  return { attempted: true, accounts: accounts.length, attempt: lastAttempt, account: lastAccount, failures };
 }
 
 // Kode yang berarti "akun ini tidak bisa dipakai sekarang" → cooldown + akun
@@ -899,6 +912,82 @@ export async function sendWithOpenAiPool({
 export function isOpenAiPoolFailure(status, detail = '') {
   if ([401, 402, 403, 429, 503].includes(Number(status))) return true;
   return /insufficient_quota|quota|rate.?limit|billing|exceeded|deactivated|invalid_api_key/i.test(String(detail || ''));
+}
+
+/**
+ * Kenapa satu akun gagal dipanggil. Ini yang membedakan pesan yang benar:
+ *   • 'auth'      → kunci ditolak (401/403): akun memang tidak bisa dipakai.
+ *   • 'billing'   → kredit/billing habis (402 ataupun 429 berisi
+ *                   `insufficient_quota`/`billing`): pengisian ulang di
+ *                   platform OpenAI yang dibutuhkan, bukan menunggu.
+ *   • 'rate_limit'→ kena batas LAJU (429 murni, mis.
+ *                   `rate_limit_exceeded`/`too many requests`): sebentar lagi
+ *                   pulih sendiri, jadi menyuruh "tambah saldo" menyesatkan.
+ *   • 'other'     → sisanya (5xx, gangguan).
+ *
+ * Kenapa perlu dipisah: dulu semua 429 diperlakukan sama, sehingga akun yang
+ * hanya kena rate limit singkat dilaporkan sebagai "kuota habis / tambah
+ * saldo". Pengguna lalu mencari masalah billing yang tidak ada.
+ */
+export function classifyOpenAiFailure(status, detail = '') {
+  const code = Number(status) || 0;
+  const text = String(detail || '');
+  if (/insufficient_quota|billing_hard_limit|billing_not_active|exceeded your current quota|credit balance|payment/i.test(text)) return 'billing';
+  if (code === 402) return 'billing';
+  if (/invalid_api_key|incorrect api key|unauthorized|deactivated/i.test(text)) return 'auth';
+  if (code === 401 || code === 403) return 'auth';
+  if (code === 429) return 'rate_limit';
+  return 'other';
+}
+
+/**
+ * Pesan untuk pengguna saat SELURUH akun pool menolak satu permintaan.
+ * `details` = daftar `{ status, detail }` dari akun yang dicoba (boleh kosong).
+ * Mengembalikan `{ code, status, error }` supaya `/api/chat`, `/api/agent`, dan
+ * UI memakai kalimat yang sama.
+ */
+export function openAiFailureMessage(details = [], { model = '' } = {}) {
+  const list = Array.isArray(details) ? details.filter(Boolean) : [];
+  const kinds = list.map((item) => classifyOpenAiFailure(item.status, item.detail));
+  const label = model ? ` untuk model "${model}"` : '';
+  const rateLimited = kinds.filter((kind) => kind === 'rate_limit').length;
+  const billing = kinds.filter((kind) => kind === 'billing').length;
+  const auth = kinds.filter((kind) => kind === 'auth').length;
+  const accounts = list.length;
+
+  if (rateLimited && !billing && !auth) {
+    return {
+      code: 'openai_rate_limited',
+      status: 429,
+      kind: 'rate_limit',
+      error: `Akun OpenAI${label} kena batas laju permintaan (429) sementara, bukan kuota habis. `
+        + 'Tunggu sekitar satu menit lalu coba lagi; akun di pool otomatis dicoba bergiliran.',
+    };
+  }
+  if (billing) {
+    return {
+      code: 'openai_pool_billing',
+      status: 402,
+      kind: 'billing',
+      error: `Kredit/billing akun OpenAI${label} habis atau belum aktif (${billing} dari ${accounts || 1} akun). `
+        + 'Isi saldo di platform.openai.com → Billing, atau tambahkan akun lain di Studio → Akun OpenAI.',
+    };
+  }
+  if (auth) {
+    return {
+      code: 'openai_pool_unauthorized',
+      status: 401,
+      kind: 'auth',
+      error: `API key akun OpenAI ditolak (401/403) untuk ${auth} dari ${accounts || 1} akun. `
+        + 'Ganti kuncinya di Studio → Akun OpenAI, lalu tekan Uji.',
+    };
+  }
+  return {
+    code: 'openai_pool_failed',
+    status: 502,
+    kind: 'other',
+    error: `Semua akun OpenAI di pool gagal dipanggil${label}. Cek status akun di Studio → Akun OpenAI (Uji) atau coba lagi sebentar.`,
+  };
 }
 
 /**
@@ -923,7 +1012,12 @@ export async function recordOpenAiUsage(env, id, { ok = false, status = 0, error
       Object.assign(patch, { consecutive_failures: 0, cooldown_until: null, last_error: null, last_ok_at: now.toISOString() });
     } else if (isOpenAiPoolFailure(status, error)) {
       const failures = (Number(row.consecutive_failures) || 0) + 1;
-      const minutes = Math.min(COOLDOWN_MAX_MINUTES, COOLDOWN_BASE_MINUTES * (2 ** Math.min(failures - 1, 3)));
+      // Batas LAJU (429 murni) pulih dalam hitungan detik/menit. Menghukum
+      // akun dengan cooldown 10–60 menit seperti kegagalan auth membuat satu
+      // permintaan cepat mematikan pool selama satu jam.
+      const minutes = classifyOpenAiFailure(status, error) === 'rate_limit'
+        ? RATE_LIMIT_COOLDOWN_MINUTES
+        : Math.min(COOLDOWN_MAX_MINUTES, COOLDOWN_BASE_MINUTES * (2 ** Math.min(failures - 1, 3)));
       Object.assign(patch, {
         consecutive_failures: failures,
         cooldown_until: new Date(now.getTime() + minutes * 60_000).toISOString(),
