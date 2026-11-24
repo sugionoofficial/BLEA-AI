@@ -229,6 +229,36 @@ Tombol **Uji** karena sebab itu memakai urutan ini:
 Tanpa langkah 3–4, akun yang modelnya tidak ada tampil "berhasil diuji" padahal
 setiap chat akan gagal.
 
+## Apa yang TIDAK dikirim BLEA ke OpenAI
+
+Supaya tidak ada yang menduga fitur "hilang" padahal memang tidak pernah
+dipakai, ini daftar lengkapnya.
+
+Body yang BLEA kirim ke Responses API (jalur OAuth) hanya:
+
+```json
+{ "model": "…", "input": [...], "instructions": "…", "store": false, "stream": true }
+```
+
+Field lain yang diteruskan apa adanya bila ada nilainya: `reasoning`, `text`,
+`include`, `service_tier` (`PASS_THROUGH` di `src/lib/openaiResponses.js`).
+
+Yang **tidak** dikirim, dan bukan bug:
+
+| Field | Kenapa |
+|---|---|
+| `tools` (termasuk `type: "mcp"`) | BLEA memakai protokol alat berbasis teks sendiri (`parseAgentToolCall`) yang dieksekusi di server; MCP/connector juga termasuk alat yang tidak didukung pada jalur paket OAuth |
+| `temperature`, `top_p`, `max_output_tokens`, `metadata`, `user` | ditolak jalur paket OAuth (lihat preview limitations OpenAI) |
+| `previous_response_id` | histori dikirim ulang di `input` |
+
+Akun **API key** memakai `/v1/chat/completions`, bukan `/v1/responses`. Karena
+itu contoh curl ke `/v1/responses` dengan `tools: mcp` bukan pembanding yang
+sah untuk menguji akun pool: endpoint, bentuk body, dan jalurnya berbeda.
+
+Kalau sebuah permintaan manual diuji, tambahkan `-i` pada `curl` supaya status
+HTTP terlihat — `401` (kunci kosong), `404` (model tidak ada di project),
+dan `429` (saldo) adalah tiga sebab yang berbeda.
+
 ## Nama internal & database
 
 Istilah lama "chatgpt" sudah dihapus dari kode, label, dokumen, dan nama objek
