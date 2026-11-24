@@ -9,6 +9,8 @@ import {
   openAiFailureMessage,
   openAiPoolBlockedMessage,
   openAiPoolDiagnostic,
+  stalePoolBlock,
+  testOpenAiAccount,
   recordOpenAiUsage,
   readOpenAiSealedField,
   sealOpenAiToken,
@@ -943,4 +945,145 @@ test('/api/catalog openai memakai kunci dari pool akun, bukan baris kosong', asy
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// --- Regresi 2026-11-24: "1 akun sedang cooldown" padahal kreditnya habis ----
+
+const NO_CREDITS = 'You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.';
+
+test('kredit habis dikenali sebagai billing, bukan batas laju', () => {
+  // Pesan asli OpenAI untuk saldo habis datang sebagai HTTP 429, tanpa kata
+  // "insufficient_quota". Dulu klasifikasinya jatuh ke rate_limit sehingga
+  // admin disuruh "tunggu sebentar" padahal saldo memang nol.
+  assert.equal(classifyOpenAiFailure(429, NO_CREDITS), 'billing');
+  assert.equal(classifyOpenAiFailure(429, 'Rate limit reached for requests per min'), 'rate_limit');
+});
+
+test('akun tanpa kredit tidak lagi berkedok "cooldown" setelah jamnya lewat', () => {
+  const now = Date.now();
+  const base = {
+    id: '11111111-1111-4111-8111-111111111111',
+    account_label: 'Akun kredit habis',
+    enabled: true,
+    credential_kind: 'api_key',
+    capabilities: ['chat', 'agent'],
+    last_error: NO_CREDITS,
+    daily_limit: 0,
+    used_today: 1,
+    quota_date: jakartaDate(),
+  };
+
+  // Percobaan pertama: masih dalam cooldown biasa → sebabnya cooldown.
+  const cooling = sanitizeOpenAiAccount({
+    ...base,
+    last_error: 'Rate limit reached for requests per min',
+    consecutive_failures: 1,
+    cooldown_until: new Date(now + 300_000).toISOString(),
+  }, now);
+  assert.equal(cooling.state, 'cooldown');
+  assert.equal(cooling.blocked_reason, null);
+
+  // Cooldown lewat tetapi kredit masih nol: HARUS "kredit habis", bukan "siap".
+  const stale = sanitizeOpenAiAccount({
+    ...base,
+    consecutive_failures: 1,
+    cooldown_until: new Date(now - 60_000).toISOString(),
+  }, now);
+  assert.equal(stale.state, 'kredit-habis');
+  assert.equal(stale.usable, false);
+  assert.equal(stale.blocked_reason, 'billing');
+  // Tanpa cooldown_until pun tetap terhalang (keadaan permanen).
+  assert.ok(stalePoolBlock({ ...base, consecutive_failures: 1, cooldown_until: null }, now));
+
+  // Kunci ditolak berulang juga berhenti dicoba, bukan cooldown selamanya.
+  const authStale = sanitizeOpenAiAccount({
+    ...base,
+    last_error: 'Incorrect API key provided: sk-***',
+    consecutive_failures: 3,
+    cooldown_until: new Date(now - 60_000).toISOString(),
+  }, now);
+  assert.equal(authStale.state, 'kunci-ditolak');
+  assert.equal(authStale.usable, false);
+});
+
+test('diagnosa pool menyebut kredit habis + tindakannya, bukan "cooldown"', async () => {
+  const now = Date.now();
+  const row = {
+    id: '11111111-1111-4111-8111-111111111111',
+    account_email: 'akun@example.com',
+    credential_kind: 'api_key',
+    enabled: true,
+    priority: 1,
+    capabilities: ['chat', 'agent'],
+    daily_limit: 0,
+    used_today: 1,
+    quota_date: jakartaDate(),
+    last_error: NO_CREDITS,
+    consecutive_failures: 1,
+    cooldown_until: new Date(now - 60_000).toISOString(),
+    sealed_token: await sealOpenAiToken(ENV, 'sk-uji-nokredit'),
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json([row]);
+  let blocked;
+  try {
+    blocked = await openAiPoolBlockedMessage(ENV, 'chat');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(blocked.status, 503);
+  assert.equal(blocked.code, 'openai_pool_needs_attention');
+  assert.match(blocked.error, /kehabisan kredit OpenAI/);
+  assert.match(blocked.error, /Billing/);
+  assert.doesNotMatch(blocked.error, /cooldown/);
+  assert.equal(blocked.pool.billing, 1);
+  assert.equal(blocked.pool.stale_accounts[0].reason, 'billing');
+  // Pemilihan akun juga harus melewatinya, bukan mencobanya lagi tiap menit.
+  assert.equal(await openAiPoolBlockedMessage(ENV, 'image'), null, 'pool kosong untuk kapabilitas lain tetap null');
+});
+
+test('tombol Uji tidak melaporkan "berhasil" untuk akun tanpa kredit', async () => {
+  const row = {
+    id: '11111111-1111-4111-8111-111111111111',
+    account_email: 'akun@example.com',
+    credential_kind: 'api_key',
+    enabled: true,
+    priority: 1,
+    capabilities: ['chat'],
+    daily_limit: 0,
+    used_today: 1,
+    quota_date: jakartaDate(),
+    api_base: 'https://api.openai.com',
+    sealed_token: await sealOpenAiToken(ENV, 'sk-uji-tanpa-kredit'),
+  };
+  const realFetch = globalThis.fetch;
+  let patched = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/rest/v1/openai_accounts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(init.body);
+        return new Response(null, { status: 204 });
+      }
+      return Response.json([row]);
+    }
+    if (url.endsWith('/v1/models')) return Response.json({ data: [] });
+    if (url.endsWith('/v1/chat/completions')) {
+      return new Response(JSON.stringify({ error: { message: NO_CREDITS, code: 'insufficient_quota' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let result;
+  try {
+    result = await testOpenAiAccount(ENV, row.id);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(result.ok, false, '/v1/models 200 tidak berarti akun bisa dipakai');
+  assert.match(result.message, /kredit OpenAI habis/i);
+  assert.match(result.message, /Billing/);
+  assert.equal(patched.last_test_ok, false);
 });

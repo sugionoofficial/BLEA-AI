@@ -3691,6 +3691,9 @@ async function handleApi(request, url, env) {
       const summary = await openAiPoolSummary(env);
       const ready = summary.usable > 0;
       const models = studioModelItems([capability, 'chat'], env);
+      // Saat pool tidak siap, sebut SEBABNYA (kredit habis, kunci ditolak,
+      // cooldown) — bukan "belum ada akun", karena akunnya jelas ada.
+      const blocked = ready ? null : await openAiPoolBlockedMessage(env, capability).catch(() => null);
       const payload = {
         ok: true,
         ready,
@@ -3701,7 +3704,9 @@ async function handleApi(request, url, env) {
         pool: summary,
         source: 'pool akun OpenAI: OAuth Connect OpenAI + API key (/studio/openai-accounts)',
         ...(ready ? {} : {
-          hint: 'Belum ada akun OpenAI yang siap. Buka Studio → Akun OpenAI lalu tekan “Connect OpenAI” (tanpa API key); API key hanya perlu untuk tool gambar/video.',
+          code: blocked?.code || 'openai_pool_empty',
+          hint: blocked?.error
+            || 'Belum ada akun OpenAI yang siap. Buka Studio → Akun OpenAI lalu tambahkan akun atau tekan “Connect OpenAI”.',
         }),
       };
       if (path === 'studio/ping') {
