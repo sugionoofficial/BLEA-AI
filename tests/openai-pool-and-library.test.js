@@ -8,6 +8,7 @@ import {
   classifyOpenAiFailure,
   openAiErrorCodeHint,
   openAiFailureMessage,
+  probeOAuthPlanUsage,
   openAiPoolBlockedMessage,
   openAiPoolDiagnostic,
   stalePoolBlock,
@@ -1130,3 +1131,125 @@ test('pesan billing menjelaskan "Free tier" bukan kredit gratis', () => {
   assert.match(message.error, /bukan kredit gratis/i);
   assert.match(message.error, /OAuth/);
 });
+
+// --- Regresi 2026-11-24 (lanjutan): jalur paket akun (OAuth) ----------------
+
+const NOT_ELIGIBLE = '{"error":{"code":"subscription_sharing_user_not_eligible","message":"This account or workspace cannot share its plan"}}';
+
+test('paket yang tidak boleh dibagikan adalah penghalang permanen, bukan cooldown', async () => {
+  const row = {
+    id: '22222222-2222-4222-8222-222222222222',
+    account_email: 'oauth@example.com',
+    credential_kind: 'oauth',
+    enabled: true,
+    capabilities: ['chat'],
+    daily_limit: 0,
+    used_today: 0,
+    quota_date: jakartaDate(),
+    last_error: NOT_ELIGIBLE,
+    consecutive_failures: 1,
+    cooldown_until: null,
+  };
+  // Sekali saja cukup: mengulang login tidak mengubah keputusan OpenAI.
+  assert.equal(stalePoolBlock(row)?.reason, 'plan_not_eligible');
+  const account = sanitizeOpenAiAccount(row);
+  assert.equal(account.state, 'paket-tidak-boleh');
+  assert.equal(account.usable, false);
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/rest/v1/openai_accounts')) return Response.json([row]);
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let blocked;
+  try {
+    blocked = await openAiPoolBlockedMessage(ENV, 'chat');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(blocked.code, 'openai_pool_needs_attention');
+  assert.equal(blocked.pool.plan_not_eligible, 1);
+  // Pesannya harus menyebut bahwa mengulang Connect tidak menolong.
+  assert.match(blocked.error, /Plus\/Pro/);
+  assert.match(blocked.error, /bukan mengulangi tombol Connect/);
+  assert.doesNotMatch(blocked.error, /cooldown/);
+});
+
+test('Uji akun OAuth membuktikan izin paket, bukan berhenti di /v1/models', async () => {
+  const row = {
+    id: '33333333-3333-4333-8333-333333333333',
+    account_email: 'oauth2@example.com',
+    credential_kind: 'oauth',
+    enabled: true,
+    capabilities: ['chat'],
+    daily_limit: 0,
+    used_today: 0,
+    quota_date: jakartaDate(),
+    model_default: 'gpt-5.1',
+    oauth_client_id: 'oaiapp_test',
+    oauth_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    sealed_token: await sealOpenAiToken(ENV, 'oauth-access-token'),
+  };
+  const realFetch = globalThis.fetch;
+  let patched = null;
+  let responsesBody = null;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/rest/v1/openai_accounts')) {
+      if ((init.method || 'GET') === 'PATCH') {
+        patched = JSON.parse(init.body);
+        return new Response(null, { status: 204 });
+      }
+      return Response.json([row]);
+    }
+    // /v1/models 200 walau izin paket TIDAK diberikan — persis perilaku OpenAI.
+    if (url.endsWith('/v1/models')) return Response.json({ models: [{ slug: 'gpt-6.2-sol', visibility: 'list' }] });
+    if (url.endsWith('/v1/responses')) {
+      responsesBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ error: { code: 'subscription_sharing_user_not_eligible' } }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let result;
+  try {
+    result = await testOpenAiAccount(ENV, row.id);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(result.ok, false, 'status 200 di /v1/models tidak berarti paket boleh dipakai');
+  assert.match(result.message, /Plus\/Pro|paket/i);
+  // Bukti bahwa probe benar-benar memanggil Responses API dengan syarat jalur paket.
+  assert.equal(responsesBody.store, false);
+  assert.equal(responsesBody.stream, true);
+  // Model diambil dari katalog akun, bukan tebakan `gpt-5.1`.
+  assert.equal(responsesBody.model, 'gpt-6.2-sol');
+  assert.equal(patched.last_test_ok, false);
+  assert.match(patched.last_error, /subscription_sharing_user_not_eligible/);
+});
+
+test('probeOAuthPlanUsage: batas paket bukan kegagalan kredensial', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.endsWith('/v1/models')) return Response.json(PLAN_MODEL_LIST);
+    if (url.endsWith('/v1/responses')) {
+      return new Response(JSON.stringify({ error: { code: 'subscription_sharing_usage_limit_exceeded' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const probe = await probeOAuthPlanUsage({ token: 'oauth-access' });
+    assert.equal(probe.ok, false);
+    assert.equal(probe.kind, 'plan_usage_limit', 'bukan billing: akun OAuth tidak punya saldo');
+    assert.match(probe.detail, /[Bb]atas pemakaian paket/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+const PLAN_MODEL_LIST = { models: [{ slug: 'gpt-6.2-sol', visibility: 'list' }] };

@@ -7,6 +7,8 @@ import {
   extractResponsesToolCalls,
   isSubscriptionLimitError,
   parseResponsesEvent,
+  planModelFromCatalog,
+  planUsageFailure,
   responsesToChatCompletion,
 } from '../src/lib/openaiResponses.js';
 import {
@@ -883,4 +885,72 @@ test('client authorize dan client tukar kode tercatat sama', async () => {
   } finally {
     stub.restore();
   }
+});
+
+// --- Regresi jalur OAuth (paket akun) --------------------------------------
+
+const PLAN_MODELS = (slugs) => ({ models: slugs.map((slug) => ({ slug, display_name: slug, visibility: 'list' })) });
+
+test('model OAuth dipilih dari katalog akun, bukan ditebak', async () => {
+  // Katalog per-akun: `gpt-5.1` tidak ada di akun ini.
+  assert.equal(planModelFromCatalog(PLAN_MODELS(['gpt-6.2-sol', 'gpt-6.1-sol']), 'gpt-5.1'), 'gpt-6.2-sol');
+  // Model pilihan pengguna dipertahankan bila memang tersedia.
+  assert.equal(planModelFromCatalog(PLAN_MODELS(['gpt-5.1', 'gpt-6.2-sol']), 'gpt-5.1'), 'gpt-5.1');
+  // `visibility` selain "list" tidak ditawarkan.
+  assert.equal(planModelFromCatalog({ models: [{ slug: 'hidden-model', visibility: 'hidden' }, { slug: 'gpt-5.1' }] }, ''), 'gpt-5.1');
+  // Katalog tak terbaca: JANGAN menukar pilihan pengguna.
+  assert.equal(planModelFromCatalog({ models: [] }, 'gpt-5.1'), 'gpt-5.1');
+});
+
+test('model_not_found tidak langsung gagal: katalog akun dibaca lalu dicoba sekali lagi', async () => {
+  const realFetch = globalThis.fetch;
+  const sentModels = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.endsWith('/v1/models')) return Response.json(PLAN_MODELS(['gpt-6.2-sol']));
+    if (url.endsWith('/v1/responses')) {
+      sentModels.push(JSON.parse(init.body).model);
+      if (sentModels.length === 1) {
+        return new Response(JSON.stringify({ error: { code: 'model_not_found', message: 'The model gpt-5.1 does not exist' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(sseStream([
+        { type: 'response.output_text.delta', delta: 'ok' },
+        { type: 'response.completed', response: { id: 'r', output: [] } },
+      ]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const result = await sendOAuthResponses({
+      accessToken: 'oauth-access',
+      model: 'gpt-5.1',
+      payload: { messages: [{ role: 'user', content: 'Halo' }] },
+    });
+    assert.deepEqual(sentModels, ['gpt-5.1', 'gpt-6.2-sol']);
+    assert.equal(result.ok, true, 'model yang tidak ada bukan akun rusak');
+    assert.equal(result.data.model_used, 'gpt-6.2-sol');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('kode galat paket dibedakan dari billing dan rate limit', () => {
+  // `usage_limit` di dalam nama kode membuatnya dulu tertangkap sebagai
+  // "kredit habis" — padahal akun OAuth tidak punya saldo sama sekali.
+  const limit = planUsageFailure(429, '{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}');
+  assert.equal(limit.reason, 'usage_limit');
+  assert.equal(limit.status, 429);
+
+  const notEligible = planUsageFailure(403, '{"error":{"code":"subscription_sharing_user_not_eligible"}}');
+  assert.equal(notEligible.reason, 'not_eligible');
+  // Inti pelajarannya: mengulang OAuth TIDAK menolong, jadi pesannya harus
+  // menawarkan jalan lain (API key / akun Plus-Pro).
+  assert.match(notEligible.action, /Free\/Go/);
+  assert.match(notEligible.action, /TIDAK akan mengubahnya/);
+  assert.match(notEligible.action, /API key/);
+
+  assert.equal(planUsageFailure(429, '{"error":{"code":"rate_limit_exceeded"}}'), null);
+  assert.equal(planUsageFailure(429, 'You have no credits remaining'), null);
 });

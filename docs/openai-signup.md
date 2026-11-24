@@ -136,6 +136,55 @@ Akun yang gagal karena billing ditahan (state `kredit-habis`) sampai diperbaiki
 — tidak dicoba ulang setiap cooldown habis, dan tidak dilaporkan sebagai
 "cooldown" di UI.
 
+## Jalur OAuth: siapa yang bisa memakainya
+
+Jalur ini memakai paket ChatGPT pengguna, bukan saldo API, jadi **syaratnya
+paket**, bukan sekadar bisa login:
+
+| Kondisi akun | Login OAuth | Pemakaian paket |
+|---|---|---|
+| Tanpa langganan (Free) | berhasil | **ditolak** `403 subscription_sharing_user_not_eligible` |
+| Go | berhasil | ditolak (sama seperti Free) |
+| Plus / Pro (akun pribadi) | berhasil | berjalan |
+| Business / Enterprise / Edu | berhasil | perlu izin admin workspace |
+
+Login yang berhasil **tidak** berarti paketnya boleh dipakai: keduanya izin
+terpisah. Kode `subscription_sharing_*` ditangani sebagai sebab tersendiri
+(`openaiPool.planUsageFailure`), bukan sebagai "kunci ditolak" atau "kredit
+habis" — akun OAuth tidak punya saldo sama sekali.
+
+| `error.code` | Arti | Tindakan |
+|---|---|---|
+| `subscription_sharing_user_not_eligible` | akun/workspace tidak boleh membagikan paket | permanen untuk akun itu; pindah ke API key atau akun Plus/Pro |
+| `subscription_sharing_usage_limit_exceeded` | batas pemakaian paket tercapai | tunggu / tambah akun; lihat Settings → Usage |
+| `subscription_sharing_usage_unavailable` | pemakaian tidak bisa diperiksa | coba lagi nanti |
+| `subscription_sharing_invalid_user` | sesi OAuth tidak dikenali | login ulang lewat Connect |
+| `subscription_sharing_unsupported_capability` | isi permintaan tidak didukung | jalur ini hanya teks |
+
+Akun yang kena `not_eligible` ditandai `paket-tidak-boleh` dan **berhenti
+dicoba** (bukan "cooldown"), karena mengulang login tidak mengubah keputusan
+OpenAI.
+
+### Model dipilih dari katalog akun, bukan ditebak
+
+Jalur paket memakai katalog **per akun**: `GET /v1/models` dengan access token
+mengembalikan `{models:[{slug, …}]}`. Dulu `model_default` diisi tebakan
+`gpt-5.1`; bila akun tidak punya model itu, setiap chat gagal `model_not_found`
+padahal tokennya sehat. Sekarang:
+
+1. saat pendaftaran OAuth, model dipilih dari katalog akun
+   (`planModelFromCatalog`);
+2. saat chat, `model_not_found` tidak langsung dianggap gagal — katalog dibaca
+   lalu permintaan diulang **sekali** dengan model yang benar-benar dimiliki;
+3. tombol **Uji** memakai model dari katalog yang sama.
+
+### Uji akun OAuth
+
+`GET /v1/models` tetap 200 walau izin paket tidak diberikan, jadi Uji tidak
+berhenti di situ: ia memanggil satu kali `POST /v1/responses`
+(`store:false`, `stream:true`) untuk membuktikan izinnya. Batas pemakaian
+dilaporkan sebagai "sedang kena batas", bukan sebagai akun rusak.
+
 ## Nama internal & database
 
 Istilah lama "chatgpt" sudah dihapus dari kode, label, dokumen, dan nama objek
