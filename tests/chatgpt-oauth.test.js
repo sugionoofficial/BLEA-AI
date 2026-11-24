@@ -588,7 +588,7 @@ test('kolom tempel URL callback muncul di halaman Akun ChatGPT', async () => {
 // OpenAI hanya menjawab {"error":"invalid_grant"} tanpa error_description, jadi
 // penyebabnya harus dicegah dan dijejaki di sisi kita.
 function oauthEnvWith({ attempt, tokenResponses = [] } = {}) {
-  const state = { tokenCalls: [], patches: [], claims: 0 };
+  const state = { tokenCalls: [], patches: [], claims: 0, claimBody: null };
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const method = init.method || 'GET';
@@ -596,6 +596,7 @@ function oauthEnvWith({ attempt, tokenResponses = [] } = {}) {
     // Klaim penukaran sekali-pakai.
     if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.') && method === 'PATCH' && url.includes('exchanged_code_fingerprint=is.null')) {
       state.claims += 1;
+      state.claimBody = JSON.parse(init.body || '{}');
       return Response.json(state.claims > 1 ? [] : [{ id: attempt.id }]);
     }
     if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.') && method === 'PATCH') {
@@ -623,11 +624,14 @@ const baseAttempt = (overrides = {}) => ({
   ...overrides,
 });
 
-test('invalid_grant: ulangi tanpa `resource` sekali, lalu berhasil', async () => {
+// Kode otorisasi hanya sah SEKALI, jadi percobaan ulang tanpa `resource` dulu
+// tidak berguna: permintaan kedua untuk kode yang sama hampir pasti ditolak dan
+// justru mengaburkan penyebab. Dokumen OpenAI juga meminta parameter yang SAMA
+// saat authorize dan saat tukar kode.
+test('penukaran kode dikirim sekali dengan parameter yang sama seperti authorize', async () => {
   const stub = oauthEnvWith({
     attempt: baseAttempt(),
     tokenResponses: [
-      { status: 400, body: { error: 'invalid_grant' } },
       { status: 200, body: { access_token: 'oa-access-xx', refresh_token: 'oa-refresh-xx', expires_in: 3600, scope: 'openid chatgpt.tokens.use.direct', id_token: `x.${Buffer.from(JSON.stringify({ email: 'a@b.c' })).toString('base64url')}.y` } },
     ],
   });
@@ -638,42 +642,69 @@ test('invalid_grant: ulangi tanpa `resource` sekali, lalu berhasil', async () =>
       code: 'code-1',
       client_id: 'oaiapp_X',
     });
-    assert.equal(stub.state.tokenCalls.length, 2, 'dua percobaan: dengan lalu tanpa resource');
+    assert.equal(stub.state.tokenCalls.length, 1, 'hanya satu permintaan tukar kode');
     assert.equal(stub.state.tokenCalls[0].resource, 'https://api.openai.com/v1');
-    assert.equal(stub.state.tokenCalls[1].resource, undefined);
+    assert.equal(stub.state.tokenCalls[0].redirect_uri, 'http://127.0.0.1:1455/auth/callback');
+    assert.equal(stub.state.tokenCalls[0].code_verifier, 'V'.repeat(86));
     assert.equal(result.link.plan_usage, true);
   } finally {
     stub.restore();
   }
 });
 
-test('invalid_grant: pesan yang jelas + jejak teknis tersimpan', async () => {
-  const attempt = baseAttempt();
+// Pesan invalid_grant harus dibangun dari FAKTA percobaan ini, bukan tiga
+// tebakan setara. Bukti yang tersedia sebelum penukaran: `scope` di callback,
+// umur percobaan, dan klaim sekali-pakai.
+test('invalid_grant: pesan memakai bukti (izin paket, umur, satu kali) + jejak teknis', async () => {
+  const attempt = baseAttempt({ created_at: new Date(Date.now() - 71_000).toISOString() });
   const stub = oauthEnvWith({
     attempt,
-    tokenResponses: [
-      { status: 400, body: { error: 'invalid_grant' } },
-      { status: 400, body: { error: 'invalid_grant' } },
-    ],
+    tokenResponses: [{ status: 400, body: { error: 'invalid_grant' } }],
   });
   let message = '';
   try {
     await assert.rejects(
       completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
         attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-2', client_id: 'oaiapp_X',
+        scope: 'openid chatgpt.tokens.use.direct email offline_access',
       }).catch((error) => { message = String(error?.message || error); throw error; }),
-      /invalid_grant\) dan tidak menyebut sebabnya/,
+      /invalid_grant\) tanpa menyebut sebab/,
     );
-    // Pesan harus menyebut urutan pemeriksaan, bukan tiga tebakan setara:
-    // dugaan pertama (dua pemuatan halaman) paling sering dan paling mudah
-    // diperiksa lewat daftar akun yang sudah ada.
-    assert.match(message, /dua kali|DUA kali/i);
-    assert.match(message, /lihat daftar akun/);
+    // Izin paket terbukti dicentang → tidak boleh disarankan mencentangnya lagi.
+    assert.match(message, /SUDAH dicentang/);
+    assert.match(message, /berumur 7\d\d? detik/);
+    assert.match(message, /SEKALI/);
+    assert.match(message, /Plus\/Pro/);
+    // Percobaan ulang tanpa resource sudah dihapus.
+    assert.equal(stub.state.tokenCalls.length, 1);
+    // `scope` callback disimpan bersama klaim sekali-pakai: bukti izin paket
+    // tercatat SEBELUM penukaran, bukan disimpulkan setelah gagal.
+    const claimed = stub.state.claimBody;
+    assert.deepEqual(claimed.scopes, ['openid', 'chatgpt.tokens.use.direct', 'email', 'offline_access']);
     const failed = stub.state.patches.find((patch) => patch.status === 'failed');
     assert.ok(failed, 'kegagalan harus dicatat');
     assert.match(failed.error_message, /client=oaiapp_X/);
+    assert.match(failed.error_message, /mode=issued/);
+    assert.match(failed.error_message, /plan_scope=granted/);
+    assert.match(failed.error_message, /age=\d+s/);
     assert.match(failed.error_message, /verify=[0-9a-f]{12}/);
     assert.ok(!failed.error_message.includes('code-2'), 'kode asli tidak boleh disimpan');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('invalid_grant tanpa izin paket di callback menyebut izin belum dicentang', async () => {
+  const attempt = baseAttempt();
+  const stub = oauthEnvWith({ attempt, tokenResponses: [{ status: 400, body: { error: 'invalid_grant' } }] });
+  let message = '';
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-4', client_id: 'oaiapp_X',
+      }).catch((error) => { message = String(error?.message || error); throw error; }),
+    );
+    assert.match(message, /izin paket TIDAK terlihat di callback/);
   } finally {
     stub.restore();
   }
