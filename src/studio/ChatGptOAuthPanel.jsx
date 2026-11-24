@@ -21,6 +21,13 @@ const STATUS_META = {
   expired: { label: 'Kedaluwarsa — ulangi login', tone: 'warn' },
 };
 
+// Izin paket terbukti dari `scope` yang dikirim callback (disimpan server
+// sebelum penukaran). Dipakai supaya saran "centang izin" tidak diulang saat
+// buktinya sudah ada.
+function planGranted(link) {
+  return Array.isArray(link?.scopes) && link.scopes.includes('chatgpt.tokens.use.direct');
+}
+
 const PLAN_LIMITS = [
   'Hanya untuk chat & agen (Responses API teks). Gambar, video, dan audio tidak tersedia lewat jalur ini.',
   'Kuota memakai paket ChatGPT pemilik akun (Plus/Pro/Go), bukan saldo API.',
@@ -371,10 +378,12 @@ export function ChatGptOAuthPanel({ onLinked }) {
                     </summary>
                     {link.status === 'failed' && (
                       <p>
-                        Kode sudah terpakai atau ditolak. Periksa daftar di bawah dulu: kalau akunnya
-                        sudah muncul, tidak ada yang perlu diulang. Kalau belum, tekan
-                        <b> Simpan aksesnya ke pool</b> lagi — client terbitan tetap dipakai, jadi
-                        tidak mendaftar ulang.
+                        OpenAI menolak penukaran kode. {planGranted(link)
+                          ? 'Izin “gunakan paket ChatGPT saya” sudah tercatat di callback, jadi bukan itu sebabnya. '
+                          : 'Izin paket tidak terlihat di callback — centang saat menyetujui. '}
+                        Sisa kemungkinan: paket akun harus Plus/Pro pada akun pribadi (bukan Free/Go
+                        atau workspace kerja), atau kode sudah kedaluwarsa. Ulangi dengan
+                        <b> Simpan aksesnya ke pool</b>; client terbitan tetap dipakai.
                       </p>
                     )}
                     <small className="oauth-link-error">{link.error}</small>

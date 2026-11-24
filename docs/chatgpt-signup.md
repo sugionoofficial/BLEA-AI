@@ -491,3 +491,30 @@ tidak membawa `scopes` sama sekali, jadi paket belum tentu penyebabnya.
   bukan hanya saat gagal — pengulangan memakai client yang sama, bukan
   mendaftar ulang.
 - Panel menampilkan pesan tindakan; jejak teknis dipindah ke `<details>`.
+
+## `invalid_grant` kedua (2026-11-24 03:35 UTC) — izin paket sudah terbukti
+
+Baris `chatgpt_oauth_links` + screenshot callback memberi tiga fakta yang
+sebelumnya tidak ada:
+
+| Fakta | Sumber | Akibat |
+|---|---|---|
+| `scope` callback memuat `chatgpt.tokens.use.direct` | URL callback di bilah alamat | izin paket **dicentang** → dugaan "izin tidak dicentang" gugur |
+| `age=71s`, `code_len` normal | baris percobaan | kode masih segar, bukan kedaluwarsa |
+| klaim `exchanged_code_fingerprint` berhasil | baris percobaan | penukaran ini yang PERTAMA untuk kode itu; klaim kedua selalu 409 sebelum ke OpenAI → dugaan "dimuat dua kali" gugur |
+
+Sisa penyebab yang benar-benar mungkin: **paket akun tidak boleh dipakai
+aplikasi lain** (perlu Plus/Pro pada akun pribadi, bukan Free/Go atau akun
+workspace kerja). Ini satu-satunya dugaan yang tidak bisa dibuktikan dari sisi
+BLEA sebelum penukaran berhasil — `invalid_grant` tidak membawa `scopes`.
+
+### Perubahan
+
+- `scope` callback disimpan ke kolom `scopes` **bersama klaim sekali-pakai**,
+  jadi bukti izin paket tercatat sebelum penukaran, bukan disimpulkan sesudahnya.
+- Percobaan ulang tanpa `resource` **dihapus**. Kode otorisasi hanya sah sekali,
+  dan dokumen OpenAI meminta parameter yang sama saat authorize dan tukar kode;
+  permintaan kedua hanya mengaburkan penyebab.
+- Trace kegagalan memuat `age=<detik>`, `code_len`, `plan_scope=granted|absent`.
+- Pesan error sekarang menyebut fakta percobaan itu dulu, baru sisa kemungkinan —
+  bukan tiga tebakan setara.

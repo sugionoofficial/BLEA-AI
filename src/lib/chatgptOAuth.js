@@ -221,16 +221,32 @@ export async function completeOAuthAttempt(env, user, input = {}) {
       ? 'Kode ini sudah pernah ditukar. Kalau akun belum muncul, muat ulang halaman; kalau tidak, ulangi login.'
       : 'Percobaan login ini sudah dipakai untuk kode lain. Ulangi dari tombol Continue with ChatGPT.', 409);
   }
+  // `scope` di callback adalah SATU-SATUNYA bukti bahwa izin paket dicentang,
+  // dan bukti itu datang SEBELUM penukaran kode. Menyimpannya sekarang membuat
+  // kegagalan berikutnya bisa dinilai tanpa menebak ("izin paket tidak
+  // dicentang" bisa langsung dibuktikan salah/benar).
+  const callbackScopes = String(input.scope || '').split(/[\s+]+/).filter(Boolean);
+  const attemptAgeSec = Math.max(0, Math.round((Date.now() - Date.parse(attempt.created_at || 0)) / 1000));
+
   // Tandai SEBELUM memanggil OpenAI, supaya dua permintaan bersamaan (klik
   // ganda / dua tab) tidak sama-sama menukar kode yang sama.
   const claimed = await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(attemptId)}&exchanged_code_fingerprint=is.null`, {
     method: 'PATCH',
     prefer: 'return=representation',
-    body: { exchanged_code_fingerprint: codeFingerprint, updated_at: new Date().toISOString() },
+    body: {
+      exchanged_code_fingerprint: codeFingerprint,
+      ...(callbackScopes.length ? { scopes: callbackScopes } : {}),
+      updated_at: new Date().toISOString(),
+    },
   }).then((r) => r.json()).catch(() => null);
   if (Array.isArray(claimed) && claimed.length === 0) {
     throw fail('Kode ini sedang/ sudah dipakai untuk login. Muat ulang halaman; bila akun belum muncul, ulangi login.', 409);
   }
+
+  // Izin paket yang diberikan pengguna, dibaca dari `scope` di callback.
+  // Ini bukti yang datang SEBELUM penukaran, jadi dipakai untuk mempersempit
+  // sebab kegagalan alih-alih menebak.
+  const planGrantedInCallback = callbackScopes.includes('chatgpt.tokens.use.direct');
 
   // Pertukaran kode. `resource` dikirim sesuai dokumentasi; bila OpenAI
   // menolak dengan `invalid_grant` (sesuai catatan mereka: "discard that code
@@ -262,16 +278,12 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     return { ok: res.ok && Boolean(data?.access_token), status: res.status, data, text, withResource };
   };
 
-  let result = await exchange(true);
-  if (!result.ok && result.data?.error === 'invalid_grant') {
-    const retry = await exchange(false);
-    if (retry.ok) result = retry;
-    else {
-      // Simpan kedua jawaban: tanpa ini, "invalid_grant" tidak bisa dilacak
-      // (OpenAI tidak mengirim error_description pada kasus ini).
-      result = { ...retry, attempts: [result, retry] };
-    }
-  }
+  // `resource` selalu dikirim: dokumen OpenAI meminta parameter yang SAMA saat
+  // authorize dan saat tukar kode. Dulu ada percobaan ulang tanpa `resource`
+  // ketika jawabannya `invalid_grant`; itu dihapus karena (a) kode otorisasi
+  // hanya sah sekali sehingga percobaan kedua hampir pasti ditolak juga, dan
+  // (b) dua permintaan untuk satu kode membuat penyebab sebenarnya kabur.
+  const result = await exchange(true);
   const text = result.text;
   const token = result.data;
   if (!result.ok) {
@@ -295,8 +307,9 @@ export async function completeOAuthAttempt(env, user, input = {}) {
         error_message: cleanText(
           `client=${clientId} mode=${clientId === OPENAI_DYNAMIC_CLIENT_ID ? 'dynamic' : 'issued'}`
           + ` redirect=${attempt.redirect_uri} verify=${codeFingerprint}`
-          + ` resource=1 status=${result.status} body=${text.slice(0, 160)}`
-          + (result.attempts ? ` | retry(no resource, ${result.attempts[1].status})=${result.attempts[1].text.slice(0, 80)}` : ''),
+          + ` age=${attemptAgeSec}s code_len=${code.length}`
+          + ` plan_scope=${planGrantedInCallback ? 'granted' : 'absent'}`
+          + ` status=${result.status} body=${text.slice(0, 160)}`,
           900,
         ),
         updated_at: new Date().toISOString(),
@@ -304,18 +317,22 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     }).catch(() => {});
     const detail = token?.error_description || token?.error || text.slice(0, 200) || `HTTP ${result.status}`;
     if (token?.error === 'invalid_grant') {
-      // Yang benar-benar bisa dibuktikan dari jawaban OpenAI hanya satu: kode
-      // ini ditolak. Penyebabnya TIDAK disebut, jadi pesan ini disusun sebagai
-      // dugaan berurutan yang masing-masing bisa diperiksa — bukan tiga
-      // kemungkinan setara tanpa petunjuk mana yang harus dicek dulu.
+      // Pesan disusun dari fakta percobaan ini, bukan daftar tebakan:
+      //  • izin paket terbukti dari `scope` di callback (datang sebelum tukar kode);
+      //  • "kode dipakai dua kali" terbukti BUKAN penyebab bila klaim penukaran
+      //    ini yang pertama (klaim kedua akan ditolak 409 sebelum sampai ke OpenAI);
+      //  • umur percobaan ikut disebut supaya kode kedaluwarsa bisa dinilai.
       throw fail(
-        'OpenAI menolak penukaran kode (invalid_grant) dan tidak menyebut sebabnya. Yang PASTI: kode ini sudah tidak berlaku. '
-        + 'Periksa berurutan: '
-        + '(1) paling sering — alamat 127.0.0.1:<port>/auth/callback terbuka DUA kali. Penukaran pertama memakai kodenya, yang kedua ditolak. '
-        + 'Abaikan hasil penukaran pertama dan lihat daftar akun di panel ini dulu; kalau akunnya sudah muncul, tidak ada yang perlu diulang. '
-        + '(2) izin "gunakan paket ChatGPT saya" tidak dicentang saat menyetujui. '
-        + '(3) paket akun tidak bisa dipakai aplikasi lain: perlu Plus/Pro pada akun pribadi, bukan Free/Go atau akun workspace kerja. '
-        + 'Client terbitan (' + clientId + ') sudah disimpan, jadi mengulang tidak mendaftar ulang.',
+        'OpenAI menolak penukaran kode (invalid_grant) tanpa menyebut sebab. Fakta percobaan ini: '
+        + (planGrantedInCallback
+          ? 'izin "gunakan paket ChatGPT saya" SUDAH dicentang (terlihat di callback), '
+          : 'izin paket TIDAK terlihat di callback, ')
+        + `kode baru ditukar SEKALI, dan percobaan ini berumur ${attemptAgeSec} detik. `
+        + 'Sisa penyebab yang paling mungkin: '
+        + '(1) paket akun tidak bisa dipakai aplikasi lain — perlu Plus/Pro pada akun pribadi, bukan Free/Go atau akun workspace kerja; '
+        + '(2) kode disalin dari tab yang sudah lama terbuka sehingga kedaluwarsa; '
+        + '(3) halaman callback dibuka di perangkat/tab lain sebelum sempat ditukar. '
+        + `Client terbitan (${clientId}) sudah disimpan, jadi mengulang tidak mendaftar ulang.`,
         400,
       );
     }
