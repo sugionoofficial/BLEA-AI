@@ -27,7 +27,7 @@
 import {
   createOpenAiAccount,
   sealOpenAiToken,
-  unsealOpenAiToken,
+  readOpenAiSealedField,
 } from './openaiPool.js';
 
 export const OPENAI_AUTH_BASE = 'https://auth.openai.com';
@@ -435,7 +435,7 @@ export async function refreshOAuthLink(env, id) {
   const rows = await dbJson(env, `${TABLE}?select=*&id=eq.${encodeURIComponent(id)}&limit=1`);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) throw fail('Tautan OpenAI tidak ditemukan.', 404);
-  const refreshToken = await unsealOpenAiToken(env, row.sealed_refresh_token || '');
+  const refreshToken = await readOpenAiSealedField(env, row.sealed_refresh_token || '', { table: TABLE, id: row.id, column: 'sealed_refresh_token' });
   if (!refreshToken) throw fail('Tautan ini tidak punya refresh token. Sambungkan ulang akun lewat tombol Connect.', 400);
   const form = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -516,7 +516,7 @@ export async function disconnectOAuthLink(env, user, id) {
   const rows = await dbJson(env, `${TABLE}?select=*&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(user.id)}&limit=1`);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) throw fail('Tautan OpenAI tidak ditemukan.', 404);
-  const refreshToken = await unsealOpenAiToken(env, row.sealed_refresh_token || '');
+  const refreshToken = await readOpenAiSealedField(env, row.sealed_refresh_token || '', { table: TABLE, id: row.id, column: 'sealed_refresh_token' });
   let revoked = false;
   if (refreshToken && row.issued_client_id) {
     try {

@@ -73,6 +73,7 @@ import {
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import {
   OPENAI_CAPABILITIES,
+  openAiPoolBlockedMessage,
   openAiPoolSummary,
   createOpenAiAccount,
   deleteOpenAiAccount,
@@ -5449,6 +5450,16 @@ async function handleApi(request, url, env) {
           capability,
           limit: Number(options?.limit) || 4,
         }),
+        // Dipakai hanya untuk pesan error: membedakan "pool kosong" dari
+        // "akun ada tapi tidak bisa dipakai". Tanpa angka ini, akun yang sehat
+        // tampil seolah belum dikonfigurasi.
+        poolBlockedMessage: (capability = 'agent') => openAiPoolBlockedMessage(env, capability),
+        // Ruang yang punya loop agen memakai kapabilitas `agent`; ruang teks
+        // biasa memakai `chat`. Dipakai untuk memilih akun pool yang tepat.
+        studioToolUsesAgentTools: (id) => {
+          const tools = agentToolsForStudioTool(id);
+          return Array.isArray(tools) && tools.length > 0;
+        },
         buildFallbackCandidates: ({ primaryProvider, primaryModel, keyByProvider }) => buildChatFallbackCandidates({
           primaryProvider,
           primaryModel,
@@ -5575,6 +5586,18 @@ async function handleApi(request, url, env) {
         primaryApiKey = 'binding:AI';
       }
       if (!primaryApiKey) {
+        // Provider `openai` memakai pool akun; pesan generik di sini dulu
+        // membuat akun yang sehat tampak belum dikonfigurasi.
+        if (primaryProvider === 'openai') {
+          const blocked = await openAiPoolBlockedMessage(env, 'chat').catch(() => null);
+          if (blocked) {
+            return jsonResponse({ error: blocked.error, code: blocked.code, pool: blocked.pool }, blocked.status);
+          }
+          return jsonResponse({
+            error: 'Belum ada akun OpenAI di pool. Tambahkan API key di Studio → Akun OpenAI.',
+            code: 'openai_pool_empty',
+          }, 400);
+        }
         return jsonResponse({ error: `API key untuk provider "${primaryProvider}" belum dikonfigurasi.` }, 400);
       }
 

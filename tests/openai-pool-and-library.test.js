@@ -5,6 +5,9 @@ import {
   OPENAI_CAPABILITIES,
   jakartaDate,
   sanitizeOpenAiAccount,
+  openAiPoolBlockedMessage,
+  openAiPoolDiagnostic,
+  readOpenAiSealedField,
   sealOpenAiToken,
   unsealOpenAiToken,
   validateOpenAiAccountInput,
@@ -14,6 +17,7 @@ import {
   capabilityForApiPath,
   toolCapabilityViolation,
 } from '../src/lib/toolCapabilities.js';
+import { handleAgentTurn } from '../src/agent/agentRoute.js';
 import { STUDIO_TOOLS } from '../src/studio/toolCatalog.js';
 import {
   OPENAI_CAPABILITY_MATRIX,
@@ -51,6 +55,62 @@ test('kredensial pool disegel AES-GCM dan tidak bisa dibuka dengan kunci lain', 
   const otherEnv = { ...ENV, PROVIDER_CREDENTIAL_ENCRYPTION_KEY: 'kunci-lain-yang-tidak-sama-0123456789abcdef0123456789abcdef' };
   assert.equal(await unsealOpenAiToken(otherEnv, sealed), '');
   assert.equal(await unsealOpenAiToken(ENV, 'bukan-segel'), '');
+});
+
+// Regresi nyata 2026-11-24: akun tersimpan 04:25 UTC, lalu rename produk
+// (#208) mengganti string derivation kunci enkripsi. Token lama tidak bisa
+// dibuka lagi, `pickOpenAiAccount` melewati akun itu, pool tampak kosong, dan
+// pengguna melihat "API key untuk provider openai belum dikonfigurasi" padahal
+// kuncinya ada. Penyegel HARUS tetap bisa membaca segel format lama dan
+// menaik-formatkannya, bukan menghapus kredensial pengguna.
+test('segel lama tetap terbuka dan dinaikkan ke format sekarang', async () => {
+  const enc = new TextEncoder();
+  const b64url = (bytes) => Buffer.from(bytes).toString('base64url');
+  // Format lama: derivation + AAD sebelum rename produk.
+  const legacyInfo = atob('YmxlYS1jaGF0Z3B0LXBvb2wtdjE=');
+  const legacyAad = atob('Y2hhdGdwdC1jcmVkZW50aWFs');
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(`${legacyInfo}:${ENV.PROVIDER_CREDENTIAL_ENCRYPTION_KEY}`));
+  const key = await crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(legacyAad) }, key, enc.encode('sk-lama-rahasia-1234'));
+  const legacySealed = `${b64url(iv)}.${b64url(ciphertext)}`;
+
+  assert.equal(await unsealOpenAiToken(ENV, legacySealed), 'sk-lama-rahasia-1234', 'segel lama harus terbaca');
+
+  // Naik-format: token terbaca, lalu kolomnya ditulis ulang ke format sekarang.
+  let patched = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    assert.match(String(url), /\/rest\/v1\/openai_accounts\?id=eq\./);
+    patched = JSON.parse(String(init.body));
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const token = await readOpenAiSealedField(ENV, legacySealed, {
+      table: '/openai_accounts',
+      id: '11111111-1111-4111-8111-111111111111',
+      column: 'sealed_token',
+    });
+    assert.equal(token, 'sk-lama-rahasia-1234');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.ok(patched?.sealed_token, 'segel harus ditulis ulang');
+  assert.notEqual(patched.sealed_token, legacySealed);
+  // Segel hasil naik-format tetap terbaca sebagai token yang sama.
+  assert.equal(await unsealOpenAiToken(ENV, patched.sealed_token), 'sk-lama-rahasia-1234');
+
+  // Segel yang tidak bisa dibuka tidak boleh menyentuh database.
+  let touched = false;
+  globalThis.fetch = async () => { touched = true; return new Response(null, { status: 204 }); };
+  try {
+    assert.equal(await readOpenAiSealedField(ENV, 'rusak.bukan-segel', {
+      table: '/openai_accounts', id: '11111111-1111-4111-8111-111111111111', column: 'sealed_token',
+    }), '');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(touched, false, 'segel rusak tidak boleh memicu penulisan');
 });
 
 test('tanggal kuota memakai WIB, bukan UTC', () => {
@@ -389,5 +449,225 @@ test('halaman Koneksi tidak mengklaim OpenAI tersambung tanpa bukti', async () =
     assert.ok(html.includes('Belum diperiksa'));
   } finally {
     await vite.close();
+  }
+});
+
+// Regresi yang sama seperti di atas, tetapi dari sudut pandang pesan error:
+// akun yang tersegel dengan format lama TIDAK boleh dilaporkan sebagai
+// "belum dikonfigurasi". Diagnosa menghitung penghalang yang sebenarnya.
+test('diagnosa pool membedakan segel lama, cooldown, dan kuota habis', async () => {
+  const enc = new TextEncoder();
+  const b64url = (bytes) => Buffer.from(bytes).toString('base64url');
+  const legacyInfo = atob('YmxlYS1jaGF0Z3B0LXBvb2wtdjE=');
+  const legacyAad = atob('Y2hhdGdwdC1jcmVkZW50aWFs');
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(`${legacyInfo}:${ENV.PROVIDER_CREDENTIAL_ENCRYPTION_KEY}`));
+  const legacyKey = await crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: enc.encode(legacyAad) },
+    legacyKey,
+    enc.encode('sk-lama-rahasia-1234'),
+  );
+  const legacySealed = `${b64url(iv)}.${b64url(ciphertext)}`;
+  const today = jakartaDate();
+  const base = {
+    id: '11111111-1111-4111-8111-111111111111',
+    credential_kind: 'api_key',
+    enabled: true,
+    priority: 10,
+    daily_limit: 200,
+    used_today: 0,
+    quota_date: today,
+    capabilities: ['chat', 'agent'],
+    cooldown_until: null,
+  };
+  const rows = [
+    // Sehat, tapi tersegel dengan kunci format lama.
+    { ...base, sealed_token: legacySealed },
+    // Sehat, format segel sekarang, kapabilitas hanya chat.
+    { ...base, id: '22222222-2222-4222-8222-222222222222', sealed_token: await sealOpenAiToken(ENV, 'sk-baru'), capabilities: ['chat'] },
+    // Cooldown.
+    { ...base, id: '33333333-3333-4333-8333-333333333333', sealed_token: await sealOpenAiToken(ENV, 'sk-c'), capabilities: ['chat'], cooldown_until: new Date(Date.now() + 300_000).toISOString() },
+    // Kuota habis.
+    { ...base, id: '44444444-4444-4444-8444-444444444444', sealed_token: await sealOpenAiToken(ENV, 'sk-d'), capabilities: ['chat'], used_today: 200 },
+    // Segel ada tetapi kuncinya lain (secret Worker berganti).
+    { ...base, id: '55555555-5555-4555-8555-555555555555', sealed_token: await sealOpenAiToken({ ...ENV, PROVIDER_CREDENTIAL_ENCRYPTION_KEY: 'kunci-lama-yang-berbeda-0123456789abcdef0123456789abcdef0123456789abcdef' }, 'sk-e'), capabilities: ['chat'] },
+    // Nonaktif.
+    { ...base, id: '66666666-6666-4666-8666-666666666666', sealed_token: await sealOpenAiToken(ENV, 'sk-f'), capabilities: ['chat'], enabled: false },
+  ];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /\/rest\/v1\/openai_accounts\?select=\*/);
+    return Response.json(rows);
+  };
+  try {
+    const chat = await openAiPoolDiagnostic(ENV, 'chat');
+    assert.equal(chat.readable, true);
+    assert.equal(chat.total, 6);
+    assert.equal(chat.match_capability, 6);
+    assert.equal(chat.enabled, 5);
+    assert.equal(chat.cooling, 1);
+    assert.equal(chat.quota_exhausted, 1);
+    // Dua segel tak terbuka: satu di atas kunci format lama? tidak — itu
+    // justru harus TERBACA. Yang gagal hanya baris ber-kunci-berbeda.
+    assert.equal(chat.sealed_missing, 1);
+    assert.equal(chat.usable, 2, 'akun bersegel lama dan bersegel baru sama-sama siap');
+
+    const agent = await openAiPoolDiagnostic(ENV, 'agent');
+    assert.equal(agent.match_capability, 1);
+    assert.equal(agent.usable, 1);
+
+    const none = await openAiPoolDiagnostic(ENV, 'music');
+    assert.equal(none.match_capability, 0);
+    assert.equal(none.usable, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // Bila tabelnya tidak terbaca, diagnosa melaporkan `readable: false` alih-alih
+  // mengarang angka; pemanggil lalu memakai pesan generik.
+  globalThis.fetch = async () => new Response('boom', { status: 500 });
+  try {
+    const broken = await openAiPoolDiagnostic(ENV, 'chat');
+    assert.equal(broken.readable, false);
+    assert.equal(broken.total, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+function agentDeps(overrides = {}) {
+  return {
+    getUser: async () => ({ id: 'user-1', email: 'creator@example.com' }),
+    servicePostgrest: async () => Response.json([{ provider: 'unorouter', api_key: '', base_url: null }]),
+    normalizeAgentAttachments: () => [],
+    normalizeVideoAnalysis: () => ({}),
+    normalizeVideoTranscript: () => ({ text: '', segmentCount: 0 }),
+    hasWorkersAiBinding: () => false,
+    ...overrides,
+  };
+}
+
+function agentRequest(headers = {}) {
+  return new Request(`${BASE}/api/agent`, {
+    method: 'POST',
+    headers: { origin: BASE, authorization: 'Bearer user-jwt', 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ provider: 'openai', model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'halo' }] }),
+  });
+}
+
+test('ruang agen: pool kosong → 400 openai_pool_empty, akun tidak terpakai → 503 dengan sebab', async () => {
+  const empty = await handleAgentTurn(agentRequest(), new URL(`${BASE}/api/agent`), ENV, agentDeps({
+    pickPoolAccounts: async () => [],
+    poolBlockedMessage: async () => null,
+  }));
+  assert.equal(empty.status, 400);
+  const emptyBody = await empty.json();
+  assert.equal(emptyBody.code, 'openai_pool_empty');
+  assert.match(emptyBody.error, /Akun OpenAI/);
+
+  // Akun ADA tetapi tidak bisa dipakai: 503 dan sebabnya disebut satu per satu,
+  // bukan pesan "belum dikonfigurasi".
+  const notUsable = await handleAgentTurn(agentRequest({ 'x-blea-studio-tool': 'agent' }), new URL(`${BASE}/api/agent`), ENV, agentDeps({
+    studioToolUsesAgentTools: (id) => id === 'agent',
+    pickPoolAccounts: async () => [],
+    poolBlockedMessage: async () => ({ status: 503, code: 'openai_pool_not_usable', error: 'Akun OpenAI ada 3 di pool, 0 siap dipakai: 1 akun sedang cooldown.', pool: { total: 3 } }),
+  }));
+  assert.equal(notUsable.status, 503);
+  const body = await notUsable.json();
+  assert.equal(body.code, 'openai_pool_not_usable');
+  assert.match(body.error, /cooldown/);
+  assert.doesNotMatch(body.error, /belum dikonfigurasi/);
+
+  // Kapabilitas yang diminta mengikuti ruang: ruang teks minta `chat`, ruang
+  // ber-alat-agen minta `agent`.
+  const seen = [];
+  await handleAgentTurn(agentRequest(), new URL(`${BASE}/api/agent`), ENV, agentDeps({
+    pickPoolAccounts: async (capability) => { seen.push(capability); return []; },
+    poolBlockedMessage: async () => null,
+  }));
+  await handleAgentTurn(agentRequest({ 'x-blea-studio-tool': 'research' }), new URL(`${BASE}/api/agent`), ENV, agentDeps({
+    studioToolUsesAgentTools: (id) => id === 'research',
+    pickPoolAccounts: async (capability) => { seen.push(capability); return []; },
+    poolBlockedMessage: async () => null,
+  }));
+  assert.deepEqual(seen, ['chat', 'agent']);
+
+  // Provider selain openai tetap memakai pesan lama.
+  const other = await handleAgentTurn(
+    new Request(`${BASE}/api/agent`, {
+      method: 'POST',
+      headers: { origin: BASE, authorization: 'Bearer user-jwt', 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'deepseek', model: 'deepseek-chat', messages: [{ role: 'user', content: 'halo' }] }),
+    }),
+    new URL(`${BASE}/api/agent`),
+    ENV,
+    agentDeps({ pickPoolAccounts: async () => [] }),
+  );
+  assert.equal(other.status, 400);
+  assert.match((await other.json()).error, /belum dikonfigurasi/);
+});
+
+test('pesan penolakan pool menyebut penghalang nyata dan null bila pool kosong', async () => {
+  const today = jakartaDate();
+  const rows = [
+    {
+      id: '11111111-1111-4111-8111-111111111111',
+      credential_kind: 'api_key',
+      enabled: true,
+      priority: 10,
+      daily_limit: 200,
+      used_today: 200,
+      quota_date: today,
+      capabilities: ['chat'],
+      sealed_token: await sealOpenAiToken(ENV, 'sk-a'),
+    },
+    {
+      id: '22222222-2222-4222-8222-222222222222',
+      credential_kind: 'api_key',
+      enabled: true,
+      priority: 10,
+      daily_limit: 200,
+      used_today: 0,
+      quota_date: today,
+      capabilities: ['agent'],
+      cooldown_until: new Date(Date.now() + 300_000).toISOString(),
+      sealed_token: await sealOpenAiToken(ENV, 'sk-b'),
+    },
+    {
+      id: '33333333-3333-4333-8333-333333333333',
+      credential_kind: 'session',
+      enabled: true,
+      priority: 10,
+      daily_limit: 0,
+      capabilities: ['video'],
+      sealed_token: await sealOpenAiToken(ENV, 'sk-c'),
+    },
+  ];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json(rows);
+  try {
+    const chat = await openAiPoolBlockedMessage(ENV, 'chat');
+    assert.equal(chat.status, 503);
+    assert.equal(chat.code, 'openai_pool_not_usable');
+    assert.match(chat.error, /kuota harian/);
+    assert.equal(chat.error.includes('belum dikonfigurasi'), false);
+
+    const agent = await openAiPoolBlockedMessage(ENV, 'agent');
+    assert.match(agent.error, /cooldown/);
+
+    const video = await openAiPoolBlockedMessage(ENV, 'video');
+    assert.match(video.error, /jenis kredensial/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // Pool benar-benar kosong → null, supaya pemanggil memakai pesan
+  // "belum ada akun" (400) yang lebih tepat daripada 503.
+  globalThis.fetch = async () => Response.json([]);
+  try {
+    assert.equal(await openAiPoolBlockedMessage(ENV, 'chat'), null);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

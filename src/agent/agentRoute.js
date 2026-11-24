@@ -77,6 +77,15 @@ export async function handleAgentTurn(request, url, env, deps) {
     if (violation) return Response.json({ error: violation.message, code: violation.code }, { status: 400 });
   }
 
+  // Ruang dengan alat agen (agen, riset, klip, analisis berkas) memakai
+  // kapabilitas `agent`; ruang teks biasa (`chat`) memakai `chat`.
+  const usesAgentTools = (() => {
+    if (typeof deps.studioToolUsesAgentTools === 'function') {
+      return Boolean(deps.studioToolUsesAgentTools(request.headers.get('x-blea-studio-tool') || ''));
+    }
+    return false;
+  })();
+
   const latestPrompt = (() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].role === 'user') return messages[i].content.slice(0, 4000);
@@ -109,14 +118,37 @@ export async function handleAgentTurn(request, url, env, deps) {
   if (provider === 'cloudflare' && !apiKey && deps.hasWorkersAiBinding(env)) apiKey = 'binding:AI';
   // Pool akun OpenAI manual: satu giliran agen diambil dari akun yang paling
   // siap, dan akun berikutnya dipakai bila akun itu menolak (401/402/403/429).
+  // `pickPoolAccounts` menanyakan kapabilitas pool. Ruang agen memakai
+  // `agent`; ruang chat memakai `chat` supaya akun yang hanya diberi izin chat
+  // tidak "hilang" saat dipakai lewat ruang Chat.
+  const poolCapability = usesAgentTools ? 'agent' : 'chat';
   const poolCandidates = provider === 'openai' && typeof deps.pickPoolAccounts === 'function'
-    ? await deps.pickPoolAccounts('agent', { limit: 4 })
+    ? await deps.pickPoolAccounts(poolCapability, { limit: 4 })
     : [];
   if (!apiKey && poolCandidates.length) {
     apiKey = poolCandidates[0].apiKey;
     keyByProvider.set('openai', { provider: 'openai', api_key: apiKey, base_url: `${poolCandidates[0].apiBase}/v1` });
   }
-  if (!apiKey) return Response.json({ error: `API key untuk provider "${provider}" belum dikonfigurasi.` }, { status: 400 });
+  if (!apiKey) {
+    // Pesan harus membedakan dua sebab yang obatnya berbeda: belum ada
+    // kredensial sama sekali, atau kredensial ADA tetapi tidak bisa dipakai
+    // (mis. tidak aktiv, kuota habis, cooldown, atau segel tidak terbuka
+    // dengan secret Worker). Dulu keduanya tampil sebagai "belum
+    // dikonfigurasi", sehingga akun yang sehat tampak seperti tidak ada.
+    if (provider === 'openai') {
+      const blocked = typeof deps.poolBlockedMessage === 'function'
+        ? await deps.poolBlockedMessage(poolCapability).catch(() => null)
+        : null;
+      if (blocked) {
+        return Response.json({ error: blocked.error, code: blocked.code, pool: blocked.pool }, { status: blocked.status });
+      }
+      return Response.json({
+        error: 'Belum ada akun OpenAI di pool. Tambahkan API key di Studio → Akun OpenAI.',
+        code: 'openai_pool_empty',
+      }, { status: 400 });
+    }
+    return Response.json({ error: `API key untuk provider "${provider}" belum dikonfigurasi.` }, { status: 400 });
+  }
 
   // Only a page-pinned skill loads up front; everything else arrives through
   // `load_skill` inside the loop, so a false keyword match never burns context.
