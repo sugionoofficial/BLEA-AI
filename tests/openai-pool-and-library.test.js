@@ -6,6 +6,7 @@ import {
   jakartaDate,
   sanitizeOpenAiAccount,
   classifyOpenAiFailure,
+  openAiErrorCodeHint,
   openAiFailureMessage,
   openAiPoolBlockedMessage,
   openAiPoolDiagnostic,
@@ -1086,4 +1087,46 @@ test('tombol Uji tidak melaporkan "berhasil" untuk akun tanpa kredit', async () 
   assert.match(result.message, /kredit OpenAI habis/i);
   assert.match(result.message, /Billing/);
   assert.equal(patched.last_test_ok, false);
+});
+
+// --- Regresi 2026-11-24 (lanjutan): "Free tier" bukan kredit gratis --------
+
+const CREDIT_EXHAUSTED_BODY = JSON.stringify({
+  error: {
+    message: 'You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.',
+    type: 'insufficient_quota',
+    code: 'credit_balance_exhausted',
+  },
+});
+
+test('kode galat resmi OpenAI menentukan tindakan, bukan tebakan dari teks', () => {
+  // Semuanya HTTP 429 dengan type insufficient_quota; hanya `code` yang
+  // membedakannya. Tanpa ini, semua bermuara ke "isi saldo".
+  assert.equal(classifyOpenAiFailure(429, CREDIT_EXHAUSTED_BODY), 'billing');
+  assert.equal(openAiErrorCodeHint(CREDIT_EXHAUSTED_BODY).reason, 'credit_balance');
+  assert.match(openAiErrorCodeHint(CREDIT_EXHAUSTED_BODY).action, /Add credits/);
+
+  const spend = JSON.stringify({ error: { code: 'organization_spend_limit_exceeded' } });
+  assert.equal(classifyOpenAiFailure(429, spend), 'billing');
+  assert.equal(openAiErrorCodeHint(spend).reason, 'spend_limit');
+  assert.match(openAiErrorCodeHint(spend).action, /Limits/);
+
+  const usage = JSON.stringify({ error: { code: 'organization_usage_limit_exceeded' } });
+  assert.equal(openAiErrorCodeHint(usage).reason, 'usage_limit');
+
+  // Rate limit sungguhan tidak boleh diseret ke billing.
+  assert.equal(classifyOpenAiFailure(429, '{"error":{"code":"rate_limit_exceeded"}}'), 'rate_limit');
+  assert.equal(openAiErrorCodeHint('{"error":{"code":"rate_limit_exceeded"}}'), null);
+});
+
+test('pesan billing menjelaskan "Free tier" bukan kredit gratis', () => {
+  const message = openAiFailureMessage([{ status: 429, detail: CREDIT_EXHAUSTED_BODY }]);
+  assert.equal(message.code, 'openai_pool_billing');
+  assert.match(message.error, /Saldo API OpenAI nol/);
+  assert.match(message.error, /Add credits/);
+  // Inilah yang dulu membuat admin bingung: "tapi saya free tier dan chat di
+  // OpenAI jalan". Pesannya harus menyebut kedua hal itu.
+  assert.match(message.error, /Free tier/i);
+  assert.match(message.error, /bukan kredit gratis/i);
+  assert.match(message.error, /OAuth/);
 });

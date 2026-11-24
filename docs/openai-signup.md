@@ -97,6 +97,45 @@ Percobaan nyata di `openai_oauth_links` (`52c57983-…`): `status=failed`,
   (`scope` di URL callback memuatnya).
 - Retry tanpa `resource` sudah dihapus; jangan dikembalikan.
 
+## Kenapa API key ditolak walau akun "bisa chat"
+
+Dua jalur OpenAI yang **tidak** saling berbagi kuota:
+
+| Jalur | Yang dipakai | Tanpa pembayaran |
+|---|---|---|
+| `platform.openai.com` → API key (`sk-…`) | saldo kredit **API** | gagal `429 credit_balance_exhausted` |
+| `chat.openai.com` / aplikasi ChatGPT | langganan ChatGPT | jalan bila ada langganan |
+
+Chat di aplikasi OpenAI bisa jalan sementara API key ditolak karena keduanya
+anggaran yang berbeda. Hal yang sama berlaku untuk **Usage tiers** di menu
+Limits: `Free tier` di sana adalah **tingkat batas laju** (RPM/TPM), bukan
+kredit gratis. OpenAI tidak lagi memberi kredit gratis saat mendaftar; API baru
+jalan setelah organisasi punya saldo prabayar (minimum pembelian US$5).
+
+### Kode 429 yang wajib dibedakan
+
+Semuanya HTTP 429 dengan `type: insufficient_quota`, jadi `type` saja tidak
+cukup — BLEA membaca `error.code` (`openAiErrorCodeHint` di
+`src/lib/openaiPool.js`):
+
+| `error.code` | Arti | Tindakan |
+|---|---|---|
+| `credit_balance_exhausted` | saldo prabayar organisasi nol | Billing → **Add credits** |
+| `organization_spend_limit_exceeded` | batas belanja organisasi | Settings → Limits |
+| `project_spend_limit_exceeded` | batas belanja proyek | Settings → Limits |
+| `organization_usage_limit_exceeded` | batas pemakaian dari OpenAI | minta limit lebih tinggi (Usage tiers) |
+| `rate_limit_exceeded` / `slow_down` | laju permintaan terlalu cepat | tunggu `Retry-After` |
+
+`GET /v1/models` tetap **200** walau saldo nol, jadi tombol **Uji** di
+`/studio/openai-accounts` tidak berhenti di situ: setelah kunci diterima ia
+memanggil satu kali `POST /v1/chat/completions` termurah untuk membuktikan
+billing. Tanpa langkah itu, akun tanpa kredit tampil "berhasil diuji" padahal
+chat pasti gagal.
+
+Akun yang gagal karena billing ditahan (state `kredit-habis`) sampai diperbaiki
+— tidak dicoba ulang setiap cooldown habis, dan tidak dilaporkan sebagai
+"cooldown" di UI.
+
 ## Nama internal & database
 
 Istilah lama "chatgpt" sudah dihapus dari kode, label, dokumen, dan nama objek

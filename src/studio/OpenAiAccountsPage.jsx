@@ -43,9 +43,13 @@ const STATE_META = {
 // admin tidak perlu menebak halaman mana yang harus dibuka.
 const BLOCKED_ACTION = {
   billing: {
-    label: 'Isi saldo di platform.openai.com → Billing',
+    label: 'Isi kredit API di platform.openai.com → Billing',
     href: PLATFORM_BILLING_URL,
-    note: 'Kredit OpenAI habis. Menunggu tidak akan memulihkannya; setelah saldo terisi tekan Uji.',
+    // “Free tier” di halaman Limits OpenAI adalah tingkat batas laju, bukan
+    // kredit gratis — ini sumber kebingungan yang paling sering muncul.
+    note: 'Saldo kredit API nol (kode credit_balance_exhausted). Menunggu tidak memulihkannya. '
+      + '“Free tier” di menu Limits bukan kredit gratis: API hanya jalan setelah ada saldo prabayar. '
+      + 'Setelah menambah kredit, tekan Uji.',
   },
   auth: {
     label: 'Ganti API key di platform.openai.com → API keys',
