@@ -599,3 +599,24 @@
 .cga-matrix-state { font-style: normal; font-size: 11px; }
 .cga-matrix-state.is-ok { color: #58c98a; }
 .cga-matrix-state.is-idle { opacity: .65; }
+
+/* Edit cepat per akun (batas harian, prioritas, model default). */
+.cga-inline-edit {
+  display: grid; gap: 8px;
+  padding: 10px; border-radius: 12px;
+  border: 1px solid var(--cga-line); background: var(--cga-block-2);
+}
+.cga-inline-edit label { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--cga-muted); }
+.cga-inline-edit input {
+  padding: 6px 9px; border-radius: 9px;
+  border: 1px solid var(--cga-line); background: var(--cga-block);
+  color: var(--cga-ink); font-family: inherit; font-size: 12px;
+}
+.cga-inline-edit input:focus { outline: 2px solid var(--cga-accent); outline-offset: 1px; }
+.cga-inline-edit-actions { display: flex; gap: 6px; }
+.cga-inline-edit-actions button {
+  padding: 5px 12px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--cga-line); background: var(--cga-block);
+  color: var(--cga-ink); font-family: inherit; font-size: 11px;
+}
+.cga-inline-edit-actions button:disabled { opacity: .55; cursor: progress; }

@@ -73,6 +73,7 @@ import {
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import {
   OPENAI_CAPABILITIES,
+  openAiFailureMessage,
   openAiPoolBlockedMessage,
   openAiPoolSummary,
   createOpenAiAccount,
@@ -1186,7 +1187,7 @@ async function sendChatCompletionRequest({ provider, model, apiKey, baseUrl, pay
   }
   if (!upstream.ok) {
     const rawText = await upstream.text().catch(() => '');
-    const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'));
+    const errorInfo = parseChatUpstreamError(rawText, upstream.status, upstream.headers.get('retry-after'), provider);
     return { ok: false, status: upstream.status, errorInfo };
   }
   const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
@@ -1493,7 +1494,12 @@ function createChatSseResponse({
   });
 }
 
-function parseChatUpstreamError(rawText, status, retryAfterHeader) {
+// Provider yang seluruh modelnya berasal dari SATU pool kredensial. Untuk
+// provider seperti ini, "pilih model lain" bukan saran yang berguna: model lain
+// memakai akun yang sama, jadi pengguna akan melihat galat yang sama.
+const POOLED_CREDENTIAL_PROVIDERS = new Set(['openai']);
+
+function parseChatUpstreamError(rawText, status, retryAfterHeader, provider = '') {
   let parsed = {};
   try { parsed = JSON.parse(rawText); } catch {}
   const message = String(
@@ -1513,11 +1519,28 @@ function parseChatUpstreamError(rawText, status, retryAfterHeader) {
     if (match) retryAfterSec = Number(match[1]);
   }
 
+  // 429 punya dua arti yang obatnya berbeda jauh:
+  //   • batas LAJU (rate_limit_exceeded) → tunggu sebentar;
+  //   • kuota/billing habis (insufficient_quota) → isi saldo.
+  // Dulu keduanya disatukan sebagai "batas permintaan… pilih model lain",
+  // sehingga akun OpenAI yang billing-nya habis tampak seperti masalah ramai.
+  const quotaExhausted = /insufficient_quota|billing|exceeded your current quota|credit balance/i.test(`${code} ${message}`);
+  const pooled = POOLED_CREDENTIAL_PROVIDERS.has(String(provider || '').toLowerCase());
   let friendlyMessage;
-  if (status === 429 || code === 'rate_limit_exceeded') {
-    friendlyMessage = retryAfterSec
-      ? `Batas permintaan model tercapai (429). Coba lagi dalam ${retryAfterSec} detik atau pilih model lain.`
-      : 'Batas permintaan model tercapai (429). Silakan tunggu sebentar atau pilih model lain.';
+  if (quotaExhausted && (status === 429 || status === 402)) {
+    friendlyMessage = pooled
+      ? 'Kuota/kredit akun OpenAI di pool habis. Isi saldo di platform.openai.com → Billing, atau tambahkan akun lain lewat Buka Studio → Akun OpenAI.'
+      : 'Saldo atau kuota API provider tidak mencukupi untuk model ini.';
+  } else if (status === 429 || code === 'rate_limit_exceeded') {
+    if (pooled) {
+      friendlyMessage = retryAfterSec
+        ? `Akun OpenAI kena batas laju permintaan (429). Coba lagi dalam ${retryAfterSec} detik; akun pool dipakai bergiliran.`
+        : 'Akun OpenAI kena batas laju permintaan (429). Tunggu sekitar satu menit lalu coba lagi; akun pool dipakai bergiliran.';
+    } else {
+      friendlyMessage = retryAfterSec
+        ? `Batas permintaan model tercapai (429). Coba lagi dalam ${retryAfterSec} detik atau pilih model lain.`
+        : 'Batas permintaan model tercapai (429). Silakan tunggu sebentar atau pilih model lain.';
+    }
   } else if (status === 402) {
     friendlyMessage = 'Saldo atau kuota API provider tidak mencukupi untuk model ini.';
   } else if (status === 401 || status === 403) {
@@ -3405,6 +3428,10 @@ async function handleApi(request, url, env) {
         configuredSet.add(r.provider);
       }
       if (hasWorkersAiBinding(env)) configuredSet.add('cloudflare');
+      // OpenAI memakai pool akun (Studio → Akun OpenAI). Tanpa ini, halaman
+      // status/chat menganggap OpenAI belum terhubung walau poolnya siap.
+      const openAiPool = await openAiPoolSummary(env).catch(() => null);
+      if (openAiPool?.usable > 0) configuredSet.add('openai');
       const configuredProviders = Array.from(configuredSet);
       const configured = configuredProviders.length > 0;
       return jsonResponse({ ok: true, configured, providers: configuredProviders, workersAiBound: hasWorkersAiBinding(env) });
@@ -3882,8 +3909,14 @@ async function handleApi(request, url, env) {
             servicePostgrest(env, `/provider_key_pool?select=api_key,base_url&provider=eq.${encodeURIComponent(provider)}&enabled=eq.true&order=priority.asc&limit=1`).catch(() => null),
           ]);
           const poolRows = poolRes?.ok ? await poolRes.json().catch(() => []) : [];
-          const activeKey = keyRow?.api_key || poolRows?.[0]?.api_key || '';
-          const rawBase = body.baseUrl || keyRow?.base_url || poolRows?.[0]?.base_url;
+          // Provider `openai` menyimpan kredensial di POOL akun (Studio → Akun
+          // OpenAI), bukan di provider_api_keys. Tanpa cabang ini, "Muat daftar
+          // model" hanya menampilkan daftar bawaan walau akunnya ada.
+          const accountRow = provider === 'openai' && !keyRow?.api_key
+            ? (await pickOpenAiAccountsFor(env, { capability: 'chat', limit: 1 }).catch(() => []))[0]
+            : null;
+          const activeKey = keyRow?.api_key || poolRows?.[0]?.api_key || accountRow?.apiKey || '';
+          const rawBase = body.baseUrl || keyRow?.base_url || poolRows?.[0]?.base_url || (accountRow ? `${accountRow.apiBase}/v1` : '');
           const apiBase = resolveProviderApiBase(provider, rawBase);
           if (apiBase) {
             const headers = activeKey ? { authorization: `Bearer ${activeKey}` } : {};
@@ -4096,14 +4129,21 @@ async function handleApi(request, url, env) {
     if (path === 'admin-models' && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       if (!(await isAdmin(env, token))) return jsonResponse({ error: 'admin required' }, 403);
-      const [res, keysRes, poolRes, fbAccRes, fbSessRes, priceProvRes] = await Promise.all([
+      const [res, keysRes, poolRes, fbAccRes, fbSessRes, priceProvRes, oaRes] = await Promise.all([
         servicePostgrest(env, '/provider_models?select=provider,model,active&order=created_at.desc&limit=500'),
         servicePostgrest(env, '/provider_api_keys?select=provider,label,base_url,api_key&order=provider').catch(() => null),
         servicePostgrest(env, '/provider_key_pool?select=provider,enabled&limit=200').catch(() => null),
         servicePostgrest(env, '/freebeat_oauth_accounts?select=id,enabled&limit=10').catch(() => null),
         servicePostgrest(env, '/freebeat_provider_sessions?select=user_id&limit=1').catch(() => null),
         servicePostgrest(env, '/credit_model_prices?select=provider&limit=500').catch(() => null),
+        // Pool akun OpenAI = kredensial provider `openai`, yang tidak pernah
+        // ditulis ke provider_api_keys.
+        servicePostgrest(env, '/openai_accounts?select=id,enabled&limit=200').catch(() => null),
       ]);
+      // Pool akun OpenAI (Studio → Akun OpenAI) adalah kredensial provider
+      // `openai`. Tanpa baris di provider_api_keys, provider ini dulu tidak
+      // pernah muncul di pemilih katalog Admin — padahal akunnya ada.
+      const openAiPoolRows = oaRes?.ok ? await oaRes.json().catch(() => []) : [];
       if (!res.ok) return jsonResponse({ error: 'DB read failed', status: res.status }, 500);
       const rows = await res.json().catch(() => []);
       const models = (rows ?? []).map((m) => ({ id: m.model, active: m.active, provider: m.provider }));
@@ -4130,6 +4170,9 @@ async function handleApi(request, url, env) {
       const poolRows = poolRes?.ok ? await poolRes.json().catch(() => []) : [];
       for (const row of Array.isArray(poolRows) ? poolRows : []) {
         upsertProv(row.provider, '', 'key_pool');
+      }
+      if (Array.isArray(openAiPoolRows) && openAiPoolRows.length) {
+        upsertProv('openai', PROVIDER_PRESETS.openai?.label || 'OpenAI', 'pool');
       }
       const fbAccRows = fbAccRes?.ok ? await fbAccRes.json().catch(() => []) : [];
       const fbSessRows = fbSessRes?.ok ? await fbSessRes.json().catch(() => []) : [];
@@ -5454,6 +5497,7 @@ async function handleApi(request, url, env) {
         // "akun ada tapi tidak bisa dipakai". Tanpa angka ini, akun yang sehat
         // tampil seolah belum dikonfigurasi.
         poolBlockedMessage: (capability = 'agent') => openAiPoolBlockedMessage(env, capability),
+        poolFailureMessage: (details, options) => openAiFailureMessage(details, options),
         // Ruang yang punya loop agen memakai kapabilitas `agent`; ruang teks
         // biasa memakai `chat`. Dipakai untuk memilih akun pool yang tepat.
         studioToolUsesAgentTools: (id) => {
@@ -5630,6 +5674,11 @@ async function handleApi(request, url, env) {
         const triedModels = [requestedModel];
         const triedDetails = [];
 
+        // Kegagalan per akun pool OpenAI (kalau ada). Dipakai untuk pesan akhir:
+        // sebab yang benar (batas laju / billing / kunci) jauh lebih berguna
+        // daripada "pilih model lain", karena semua model OpenAI memakai pool
+        // kredensial yang sama.
+        let poolFailures = [];
         if (wantStream) {
           let alibabaPrimaryCand = null;
           let probed = null;
@@ -5645,6 +5694,7 @@ async function handleApi(request, url, env) {
               stream: true,
               send: sendChatCompletionRequest,
             });
+            poolFailures = Array.isArray(pooled.failures) ? pooled.failures : [];
             if (pooled.attempt) {
               probed = await probeChatStreamAttempt(pooled.attempt);
               if (pooled.account) {
@@ -5781,27 +5831,38 @@ async function handleApi(request, url, env) {
             });
           }
 
-          const errInfo = probed.errorInfo || parseChatUpstreamError('', probed.status || 502);
+          const errInfo = probed.errorInfo || parseChatUpstreamError('', probed.status || 502, null, activeProvider);
           const rateLimitedEntries = triedDetails.filter((d) => d.status === 429 || d.code === 'rate_limit_exceeded');
           const allRateLimited = triedDetails.length > 1 && rateLimitedEntries.length === triedDetails.length;
           const retryCandidates = rateLimitedEntries.map((d) => d.retryAfterSec).filter((n) => Number.isFinite(n) && n > 0);
-          const bestRetryAfter = retryCandidates.length ? Math.min(...retryCandidates) : errInfo.retryAfterSec;
-          const finalStatus = [401, 402, 403, 404, 429].includes(probed.status) ? probed.status : (rateLimitedEntries.length ? 429 : 502);
-          const errorMessage = allRateLimited
+          let bestRetryAfter = retryCandidates.length ? Math.min(...retryCandidates) : errInfo.retryAfterSec;
+          let finalStatus = [401, 402, 403, 404, 429].includes(probed.status) ? probed.status : (rateLimitedEntries.length ? 429 : 502);
+          let errorCode = errInfo.code;
+          let errorMessage = allRateLimited
             ? (bestRetryAfter
               ? `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Coba lagi dalam ${bestRetryAfter} detik, pilih model lain, atau tambah saldo/provider di Admin.`
               : `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Tunggu sebentar atau tambah saldo/provider di Admin.`)
             : errInfo.friendlyMessage;
+          // Pool OpenAI: sebut sebab per akun. "Pilih model lain" tidak pernah
+          // menolong di sini karena semua model OpenAI memakai akun yang sama.
+          if (primaryProvider === 'openai' && poolFailures.length) {
+            const poolMessage = openAiFailureMessage(poolFailures, { model: requestedModel });
+            errorCode = poolMessage.code;
+            finalStatus = poolMessage.status;
+            errorMessage = poolMessage.error;
+            if (poolMessage.kind === 'rate_limit') bestRetryAfter = bestRetryAfter || 60;
+          }
           return jsonResponse(
             {
               ok: false,
               error: errorMessage,
-              code: errInfo.code,
+              code: errorCode,
               status: finalStatus,
               retryAfterSec: bestRetryAfter,
               detail: errInfo.rawDetail,
               triedModels,
               triedDetails,
+              ...(poolFailures.length ? { poolFailures } : {}),
             },
             finalStatus,
             bestRetryAfter ? { 'retry-after': String(bestRetryAfter) } : {},
@@ -5819,6 +5880,7 @@ async function handleApi(request, url, env) {
             timeoutMs: chatUpstreamTimeoutMs(activeProvider),
             send: sendChatCompletionRequest,
           });
+          poolFailures = Array.isArray(pooled.failures) ? pooled.failures : [];
           if (pooled.attempt) {
             attempt = pooled.attempt;
             if (pooled.account) {
@@ -5930,27 +5992,37 @@ async function handleApi(request, url, env) {
         if (attempt.ok && finalReply) finalReply = stripSearchBlocks(finalReply);
 
         if (!attempt.ok || !finalReply) {
-          const errInfo = attempt.errorInfo || parseChatUpstreamError('', attempt.status || 502);
+          const errInfo = attempt.errorInfo || parseChatUpstreamError('', attempt.status || 502, null, activeProvider);
           const rateLimitedEntries = triedDetails.filter((d) => d.status === 429 || d.code === 'rate_limit_exceeded');
           const allRateLimited = triedDetails.length > 1 && rateLimitedEntries.length === triedDetails.length;
           const retryCandidates = rateLimitedEntries.map((d) => d.retryAfterSec).filter((n) => Number.isFinite(n) && n > 0);
-          const bestRetryAfter = retryCandidates.length ? Math.min(...retryCandidates) : errInfo.retryAfterSec;
-          const finalStatus = [401, 402, 403, 404, 429].includes(attempt.status) ? attempt.status : (rateLimitedEntries.length ? 429 : 502);
-          const errorMessage = allRateLimited
+          let bestRetryAfter = retryCandidates.length ? Math.min(...retryCandidates) : errInfo.retryAfterSec;
+          let finalStatus = [401, 402, 403, 404, 429].includes(attempt.status) ? attempt.status : (rateLimitedEntries.length ? 429 : 502);
+          let errorCode = errInfo.code;
+          let errorMessage = allRateLimited
             ? (bestRetryAfter
               ? `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Coba lagi dalam ${bestRetryAfter} detik, pilih model lain, atau tambah saldo/provider di Admin.`
               : `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Tunggu sebentar atau tambah saldo/provider di Admin.`)
             : errInfo.friendlyMessage;
+          // Sama seperti jalur streaming: untuk pool OpenAI, sebut sebabnya.
+          if (primaryProvider === 'openai' && poolFailures.length) {
+            const poolMessage = openAiFailureMessage(poolFailures, { model: requestedModel });
+            errorCode = poolMessage.code;
+            finalStatus = poolMessage.status;
+            errorMessage = poolMessage.error;
+            if (poolMessage.kind === 'rate_limit') bestRetryAfter = bestRetryAfter || 60;
+          }
           return jsonResponse(
             {
               ok: false,
               error: errorMessage,
-              code: errInfo.code,
+              code: errorCode,
               status: finalStatus,
               retryAfterSec: bestRetryAfter,
               detail: errInfo.rawDetail,
               triedModels,
               triedDetails,
+              ...(poolFailures.length ? { poolFailures } : {}),
             },
             finalStatus,
             bestRetryAfter ? { 'retry-after': String(bestRetryAfter) } : {},

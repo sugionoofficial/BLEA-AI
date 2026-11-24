@@ -7,6 +7,7 @@ import {
   Clock,
   KeyRound,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
   ShieldAlert,
@@ -71,6 +72,11 @@ export function OpenAiAccountsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [confirmDeleteId, setConfirmDeleteId] = useState('');
   const [formOpen, setFormOpen] = useState(false);
+  // Edit cepat per akun. Menambah akun bukan satu-satunya saat batas harian
+  // perlu diubah: akun yang sudah tersimpan juga harus bisa disetel ulang tanpa
+  // menghapus lalu menempel ulang API key-nya.
+  const [editId, setEditId] = useState('');
+  const [editDraft, setEditDraft] = useState({ daily_limit: '', priority: '', model_default: '' });
 
   const setBanner = useCallback((message, tone = 'info') => {
     setNotice(message);
@@ -166,6 +172,40 @@ export function OpenAiAccountsPage() {
     setBanner('Akun dihapus dari pool.', 'ok');
     await load();
   }, [load, setBanner]);
+
+  const beginEdit = useCallback((account) => {
+    setEditId(account.id);
+    setEditDraft({
+      daily_limit: String(account.daily_limit ?? 0),
+      priority: String(account.priority ?? ''),
+      model_default: account.model_default || '',
+    });
+  }, []);
+
+  const saveEdit = useCallback(async (account) => {
+    const limitRaw = String(editDraft.daily_limit).trim();
+    const limit = Number(limitRaw);
+    // Divalidasi di klien supaya salah ketik tidak berubah jadi 0 (= tanpa
+    // batas) secara diam-diam; server tetap memvalidasi ulang.
+    if (!/^\d+$/.test(limitRaw) || !Number.isSafeInteger(limit) || limit > 1_000_000) {
+      setBanner('Batas harian harus bilangan bulat 0–1000000 (0 = tanpa batas).', 'error');
+      return;
+    }
+    const body = { daily_limit: limit };
+    const priorityRaw = String(editDraft.priority).trim();
+    if (priorityRaw !== '') {
+      const priority = Number(priorityRaw);
+      if (!/^\d+$/.test(priorityRaw) || !Number.isSafeInteger(priority) || priority > 100_000) {
+        setBanner('Prioritas harus bilangan bulat 0–100000.', 'error');
+        return;
+      }
+      body.priority = priority;
+    }
+    const modelDefault = String(editDraft.model_default).trim();
+    if (modelDefault && modelDefault !== account.model_default) body.model_default = modelDefault;
+    setEditId('');
+    await patch(account.id, body, `Batas harian diperbarui: ${limit === 0 ? 'tanpa batas' : `${limit} permintaan/hari`}.`);
+  }, [editDraft, patch, setBanner]);
 
   const toggleCapability = useCallback((capability) => {
     setForm((current) => {
@@ -410,6 +450,50 @@ export function OpenAiAccountsPage() {
                   </small>
                 </div>
 
+                {editId === account.id && (
+                  <form
+                    className="cga-inline-edit"
+                    onSubmit={(event) => { event.preventDefault(); saveEdit(account); }}
+                  >
+                    <label>
+                      <span>Batas harian (0 = tanpa batas)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="1000000"
+                        value={editDraft.daily_limit}
+                        onChange={(event) => setEditDraft((cur) => ({ ...cur, daily_limit: event.target.value }))}
+                        aria-label="Batas harian akun"
+                      />
+                    </label>
+                    <label>
+                      <span>Prioritas</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100000"
+                        value={editDraft.priority}
+                        onChange={(event) => setEditDraft((cur) => ({ ...cur, priority: event.target.value }))}
+                        aria-label="Prioritas akun"
+                      />
+                    </label>
+                    <label>
+                      <span>Model default</span>
+                      <input
+                        type="text"
+                        value={editDraft.model_default}
+                        onChange={(event) => setEditDraft((cur) => ({ ...cur, model_default: event.target.value }))}
+                        maxLength={120}
+                        aria-label="Model default akun"
+                      />
+                    </label>
+                    <div className="cga-inline-edit-actions">
+                      <button type="submit" className="cga-primary" disabled={busy}>Simpan</button>
+                      <button type="button" onClick={() => setEditId('')} disabled={busy}>Batal</button>
+                    </div>
+                  </form>
+                )}
+
                 <div className="cga-caps-row">
                   {account.capabilities.map((capability) => (
                     <em key={capability}>{OPENAI_CAPABILITY_LABELS[capability] || capability}</em>
@@ -426,6 +510,13 @@ export function OpenAiAccountsPage() {
                 </p>
 
                 <div className="cga-item-actions">
+                  <button
+                    type="button"
+                    onClick={() => (editId === account.id ? setEditId('') : beginEdit(account))}
+                    disabled={busy}
+                  >
+                    <Pencil size={12} /> {editId === account.id ? 'Tutup' : 'Ubah batas'}
+                  </button>
                   <button type="button" onClick={() => runTest(account)} disabled={busy}>
                     {busy ? <Loader2 size={12} className="agent-spin" /> : <ShieldAlert size={12} />} Uji
                   </button>
