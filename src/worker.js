@@ -1005,6 +1005,30 @@ async function sendCloudflareBindingChat({ ai, model, payload, stream = false })
   }
 }
 
+/**
+ * Kandidat cadangan ketika provider utama TIDAK BISA DIPAKAI SAMA SEKALI
+ * (pool OpenAI ada tetapi tidak ada akun yang bisa dipanggil, atau kredensial
+ * provider kosong).
+ *
+ * Kenapa perlu: jalur awal `/api/chat` langsung mengembalikan 4xx/503 dengan
+ * pesan pool sebelum rantai fallback pernah dibangun. Akibatnya pengguna dengan
+ * akun OpenAI bermasalah tidak pernah sampai ke provider lain yang sehat
+ * (mis. alibaba), padahal `autoFallback` aktif. Dulu kandidat hanya dibangun
+ * dari `provider_models` milik provider utama — di sini SEMUA model aktif
+ * dipertimbangkan, karena provider utama jelas tidak menghasilkan apa pun.
+ */
+function buildAnyProviderChatCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env, poolByProvider }) {
+  const all = buildChatFallbackCandidates({
+    primaryProvider,
+    primaryModel,
+    keyByProvider,
+    dbModelRows,
+    env,
+    poolByProvider,
+  });
+  return all.slice(0, 6);
+}
+
 function buildChatFallbackCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env, poolByProvider }) {
   const seen = new Set([`${primaryProvider}:${primaryModel}`]);
   const raw = [];
@@ -5652,14 +5676,38 @@ async function handleApi(request, url, env) {
       if (!primaryApiKey) {
         // Provider `openai` memakai pool akun; pesan generik di sini dulu
         // membuat akun yang sehat tampak belum dikonfigurasi.
+        const blocked = primaryProvider === 'openai'
+          ? await openAiPoolBlockedMessage(env, 'chat').catch(() => null)
+          : null;
+        // JANGAN langsung menyerah: provider utama memang tidak bisa dipakai,
+        // tetapi provider lain mungkin sehat. Tanpa ini, pengguna dengan akun
+        // OpenAI bermasalah tidak pernah sampai ke fallback (mis. alibaba).
+        if (body.autoFallback !== false) {
+          const rescue = await tryFallbackWithoutPrimary({
+            env,
+            primaryProvider,
+            requestedModel,
+            keyByProvider,
+            poolByProvider: alibabaPoolMap,
+            fetchBody: {
+              ...body,
+              model: requestedModel,
+              messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, ...(Array.isArray(body.messages) ? body.messages : [])],
+              stream: false,
+            },
+            conversationId: body.conversationId,
+            userId: user.id,
+            reason: blocked?.code || (primaryProvider === 'openai' ? 'openai_pool_empty' : 'provider_not_configured'),
+          });
+          if (rescue) return jsonResponse(rescue, 200, { 'cache-control': 'no-store' });
+        }
+        if (blocked) {
+          // `hint` diteruskan: untuk kasus paket OAuth, satu-satunya jalan
+          // keluar berbeda (API key berbayar), dan UI membutuhkannya tanpa
+          // harus menebak dari kalimat.
+          return jsonResponse({ error: blocked.error, code: blocked.code, hint: blocked.hint, pool: blocked.pool }, blocked.status);
+        }
         if (primaryProvider === 'openai') {
-          const blocked = await openAiPoolBlockedMessage(env, 'chat').catch(() => null);
-          if (blocked) {
-            // `hint` diteruskan: untuk kasus paket OAuth, satu-satunya jalan
-            // keluar berbeda (API key berbayar), dan UI membutuhkannya tanpa
-            // harus menebak dari kalimat.
-            return jsonResponse({ error: blocked.error, code: blocked.code, hint: blocked.hint, pool: blocked.pool }, blocked.status);
-          }
           return jsonResponse({
             error: 'Belum ada akun OpenAI di pool. Tambahkan API key di Studio → Akun OpenAI.',
             code: 'openai_pool_empty',
@@ -6027,6 +6075,27 @@ async function handleApi(request, url, env) {
               ? `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Coba lagi dalam ${bestRetryAfter} detik, pilih model lain, atau tambah saldo/provider di Admin.`
               : `Batas permintaan paket gratis tercapai pada ${triedModels.length} model (429). Tunggu sebentar atau tambah saldo/provider di Admin.`)
             : errInfo.friendlyMessage;
+          // Pool OpenAI ada isinya tetapi TIDAK ADA akun yang bisa dipanggil
+          // (kredit habis / kunci mati / paket OAuth ditolak). Dulu jawabannya
+          // langsung pesan pool, padahal provider lain mungkin sehat — chat
+          // jadi tampak mati total padahal hanya satu provider yang bermasalah.
+          if (primaryProvider === 'openai' && body.autoFallback !== false) {
+            const blocked = await openAiPoolBlockedMessage(env, 'chat').catch(() => null);
+            if (blocked) {
+              const rescue = await tryFallbackWithoutPrimary({
+                env,
+                primaryProvider: 'openai',
+                requestedModel,
+                keyByProvider,
+                poolByProvider: alibabaPoolMap,
+                fetchBody,
+                conversationId: body.conversationId,
+                userId: user.id,
+                reason: blocked.code,
+              });
+              if (rescue) return jsonResponse(rescue, 200, { 'cache-control': 'no-store' });
+            }
+          }
           // Sama seperti jalur streaming: untuk pool OpenAI, sebut sebabnya.
           if (primaryProvider === 'openai' && poolFailures.length) {
             const poolMessage = openAiFailureMessage(poolFailures, { model: requestedModel });
@@ -6161,6 +6230,86 @@ async function handleApi(request, url, env) {
   } catch (e) {
     return jsonResponse({ error: String(e) }, 500);
   }
+}
+
+/**
+ * Jalankan satu putaran fallback ketika provider utama TIDAK BISA DIPAKAI
+ * sama sekali (kredensial kosong / pool OpenAI tidak punya akun yang bisa
+ * dipanggil).
+ *
+ * Kenapa ada: jalur utama `/api/chat` dulu langsung mengembalikan 4xx/503
+ * sebelum rantai fallback dibangun, sehingga pengguna dengan akun OpenAI
+ * bermasalah tidak pernah sampai ke provider sehat (mis. alibaba) walau
+ * `autoFallback` aktif. Fungsi ini memakai kandidat yang sama dengan jalur
+ * biasa supaya perilakunya konsisten: satu model dicoba per kandidat, pesan
+ * asisten tetap disimpan, dan jawabannya menyebut `fallbackFrom`/`fallbackReason`.
+ *
+ * Mengembalikan null bila tidak ada kandidat yang berhasil — pemanggil lalu
+ * memakai pesan error aslinya.
+ */
+async function tryFallbackWithoutPrimary({
+  env,
+  primaryProvider,
+  requestedModel,
+  keyByProvider,
+  poolByProvider,
+  fetchBody,
+  conversationId = '',
+  userId = '',
+  reason = 'primary_unavailable',
+}) {
+  const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+  const dbModelRows = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
+  const candidates = buildAnyProviderChatCandidates({
+    primaryProvider,
+    primaryModel: requestedModel,
+    keyByProvider,
+    dbModelRows,
+    env,
+    poolByProvider,
+  });
+  for (const cand of candidates) {
+    const alt = await sendChatCompletionRequest({
+      provider: cand.provider,
+      model: cand.model,
+      apiKey: cand.apiKey,
+      baseUrl: cand.baseUrl,
+      payload: { ...fetchBody, model: cand.model },
+      timeoutMs: 18_000,
+      env,
+    });
+    if (!alt.ok) continue;
+    const reply = extractAssistantReply(alt.data) || '';
+    if (!reply) continue;
+    // Simpan pesan asisten supaya riwayat percakapan tetap utuh, sama seperti
+    // jalur normal.
+    const insertRes = await servicePostgrest(env, '/ai_messages', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: {
+        conversation_id: conversationId,
+        user_id: userId,
+        role: 'assistant',
+        content: reply,
+      },
+    }).catch(() => null);
+    let messageId = '';
+    if (insertRes?.ok) {
+      const inserted = await insertRes.json().catch(() => []);
+      messageId = inserted?.[0]?.id ?? '';
+    }
+    return {
+      ok: true,
+      reply,
+      messageId,
+      model: cand.model,
+      provider: cand.provider,
+      fallbackFrom: requestedModel,
+      fallbackReason: reason,
+      note: `Provider utama (${primaryProvider}) tidak bisa dipakai; jawaban ini berasal dari ${cand.provider}.`,
+    };
+  }
+  return null;
 }
 
 async function pollVideoGenerationRow(env, row) {
