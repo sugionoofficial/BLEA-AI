@@ -583,3 +583,16 @@
   font: 10.5px/1.5 ui-monospace, monospace; word-break: break-word;
   background: rgba(255, 255, 255, .04);
 }
+
+/* Pemilih jalur: platform.openai.com vs chatgpt.com. */
+.cga-route { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.cga-route label {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 10px 12px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  background: rgba(255, 255, 255, .02);
+}
+.cga-route input { margin-top: 2px; }
+.cga-route span { display: flex; flex-direction: column; gap: 2px; }
+.cga-route b { font-size: 12px; }
+.cga-route small { font-size: 11px; line-height: 1.45; opacity: .75; }

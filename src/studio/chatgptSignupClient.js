@@ -49,9 +49,18 @@ export async function fetchAutofillUserscript(email = '') {
 
 export const chatGptSignupApi = {
   status: () => request('/chatgpt-signup'),
-  prepare: (email, authSessionLoggingId = '') => request('/chatgpt-signup', {
+  // `route`: 'platform' (default) membuka platform.openai.com; 'chatgpt'
+  // membuka chatgpt.com untuk alur OAuth. `next` hanya dipakai jalur platform
+  // dan divalidasi server (daftar path tetap).
+  prepare: (email, authSessionLoggingId = '', { route = 'platform', next = '' } = {}) => request('/chatgpt-signup', {
     method: 'POST',
-    body: { action: 'prepare', email, ...(authSessionLoggingId ? { auth_session_logging_id: authSessionLoggingId } : {}) },
+    body: {
+      action: 'prepare',
+      email,
+      route,
+      ...(next ? { next } : {}),
+      ...(authSessionLoggingId ? { auth_session_logging_id: authSessionLoggingId } : {}),
+    },
   }),
   mark: (id, step, note = '') => request('/chatgpt-signup', { method: 'POST', body: { action: 'mark', id, step, note } }),
   verify: (id) => request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id } }),

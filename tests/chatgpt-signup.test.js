@@ -1144,3 +1144,35 @@ test('explainOAuthError membedakan invalid_state alur daftar dan OAuth BLEA', ()
   const oauthPage = explainOAuthError({ error: 'invalid_state', detail: 'https://auth.openai.com/api/accounts/authorize?client_id=x' });
   assert.match(oauthPage.stage, /authorize|OAuth BLEA/i);
 });
+
+// Jalur platform.openai.com: titik masuk yang sah (semua halaman platform 302
+// ke /login saat belum masuk), `next` dibatasi daftar path tetap, dan email
+// tidak dikirim sebagai parameter karena formulirnya tidak memakainya.
+test('jalur platform memakai login platform.openai.com dengan next terbatas', () => {
+  const { buildPlatformSignupUrl, PLATFORM_LOGIN_URL, PLATFORM_STEPS, PLATFORM_NEXT_PATHS } = globalThis.__signup;
+  assert.equal(PLATFORM_LOGIN_URL, 'https://platform.openai.com/login');
+  assert.equal(buildPlatformSignupUrl('a@b.co'), 'https://platform.openai.com/login');
+  assert.equal(buildPlatformSignupUrl('a@b.co', { next: '/api-keys' }), 'https://platform.openai.com/login?next=%2Fapi-keys');
+  // Domain lain / path di luar daftar tidak boleh jadi open redirect.
+  assert.equal(buildPlatformSignupUrl('a@b.co', { next: 'https://evil.example/x' }), PLATFORM_LOGIN_URL);
+  assert.equal(buildPlatformSignupUrl('a@b.co', { next: '/home?x=1' }), PLATFORM_LOGIN_URL);
+  assert.deepEqual(PLATFORM_NEXT_PATHS, ['/home', '/api-keys', '/settings/organization/billing/overview']);
+  // Email tidak boleh masuk URL: bukan parameter yang dipakai halaman itu.
+  assert.ok(!buildPlatformSignupUrl('kotak+1@mail.tm').includes('mail.tm'));
+  // Langkahnya harus menyebut API key, bukan OAuth.
+  assert.match(PLATFORM_STEPS.join(' '), /API key/i);
+  assert.ok(!/Continue with ChatGPT/.test(PLATFORM_STEPS.join(' ')));
+});
+
+// Route default harus platform: itu jalur yang diminta dan satu-satunya yang
+// tidak bergantung pada paket ChatGPT.
+test('prepare default ke jalur platform dan menyimpan langkahnya', async () => {
+  const { readFileSync } = await import('node:fs');
+  const route = readFileSync(new URL('../src/lib/chatgptSignupRoute.js', import.meta.url), 'utf8');
+  assert.match(route, /input\?\.route \|\| ''\)\.toLowerCase\(\) === 'chatgpt' \? 'chatgpt' : 'platform'/);
+  assert.match(route, /buildPlatformSignupUrl/);
+  const client = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  assert.match(client, /useState\('platform'\)/);
+  assert.match(client, /Buka login platform/);
+  assert.match(client, /PLATFORM_API_KEYS_URL/);
+});
