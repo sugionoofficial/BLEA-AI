@@ -1221,3 +1221,73 @@ test('/api/chat melaporkan provider cadangan yang ikut gagal saat pool OpenAI ha
   assert.equal(alibaba[0].status, 401);
   assert.match(String(alibaba[0].code), /invalid_api_key/);
 });
+
+// Regresi: katalog model bisa didominasi satu provider (102 model openai +
+// 109 freebeat). Kueri kandidat lama memakai `limit=150`, jadi alibaba dan
+// cloudflare TIDAK PERNAH masuk daftar kandidat dan fallback berakhir "tidak
+// ada kandidat" tanpa satu pun percobaan. Tes ini meniru komposisi produksi.
+test('/api/chat tetap menemukan kandidat cadangan walau katalog didominasi provider lain', async () => {
+  const realFetch = globalThis.fetch;
+  const sentModels = [];
+  const openAiRows = Array.from({ length: 300 }, (_v, i) => ({ provider: 'openai', model: `gpt-4o-mini-${i}` }));
+  const freebeatRows = Array.from({ length: 109 }, (_v, i) => ({ provider: 'freebeat', model: `${100 + i}` }));
+  const alibabaRow = { provider: 'alibaba', model: 'qwen-plus' };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') {
+      return Response.json({ id: 'user-1', email: 'creator@example.com' });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([{ provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' }]);
+    }
+    if (url.includes('/rest/v1/openai_accounts')) {
+      return Response.json([{
+        id: '66666666-6666-4666-8666-666666666666',
+        account_email: 'habis@example.com',
+        credential_kind: 'api_key',
+        enabled: true,
+        capabilities: ['chat'],
+        daily_limit: 0,
+        used_today: 1,
+        quota_date: new Date().toISOString().slice(0, 10),
+        last_error: 'You have no credits remaining. Add credits to continue using the API.',
+        consecutive_failures: 1,
+        cooldown_until: null,
+      }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) {
+      return Response.json([{ id: 'k1', provider: 'alibaba', api_key: 'sk-alibaba-test', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', enabled: true, priority: 10, consecutive_failures: 0 }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      // Patuhi `limit` seperti PostgREST, supaya batas kueri benar-benar diuji.
+      const limit = Number(new URL(url).searchParams.get('limit')) || 1000;
+      return Response.json([...openAiRows, ...freebeatRows, alibabaRow].slice(0, limit));
+    }
+    if (url.startsWith('https://dashscope-intl.aliyuncs.com/') && url.endsWith('/chat/completions')) {
+      sentModels.push(JSON.parse(init.body).model);
+      return Response.json({ choices: [{ message: { content: 'Jawaban qwen.' } }] });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-katalog-1' }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let res;
+  let data;
+  try {
+    res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-katalog-besar',
+        provider: 'openai',
+        model: 'gpt-4o-mini-0',
+        messages: [{ role: 'user', content: 'Halo' }],
+      },
+    }), createEnv());
+    data = await res.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 200, `fallback harus sampai ke alibaba, bukan "tidak ada kandidat": ${JSON.stringify(data)}`);
+  assert.equal(data.provider, 'alibaba');
+  assert.deepEqual(sentModels, ['qwen-plus']);
+});

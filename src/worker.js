@@ -1017,6 +1017,13 @@ async function sendCloudflareBindingChat({ ai, model, payload, stream = false })
  * dari `provider_models` milik provider utama — di sini SEMUA model aktif
  * dipertimbangkan, karena provider utama jelas tidak menghasilkan apa pun.
  */
+// Kueri kandidat cadangan DULU memakai `limit=150` pada seluruh baris model
+// aktif. Dengan 102 model openai + 109 freebeat di katalog, 150 baris pertama
+// hanya berisi dua provider itu — alibaba (16 model chat) dan cloudflare
+// (12 model) tidak pernah ikut menjadi kandidat, sehingga fallback berakhir
+// "tidak ada kandidat" tanpa satu pun percobaan nyata.
+const PROVIDER_MODEL_CANDIDATE_QUERY = '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=1000';
+
 function buildAnyProviderChatCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env, poolByProvider }) {
   const all = buildChatFallbackCandidates({
     primaryProvider,
@@ -5815,7 +5822,7 @@ async function handleApi(request, url, env) {
             });
             const canRetryStreamFallback = [400, 404, 429, 502, 503, 504].includes(probed.status) && body.autoFallback !== false;
             if (canRetryStreamFallback) {
-              const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+              const modelsRes = await servicePostgrest(env, PROVIDER_MODEL_CANDIDATE_QUERY);
               cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
               const candidates = buildChatFallbackCandidates({
                 primaryProvider,
@@ -6000,7 +6007,7 @@ async function handleApi(request, url, env) {
 
         const canRetryFallback = (!attempt.ok ? [400, 404, 429, 502, 503, 504].includes(attempt.status) : !finalReply) && body.autoFallback !== false;
         if ((!attempt.ok || !finalReply) && canRetryFallback) {
-          const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+          const modelsRes = await servicePostgrest(env, PROVIDER_MODEL_CANDIDATE_QUERY);
           cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
           const candidates = buildChatFallbackCandidates({
             primaryProvider,
@@ -6171,7 +6178,7 @@ async function handleApi(request, url, env) {
             });
             if (!roundRes.ok && [429, 503, 502].includes(roundRes.status) && body.autoFallback !== false) {
               if (!cachedDbModels) {
-                const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+                const modelsRes = await servicePostgrest(env, PROVIDER_MODEL_CANDIDATE_QUERY);
                 cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
               }
               const alt = buildChatFallbackCandidates({
@@ -6280,7 +6287,7 @@ async function tryFallbackWithoutPrimary({
   userId = '',
   reason = 'primary_unavailable',
 }) {
-  const modelsRes = await servicePostgrest(env, '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=150');
+  const modelsRes = await servicePostgrest(env, PROVIDER_MODEL_CANDIDATE_QUERY);
   const dbModelRows = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
   const candidates = buildAnyProviderChatCandidates({
     primaryProvider,
