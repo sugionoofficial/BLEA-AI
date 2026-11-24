@@ -518,3 +518,30 @@ BLEA sebelum penukaran berhasil — `invalid_grant` tidak membawa `scopes`.
 - Trace kegagalan memuat `age=<detik>`, `code_len`, `plan_scope=granted|absent`.
 - Pesan error sekarang menyebut fakta percobaan itu dulu, baru sisa kemungkinan —
   bukan tiga tebakan setara.
+
+## Audit `invalid_grant` dengan grep (bukan dugaan)
+
+Tiga temuan nyata dari membaca ulang `src/lib/chatgptOAuth.js` baris per baris:
+
+| Temuan | Bukti di kode | Akibat |
+|---|---|---|
+| `client_id` **tidak pernah dikirim ke `/start`** | `chatGptOAuthApi.start({ state, nonce, code_verifier, redirect_uri })` | baris percobaan tidak bisa membuktikan client mana yang dipakai saat authorize — satu-satunya cara membedakan pendaftaran pertama dari mendaftar ulang yang tidak perlu |
+| **Pelanggaran dokumen OpenAI**: callback dengan `client_id` lain diterima | `const clientId = input.client_id \|\| attempt.requested_client_id` | doc: *“If the callback supplies a different client ID, reject the result rather than replacing the selected account's registration.”* Client callback menang → percobaan dari client A bisa ditukar sebagai client B → `invalid_grant` |
+| Callback **tanpa `state`** diterima | `if (returnedState && attempt.state && …)` | `state` adalah parameter wajib; tanpa itu tidak ada pembanding, dan kode tetap diklaim → kode sah hangus |
+
+## `age=30s` — hipotesis "aplikasi dua instance" (belum terbukti)
+
+Percobaan 03:35:32 → gagal 03:36:43. Selisih antar-langkah 71 detik, tetapi
+`created_at → updated_at` penuh 30 detik: **dalam rentang `AbortSignal.timeout(30_000)`**.
+Awalnya saya tulis di pesan bahwa kode ditukar pada detik ke-71 — itu keliru,
+tidak ada kolom yang membuktikannya.
+
+Kalau aplikasi mengirim percobaan ini dari DUA jendela (mis. HP dan PC), keduanya
+memakai `code_verifier` dan `state` yang sama untuk satu kode. Penukaran pertama
+menang, yang kedua `invalid_grant`; atau `single_use` PKCE di OpenAI membuat
+keduanya ditolak. Yang meragukan hipotesis ini: trace tidak memuat percobaan
+kedua, dan penukaran hanya dikirim sekali per permintaan.
+
+**Cara membuktikan/menyanggah:** tekan tombol **sekali** di SATU jendela, tunggu
+sampai panel menyelesaikan pertukaran (jangan menekan lagi di jendela lain).
+Kalau berhasil, hipotesis ini benar.

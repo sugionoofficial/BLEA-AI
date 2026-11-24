@@ -128,6 +128,9 @@ export async function createOAuthAttempt(env, user, input = {}) {
       redirect_uri: redirectUri,
       // `client_id` hasil registrasi sebelumnya dipakai untuk sign-in ulang,
       // supaya akun yang sama tidak mendaftar client baru setiap kali login.
+      // Client yang dipakai saat AUTHORIZE. Null = pendaftaran pertama
+      // (`dynamic_agent_client`). Terisi = sign-in ulang memakai client terbitan,
+      // yang harus SAMA saat tukar kode (dokumen OpenAI).
       requested_client_id: cleanText(input.client_id, 120) || null,
       status: 'pending',
     },
@@ -194,11 +197,44 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     );
   }
 
-  // `state` WAJIB cocok dengan baris percobaan. Tanpa ini, callback dari
-  // percobaan lama bisa dipasangkan dengan code_verifier percobaan baru —
-  // PKCE tidak cocok, dan OpenAI menjawab `invalid_grant` tanpa penjelasan.
+  // `state` WAJIB cocok dengan baris percobaan sebelum apa pun dikirim ke
+  // OpenAI. Tanpa ini, callback dari percobaan lama bisa dipasangkan dengan
+  // code_verifier percobaan baru → PKCE tidak cocok → OpenAI menjawab
+  // `invalid_grant` tanpa penjelasan, dan kode yang sebenarnya sah ikut hangus
+  // karena sudah "diklaim" di baris ini.
   if (returnedState && attempt.state && returnedState !== attempt.state) {
     throw fail('state callback tidak cocok dengan sesi login yang tersimpan. Mulai lagi dari tombol Continue with ChatGPT.', 409);
+  }
+  // `state` adalah parameter wajib di callback (dokumen OpenAI). Kalau kosong,
+  // itu bukan "tidak ada yang perlu dicocokkan" — callback-nya tidak sah.
+  if (!returnedState) {
+    throw fail(
+      'Callback tidak memuat parameter state, jadi tidak bisa dipastikan milik percobaan ini. '
+      + 'Salin SELURUH alamat dari bilah browser (termasuk ?code=…&state=…).',
+      400,
+    );
+  }
+
+  // Satu kode hanya boleh ditukar sekali. Kalau tidak, penukaran kedua
+  // menghasilkan `invalid_grant` yang menyesatkan (kode sebenarnya sudah sah
+  // ditukar sebelumnya).
+  const codeFingerprint = await fingerprintCode(code);
+  if (attempt.exchanged_code_fingerprint) {
+    throw fail(attempt.exchanged_code_fingerprint === codeFingerprint
+      ? 'Kode ini sudah pernah ditukar. Kalau akun belum muncul, muat ulang halaman; kalau tidak, ulangi login.'
+      : 'Percobaan login ini sudah dipakai untuk kode lain. Ulangi dari tombol Continue with ChatGPT.', 409);
+  }
+  // Dokumen OpenAI: bila callback memberi client_id BERBEDA dari yang dipakai
+  // percobaan ini, TOLAK — jangan mengganti registrasi akun yang sudah terpilih.
+  // Dulu nilai callback langsung menang, sehingga percobaan yang authorize-nya
+  // memakai client A bisa ditukar dengan client B (jawabannya: invalid_grant).
+  const authorizeClientId = cleanText(attempt.requested_client_id, 120);
+  if (authorizeClientId && clientId !== authorizeClientId) {
+    throw fail(
+      `Callback membawa client_id ${clientId}, padahal percobaan ini memakai ${authorizeClientId}. `
+      + 'Percobaan ini dihentikan dan kode TIDAK ditukar. Mulai lagi dari tombol "Simpan aksesnya ke pool".',
+      409,
+    );
   }
 
   // Percobaan dibuat SEBELUM client terbitan diketahui (pendaftaran pertama),
@@ -212,15 +248,6 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     }).catch(() => {});
   }
 
-  // Satu kode hanya boleh ditukar sekali. Kalau tidak, penukaran kedua
-  // menghasilkan `invalid_grant` yang menyesatkan (kode sebenarnya sudah sah
-  // ditukar sebelumnya).
-  const codeFingerprint = await fingerprintCode(code);
-  if (attempt.exchanged_code_fingerprint) {
-    throw fail(attempt.exchanged_code_fingerprint === codeFingerprint
-      ? 'Kode ini sudah pernah ditukar. Kalau akun belum muncul, muat ulang halaman; kalau tidak, ulangi login.'
-      : 'Percobaan login ini sudah dipakai untuk kode lain. Ulangi dari tombol Continue with ChatGPT.', 409);
-  }
   // `scope` di callback adalah SATU-SATUNYA bukti bahwa izin paket dicentang,
   // dan bukti itu datang SEBELUM penukaran kode. Menyimpannya sekarang membuat
   // kegagalan berikutnya bisa dinilai tanpa menebak ("izin paket tidak
@@ -305,7 +332,8 @@ export async function completeOAuthAttempt(env, user, input = {}) {
         // `mode`, tidak jelas apakah percobaan ini memakai client terbitan atau
         // `dynamic_agent_client`.
         error_message: cleanText(
-          `client=${clientId} mode=${clientId === OPENAI_DYNAMIC_CLIENT_ID ? 'dynamic' : 'issued'}`
+          `client=${clientId} authorize_client=${authorizeClientId || 'dynamic'}`
+          + ` mode=${clientId === OPENAI_DYNAMIC_CLIENT_ID ? 'dynamic' : 'issued'}`
           + ` redirect=${attempt.redirect_uri} verify=${codeFingerprint}`
           + ` age=${attemptAgeSec}s code_len=${code.length}`
           + ` plan_scope=${planGrantedInCallback ? 'granted' : 'absent'}`

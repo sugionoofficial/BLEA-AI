@@ -131,7 +131,18 @@ export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '', 
   const codeVerifier = randomString(64);
   const codeChallenge = await challengeFor(codeVerifier);
 
-  const res = await chatGptOAuthApi.start({ state, nonce, code_verifier: codeVerifier, redirect_uri: redirectUri });
+  // `client_id` IKUT dikirim ke /start. Sebelumnya tidak, sehingga baris
+  // percobaan tidak bisa membuktikan client mana yang dipakai saat authorize —
+  // dan itulah satu-satunya cara membedakan "pendaftaran pertama" dari
+  // "mendaftar ulang padahal client sudah terbit".
+  const authorizeClientId = issuedClientId && issuedClientId !== DYNAMIC_CLIENT_ID ? issuedClientId : '';
+  const res = await chatGptOAuthApi.start({
+    state,
+    nonce,
+    code_verifier: codeVerifier,
+    redirect_uri: redirectUri,
+    client_id: authorizeClientId,
+  });
   if (!res.ok) return { ok: false, error: res.data?.error || 'Tidak bisa memulai sesi login ChatGPT.' };
 
   try {

@@ -247,6 +247,7 @@ test('completeOAuthAttempt menukar kode dan mendaftarkan akun oauth ke pool', as
   try {
     const result = await completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
       attempt_id: '11111111-1111-1111-1111-111111111111',
+      state: 'a'.repeat(24),
       code: 'auth-code',
       client_id: 'oaiapp_test',
     });
@@ -814,6 +815,71 @@ test('client terbitan dicatat sejak penukaran kode dimulai', async () => {
     const failed = stub.state.patches.find((patch) => patch.status === 'failed');
     assert.match(failed.error_message, /mode=issued/);
     assert.match(failed.error_message, /redirect=http:\/\/127\.0\.0\.1:/);
+  } finally {
+    stub.restore();
+  }
+});
+
+// `state` adalah parameter wajib di callback (dokumen OpenAI). Alur kita dulu
+// menerima callback tanpa `state` (klausa `if (returnedState && …)`), sehingga
+// penukaran bisa dikirim tanpa pembanding sama sekali. Ditolak SEBELUM memanggil
+// OpenAI, dan tanpa mengklaim kode di baris percobaan.
+test('callback tanpa state ditolak sebelum memanggil OpenAI dan tanpa mengklaim kode', async () => {
+  const attempt = baseAttempt();
+  const stub = oauthEnvWith({ attempt, tokenResponses: [] });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, code: 'code-x', client_id: 'oaiapp_X',
+      }),
+      /tidak memuat parameter state/,
+    );
+    assert.equal(stub.state.tokenCalls.length, 0, 'OpenAI tidak boleh dipanggil');
+    assert.equal(stub.state.claims, 0, 'kode tidak boleh diklaim tanpa state');
+    assert.ok(!stub.state.patches.some((patch) => patch.status === 'failed'), 'baris tidak boleh ditandai gagal');
+  } finally {
+    stub.restore();
+  }
+});
+
+// Dokumen OpenAI: "If the callback supplies a different client ID, reject the
+// result rather than replacing the selected account's registration." Dulu
+// client dari callback selalu menang, jadi percobaan yang authorize-nya memakai
+// client A bisa ditukar dengan client B — jawabannya invalid_grant.
+test('callback dengan client_id berbeda ditolak sebelum kode ditukar', async () => {
+  const attempt = baseAttempt({ requested_client_id: 'oaiapp_A' });
+  const stub = oauthEnvWith({ attempt, tokenResponses: [] });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-y', client_id: 'oaiapp_B',
+      }),
+      /client_id oaiapp_B, padahal percobaan ini memakai oaiapp_A/,
+    );
+    assert.equal(stub.state.tokenCalls.length, 0, 'kode tidak boleh ditukar');
+    assert.equal(stub.state.claims, 0, 'kode tidak boleh diklaim');
+  } finally {
+    stub.restore();
+  }
+});
+
+// Saat authorize memakai client terbitan, tukar kode WAJIB memakai client yang
+// sama. Trace menyimpan keduanya supaya kegagalan bisa dibaca tanpa menebak.
+test('client authorize dan client tukar kode tercatat sama', async () => {
+  const attempt = baseAttempt({ requested_client_id: 'oaiapp_SAME' });
+  const stub = oauthEnvWith({
+    attempt,
+    tokenResponses: [{ status: 400, body: { error: 'invalid_grant' } }],
+  });
+  try {
+    await assert.rejects(
+      completeOAuthAttempt(createEnv(), { id: 'user-1' }, {
+        attempt_id: attempt.id, state: 'S'.repeat(32), code: 'code-z', client_id: 'oaiapp_SAME',
+      }),
+    );
+    assert.equal(stub.state.tokenCalls[0].client_id, 'oaiapp_SAME');
+    const failed = stub.state.patches.find((patch) => patch.status === 'failed');
+    assert.match(failed.error_message, /client=oaiapp_SAME authorize_client=oaiapp_SAME/);
   } finally {
     stub.restore();
   }
