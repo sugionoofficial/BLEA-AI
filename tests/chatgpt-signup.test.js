@@ -1119,3 +1119,24 @@ test('beginChatGptSignIn membuka tab baru, bukan menggantikan halaman panel', as
   const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
   assert.match(panel, /beginChatGptSignIn\(\{ loginHint[^}]*tab: authTab/);
 });
+
+// Pengguna berpindah perangkat (HP → PC) di tengah alur: URL callback boleh
+// diselesaikan dari perangkat yang localStorage-nya TIDAK memuat percobaan itu.
+// Dulu klien menolak di depan ("state tidak cocok") sebelum server sempat
+// memeriksa `state` yang tersimpan — tempelan URL yang sah jadi gagal.
+test('URL callback bisa diselesaikan dari perangkat lain (state dicari di server)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const client = readFileSync(new URL('../src/studio/chatgptOAuthClient.js', import.meta.url), 'utf8');
+  assert.ok(!/pending\.state !== returnedState/.test(client), 'jangan menolak state sebelum server memeriksanya');
+  assert.match(client, /pendingAttemptId/);
+  assert.match(client, /server mencari barisnya lewat `state`/);
+});
+
+// `invalid_state` punya dua sumber; saran perbaikannya tidak boleh tertukar.
+test('explainOAuthError membedakan invalid_state alur daftar dan OAuth BLEA', () => {
+  const { explainOAuthError } = globalThis.__signup;
+  const signupPage = explainOAuthError({ error: 'invalid_state' });
+  assert.match(signupPage.stage, /daftar|verifikasi/i);
+  const oauthPage = explainOAuthError({ error: 'invalid_state', detail: 'https://auth.openai.com/api/accounts/authorize?client_id=x' });
+  assert.match(oauthPage.stage, /authorize|OAuth BLEA/i);
+});
