@@ -1022,6 +1022,14 @@ async function sendCloudflareBindingChat({ ai, model, payload, stream = false })
 // hanya berisi dua provider itu — alibaba (16 model chat) dan cloudflare
 // (12 model) tidak pernah ikut menjadi kandidat, sehingga fallback berakhir
 // "tidak ada kandidat" tanpa satu pun percobaan nyata.
+// Status yang layak dicoba ke provider LAIN. Dulu 401/402/403 tidak termasuk,
+// padahal justru itulah kegagalan paling sering pada provider utama (kunci
+// alibaba ditolak, kredit OpenAI habis). Kandidat cadangan memakai kredensial
+// provider yang berbeda, jadi status akun provider utama tidak menghalangi
+// percobaan — kecuali 400/404 yang menandakan payload/model salah dan akan
+// gagal sama di mana pun.
+const FALLBACK_WORTHY_STATUS = new Set([401, 402, 403, 429, 500, 502, 503, 504]);
+
 const PROVIDER_MODEL_CANDIDATE_QUERY = '/provider_models?select=provider,model&active=eq.true&order=created_at.desc&limit=1000';
 
 function buildAnyProviderChatCandidates({ primaryProvider, primaryModel, keyByProvider, dbModelRows, env, poolByProvider }) {
@@ -5820,7 +5828,7 @@ async function handleApi(request, url, env) {
               retryAfterSec: probed.errorInfo?.retryAfterSec ?? null,
               detail: probed.errorInfo?.rawDetail || '',
             });
-            const canRetryStreamFallback = [400, 404, 429, 502, 503, 504].includes(probed.status) && body.autoFallback !== false;
+            const canRetryStreamFallback = FALLBACK_WORTHY_STATUS.has(probed.status) && body.autoFallback !== false;
             if (canRetryStreamFallback) {
               const modelsRes = await servicePostgrest(env, PROVIDER_MODEL_CANDIDATE_QUERY);
               cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
@@ -6005,7 +6013,7 @@ async function handleApi(request, url, env) {
           });
         }
 
-        const canRetryFallback = (!attempt.ok ? [400, 404, 429, 502, 503, 504].includes(attempt.status) : !finalReply) && body.autoFallback !== false;
+        const canRetryFallback = (!attempt.ok ? FALLBACK_WORTHY_STATUS.has(attempt.status) : !finalReply) && body.autoFallback !== false;
         if ((!attempt.ok || !finalReply) && canRetryFallback) {
           const modelsRes = await servicePostgrest(env, PROVIDER_MODEL_CANDIDATE_QUERY);
           cachedDbModels = modelsRes.ok ? await modelsRes.json().catch(() => []) : [];
