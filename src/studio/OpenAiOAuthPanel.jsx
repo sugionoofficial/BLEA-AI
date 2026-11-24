@@ -121,6 +121,10 @@ export function OpenAiOAuthPanel({ onLinked }) {
     // Kalau berhasil, halaman langsung dialihkan ke OpenAI; tidak ada state lagi.
     if (!res.ok) {
       setBusy('');
+      // 401 = sesi BLEA, bukan OpenAI. Dulu teksnya "Login diperlukan." dan
+      // terbaca seperti OpenAI yang menolak; sekarang dijelaskan apa adanya
+      // plus tautan masuk, supaya tidak ada yang menebak.
+      setNeedsLogin(Number(res.status) === 401);
       setError(res.error || 'Tidak bisa memulai login OpenAI.');
     }
   }
@@ -300,6 +304,13 @@ export function OpenAiOAuthPanel({ onLinked }) {
           </small>
         )}
       </div>
+
+      {needsLogin && (
+        <p className="oauth-error">
+          <CircleAlert size={14} /> Sesi BLEA di halaman ini tidak aktif.{' '}
+          <a href="/login">Masuk dulu</a>, lalu kembali ke halaman ini dan tekan tombol Connect lagi.
+        </p>
+      )}
 
       {/* Diagnosa kode error dari halaman OpenAI. */}
       <div className="oauth-manual">

@@ -143,7 +143,16 @@ export async function beginOpenAiSignIn({ issuedClientId = '', loginHint = '', t
     redirect_uri: redirectUri,
     client_id: authorizeClientId,
   });
-  if (!res.ok) return { ok: false, error: res.data?.error || 'Tidak bisa memulai sesi login OpenAI.' };
+  // `status`/`code` diteruskan supaya UI bisa membedakan "sesi BLEA mati"
+  // (401) dari "tombolnya gagal" — dua hal dengan jalan keluar berbeda.
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      code: res.data?.code || '',
+      error: res.data?.error || 'Tidak bisa memulai sesi login OpenAI.',
+    };
+  }
 
   try {
     window.localStorage.setItem(PENDING_KEY, JSON.stringify({

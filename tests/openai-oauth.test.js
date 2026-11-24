@@ -539,7 +539,39 @@ test('/api/openai-oauth/complete menolak 401 tanpa sesi BLEA', async () => {
     createEnv(),
   );
   assert.equal(res.status, 401);
-  assert.match((await res.json()).error, /Login diperlukan/);
+  const body = await res.json();
+  // Pesan lama "Login diperlukan." dibaca pengguna sebagai *OpenAI* menolak.
+  // 401 di sini selalu soal sesi BLEA, jadi kalimatnya harus menyebut itu.
+  assert.equal(body.code, 'auth_required');
+  assert.match(body.error, /token sesi BLEA/i);
+  assert.match(body.error, /belum menyentuh OpenAI|belum login/i);
+});
+
+// Token ADA tetapi ditolak Supabase (kedaluwarsa/di-revoke) adalah keadaan
+// berbeda dari "tidak ada token": yang pertama butuh masuk ulang, yang kedua
+// halaman memang belum login. Pesannya tidak boleh menyamakan keduanya.
+test('/api/openai-oauth menolak token yang dikirim tetapi tidak diterima', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/user')) {
+      return new Response(JSON.stringify({ message: 'invalid JWT' }), { status: 401, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let body;
+  let status;
+  try {
+    const res = await worker.fetch(apiRequest('/openai-oauth', { token: 'jwt-kedaluwarsa' }), createEnv());
+    status = res.status;
+    body = await res.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(status, 401);
+  assert.equal(body.code, 'auth_required');
+  assert.match(body.error, /Sesi BLEA tidak diterima/i);
+  // Harus jelas bahwa OpenAI belum dilibatkan sama sekali.
+  assert.match(body.error, /belum menyentuh OpenAI/);
 });
 
 // Regresi penempatan JSX: blok "Sudah menyetujui di OpenAI?" dulu tidak
