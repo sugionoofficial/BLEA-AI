@@ -3,9 +3,7 @@ import {
   CircleAlert,
   CircleCheck,
   ClipboardCopy,
-  Download,
   ExternalLink,
-  Link2,
   Loader2,
   MailSearch,
   RefreshCw,
@@ -15,28 +13,22 @@ import {
   UserPlus,
 } from 'lucide-react';
 import {
-  chatGptSignupApi,
-  fetchAutofillUserscript,
-  newLoggingId,
+  openAiSignupApi,
   SIGNUP_STEP_META,
-} from './chatgptSignupClient';
+} from './openaiSignupClient';
 import {
   APP_HANDOFF_GUIDE,
-  buildAutofillBookmarklet,
-  sessionCheckGuide,
-} from '../lib/chatgptSignup';
-import {
   PLATFORM_API_KEYS_URL,
   PLATFORM_BILLING_URL,
   PLATFORM_LOGIN_URL,
   PLATFORM_STEPS,
-  SIGNUP_FORM_URL,
-} from '../lib/chatgptSignup';
+  sessionCheckGuide,
+} from '../lib/openaiSignup';
 
 const STEP_ORDER = ['dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi'];
 
 // Alasan singkat yang tampil sebelum server menjawab. Versi panjang dan
-// riwayat percobaan ada di docs/chatgpt-signup.md, bukan di layar.
+// riwayat percobaan ada di docs/openai-signup.md, bukan di layar.
 const DEFAULT_LIMITS = [
   'Pendaftaran dikirim dari browser Anda, bukan dari server BLEA (Worker diblokir ke domain OpenAI).',
   'Kode verifikasi Anda tempel sendiri di tab OpenAI — tidak ada verifikasi otomatis.',
@@ -48,20 +40,13 @@ function toneOf(step) {
 }
 
 /**
- * Panel "Daftar ChatGPT pakai email TempMail".
+ * Panel "Daftar akun OpenAI pakai email TempMail".
  *
- * Perbaikan penting: dulu tombol utama membuka
- * `chatgpt.com/api/auth/signin/openai?...` dengan GET. Itu endpoint POST
- * NextAuth, jadi tanpa csrfToken halaman selalu berakhir di
- * "Kami tidak dapat memproses upaya masuk Anda" dan email tidak pernah
- * terkirim. Percobaan berikutnya menunjukkan `chatgpt.com/auth/login` juga
- * gagal (halaman error, lalu tab dilempar ke beranda setelah cookie dihapus),
- * jadi sekarang yang dibuka adalah `chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup`,
- * yang berakhir di formulir "Create an account" milik OpenAI.
- * Langkah berikutnya diverifikasi lewat URL setelah pengguna menekan
- * "Continue" — bukan diklaim berhasil tanpa bukti.
+ * Satu jalur saja: platform.openai.com/login → email → Continue → kode 6 digit
+ * → platform.openai.com/home → API keys. Langkahnya diverifikasi lewat URL
+ * setelah pengguna menekan "Continue", bukan diklaim berhasil tanpa bukti.
  */
-export function ChatGptSignupPanel({ onVerified }) {
+export function OpenAiSignupPanel({ onVerified }) {
   const [config, setConfig] = useState(null);
   const [tempEmail, setTempEmail] = useState('');
   const [attempts, setAttempts] = useState([]);
@@ -72,24 +57,16 @@ export function ChatGptSignupPanel({ onVerified }) {
   const [activeId, setActiveId] = useState('');
   const [lastUrl, setLastUrl] = useState('');
   const [candidates, setCandidates] = useState([]);
-  const [signin, setSignin] = useState(null);
   const [returnUrl, setReturnUrl] = useState('');
   const [returnAnalysis, setReturnAnalysis] = useState(null);
   const [copied, setCopied] = useState('');
-  const [bookmarklet, setBookmarklet] = useState('');
-  const [userscriptBusy, setUserscriptBusy] = useState(false);
-  const [userscriptText, setUserscriptText] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
   const [sessionGuide, setSessionGuide] = useState(null);
   const [codeExpired, setCodeExpired] = useState(false);
   const [codeNote, setCodeNote] = useState('');
   const [codeUnverified, setCodeUnverified] = useState(false);
-  // Jalur default: platform.openai.com (akun API). Jalur chatgpt.com tetap
-  // tersedia untuk siapa pun yang memang punya paket ChatGPT Plus/Pro.
-  const [route, setRoute] = useState('platform');
-
   const load = useCallback(async () => {
-    const res = await chatGptSignupApi.status();
+    const res = await openAiSignupApi.status();
     if (!res.ok) {
       setError(res.data?.error || 'Status pendaftaran tidak bisa dimuat.');
       return;
@@ -111,7 +88,7 @@ export function ChatGptSignupPanel({ onVerified }) {
     if (!activeId) { setVerificationCode(''); return; }
     let cancelled = false;
     (async () => {
-      const res = await chatGptSignupApi.code(activeId);
+      const res = await openAiSignupApi.code(activeId);
       if (cancelled || !res.ok) return;
       setVerificationCode(String(res.data?.code || ''));
       setCodeExpired(Boolean(res.data?.code_expired));
@@ -121,21 +98,10 @@ export function ChatGptSignupPanel({ onVerified }) {
     return () => { cancelled = true; };
   }, [activeId]);
 
-  // Dibangun dari email yang sedang diketik, bukan nilai lama server.
-  useEffect(() => {
-    if (!email.trim()) { setBookmarklet(''); return; }
-    try {
-      setBookmarklet(buildAutofillBookmarklet(email));
-    } catch {
-      // Email belum valid: jangan tampilkan bookmarklet yang salah alamat.
-      setBookmarklet('');
-    }
-  }, [email]);
-
   const active = attempts.find((item) => item.id === activeId) || null;
   const stepIndex = active ? STEP_ORDER.indexOf(active.step) : -1;
 
-  // Panduan manual, bukan pemeriksaan otomatis: chatgpt.com tidak mengirim
+  // Panduan manual, bukan pemeriksaan otomatis: halaman OpenAI tidak mengirim
   // header CORS, jadi fetch lintas-origin selalu berakhir "Failed to fetch".
 
   function toggleSessionGuide() {
@@ -155,7 +121,7 @@ export function ChatGptSignupPanel({ onVerified }) {
 
     let res;
     try {
-      res = await chatGptSignupApi.prepare(email, newLoggingId(), { route, next: '/api-keys' });
+      res = await openAiSignupApi.prepare(email, { next: '/api-keys' });
     } catch (requestError) {
       closePendingTab();
       setBusy('');
@@ -170,16 +136,13 @@ export function ChatGptSignupPanel({ onVerified }) {
     }
     const url = res.data?.url || res.data?.attempt?.signup_url || '';
     setLastUrl(url);
-    setSignin(res.data?.signin || null);
     setActiveId(res.data?.attempt?.id || '');
     setReturnUrl('');
     setReturnAnalysis(null);
     const plusWarning = res.data?.plus_address
       ? ' Alamat ini memakai +tag; sebagian formulir OpenAI menolak tanda + — kalau ditolak, ganti alias tanpa + di TempMail.'
       : '';
-    setNotice((res.data?.route === 'platform'
-      ? 'Halaman login platform.openai.com dibuka. Tempel email TempMail, tekan Continue, lalu masukkan kode 6 digit dari inbox. Setelah masuk, buat API key di menu API keys.'
-      : 'Formulir OpenAI dibuka. Tempel email TempMail di kolom "Email address", lalu tekan Continue. Kalau yang tampil "Welcome back", tekan tautan "Sign up" di bawah tombol Continue lebih dulu.') + plusWarning);
+    setNotice('Halaman login platform.openai.com dibuka. Tempel email TempMail, tekan Continue, lalu masukkan kode 6 digit dari inbox. Setelah masuk, buat API key di menu API keys.' + plusWarning);
     if (url && pendingTab) {
       pendingTab.location.replace(url);
     } else if (url) {
@@ -190,41 +153,12 @@ export function ChatGptSignupPanel({ onVerified }) {
     await load();
   }
 
-  // Unduh userscript sebagai berkas, dan simpan isinya sebagai cadangan bila
-  // unduhan diblokir.
-  async function downloadUserscript() {
-    setUserscriptBusy(true);
-    setError('');
-    setNotice('');
-    const res = await fetchAutofillUserscript(email);
-    setUserscriptBusy(false);
-    if (!res.ok) {
-      setError(res.error || 'Userscript tidak bisa diunduh.');
-      return;
-    }
-    setUserscriptText(res.text);
-    try {
-      const blob = new Blob([res.text], { type: 'text/javascript' });
-      const href = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = href;
-      link.download = 'blea-chatgpt-autofill.user.js';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(href), 10_000);
-      setNotice('Berkas userscript diunduh. Buka berkas itu → Tampermonkey menawarkan Install → setelah itu kolom email terisi otomatis setiap halaman login ChatGPT dibuka.');
-    } catch {
-      setError('Unduhan diblokir browser. Salin isi skrip dari kotak di bawah ke userscript baru di Tampermonkey.');
-    }
-  }
-
   async function confirmReturnUrl() {
     if (!active) return;
     setBusy('confirm');
     setError('');
     setReturnAnalysis(null);
-    const res = await chatGptSignupApi.confirm(active.id, returnUrl);
+    const res = await openAiSignupApi.confirm(active.id, returnUrl);
     setBusy('');
     if (!res.ok) {
       setError(res.data?.error || 'URL hasil tidak bisa diperiksa.');
@@ -243,7 +177,7 @@ export function ChatGptSignupPanel({ onVerified }) {
     if (!active) return;
     setBusy(`mark:${step}`);
     setError('');
-    const res = await chatGptSignupApi.mark(active.id, step, '');
+    const res = await openAiSignupApi.mark(active.id, step, '');
     setBusy('');
     if (!res.ok) {
       setError(res.data?.error || 'Langkah gagal disimpan.');
@@ -258,7 +192,7 @@ export function ChatGptSignupPanel({ onVerified }) {
     setBusy('verify');
     setError('');
     setCandidates([]);
-    const res = await chatGptSignupApi.verify(active.id);
+    const res = await openAiSignupApi.verify(active.id);
     setBusy('');
     if (!res.ok) {
       setError(res.data?.error || 'Inbox TempMail tidak bisa diperiksa.');
@@ -275,7 +209,7 @@ export function ChatGptSignupPanel({ onVerified }) {
       // Email OpenAI berisi KODE, bukan tautan. Instruksi "klik tautan" dulu
       // salah dan membuat pengguna buntu.
       setNotice(res.data?.code
-        ? `Email verifikasi ditemukan: “${res.data?.best?.subject || '(tanpa subjek)'}”. Kodenya sudah diambil — salin lalu tempel di tab ChatGPT.`
+        ? `Email verifikasi ditemukan: “${res.data?.best?.subject || '(tanpa subjek)'}”. Kodenya sudah diambil — salin lalu tempel di tab platform.`
         : `Email verifikasi ditemukan: “${res.data?.best?.subject || '(tanpa subjek)'}”, tetapi kodenya tidak terbaca otomatis. Buka pesan di TempMail dan salin kodenya.`);
       onVerified?.();
     } else {
@@ -316,9 +250,8 @@ export function ChatGptSignupPanel({ onVerified }) {
   const copyUrl = () => copyText(lastUrl, 'url');
 
   const activeCode = verificationCode || active?.verification_code || '';
-  // Halaman tujuan tombol. Jalur platform memakai login platform (default),
-  // jalur ChatGPT memakai formulir daftar yang sudah terbukti.
-  const signupPageUrl = lastUrl || (route === 'platform' ? PLATFORM_LOGIN_URL : SIGNUP_FORM_URL);
+  // Halaman tujuan tombol: login platform (default) atau URL yang terakhir dibuka.
+  const signupPageUrl = lastUrl || PLATFORM_LOGIN_URL;
 
   return (
     <section className="oauth-panel cga-signup" id="cga-signup">
@@ -327,9 +260,9 @@ export function ChatGptSignupPanel({ onVerified }) {
           <span className="oauth-badge"><UserPlus size={12} /> Langkah 1 · Buat akun</span>
           <h2>Daftar lewat OpenAI Platform</h2>
           <p>
-            Jalur utama: <b>platform.openai.com</b> — email TempMail, Continue, kode 6 digit, lalu masuk.
+            <b>platform.openai.com</b> — email TempMail, Continue, kode 6 digit, lalu masuk.
             Setelah itu buat <b>API key</b> di menu API keys dan tempel di “Tambah akun manual”.
-            Tidak perlu paket ChatGPT dan tidak terkena masalah OAuth.
+            Tidak perlu langganan apa pun dan tidak terkena masalah OAuth.
           </p>
         </div>
         <div className="oauth-head-actions">
@@ -346,20 +279,6 @@ export function ChatGptSignupPanel({ onVerified }) {
       {/* LANGKAH 1 — email + buka formulir. */}
       <div className="cga-step">
         <b className="cga-step-title"><span>1</span> Isi email, buka formulir</b>
-        <div className="cga-route">
-          <label>
-            <input type="radio" name="cga-route" checked={route === 'platform'} onChange={() => setRoute('platform')} />
-            <span>
-              <b>OpenAI Platform</b> <small>platform.openai.com → API key. Tidak perlu paket ChatGPT.</small>
-            </span>
-          </label>
-          <label>
-            <input type="radio" name="cga-route" checked={route === 'chatgpt'} onChange={() => setRoute('chatgpt')} />
-            <span>
-              <b>ChatGPT (OAuth)</b> <small>chatgpt.com → sesi ChatGPT. Butuh Plus/Pro pribadi.</small>
-            </span>
-          </label>
-        </div>
         <div className="cga-signup-grid">
           <label>
             <span>Email dari halaman TempMail</span>
@@ -393,7 +312,7 @@ export function ChatGptSignupPanel({ onVerified }) {
                 Buka TempMail <ExternalLink size={12} />
               </a>
               <a className="cga-signup-open" href={signupPageUrl} target="_blank" rel="noreferrer">
-                {route === 'platform' ? 'Buka login platform' : 'Buka formulir ChatGPT'} <ExternalLink size={12} />
+                Buka login platform <ExternalLink size={12} />
               </a>
             </div>
           </label>
@@ -440,48 +359,29 @@ export function ChatGptSignupPanel({ onVerified }) {
             Tekan <b>Cari email verifikasi</b> setelah formulir OpenAI meminta kode. Kodenya muncul di sini.
           </small>
         )}
-        {route === 'platform' && (
-          <ol className="cga-signup-session-steps">
-            {PLATFORM_STEPS.map((line) => <li key={line}>{line}</li>)}
-          </ol>
-        )}
+        <ol className="cga-signup-session-steps">
+          {PLATFORM_STEPS.map((line) => <li key={line}>{line}</li>)}
+        </ol>
       </div>
 
-      {/* LANGKAH 3 tidak diduplikasi di sini: panel "Continue with ChatGPT" di
-          bawah adalah satu-satunya tombol penyimpan akses. Dua tombol dengan
-          fungsi sama membuat bingung. */}
+      {/* Langkah 3 tidak menduplikasi tombol penyimpan: "Tambah akun manual" di
+          atas sudah jadi satu-satunya tempat penyimpanan API key. Jalur OAuth
+          (Connect OpenAI) ada di panel terpisah di bawah. */}
       <div className="cga-step">
         <b className="cga-step-title"><span>3</span> Simpan aksesnya ke pool</b>
-        {route === 'platform' ? (
-          <>
-            <p className="cga-step-note">
-              Di platform.openai.com buka <b>API keys</b> → <b>Create new secret key</b>, salin key-nya
-              (diawali <code>sk-</code>), lalu tempel lewat tombol <b>Tambah akun manual</b> di atas.
-              Pemakaian API ditagih dari saldo billing platform, bukan dari paket ChatGPT.
-            </p>
-            <div className="cga-item-actions">
-              <a className="cga-primary cga-jump" href={PLATFORM_API_KEYS_URL} target="_blank" rel="noopener noreferrer">
-                <PlugZap size={12} /> Buka API keys
-              </a>
-              <a className="cga-signup-open" href={PLATFORM_BILLING_URL} target="_blank" rel="noopener noreferrer">
-                Cek saldo billing <ExternalLink size={12} />
-              </a>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="cga-step-note">
-              Setelah masuk ke ChatGPT (halaman chat, bukan halaman verifikasi), lanjut ke panel
-              <b> Continue with ChatGPT</b> di bawah dan tekan <b>Simpan aksesnya ke pool</b>.
-              Yang disimpan access token ±1 jam + refresh token yang diperbarui otomatis, bukan cookie sesi.
-            </p>
-            <div className="cga-item-actions">
-              <a className="cga-primary cga-jump" href="#cga-oauth">
-                <PlugZap size={12} /> Ke langkah 3 di bawah
-              </a>
-            </div>
-          </>
-        )}
+        <p className="cga-step-note">
+          Di platform.openai.com buka <b>API keys</b> → <b>Create new secret key</b>, salin key-nya
+          (diawali <code>sk-</code>), lalu tempel lewat tombol <b>Tambah akun manual</b> di atas.
+          Pemakaian API ditagih dari saldo billing platform.
+        </p>
+        <div className="cga-item-actions">
+          <a className="cga-primary cga-jump" href={PLATFORM_API_KEYS_URL} target="_blank" rel="noopener noreferrer">
+            <PlugZap size={12} /> Buka API keys
+          </a>
+          <a className="cga-signup-open" href={PLATFORM_BILLING_URL} target="_blank" rel="noopener noreferrer">
+            Cek saldo billing <ExternalLink size={12} />
+          </a>
+        </div>
       </div>
 
       {error && <p className="oauth-error"><CircleAlert size={14} /> {error}</p>}
@@ -526,7 +426,7 @@ export function ChatGptSignupPanel({ onVerified }) {
                       spellCheck={false}
                       value={returnUrl}
                       onChange={(event) => setReturnUrl(event.target.value)}
-                      placeholder="https://auth.openai.com/… atau https://chatgpt.com/auth/…"
+                      placeholder="https://auth.openai.com/… atau https://platform.openai.com/…"
                     />
                     <button type="button" className="cga-primary" onClick={confirmReturnUrl} disabled={busy === 'confirm' || !returnUrl.trim()}>
                       {busy === 'confirm' ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Periksa URL
@@ -555,7 +455,7 @@ export function ChatGptSignupPanel({ onVerified }) {
 
           {lastUrl && (
             <div className="oauth-manual">
-              <b><ClipboardCopy size={13} /> URL formulir yang dibuka</b>
+              <b><ClipboardCopy size={13} /> URL login yang dibuka</b>
               <p><code>{lastUrl}</code></p>
               <div className="cga-signup-url-actions">
                 <a className="cga-signup-open" href={lastUrl} target="_blank" rel="noopener noreferrer">
@@ -566,42 +466,6 @@ export function ChatGptSignupPanel({ onVerified }) {
             </div>
           )}
 
-          <details className="cga-signup-optional">
-            <summary>Opsional: isi otomatis (tidak wajib)</summary>
-            <p>
-              Tempel manual sudah cukup. Ini hanya untuk yang malas mengetik ulang: userscript
-              Tampermonkey atau bookmarklet. Keduanya hanya mengisi kolom email — <b>Continue</b>{' '}
-              tetap Anda yang tekan.
-            </p>
-            <div className="cga-signup-bookmarklet-row">
-              <button type="button" className="cga-signup-userscript" onClick={downloadUserscript} disabled={userscriptBusy || !email.trim()}>
-                {userscriptBusy ? <Loader2 size={12} className="agent-spin" /> : <Download size={12} />} Unduh userscript
-              </button>
-              <a
-                className="cga-signup-drag"
-                href={bookmarklet}
-                title="Seret ke bilah bookmark, lalu klik di tab ChatGPT"
-                onClick={(event) => {
-                  event.preventDefault();
-                  setError('Seret tombol ini ke bilah bookmark, lalu klik bookmark-nya di tab ChatGPT. Chrome membuang awalan javascript: kalau ditempel — seret, jangan tempel.');
-                }}
-              >
-                <ClipboardCopy size={12} /> Seret: bookmarklet
-              </a>
-              <button type="button" onClick={() => copyText(bookmarklet, 'bookmarklet')}>
-                {copied === 'bookmarklet' ? 'Skrip disalin' : 'Salin skrip bookmarklet'}
-              </button>
-            </div>
-            {userscriptText && (
-              <div className="cga-signup-userscript-fallback">
-                <small>Cadangan: salin skrip ke Tampermonkey → Create a new script.</small>
-                <textarea readOnly value={userscriptText} rows={8} spellCheck={false} />
-                <button type="button" onClick={() => copyText(userscriptText, 'userscript')}>
-                  {copied === 'userscript' ? 'Skrip userscript disalin' : 'Salin skrip userscript'}
-                </button>
-              </div>
-            )}
-          </details>
         </details>
       )}
 
@@ -610,9 +474,9 @@ export function ChatGptSignupPanel({ onVerified }) {
         <summary>Kalau ada masalah (klik untuk membuka)</summary>
 
         <div className="cga-problem">
-          <b>Tidak bisa memeriksa sesi ChatGPT dari BLEA</b>
+          <b>Tidak bisa memeriksa sesi platform dari BLEA</b>
           <p>
-            chatgpt.com tidak mengizinkan halaman lain membacanya, jadi pemeriksaan otomatis selalu
+            platform.openai.com tidak mengizinkan halaman lain membacanya, jadi pemeriksaan otomatis selalu
             berakhir “Failed to fetch”. Ini panduan manual:
           </p>
           <button type="button" className="cga-signup-userscript" onClick={toggleSessionGuide}>
@@ -640,7 +504,7 @@ export function ChatGptSignupPanel({ onVerified }) {
             dibuka dua kali. Satu percobaan = satu tab.
           </p>
           <ol className="cga-signup-session-steps">
-            <li>Tutup semua tab <code>auth.openai.com</code> dan <code>chatgpt.com</code>.</li>
+            <li>Tutup semua tab <code>auth.openai.com</code> dan <code>platform.openai.com</code>.</li>
             <li>Kembali ke panel ini, lalu tekan <b>Siapkan &amp; buka daftar</b> SEKALI.</li>
             <li>Biarkan tab itu terbuka sampai kode verifikasi ditempel.</li>
           </ol>
@@ -658,4 +522,4 @@ export function ChatGptSignupPanel({ onVerified }) {
   );
 }
 
-export default ChatGptSignupPanel;
+export default OpenAiSignupPanel;

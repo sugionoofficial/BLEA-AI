@@ -1,8 +1,8 @@
-import { ChatGptOAuthPanel } from './ChatGptOAuthPanel';
-import './chatgpt-accounts.css';
+import { OpenAiOAuthPanel } from './OpenAiOAuthPanel';
+import './openai-accounts.css';
 
 /**
- * Halaman callback OAuth ChatGPT (`/auth/callback`).
+ * Halaman callback OAuth OpenAI (`/auth/callback`).
  *
  * Kenapa perlu halaman sendiri: OpenAI mewajibkan redirect_uri loopback
  * `http://127.0.0.1:<port>/auth/callback`. Kalau BLEA dibuka dari 127.0.0.1,
@@ -13,12 +13,12 @@ import './chatgpt-accounts.css';
  * loopback, jalankan `npm run dev` lalu buka lewat 127.0.0.1 agar fallback SPA
  * menyajikan halaman ini.
  */
-export function ChatGptOAuthCallbackPage() {
+export function OpenAiOAuthCallbackPage() {
   return (
-    <div className="chatgpt-accounts">
-      <ChatGptOAuthPanel />
+    <div className="openai-accounts">
+      <OpenAiOAuthPanel />
     </div>
   );
 }
 
-export default ChatGptOAuthCallbackPage;
+export default OpenAiOAuthCallbackPage;

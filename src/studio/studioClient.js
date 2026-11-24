@@ -42,24 +42,24 @@ export async function fetchLibrary({ tool = 'all', limit = 40 } = {}) {
   return request('/library', { method: 'POST', body: { tool, limit } });
 }
 
-// ---- Pool akun ChatGPT/OpenAI (admin) ----
-export async function fetchChatGptAccounts() {
-  return request('/chatgpt-accounts', { tool: '' });
+// ---- Pool akun OpenAI (admin) ----
+export async function fetchOpenAiAccounts() {
+  return request('/openai-accounts', { tool: '' });
 }
-export async function createChatGptAccount(payload) {
-  return request('/chatgpt-accounts', { method: 'POST', body: payload, tool: '' });
+export async function createOpenAiAccount(payload) {
+  return request('/openai-accounts', { method: 'POST', body: payload, tool: '' });
 }
-export async function updateChatGptAccount(payload) {
-  return request('/chatgpt-accounts', { method: 'PATCH', body: payload, tool: '' });
+export async function updateOpenAiAccount(payload) {
+  return request('/openai-accounts', { method: 'PATCH', body: payload, tool: '' });
 }
-export async function deleteChatGptAccount(id) {
-  return request('/chatgpt-accounts', { method: 'DELETE', body: { id }, tool: '' });
+export async function deleteOpenAiAccount(id) {
+  return request('/openai-accounts', { method: 'DELETE', body: { id }, tool: '' });
 }
-export async function testChatGptAccount(id) {
-  return request('/chatgpt-accounts/test', { method: 'POST', body: { id }, tool: '' });
+export async function testOpenAiAccount(id) {
+  return request('/openai-accounts/test', { method: 'POST', body: { id }, tool: '' });
 }
 
-// ---- Model ChatGPT untuk Studio ----
+// ---- Model OpenAI untuk Studio ----
 // Studio memakai model OpenAI (pool akun manual), bukan katalog provider yang
 // terdaftar di Admin Panel. Endpoint ini terpisah dari /api/enabled-models
 // supaya keduanya tidak saling mengubah.
@@ -71,7 +71,7 @@ export async function pingStudioModels() {
   return request('/studio/ping', { method: 'POST', body: {}, tool: '' });
 }
 
-// ---- Generasi media lewat pool akun ChatGPT ----
+// ---- Generasi media lewat pool akun OpenAI ----
 export async function fetchStudioImageConfig() {
   return request('/studio/image/config', { method: 'POST', body: {} });
 }

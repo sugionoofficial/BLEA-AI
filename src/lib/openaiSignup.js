@@ -1,114 +1,45 @@
-// Daftar akun ChatGPT dari halaman admin, memakai email yang sedang aktif di
-// halaman TempMail.
+// Pendaftaran akun OpenAI dari halaman admin, memakai email yang sedang aktif
+// di halaman TempMail.
 //
-// BACA INI — inti persoalannya:
+// Alur yang dipakai adalah jalur platform, seluruhnya di browser pengguna:
+//   platform.openai.com/login → email → Continue → kode 6 digit dari inbox
+//   → platform.openai.com/home → API keys → Create new secret key → sk-…
 //
-// `POST https://chatgpt.com/api/auth/signin/openai` adalah endpoint NextAuth,
-// bukan halaman. Kontraknya (lihat SDK ChatGPT: GET /api/auth/csrf → POST
-// {provider}?prompt=login dengan body callbackUrl + csrfToken) adalah:
-//
-//   GET  /api/auth/csrf            → { csrfToken: "…" }  + cookie __Host-next-auth.csrf-token
-//   POST /api/auth/signin/openai   → 302 ke auth.openai.com/… (atau JSON { url }) 
-//
-// Konsekuensinya:
-//   1. Menavigasi browser ke URL POST itu (GET tanpa csrfToken) SELALU gagal
-//      dengan "Kami tidak dapat memproses upaya masuk Anda. Coba lagi" —
-//      persis halaman error yang dilaporkan. Tab tidak pernah sampai ke
-//      formulir daftar, jadi email TempMail tidak pernah terkirim.
-//   2. Server BLEA juga tidak boleh mem-POST-nya: Cloudflare Worker diblokir
-//      ke domain OpenAI, dan hasil POST tanpa cookie/Turnstile browser tetap
-//      tidak menghasilkan akun.
-//   3. Pendaftaran akun otomatis ke OpenAI melanggar Terms of Use dan hasilnya
-//      langsung ditahan captcha.
-//
-// Jadi:
-//   • `buildSignupUrl` menghasilkan URL HALAMAN nyata yang memuat formulir:
-//     `chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup` →
-//     `auth.openai.com/create-account`. Bukan endpoint POST, jadi sah dibuka
-//     dengan GET. Dua URL sebelumnya sudah dicoba dan gagal (lihat catatan di
-//     SIGNUP_FORM_URL).
-//   • Di halaman itu, browser sendirilah yang mengambil csrfToken dan mem-POST
-//     formulir — jalur yang sah, dengan cookie & Turnstile milik pengguna.
-//   • `buildSigninBootstrap` menyediakan langkah yang sama untuk kasus halaman
-//     login sudah terbuka: kirim email (POST identitas) lalu lanjut ke
-//     verifikasi. Ini panduan, bukan eksekusi otomatis.
-//
-// Yang disimpan HANYA: email, URL yang dibuka, dan langkah terakhir. Tidak ada
-// kata sandi, kode verifikasi, csrfToken, atau token sesi chatgpt.com.
-
-// Endpoint NextAuth untuk memulai OAuth (HANYA sah lewat POST + csrfToken).
-export const SIGNUP_REQUEST_URL = 'https://chatgpt.com/api/auth/signin/openai';
-// Halaman yang memang bisa dibuka dengan GET. Ini yang dipakai tombol utama.
-export const SIGNUP_PAGE_URL = 'https://chatgpt.com/auth/login';
-/**
- * Titik masuk formulir pendaftaran yang TERBUKTI memuat halaman daftar.
- *
- * Riwayat kegagalan (semua direproduksi, bukan tebakan):
- *   1. `chatgpt.com/api/auth/signin/openai?...` — endpoint POST NextAuth, GET
- *      selalu berakhir "Kami tidak dapat memproses upaya masuk Anda".
- *   2. `chatgpt.com/auth/login?...` — di browser pengguna berakhir di
- *      "ChatGPT tidak dapat menyiapkan pemuatan ini", dan setelah cookie
- *      dihapus tab dilempar ke beranda. (Dari luar browser halaman ini tetap
- *      bisa dimuat, jadi penyebabnya di sisi sesi/perangkat, bukan URL.)
- *   3. `auth.openai.com/log-in` tanpa cookie — menampilkan "Sesi Anda telah
- *      berakhir / Lanjutkan dengan masuk, atau gunakan ChatGPT.com tanpa
- *      akun", bukan formulir. Saya sendiri yang salah memilih ini di #196.
- *
- * Yang sekarang dipakai adalah jalur yang dipakai tombol "Log in" di
- * chatgpt.com, ditambah `screen_hint=signup`:
- *
- *   https://chatgpt.com/auth/login_with?callback_path=/&screen_hint=signup
- *      → auth.openai.com/create-account ... "Create an account", ada kolom
- *        email, tombol Continue, DAN tautan "Already have an account? Log in".
- *
- * Dua detail yang mahal kalau salah:
- *   • `callback_path=/` harus literal. Versi ter-encode (`%2F`) membuat
- *     halaman ini menghasilkan HTTP 500.
- *   • JANGAN tambahkan `prompt=...`. `prompt` di jalur ini juga HTTP 500
- *     (di `/auth/login` parameter itu baik-baik saja — beda halaman, beda
- *     perilaku). Keduanya diuji langsung ke server OpenAI.
- */
-// ---- Jalur OpenAI Platform (BUKAN ChatGPT) -------------------------------
-//
-// Diminta pengguna: daftar/masuk lewat `platform.openai.com`, bukan lewat
-// `chatgpt.com`. Alurnya sama bentuknya: email → Continue → kode 6 digit dari
-// inbox → masuk ke `platform.openai.com/home`.
-//
-// Bedanya dengan jalur ChatGPT, dan ini yang harus jujur disampaikan:
-//   • Yang didapat dari platform adalah akun **API** (API key + billing),
-//     bukan sesi ChatGPT. Untuk dipakai BLEA, API key-nya ditempel lewat
-//     "Tambah akun manual" — bukan lewat OAuth "Continue with ChatGPT".
-//   • Jalur ini TIDAK perlu langganan ChatGPT Plus/Pro dan tidak terkena
-//     `invalid_grant` yang membelit alur OAuth.
-//   • Sebaliknya, pemakaian API ditagih per token dari saldo billing platform;
-//     tanpa saldo, API key tetap tidak bisa dipanggil.
+// Yang TIDAK dilakukan BLEA, dan ini batas, bukan kekurangan:
+//   • Tidak mem-POST formulir ke OpenAI dari server. Cloudflare Worker diblokir
+//     ke domain OpenAI, dan pendaftaran otomatis melanggar Terms of Use.
+//   • Tidak mengisi kolom email di domain lain. Same-origin policy melarangnya,
+//     dan halaman login platform tidak memakai `login_hint`.
+//   • Tidak membaca/menyimpan cookie atau token sesi platform. Yang disimpan
+//     hanya email, URL yang dibuka, dan langkah terakhir.
 //
 // Semua halaman platform mengarah ke `/login` bila belum masuk (diuji langsung
-// ke server OpenAI: /home, /api-keys, /settings/organization/billing/overview
-// semuanya 302 → /login?next=…). Karena itu `/login` adalah titik masuk yang
-// sah dan bisa dibuka dengan GET.
+// ke server OpenAI: /home, /api-keys, dan billing semuanya 302 → /login?next=…),
+// jadi `/login` adalah titik masuk yang sah dan bisa dibuka dengan GET.
+// Parameter `next` dibatasi daftar tetap supaya tidak bisa dipakai mengarahkan
+// ke domain lain.
+
 export const PLATFORM_BASE = 'https://platform.openai.com';
 export const PLATFORM_LOGIN_URL = `${PLATFORM_BASE}/login`;
 export const PLATFORM_HOME_URL = `${PLATFORM_BASE}/home`;
 export const PLATFORM_API_KEYS_URL = `${PLATFORM_BASE}/api-keys`;
 export const PLATFORM_BILLING_URL = `${PLATFORM_BASE}/settings/organization/billing/overview`;
-// Tujuan setelah login. Daftar tetap (bukan dari input pengguna) supaya
-// parameter `next` tidak bisa dipakai mengarahkan ke domain lain.
+// Daftar tujuan yang diizinkan untuk parameter `next`.
 export const PLATFORM_NEXT_PATHS = ['/home', '/api-keys', '/settings/organization/billing/overview'];
 
 /**
  * URL login/daftar platform untuk sebuah email.
  *
  * `email` sengaja tidak dikirim sebagai parameter: halaman login platform tidak
- * memakai `login_hint` (sama seperti formulir Auth0 ChatGPT), dan parameter
- * karangan bisa memicu error. Kolom email tetap diisi manual.
+ * memakai `login_hint`, dan parameter karangan bisa memicu error. Kolom email
+ * tetap diisi manual.
  */
 export function buildPlatformSignupUrl(_email, { next = '' } = {}) {
   const target = PLATFORM_NEXT_PATHS.includes(next) ? next : '';
   return target ? `${PLATFORM_LOGIN_URL}?next=${encodeURIComponent(target)}` : PLATFORM_LOGIN_URL;
 }
 
-/** Langkah yang dilihat pengguna setelah memakai jalur platform. */
+/** Langkah yang dilihat pengguna di panel. */
 export const PLATFORM_STEPS = [
   'Klik "Buka login platform", lalu tempel email TempMail di kolom Email address dan tekan Continue.',
   'Buka halaman TempMail, salin kode 6 digit dari email OpenAI, tempel di halaman platform, lalu lanjutkan.',
@@ -116,70 +47,8 @@ export const PLATFORM_STEPS = [
   'Kembali ke panel ini → "Tambah akun manual" → tempel key itu sebagai API key. Akun langsung bisa dipakai BLEA.',
 ];
 
-export const SIGNUP_FORM_ORIGIN = 'https://chatgpt.com';
-export const SIGNUP_ENTRY_PATH = '/auth/login_with';
-export const SIGNUP_FORM_URL = `${SIGNUP_FORM_ORIGIN}${SIGNUP_ENTRY_PATH}?callback_path=/&screen_hint=signup`;
-export const SIGNUP_CSRF_URL = 'https://chatgpt.com/api/auth/csrf';
-export const SIGNUP_STEPS = [
-  'dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi', 'dilewati',
-];
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// Domain +tag Gmail: OpenAI menolak alamat yang mengandung tanda `+` pada
-// sebagian formulir, jadi kemampuan ini dilaporkan apa adanya, bukan disembunyikan.
-const PLUS_ADDRESS_RE = /\+[^@]*@/;
-
-function fail(message, status = 400, extra = {}) {
-  return Object.assign(new Error(message), { status, ...extra });
-}
-
-function cleanText(value, max) {
-  return String(value ?? '').trim().slice(0, max);
-}
-
 /**
- * URL yang benar untuk dibuka browser: halaman login/daftar, bukan endpoint
- * POST NextAuth. `login_hint` berisi email TempMail; tidak ada password dan
- * tidak ada token di URL.
- */
-export function buildSignupUrl(email, { authSessionLoggingId = '' } = {}) {
-  // Disusun sebagai string, bukan URLSearchParams: `callback_path=/` harus
-  // literal (`%2F` → halaman error 500 di server OpenAI).
-  // `email` sengaja tidak dipakai: tidak ada parameter di jalur ini yang
-  // terbukti mengisi kolom email, dan parameter karangan bisa memicu error.
-  void email;
-  const loggingId = String(authSessionLoggingId ?? '').trim().slice(0, 64);
-  // `auth_session_logging_id` sudah terbukti diterima jalur ini (dipakai alur
-  // login resmi chatgpt.com) dan tidak mengubah halaman tujuan.
-  return loggingId
-    ? `${SIGNUP_FORM_URL}&auth_session_logging_id=${encodeURIComponent(loggingId)}`
-    : SIGNUP_FORM_URL;
-}
-
-/**
- * URL lama `chatgpt.com/auth/login` — DIPERTAHANKAN hanya sebagai rujukan dan
- * untuk laporan `signupConfig`, bukan tombol utama. Dua kegagalan nyata sudah
- * terjadi di sana, jadi jangan dipakai lagi tanpa bukti baru.
- */
-export function buildLegacySignupUrl(email, { authSessionLoggingId = '' } = {}) {
-  const address = cleanText(email, 320).toLowerCase();
-  const params = new URLSearchParams({ prompt: 'login', screen_hint: 'signup' });
-  const loggingId = cleanText(authSessionLoggingId, 64);
-  if (loggingId) params.set('auth_session_logging_id', loggingId);
-  if (address) params.set('login_hint', address);
-  return `${SIGNUP_PAGE_URL}?${params.toString()}`;
-}
-
-/**
- * Langkah manual di halaman login yang sudah terbuka, untuk kasus tombol
- * utama tidak membawa `login_hint` (mis. OpenAI mengabaikan parameter itu).
- *
- * `csrf` disertakan sebagai dokumentasi: nilainya harus diambil browser dari
- * GET /api/auth/csrf pada saat itu juga, tidak boleh disimpan atau dikirim ke
- * server BLEA. Karena itu field ini selalu kosong di keluaran.
- */
-/**
- * Prioritas kolom isian di halaman login ChatGPT. `type=email` diutamakan,
+ * Prioritas kolom isian di halaman login platform. `type=email` diutamakan,
  * karena kolom itu yang benar-benar mengirim email; kolom telepon juga
  * `type=tel`/text sehingga tidak boleh dipilih lebih dulu.
  */
@@ -193,18 +62,18 @@ export const EMAIL_INPUT_SELECTORS = [
 ];
 
 /**
- * Bookmarklet: skrip yang dijalankan DI HALAMAN chatgpt.com, dipicu klik
- * pengguna sendiri.
+ * Bookmarklet: skrip yang dijalankan DI HALAMAN platform.openai.com, dipicu
+ * klik pengguna sendiri.
  *
  * Kenapa ini satu-satunya jalan: same-origin policy melarang halaman BLEA
- * menyentuh DOM `chatgpt.com` (tidak bisa mengisi kolom dari jauh), dan OpenAI
- * mengabaikan `login_hint`. Bookmarklet dieksekusi oleh dokumen chatgpt.com
- * setelah pengguna mengkliknya, jadi ia boleh mengisi kolom — persis seperti
- * pengguna mengetik sendiri.
+ * menyentuh DOM domain lain (tidak bisa mengisi kolom dari jauh), dan halaman
+ * login platform memakai `login_hint` nol. Bookmarklet dieksekusi oleh dokumen
+ * platform setelah pengguna mengkliknya, jadi ia boleh mengisi kolom — persis
+ * seperti pengguna mengetik sendiri.
  *
  * Batasannya disengaja: hanya mengisi kolom dan memfokuskan; TIDAK menekan
  * "Continue", TIDAK mengirim formulir, TIDAK membaca cookie/token, dan TIDAK
- * menyimpan apa pun. Pengguna tetap menekan tombolnya sendiri.
+ * menyimpan apa pun.
  *
  * Keamanan: email sudah lolos validasi (tanpa kutip, backslash, kurung kurawal,
  * `@` tunggal, tanpa spasi), jadi aman disisipkan ke string literal JS.
@@ -220,7 +89,7 @@ export function buildAutofillBookmarklet(email) {
     + `for(var i=0;i<els.length&&!t;i++){var el=els[i];if(el.type==='tel')continue;`
     + `var hay=((el.getAttribute('name')||'')+' '+(el.id||'')+' '+(el.getAttribute('autocomplete')||'')+' '+(el.getAttribute('placeholder')||'')).toLowerCase();`
     + `if(el.type==='email'||hay.indexOf('email')>-1||hay.indexOf('username')>-1){t=el;}}`
-    + `if(!t){alert('Kolom email tidak ditemukan di halaman ini. Buka https://chatgpt.com/auth/login dulu.');return;}`
+    + `if(!t){alert('Kolom email tidak ditemukan di halaman ini. Buka https://platform.openai.com/login dulu.');return;}`
     + `var set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;`
     + `set.call(t,v);t.dispatchEvent(new Event('input',{bubbles:true}));t.dispatchEvent(new Event('change',{bubbles:true}));t.focus();`
     + `if(t.value!==v){t.value=v;}`
@@ -235,11 +104,11 @@ export function buildAutofillBookmarklet(email) {
  * tautannya ke bilah bookmark, dan Chrome membuang awalan `javascript:` saat
  * ditempel — dua titik gagal yang tidak bisa dikendalikan dari halaman BLEA.
  * Userscript dipasang sekali, lalu berjalan sendiri setiap halaman login
- * ChatGPT dibuka: tidak ada seret, tidak ada tempel.
+ * platform dibuka: tidak ada seret, tidak ada tempel.
  *
  * Batasannya tetap sama: hanya mengisi kolom email, tidak menekan "Continue",
  * tidak mengirim formulir, tidak membaca cookie/token, tidak mengirim data ke
- * mana pun. Pengguna tetap menekan tombolnya sendiri.
+ * mana pun.
  */
 export function buildAutofillUserscript(email, { origin = '' } = {}) {
   const address = cleanText(email, 320).toLowerCase();
@@ -248,11 +117,11 @@ export function buildAutofillUserscript(email, { origin = '' } = {}) {
   }
   const from = cleanText(origin, 200);
   return `// ==UserScript==
-// @name         BLEA — isi email ChatGPT
+// @name         BLEA — isi email OpenAI
 // @namespace    blea-ai
 // @version      1.0
-// @description  Mengisi kolom email di formulir login/daftar OpenAI dengan email TempMail. Tidak menekan Continue.
-// @match        https://chatgpt.com/*
+// @description  Mengisi kolom email di halaman login platform OpenAI dengan email TempMail. Tidak menekan Continue.
+// @match        https://platform.openai.com/*
 // @match        https://auth.openai.com/*
 // @run-at       document-idle
 // @grant        none
@@ -315,31 +184,38 @@ export function buildAutofillUserscript(email, { origin = '' } = {}) {
 `;
 }
 
+/** Langkah manual yang dilihat pengguna (tanpa server, tanpa CSRF). */
 export function buildSigninBootstrap(email) {
   const address = cleanText(email, 320).toLowerCase();
   return {
-    csrf_url: SIGNUP_CSRF_URL,
-    form: {
-      method: 'POST',
-      url: SIGNUP_REQUEST_URL,
-      content_type: 'application/x-www-form-urlencoded',
-      fields: ['callbackUrl', 'csrfToken', 'login_hint'],
-      callback_url: 'https://chatgpt.com/',
-    },
+    form: { url: PLATFORM_LOGIN_URL, method: 'GET' },
     fields_to_fill: { 'Alamat email': address },
-    // Bookmarklet = satu-satunya cara sah mengisi kolom lintas-origin:
-    // dijalankan di halaman chatgpt.com atas klik pengguna.
     autofill_bookmarklet: buildAutofillBookmarklet(address),
-    // Jalur otomatis tanpa seret/tempel: dipasang sekali di Tampermonkey.
     autofill_userscript: buildAutofillUserscript(address),
     steps: [
-      'Tempel email TempMail di kolom "Alamat email" pada tab formulir OpenAI (tempel manual, atau pakai tombol "Isi email otomatis" di panel setelah tab formulir terbuka).',
+      'Tempel email TempMail di kolom "Email address" pada tab platform.openai.com (tempel manual, atau pakai bookmarklet yang Anda klik sendiri).',
       'Tekan "Continue" di tab itu (BLEA tidak pernah menekan tombol itu untuk Anda).',
       'Salin URL halaman hasil lalu tempel di kolom "URL setelah menekan Continue" di panel ini.',
-      'Panel cocokkan domain, lalu menandai permintaan sebagai "email dikirim".',
+      'Panel mencocokkan domain, lalu menandai permintaan sebagai "email dikirim".',
     ],
-    csrf: '',
   };
+}
+
+export const SIGNUP_STEPS = [
+  'dibuka', 'email_dikirim', 'menunggu_verifikasi', 'terverifikasi', 'dilewati',
+];
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Domain +tag Gmail: OpenAI menolak alamat yang mengandung tanda `+` pada
+// sebagian formulir, jadi kemampuan ini dilaporkan apa adanya, bukan disembunyikan.
+const PLUS_ADDRESS_RE = /\+[^@]*@/;
+
+function fail(message, status = 400, extra = {}) {
+  return Object.assign(new Error(message), { status, ...extra });
+}
+
+function cleanText(value, max) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
 /**
@@ -348,26 +224,27 @@ export function buildSigninBootstrap(email) {
  */
 export function signupConfig() {
   return {
-    signup_url: SIGNUP_FORM_URL,
-    legacy_login_url: SIGNUP_PAGE_URL,
-    signin_endpoint: SIGNUP_REQUEST_URL,
-    csrf_url: SIGNUP_CSRF_URL,
+    route: 'platform',
+    signup_url: PLATFORM_LOGIN_URL,
+    api_keys_url: PLATFORM_API_KEYS_URL,
+    billing_url: PLATFORM_BILLING_URL,
     method_used_by_browser: 'GET',
     supported: {
       build_signup_link: true,
-      // login_hint TIDAK dijanjikan: formulir Auth0 tidak terbukti memakainya.
+      // login_hint TIDAK dijanjikan: halaman login platform tidak memakainya.
       login_hint: false,
       server_side_post: false,
       headless_signup: false,
       captcha_bypass: false,
       capture_session_cookie: false,
     },
+    platform_steps: PLATFORM_STEPS,
     why_not_post: [
-      `${SIGNUP_REQUEST_URL} adalah endpoint POST NextAuth: tanpa csrfToken dari ${SIGNUP_CSRF_URL} hasilnya halaman "Kami tidak dapat memproses upaya masuk Anda".`,
-      'Cloudflare Worker juga diblokir ke domain OpenAI, jadi POST dari server tidak akan pernah berhasil.',
-      'Pendaftaran akun otomatis melanggar Terms of Use OpenAI dan akunnya biasanya dinonaktifkan.',
+      'Cloudflare Worker BLEA diblokir ke domain OpenAI, jadi POST dari server tidak akan pernah berhasil.',
+      'Pendaftaran akun otomatis melanggar Terms of Use OpenAI dan hasilnya langsung ditahan captcha.',
+      'Karena itu formulir diisi di browser Anda; BLEA hanya menyiapkan tautan dan membaca inbox untuk kodenya.',
     ],
-    verification_note: 'Verifikasi tetap dikerjakan manusia. BLEA membaca inbox TempMail, mengambil kode verifikasinya, lalu Anda menempelkan kode itu di tab ChatGPT — tidak ada verifikasi otomatis.',
+    verification_note: 'Verifikasi tetap dikerjakan manusia. BLEA membaca inbox TempMail, mengambil kode verifikasinya, lalu Anda menempelkan kode itu di tab platform.openai.com — tidak ada verifikasi otomatis.',
   };
 }
 
@@ -385,7 +262,7 @@ export function scoreVerificationMessage(message, request = {}) {
   const haystack = `${message?.subject || ''} ${message?.from || ''} ${message?.preview || ''}`.toLowerCase();
   let score = 0;
   const reasons = [];
-  if (/openai|chatgpt/.test(haystack)) { score += 45; reasons.push('pengirim menyebut OpenAI/ChatGPT'); }
+  if (/openai/.test(haystack)) { score += 45; reasons.push('pengirim menyebut OpenAI'); }
   if (/verif|verifikasi|confirm|konfirmasi|activate|aktifkan|kode|code|log ?in|masuk/.test(haystack)) {
     score += 35;
     reasons.push('isi menyebut verifikasi/kode');
@@ -408,15 +285,13 @@ export function scoreVerificationMessage(message, request = {}) {
  * Ambil kode verifikasi dari isi email.
  *
  * Kenapa ini perlu: email verifikasi OpenAI berisi KODE (bukan tautan yang
- * cukup diklik), dan kode itu harus ditempel kembali di tab ChatGPT. Snippet
+ * cukup diklik), dan kode itu harus ditempel kembali di tab platform. Snippet
  * inbox tidak selalu memuat kodenya, jadi isi lengkap perlu dibaca.
  *
  * Aturan pemilihan sengaja konservatif supaya tidak salah ambil angka:
  *   • utamakan deret 6–8 digit (bentuk kode OpenAI);
- *   • abaikan angka yang menempel pada tahun (`2026`), harga/kuota, atau
- *     bagian dari kata/angka lebih panjang;
- *   • kalau ada beberapa kandidat, ambil yang berada dekat kata kunci
- *     (`kode`, `code`, `verifikasi`, `verification`);
+ *   • abaikan angka yang menempel pada tahun (`2026`), nominal, atau kuota;
+ *   • kalau ada beberapa kandidat, menangkan yang dekat kata kunci;
  *   • ragu → kembalikan kosong, jangan menebak.
  */
 export function extractVerificationCode({ subject = '', bodyText = '', bodyHtml = '' } = {}) {
@@ -429,7 +304,7 @@ export function extractVerificationCode({ subject = '', bodyText = '', bodyHtml 
     .replace(/\s+/g, ' ');
   if (!plain.trim()) return { code: '', candidates: [] };
 
-  const KEYWORD_RE = /(kode|code|verifikasi|verification|verifikasi|one[- ]?time|otp|masuk|sign[- ]?in)/i;
+  const KEYWORD_RE = /(kode|code|verifikasi|verification|one[- ]?time|otp|masuk|sign[- ]?in)/i;
   const found = new Map();
   // Kode OpenAI 6 digit, kadang ditulis berkelompok ("483-920", "604 217").
   // Kelompok digabung lebih dulu, lalu deret 6–8 digit yang tidak menempel
@@ -485,7 +360,7 @@ export function describeStoredCode({ code = '', verified_at: verifiedAt = null, 
     expired,
     age_ms: age,
     note: expired
-      ? 'Kode ini sudah lewat 10 menit dan hampir pasti kedaluwarsa. Minta kode baru di ChatGPT lalu tekan "Cari email verifikasi" lagi.'
+      ? 'Kode ini sudah lewat 10 menit dan hampir pasti kedaluwarsa. Minta kode baru di halaman platform lalu tekan "Cari email verifikasi" lagi.'
       : '',
   };
 }
@@ -493,42 +368,34 @@ export function describeStoredCode({ code = '', verified_at: verifiedAt = null, 
 /**
  * Kenapa TIDAK ada pemeriksaan sesi otomatis dari browser.
  *
- * Versi sebelumnya memanggil `chatgpt.com/backend-api/me` dengan
+ * Versi sebelumnya memanggil API privat milik halaman konsumen OpenAI dengan
  * `credentials: 'include'`. Hasil nyata di browser pengguna: **"Failed to
  * fetch"** — endpoint itu bukan API publik dan tidak mengirim header CORS,
  * jadi jawabannya tidak bisa dibaca dari origin lain (BLEA). Itu kesalahan
- * rancang saya, bukan gangguan jaringan pengguna.
+ * rancang, bukan gangguan jaringan pengguna.
  *
- * Jadi yang disediakan hanya langkah manual yang jujur: periksa sendiri di
- * chatgpt.com, karena di sana sesi itu memang terlihat.
+ * Jadi yang disediakan hanya langkah manual yang jujur: periksa sendiri di tab
+ * platform, karena di sana sesi itu memang terlihat.
  */
 export function sessionCheckGuide() {
   return {
     automatic: false,
-    why: 'chatgpt.com tidak mengizinkan halaman lain membaca status sesinya (tanpa header CORS), jadi BLEA selalu mendapat "Failed to fetch".',
+    why: 'Halaman konsumen OpenAI tidak mengizinkan halaman lain membaca status sesinya (tanpa header CORS), jadi pemeriksaan otomatis dari BLEA selalu berakhir "Failed to fetch".',
     steps: [
-      'Buka https://chatgpt.com di tab yang sama dengan tab formulir.',
-      'Kalau pojok kanan bawah menampilkan avatar/nama akun, perangkat ini MASIH login — keluarkan dulu (klik avatar → Log out), atau pakai jendela Incognito yang benar-benar baru.',
-      'Kalau yang muncul tombol "Log in"/"Sign up", sesi bersih dan formulir daftar bisa dibuka.',
+      'Buka platform.openai.com di tab yang sama dengan tab login.',
+      'Kalau yang muncul adalah menu akun (bukan formulir login), perangkat ini MASIH login sebagai akun lain — keluarkan dulu, atau pakai jendela Incognito yang benar-benar baru.',
+      'Kalau yang muncul formulir "Email address" + Continue, sesi bersih dan alur daftar bisa mulai.',
     ],
-    note: 'BLEA tidak membaca cookie chatgpt.com. Setelah berhasil masuk, simpan aksesnya lewat "Continue with ChatGPT" (OAuth resmi) di panel Akun ChatGPT.',
+    note: 'BLEA tidak membaca cookie platform.openai.com. Setelah akun masuk, buat API key di menu API keys lalu tempel di "Tambah akun manual" di panel Akun OpenAI.',
   };
 }
 
 /**
- * Terjemahkan error OAuth "Continue with ChatGPT" menjadi sebab + langkah.
+ * Terjemahkan error OAuth OpenAI menjadi sebab + langkah.
  *
- * Kenapa perlu: `error_code: invalid_state` di halaman auth.openai.com terjadi
- * SEBELUM callback kita, jadi BLEA bahkan tidak menerima parameter apa pun
- * (tidak ada baris DB yang bisa diperiksa). Menampilkan kode mentah hanya
- * membuat pengguna menebak.
- *
- * Fakta vs dugaan: yang PASTI hanya bahwa OpenAI tidak mengenali `state` pada
- * URL kembali. Sebab paling umum pada alur kita: `redirect_uri` berisi port
- * yang berbeda dari saat authorize — port disusun dari halaman BLEA yang
- * sedang dibuka (`window.location.port`), dan nilai itu memang boleh berbeda
- * antar percobaan menurut dokumen OpenAI, tetapi harus SAMA dalam satu
- * percobaan.
+ * Kenapa perlu: `invalid_state` bisa muncul SEBELUM callback kita, jadi BLEA
+ * bahkan tidak menerima parameter apa pun (tidak ada baris DB yang bisa
+ * diperiksa). Menampilkan kode mentah hanya membuat pengguna menebak.
  */
 export function explainOAuthError({ error = '', detail = '', hasPendingAttempt = false } = {}) {
   const code = String(error || '').trim() || 'unknown';
@@ -536,8 +403,7 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
   if (code === 'invalid_state') {
     // `invalid_state` muncul di DUA tempat berbeda dan obatnya berbeda. Pada
     // halaman daftar/verifikasi (auth_page=…) itu milik sesi tab OpenAI; pada
-    // /api/accounts/authorize itu milik percobaan OAuth BLEA. Menyamakan
-    // keduanya pernah membuat saran perbaikan salah sasaran.
+    // /api/accounts/authorize itu milik percobaan OAuth BLEA.
     const stage = /authorize/.test(String(detail || ''))
       ? 'OAuth BLEA (/api/accounts/authorize)'
       : 'halaman daftar/verifikasi OpenAI (auth_page)';
@@ -546,15 +412,15 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
       stage,
       cause: hasPendingAttempt
         ? 'OpenAI mengembalikan state yang tidak cocok dengan percobaan login yang dikirim dari perangkat ini — biasanya karena halaman OAuth dibuka ulang/duplikat, atau callback diselesaikan di perangkat/tab lain.'
-        : 'Tidak ada percobaan OAuth yang sah dari perangkat ini, jadi state ini bukan milik BLEA. Pada halaman daftar/verifikasi (mis. /email-verification?auth_page=…) state itu milik sesi tab OpenAI sendiri: tab ditutup lalu dipulihkan dari riwayat, formulir dibuka dua kali, atau sesinya sudah kedaluwarsa. Pada halaman authorize, kemungkinan URL lama dibuka lagi atau percobaannya sudah lewat 30 menit.',
+        : 'Tidak ada percobaan OAuth yang sah dari perangkat ini, jadi state ini bukan milik BLEA. Pada halaman daftar/verifikasi state itu milik sesi tab OpenAI sendiri: tab ditutup lalu dipulihkan dari riwayat, formulir dibuka dua kali, atau sesinya sudah kedaluwarsa. Pada halaman authorize, kemungkinan URL lama dibuka lagi atau percobaannya sudah lewat 30 menit.',
       fix: hasPendingAttempt
-        ? 'Tutup tab ChatGPT/OAuth yang lama, lalu tekan Continue with ChatGPT SEKALI dan selesaikan di tab itu sampai kembali ke BLEA.'
-        : 'Tekan Continue with ChatGPT sampai halaman izin OpenAI terbuka, jangan menyimpan atau membuka ulang URL-nya, dan jangan menekan tombol itu dua kali (dua percobaan = dua state).',
+        ? 'Tutup tab OAuth yang lama, lalu tekan Connect SEKALI dan selesaikan di tab itu sampai kembali ke BLEA.'
+        : 'Tekan Connect sampai halaman izin OpenAI terbuka, jangan menyimpan atau membuka ulang URL-nya, dan jangan menekan tombol itu dua kali (dua percobaan = dua state).',
       detail: extra,
     };
   }
   if (code === 'access_denied') {
-    return { code, cause: 'Izin di halaman ChatGPT tidak diberikan (tombol batal/ditolak).', fix: 'Ulangi dan setujui izinnya.', detail: extra };
+    return { code, cause: 'Izin di halaman persetujuan OpenAI tidak diberikan (tombol batal/ditolak).', fix: 'Ulangi dan setujui izinnya.', detail: extra };
   }
   if (code === 'invalid_grant') {
     return {
@@ -563,8 +429,8 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
       cause: 'Kode otorisasi ditolak, dan OpenAI tidak menyebut sebabnya. Kode itu hanya bisa ditukar SEKALI.',
       fix: 'Periksa berurutan: (1) apakah akun sudah muncul di daftar di bawah — kalau sudah, tidak ada yang perlu diulang; '
         + '(2) jangan membuka atau memuat ulang alamat 127.0.0.1:<port>/auth/callback dua kali; '
-        + '(3) centang izin "gunakan paket ChatGPT saya" saat menyetujui; '
-        + '(4) paket akun harus Plus/Pro pada akun pribadi, bukan Free/Go atau akun workspace kerja.',
+        + '(3) pastikan persetujuan diberikan untuk klien yang sama (client_id di URL authorize = client_id saat menukar kode); '
+        + '(4) bila akun memakai paket langganan, harus paket yang mengizinkan API pada akun pribadi, bukan akun workspace kerja.',
       detail: extra,
     };
   }
@@ -573,16 +439,16 @@ export function explainOAuthError({ error = '', detail = '', hasPendingAttempt =
     return {
       code,
       stage: 'refresh token',
-      cause: 'Refresh token sudah mati atau dicabut (bisa dicabut dari ChatGPT → Settings → Apps).',
-      fix: 'Sambungkan ulang akun lewat "Simpan aksesnya ke pool". Client terbitan disimpan, jadi ini tidak mendaftar ulang.',
+      cause: 'Refresh token sudah mati atau dicabut (bisa dicabut dari sisi OpenAI → Settings → Apps).',
+      fix: 'Sambungkan ulang akun lewat "Connect". Client terbitan disimpan, jadi ini tidak mendaftar ulang.',
       detail: extra,
     };
   }
-  return { code, cause: extra || 'OpenAI tidak memberi penjelasan tambahan.', fix: 'Ulangi OAuth dari tombol Continue with ChatGPT.', detail: extra };
+  return { code, cause: extra || 'OpenAI tidak memberi penjelasan tambahan.', fix: 'Ulangi OAuth dari tombol Connect.', detail: extra };
 }
 
 /**
- * Port & redirect_uri yang DIPAKAI untuk OAuth "Continue with ChatGPT".
+ * Port & redirect_uri yang DIPAKAI untuk OAuth OpenAI.
  *
  * Dipakai UI untuk menampilkan nilai persis yang dikirim, supaya pengguna bisa
  * mencocokkannya dengan URL di bilah alamat saat `invalid_state` terjadi —
@@ -634,6 +500,8 @@ export function normalizeSignupRequest(row) {
 export function validateSignupInput(input = {}) {
   const email = cleanText(input.email, 320).toLowerCase();
   if (!isSignupEmail(email)) throw fail('Email TempMail tidak valid. Buat atau muat ulang alamat TempMail lebih dulu.', 400);
+  // Parameter ini tidak lagi memengaruhi URL (halaman login platform tidak
+  // memakainya), tetapi tetap divalidasi agar tidak ada nilai sampah di DB.
   const authSessionLoggingId = cleanText(input.auth_session_logging_id, 64);
   if (authSessionLoggingId && !/^[0-9a-f-]{20,64}$/i.test(authSessionLoggingId)) {
     throw fail('auth_session_logging_id harus berupa UUID.', 400);
@@ -642,8 +510,9 @@ export function validateSignupInput(input = {}) {
 }
 
 /**
- * Baca URL hasil klik "Continue" di formulir OpenAI, untuk memastikan langkah
- * benar-benar sampai ke tahap berikutnya (bukan tetap di halaman error).
+ * Baca URL hasil klik "Continue" di halaman login platform, untuk memastikan
+ * langkah benar-benar sampai ke tahap berikutnya (bukan tetap di halaman
+ * error).
  *
  * Yang diperiksa hanya hal yang bisa dibuktikan dari URL: domain OpenAI dan
  * apakah email yang diminta muncul di sana. Tidak ada yang diambil dari sini
@@ -663,32 +532,24 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
     return { ok: false, status: 'tidak_valid', detail: 'URL harus https.', email_matches: false };
   }
   const host = parsed.hostname.toLowerCase();
-  const openAiHost = host === 'chatgpt.com' || host.endsWith('.chatgpt.com') || host === 'openai.com' || host.endsWith('.openai.com');
+  const openAiHost = host === 'openai.com' || host.endsWith('.openai.com');
   const path = parsed.pathname || '';
   const whole = `${parsed.search} ${decodeURIComponent(parsed.search)}`.toLowerCase();
   const expected = cleanText(expectedEmail, 320).toLowerCase();
   const emailMatches = Boolean(expected) && whole.includes(expected);
-  const stillError = /\/auth\/error/.test(path) || /error=/.test(parsed.search);
-  // Halaman "Session ended" milik OpenAI (mis. `/email-verification`) TIDAK
-  // memuat kata "error" di path maupun query — hanya judulnya yang berkata
-  // begitu, dan `auth_page=…` hanyalah penanda sesi tab yang sudah mati.
-  // URL semacam itu tidak membawa `state` dan tidak menyebut email apa pun,
-  // jadi tidak bisa dipakai melanjutkan daftar. Kalau URL-nya menyebut email
-  // (`?email=…`), halaman itu masih bisa dikenali sebagai tahap verifikasi.
+  const stillError = /\/error/.test(path) || /error=/.test(parsed.search);
+  // Halaman "Session ended" milik OpenAI TIDAK memuat kata "error" di path
+  // maupun query — hanya judulnya yang berkata begitu, dan `auth_page=…`
+  // hanyalah penanda sesi tab yang sudah mati. URL semacam itu tidak membawa
+  // `state` dan tidak menyebut email, jadi tidak bisa dipakai melanjutkan.
   const endsSession = /\/(email-verification|session-ended)(\/|$)/.test(path);
   const sessionEnded = endsSession && !/state=/.test(parsed.search) && !emailMatches;
-  const verification = /verify|verification|confirm|check.?email|email-verification/.test(`${path} ${whole}`);
-  const password = /password|create-account|signup\/password/.test(`${path} ${whole}`);
+  const verification = /verify|verification|confirm|check.?email|email-verification|code/.test(`${path} ${whole}`);
   // Halaman awal: pengguna baru membuka formulir dan belum menekan Continue.
-  // Termasuk semua titik masuk yang pernah dipakai panel:
-  //   chatgpt.com/auth/login, chatgpt.com/auth/login_with,
-  //   auth.openai.com/log-in, auth.openai.com/create-account.
-  const landing = /^\/auth\/(login|login_with|signup|log-in)?\/?$/.test(path)
-    || /^\/(log-in|create-account)\/?$/.test(path)
-    || path === '/';
+  const landing = /^\/(login|log-in|auth\/login|create-account|signup)?\/?$/.test(path) || path === '/';
 
   if (!openAiHost) {
-    return { ok: false, status: 'host_asing', detail: `Host ${host} bukan domain OpenAI/ChatGPT.`, email_matches: false };
+    return { ok: false, status: 'host_asing', detail: `Host ${host} bukan domain OpenAI. Salin URL dari tab platform.openai.com.`, email_matches: false };
   }
   if (sessionEnded) {
     return {
@@ -704,7 +565,7 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
     return {
       ok: false,
       status: 'masih_error',
-      detail: 'URL itu halaman error. Ulangi dari halaman daftar di panel; kalau tetap error, coba jendela privat atau jaringan lain.',
+      detail: 'URL itu halaman error. Ulangi dari halaman login platform di panel; kalau tetap error, coba jendela privat atau jaringan lain.',
       email_matches: emailMatches,
     };
   }
@@ -716,63 +577,45 @@ export function analyzeReturnUrl(rawUrl, expectedEmail = '') {
       email_matches: emailMatches,
     };
   }
-  // PENTING: OpenAI/Auth0 TIDAK membawa email di URL lanjutan — yang tersisa
-  // hanya `state=`, dan itu memang normal. Jadi URL lanjutan yang bukan error
-  // dianggap bukti sah bahwa formulir menerima email. Email hanya bisa
-  // "terlihat" pada URL perantara tertentu; itu bonus, bukan syarat.
-  if (verification || password || emailMatches) {
-    return {
-      ok: true,
-      status: verification ? 'verifikasi' : password ? 'kata_sandi' : 'email_diterima',
-      detail: emailMatches
-        ? 'Email TempMail terbaca di URL — formulir sudah menerimanya.'
-        : 'Halaman lanjutan diterima (email memang tidak ditampilkan OpenAI di URL). Lanjutkan ke verifikasi email.',
-      email_matches: emailMatches,
-    };
-  }
+  // PENTING: OpenAI TIDAK membawa email di URL lanjutan — yang tersisa hanya
+  // `state=`, dan itu memang normal. Jadi URL lanjutan yang bukan error
+  // dianggap bukti sah bahwa formulir menerima email.
   return {
     ok: true,
-    status: 'lanjutan',
-    detail: 'Halaman lanjutan OpenAI diterima. Email tidak ditampilkan di URL oleh OpenAI — itu normal, bukan kegagalan.',
-    email_matches: false,
+    status: verification ? 'verifikasi' : emailMatches ? 'email_diterima' : 'lanjutan',
+    detail: emailMatches
+      ? 'Email TempMail terbaca di URL — formulir sudah menerimanya.'
+      : 'Halaman lanjutan OpenAI diterima (email memang tidak ditampilkan di URL — itu normal, bukan kegagalan). Lanjutkan: tempel kode dari TempMail di tab itu.',
+    email_matches: emailMatches,
   };
 }
 
 /**
- * Kenapa alur daftar berakhir dengan "buka aplikasi" lalu halaman macet.
+ * Kenapa halaman login platform lebih aman daripada jalur aplikasi.
  *
- * Gejala nyata yang dilaporkan: kode verifikasi ditempel → OpenAI menampilkan
- * tombol "buka aplikasi" (deep link `chatgpt://…`) dan tidak ada pilihan lain →
- * diklik → kembali ke halaman verifikasi yang berputar tanpa hasil.
- *
- * Sebabnya struktural, bukan bug kecil: sesi yang dimulai dari
- * `chatgpt.com/auth/login_with?callback_path=/` ditujukan untuk **aplikasi
- * ChatGPT**, bukan untuk web. Begitu verifikasi selesai, OpenAI mengembalikan
- * konteks ke callback itu — dan callback `chatgpt://` tidak ada yang menangani
- * di browser, jadi halaman berhenti di keadaan "menunggu kembali dari aplikasi".
- *
- * Karena itu BLEA TIDAK boleh memakai jalur daftar itu untuk menyimpan akses.
- * Yang benar: akun diverifikasi di web (`chatgpt.com`), lalu akses diambil
- * lewat OAuth resmi "Continue with ChatGPT" yang memakai loopback
- * `http://127.0.0.1:<port>/auth/callback` — callback itu bisa diselesaikan.
+ * Jalur daftar lama (halaman login konsumen dengan callback aplikasi)
+ * ditujukan untuk aplikasi
+ * konsumen: setelah verifikasi, OpenAI mengembalikan konteks ke callback
+ * aplikasi (`openai://…`) yang tidak ada penanganannya di browser, sehingga
+ * halaman berputar tanpa hasil. Jalur platform berakhir di
+ * `platform.openai.com/home` — halaman web biasa yang bisa dilanjutkan.
  */
 export const APP_HANDOFF_GUIDE = {
-  summary: 'Jangan klik “buka aplikasi” — mulai lagi dari jalur web',
-  why: 'Sesi daftar dari chatgpt.com/auth/login_with memang ditujukan untuk aplikasi ChatGPT. '
-    + 'Setelah verifikasi, OpenAI mengembalikan konteks ke callback aplikasi (chatgpt://…), '
-    + 'dan browser tidak punya penangan untuk itu — karena itu halamannya berputar terus.',
+  summary: 'Kalau halaman berhenti di “buka aplikasi”, mulai lagi dari jalur platform',
+  why: 'Jalur daftar lama ditujukan untuk aplikasi konsumen OpenAI. Setelah verifikasi, OpenAI '
+    + 'mengembalikan konteks ke callback aplikasi (openai://…), dan browser tidak punya '
+    + 'penangan untuk itu — karena itu halamannya berputar terus.',
   steps: [
     'Kode verifikasi Anda sudah diterima OpenAI; akunnya biasanya sudah jadi. Jangan ulangi pendaftaran dengan email yang sama.',
     'Tutup tab OpenAI yang macet (yang menampilkan tombol “buka aplikasi”).',
-    'Buka chatgpt.com di tab BARU dan login dengan email itu — pakai kode baru bila diminta. Kode baru setelah login ulang itu normal.',
-    'Kalau sudah masuk ke chat (bukan halaman verifikasi), kembali ke panel ini dan tekan “Akun sudah masuk? Simpan aksesnya ke pool”.',
+    'Di panel ini, buat permintaan baru lalu tekan “Siapkan & buka daftar” — jalur platform berakhir di platform.openai.com/home, bukan di aplikasi.',
+    'Kalau akun sudah bisa masuk, buat API key di menu API keys lalu tempel di “Tambah akun manual”.',
   ],
-  note: 'Jalur yang menyimpan akses adalah OAuth “Continue with ChatGPT” dengan callback 127.0.0.1 — '
-    + 'bukan cookie sesi chatgpt.com dan bukan deep link aplikasi.',
+  note: 'Akses yang disimpan BLEA adalah API key platform (sk-…), bukan cookie sesi dan bukan deep link aplikasi.',
 };
 
 /**
- * Bisakah callback OAuth “Continue with ChatGPT” diselesaikan dari halaman ini?
+ * Bisakah callback OAuth diselesaikan dari halaman ini?
  *
  * Kalau BLEA dibuka dari domain publik, browser pengguna tidak punya apa pun di
  * `127.0.0.1:<port>`; URL callback harus ditempel. Panel memakai ini untuk
@@ -784,14 +627,14 @@ export function describeOAuthCallbackPath({ hostname = '', port = '' } = {}) {
     redirect_uri: info.redirect_uri,
     automatic: info.auto_callback,
     steps: info.auto_callback
-      ? ['Setelah menekan tombol, ChatGPT membuka halaman izin. Setujui, lalu Anda kembali sendiri ke BLEA dan akunnya tersimpan.']
+      ? ['Setelah menekan tombol, OpenAI membuka halaman izin. Setujui, lalu Anda kembali sendiri ke BLEA dan akunnya tersimpan.']
       : [
-        'Setelah menekan tombol, ChatGPT membuka halaman izin. Setujui di sana.',
+        'Setelah menekan tombol, OpenAI membuka halaman izin. Setujui di sana.',
         `Browser akan berhenti di ${info.redirect_uri}?code=…&state=… dan halaman itu biasanya “tidak bisa diakses” — itu normal.`,
-        'Salin SELURUH alamat itu dari bilah alamat, kembali ke panel, tempel di kolom “Sudah menyetujui di ChatGPT?”, lalu tekan Selesaikan.',
+        'Salin SELURUH alamat itu dari bilah alamat, kembali ke panel, tempel di kolom “Sudah menyetujui di OpenAI?”, lalu tekan Selesaikan.',
       ],
     note: 'Callback memakai 127.0.0.1 karena OpenAI mewajibkan itu untuk klien open-source; '
-      + 'halaman BLEA tetap tidak pernah menyimpan cookie atau token ChatGPT.',
+      + 'halaman BLEA tetap tidak pernah menyimpan cookie atau token sesi konsumen.',
   };
 }
 
@@ -806,11 +649,11 @@ export function summarizeAccessStorage({ linkedCount = 0, pendingCount = 0 } = {
   if (pendingCount > 0) {
     return {
       stored: false,
-      text: 'Belum ada akses yang tersimpan: OAuth masih menunggu izin. Selesaikan di halaman ChatGPT, lalu tempel URL callback.',
+      text: 'Belum ada akses yang tersimpan: OAuth masih menunggu izin. Selesaikan di halaman persetujuan OpenAI, lalu tempel URL callback.',
     };
   }
   return {
     stored: false,
-    text: 'Belum ada akses yang tersimpan. Akun yang baru diverifikasi belum otomatis masuk pool — aksesnya diambil lewat OAuth “Continue with ChatGPT”.',
+    text: 'Belum ada akses OAuth yang tersimpan. Akun API key tidak perlu OAuth — cukup tempel sk-… di "Tambah akun manual".',
   };
 }

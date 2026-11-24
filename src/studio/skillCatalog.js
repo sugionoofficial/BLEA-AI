@@ -3,7 +3,7 @@
 //
 // Aturan penting: katalog ini BUKAN janji bahwa setiap butir punya tombol
 // sendiri. Setiap butir dipetakan ke sumber daya yang benar-benar ada:
-//   chat     → ruang Chat & Tulis (model ChatGPT, teks)
+//   chat     → ruang Chat & Tulis (model OpenAI, teks)
 //   agent    → ruang Agen (loop alat server: web_search, read_url, skill)
 //   image    → ruang Buat Gambar (gpt-image-1 lewat pool akun)
 //   video    → ruang Buat Video (sora-2; bergantung kuota akun)

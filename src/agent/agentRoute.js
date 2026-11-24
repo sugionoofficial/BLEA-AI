@@ -71,7 +71,7 @@ export async function handleAgentTurn(request, url, env, deps) {
 
   // Isolasi provider per ruang: kalau klien menyatakan ruang Studio-nya, model
   // hanya boleh berasal dari provider yang diizinkan ruang itu. Ruang agen di
-  // Studio memakai ChatGPT (openai); ruang lain memakai katalog lama.
+  // Studio memakai OpenAI; ruang lain memakai katalog lama.
   if (typeof deps.assertStudioProvider === 'function') {
     const violation = deps.assertStudioProvider(provider, requestedModel);
     if (violation) return Response.json({ error: violation.message, code: violation.code }, { status: 400 });
@@ -107,7 +107,7 @@ export async function handleAgentTurn(request, url, env, deps) {
   const keyRow = keyByProvider.get(provider);
   let apiKey = keyRow?.api_key || (provider === 'unorouter' && requestedModel.endsWith(':free') ? 'use-free' : '');
   if (provider === 'cloudflare' && !apiKey && deps.hasWorkersAiBinding(env)) apiKey = 'binding:AI';
-  // Pool akun ChatGPT manual: satu giliran agen diambil dari akun yang paling
+  // Pool akun OpenAI manual: satu giliran agen diambil dari akun yang paling
   // siap, dan akun berikutnya dipakai bila akun itu menolak (401/402/403/429).
   const poolCandidates = provider === 'openai' && typeof deps.pickPoolAccounts === 'function'
     ? await deps.pickPoolAccounts('agent', { limit: 4 })
@@ -221,7 +221,7 @@ export async function handleAgentTurn(request, url, env, deps) {
             } catch { /* stream sudah ditutup */ }
           }, 2_500);
 
-          // Akun OAuth (Continue with ChatGPT) tidak punya API key dan hanya
+          // Akun OAuth tidak punya API key dan hanya
           // sah lewat Responses API; akun API key tetap ke /chat/completions.
           const callModel = (args) => (activeIsOAuth && typeof deps.sendOAuthResponses === 'function'
             ? deps.sendOAuthResponses({

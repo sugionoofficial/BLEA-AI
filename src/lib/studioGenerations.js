@@ -1,15 +1,15 @@
-// Generasi media Studio lewat pool akun ChatGPT (OpenAI).
+// Generasi media Studio lewat pool akun OpenAI.
 //
 // Bedanya dengan jalur freebeat: tidak ada kredit BLEA yang dipotong, karena
 // yang membayar adalah akun OpenAI milik admin. Yang dibatasi adalah KUOTA
-// HARIAN per akun (kolom daily_limit di chatgpt_accounts): bila akun pertama
+// HARIAN per akun (kolom daily_limit di openai_accounts): bila akun pertama
 // habis, permintaan pindah ke akun berikutnya — sama seperti pool freebeat.
 //
-// Yang TIDAK dilakukan di sini: menitipkan token sesi ChatGPT ke backend
+// Yang TIDAK dilakukan di sini: menitipkan token sesi konsumen ke backend
 // non-publik. Semua panggilan memakai endpoint resmi (/v1/images, /v1/videos)
 // dengan API key, karena hanya itu yang sah dipakai program.
 
-import { isChatGptPoolFailure, pickChatGptAccountsFor, recordChatGptUsage } from './chatgptPool.js';
+import { isOpenAiPoolFailure, pickOpenAiAccountsFor, recordOpenAiUsage } from './openaiPool.js';
 
 const OPENAI_IMAGE_MODELS = new Set(['gpt-image-1', 'gpt-image-1-mini', 'dall-e-3']);
 const OPENAI_VIDEO_MODELS = new Set(['sora-2', 'sora-2-pro', 'sora-2-mini']);
@@ -91,7 +91,7 @@ async function patchRow(env, id, patch) {
  */
 export async function studioMediaConfig(env, kind = 'image') {
   const capability = kind === 'video' ? 'video' : 'image';
-  const accounts = await pickChatGptAccountsFor(env, { capability, limit: 4 }).catch(() => []);
+  const accounts = await pickOpenAiAccountsFor(env, { capability, limit: 4 }).catch(() => []);
   const models = [...(capability === 'video' ? OPENAI_VIDEO_MODELS : OPENAI_IMAGE_MODELS)];
   const preferred = accounts[0]?.model || (capability === 'video' ? 'sora-2' : 'gpt-image-1');
   return {
@@ -102,13 +102,13 @@ export async function studioMediaConfig(env, kind = 'image') {
     recommended: models.includes(preferred) ? preferred : models[0],
     accounts: accounts.length,
     ...(accounts.length ? {} : {
-      hint: 'Tool gambar/video butuh akun ber-API key: izin OAuth “Continue with ChatGPT” hanya mencakup chat & agen. Tambahkan API key di Studio → Akun ChatGPT.',
+      hint: 'Tool gambar/video butuh akun ber-API key: izin OAuth hanya mencakup chat & agen. Tambahkan API key di Studio → Akun OpenAI.',
     }),
   };
 }
 
 /**
- * Buat gambar lewat pool akun ChatGPT. Failover lintas akun sama seperti chat:
+ * Buat gambar lewat pool akun OpenAI. Failover lintas akun sama seperti chat:
  * kuota/rate-limit/auth → catat cooldown → akun berikutnya.
  */
 export async function generateStudioImage(env, user, input) {
@@ -116,8 +116,8 @@ export async function generateStudioImage(env, user, input) {
   if (!OPENAI_IMAGE_MODELS.has(model)) throw fail('Model gambar hanya gpt-image-1, gpt-image-1-mini, atau dall-e-3.', 400);
   const prompt = cleanPrompt(input?.prompt);
   const size = ['1024x1024', '1024x1536', '1536x1024', 'auto'].includes(String(input?.size || '')) ? String(input.size) : '1024x1024';
-  const accounts = await pickChatGptAccountsFor(env, { capability: 'image', limit: 4 });
-  if (!accounts.length) throw fail('Belum ada akun ChatGPT ber-API key yang siap untuk tool gambar. Izin OAuth hanya untuk chat & agen, jadi tool gambar butuh API key di Studio → Akun ChatGPT.', 503);
+  const accounts = await pickOpenAiAccountsFor(env, { capability: 'image', limit: 4 });
+  if (!accounts.length) throw fail('Belum ada akun OpenAI ber-API key yang siap untuk tool gambar. Izin OAuth hanya untuk chat & agen, jadi tool gambar butuh API key di Studio → Akun OpenAI.', 503);
 
   const row = await insertRow(env, {
     user_id: user.id,
@@ -149,13 +149,13 @@ export async function generateStudioImage(env, user, input) {
       });
     } catch (error) {
       lastError = String(error?.message || error).slice(0, 300);
-      await recordChatGptUsage(env, account.id, { ok: false, status: 0, error: lastError });
+      await recordOpenAiUsage(env, account.id, { ok: false, status: 0, error: lastError });
       continue;
     }
     if (!res.ok) {
       lastError = `HTTP ${res.status}: ${await readUpstreamError(res)}`;
-      await recordChatGptUsage(env, account.id, { ok: false, status: res.status, error: lastError, counted: true });
-      if (isChatGptPoolFailure(res.status, lastError)) continue;
+      await recordOpenAiUsage(env, account.id, { ok: false, status: res.status, error: lastError, counted: true });
+      if (isOpenAiPoolFailure(res.status, lastError)) continue;
       break;
     }
     const data = await res.json().catch(() => ({}));
@@ -163,15 +163,15 @@ export async function generateStudioImage(env, user, input) {
     const imageUrl = first?.url || (first?.b64_json ? `data:image/png;base64,${first.b64_json}` : '');
     if (!imageUrl) {
       lastError = 'Respons gambar kosong dari API.';
-      await recordChatGptUsage(env, account.id, { ok: false, status: 502, error: lastError });
+      await recordOpenAiUsage(env, account.id, { ok: false, status: 502, error: lastError });
       continue;
     }
-    await recordChatGptUsage(env, account.id, { ok: true, status: res.status, counted: true });
+    await recordOpenAiUsage(env, account.id, { ok: true, status: res.status, counted: true });
     const patch = {
       status: 'completed',
       media_url: imageUrl,
-      chatgpt_account_id: account.id,
-      chatgpt_account_label: account.accountLabel || account.accountEmail || '',
+      openai_account_id: account.id,
+      openai_account_label: account.accountLabel || account.accountEmail || '',
       metadata: { size, revised_prompt: first?.revised_prompt || '' },
     };
     await patchRow(env, row.id, patch);
@@ -183,7 +183,7 @@ export async function generateStudioImage(env, user, input) {
 }
 
 /**
- * Buat video lewat pool akun ChatGPT (Sora). Submit asinkron: baris disimpan
+ * Buat video lewat pool akun OpenAI (Sora). Submit asinkron: baris disimpan
  * dengan external id, lalu /api/studio/video/status mem-poll dan menyimpan
  * hasil akhirnya ke baris yang sama.
  */
@@ -193,8 +193,8 @@ export async function generateStudioVideo(env, user, input) {
   const prompt = cleanPrompt(input?.prompt);
   const seconds = ['4', '8', '12'].includes(String(input?.seconds || '')) ? String(input.seconds) : '8';
   const size = typeof input?.size === 'string' && /^\d{2,4}x\d{2,4}$/.test(input.size) ? input.size : '1280x720';
-  const accounts = await pickChatGptAccountsFor(env, { capability: 'video', limit: 4 });
-  if (!accounts.length) throw fail('Belum ada akun ChatGPT ber-API key yang siap untuk tool video. Izin OAuth hanya untuk chat & agen, jadi tool video butuh API key di Studio → Akun ChatGPT.', 503);
+  const accounts = await pickOpenAiAccountsFor(env, { capability: 'video', limit: 4 });
+  if (!accounts.length) throw fail('Belum ada akun OpenAI ber-API key yang siap untuk tool video. Izin OAuth hanya untuk chat & agen, jadi tool video butuh API key di Studio → Akun OpenAI.', 503);
 
   const row = await insertRow(env, {
     user_id: user.id,
@@ -220,27 +220,27 @@ export async function generateStudioVideo(env, user, input) {
       });
     } catch (error) {
       lastError = String(error?.message || error).slice(0, 300);
-      await recordChatGptUsage(env, account.id, { ok: false, status: 0, error: lastError });
+      await recordOpenAiUsage(env, account.id, { ok: false, status: 0, error: lastError });
       continue;
     }
     if (!res.ok) {
       lastError = `HTTP ${res.status}: ${await readUpstreamError(res)}`;
-      await recordChatGptUsage(env, account.id, { ok: false, status: res.status, error: lastError, counted: true });
-      if (isChatGptPoolFailure(res.status, lastError)) continue;
+      await recordOpenAiUsage(env, account.id, { ok: false, status: res.status, error: lastError, counted: true });
+      if (isOpenAiPoolFailure(res.status, lastError)) continue;
       break;
     }
     const data = await res.json().catch(() => ({}));
     const videoId = String(data?.id || '');
     if (!videoId) {
       lastError = 'Respons video kosong dari API.';
-      await recordChatGptUsage(env, account.id, { ok: false, status: 502, error: lastError });
+      await recordOpenAiUsage(env, account.id, { ok: false, status: 502, error: lastError });
       continue;
     }
-    await recordChatGptUsage(env, account.id, { ok: true, status: res.status, counted: true });
+    await recordOpenAiUsage(env, account.id, { ok: true, status: res.status, counted: true });
     const patch = {
       status: 'processing',
-      chatgpt_account_id: account.id,
-      chatgpt_account_label: account.accountLabel || account.accountEmail || '',
+      openai_account_id: account.id,
+      openai_account_label: account.accountLabel || account.accountEmail || '',
       metadata: { seconds, size, external_id: videoId, api_base: account.apiBase },
     };
     await patchRow(env, row.id, patch);
@@ -262,8 +262,8 @@ export async function studioVideoStatus(env, user, id) {
 
   // Akun yang dipakai submit dipakai lagi untuk poll, supaya tugas tidak
   // berpindah ke workspace akun lain.
-  const accountId = row.chatgpt_account_id;
-  const accounts = await pickChatGptAccountsFor(env, { capability: 'video', limit: 4 });
+  const accountId = row.openai_account_id;
+  const accounts = await pickOpenAiAccountsFor(env, { capability: 'video', limit: 4 });
   const account = accounts.find((item) => item.id === accountId) || accounts[0];
   if (!account) return { generation: row };
 

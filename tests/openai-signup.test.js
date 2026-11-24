@@ -2,23 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import {
-  SIGNUP_CSRF_URL,
-  SIGNUP_ENTRY_PATH,
-  SIGNUP_FORM_ORIGIN,
-  SIGNUP_FORM_URL,
-  SIGNUP_PAGE_URL,
-  SIGNUP_REQUEST_URL,
+  PLATFORM_API_KEYS_URL,
+  PLATFORM_HOME_URL,
+  PLATFORM_LOGIN_URL,
+  PLATFORM_NEXT_PATHS,
+  PLATFORM_STEPS,
   analyzeReturnUrl,
-  buildLegacySignupUrl,
+  buildPlatformSignupUrl,
   buildSigninBootstrap,
-  buildSignupUrl,
   isPlusAddress,
   scoreVerificationMessage,
   signupConfig,
   validateSignupInput,
-} from '../src/lib/chatgptSignup.js';
+} from '../src/lib/openaiSignup.js';
 
-const signupModule = await import('../src/lib/chatgptSignup.js');
+const signupModule = await import('../src/lib/openaiSignup.js');
 globalThis.__signup = signupModule;
 
 const BASE = 'https://app.example';
@@ -42,68 +40,57 @@ function request(path, { method = 'GET', body, token = 'admin-jwt' } = {}) {
   });
 }
 
-test('URL yang dibuka memuat formulir daftar OpenAI, bukan endpoint POST NextAuth', () => {
-  const url = new URL(buildSignupUrl('sugionoofficial88+1@gmail.com', { authSessionLoggingId: '3aa1b9d5-3741-4c50-abb1-498284787a85' }));
-  // Regresi bug nyata: buildSignupUrl pernah menghasilkan
-  // https://chatgpt.com/api/auth/signin/openai?... Endpoint itu POST NextAuth
-  // sehingga GET dari browser selalu berakhir di
-  // "Kami tidak dapat memproses upaya masuk Anda. Coba lagi".
-  assert.notEqual(`${url.origin}${url.pathname}`, SIGNUP_REQUEST_URL);
-  assert.ok(!url.pathname.includes('/api/auth/signin'), 'endpoint POST tidak boleh dibuka dengan GET');
-  // Regresi kedua (laporan nyata): chatgpt.com/auth/login berakhir di error
-  // "tidak dapat menyiapkan pemuatan ini" dan, setelah cookie dihapus, langsung
-  // melempar tab ke beranda tanpa formulir.
-  // Regresi ketiga (kesalahan saya di #196): auth.openai.com/log-in tanpa
-  // cookie menampilkan "Sesi Anda telah berakhir", bukan formulir.
-  assert.equal(`${url.origin}${url.pathname}`, `${SIGNUP_FORM_ORIGIN}${SIGNUP_ENTRY_PATH}`);
-  assert.equal(`${url.origin}${url.pathname}`, 'https://chatgpt.com/auth/login_with');
-  // `callback_path=/` harus LITERAL: versi ter-encode (%2F) menghasilkan 500.
-  assert.ok(url.href.startsWith('https://chatgpt.com/auth/login_with?callback_path=/'), url.href);
-  assert.ok(!url.href.includes('%2F'), 'callback_path tidak boleh di-encode');
-  // `screen_hint=signup` yang memilih halaman "Create an account"; tanpa itu
-  // yang muncul "Welcome back" (login), bukan daftar.
-  assert.equal(url.searchParams.get('screen_hint'), 'signup');
-  // `prompt=...` di jalur ini menghasilkan HTTP 500 — jangan pernah ditambah.
-  assert.equal(url.searchParams.get('prompt'), null, 'prompt mematikan halaman ini (500)');
-  assert.equal(url.searchParams.get('login_hint'), null, 'login_hint tidak dijanjikan apa pun');
-  assert.ok(!/password|csrfToken|cookie/i.test(url.toString()), 'URL tidak boleh membawa kredensial');
+test('URL pendaftaran memakai platform.openai.com dengan next yang dibatasi', () => {
+  const url = new URL(buildPlatformSignupUrl('sugionoofficial88+1@gmail.com', { next: '/api-keys' }));
+  assert.equal(`${url.origin}${url.pathname}`, 'https://platform.openai.com/login');
+  assert.equal(url.searchParams.get('next'), '/api-keys');
 
-  // URL lama tetap bisa dibangun (dokumentasi/rujukan), tetapi bukan tombol utama.
-  const legacy = new URL(buildLegacySignupUrl('a+1@b.co'));
-  assert.equal(`${legacy.origin}${legacy.pathname}`, SIGNUP_PAGE_URL);
-  assert.equal(legacy.searchParams.get('login_hint'), 'a+1@b.co');
-  assert.notEqual(buildSignupUrl('a+1@b.co'), legacy.toString());
+  // Tanpa `next`, URL-nya persis halaman login.
+  assert.equal(buildPlatformSignupUrl('a@b.co'), PLATFORM_LOGIN_URL);
+  // `next` di luar daftar tetap dibuang: parameter ini tidak boleh dipakai
+  // mengarahkan pengguna ke domain lain.
+  assert.equal(buildPlatformSignupUrl('a@b.co', { next: 'https://evil.example' }), PLATFORM_LOGIN_URL);
+  assert.equal(buildPlatformSignupUrl('a@b.co', { next: '//evil.example' }), PLATFORM_LOGIN_URL);
+  for (const path of PLATFORM_NEXT_PATHS) {
+    assert.ok(buildPlatformSignupUrl('a@b.co', { next: path }).endsWith(`next=${encodeURIComponent(path)}`));
+  }
+  // Email tidak pernah dikirim sebagai parameter: halaman login platform tidak
+  // memakai login_hint, dan parameter karangan bisa memicu error.
+  assert.ok(!url.href.includes('sugionoofficial'));
+  assert.equal(url.searchParams.get('login_hint'), null);
 
   const config = signupConfig({});
-  assert.equal(config.signup_url, SIGNUP_FORM_URL);
-  assert.equal(config.legacy_login_url, SIGNUP_PAGE_URL);
-  // Halaman yang salah di #196 tidak boleh kembali jadi tombol utama.
-  assert.ok(!config.signup_url.includes('auth.openai.com'), 'auth.openai.com/log-in menampilkan "sesi berakhir"');
-  // login_hint TIDAK dijanjikan lagi: formulir Auth0 tidak terbukti memakainya.
+  assert.equal(config.route, 'platform');
+  assert.equal(config.signup_url, PLATFORM_LOGIN_URL);
+  assert.equal(config.api_keys_url, PLATFORM_API_KEYS_URL);
   assert.equal(config.supported.login_hint, false);
-  assert.equal(config.csrf_url, SIGNUP_CSRF_URL);
   assert.equal(config.supported.server_side_post, false);
   assert.equal(config.supported.headless_signup, false);
   assert.equal(config.supported.captcha_bypass, false);
   assert.equal(config.supported.capture_session_cookie, false);
-  assert.ok(config.why_not_post.some((line) => line.includes('csrfToken')));
+  assert.deepEqual(config.platform_steps, PLATFORM_STEPS);
+  // Langkahnya harus benar-benar berakhir di platform, bukan di aplikasi.
+  assert.match(PLATFORM_STEPS.join(' '), /platform\.openai\.com\/home/);
+  assert.match(PLATFORM_STEPS.join(' '), /API key/);
 });
 
-test('bootstrap sign-in menyebut langkah sah dan tidak pernah membawa csrfToken', () => {
+test('bootstrap sign-in hanya berisi langkah manual, tanpa CSRF dan tanpa POST', () => {
   const bootstrap = buildSigninBootstrap('a+1@b.co');
-  assert.equal(bootstrap.csrf_url, SIGNUP_CSRF_URL);
-  assert.equal(bootstrap.form.url, SIGNUP_REQUEST_URL);
-  assert.equal(bootstrap.form.method, 'POST');
-  assert.ok(bootstrap.form.fields.includes('csrfToken'));
+  assert.equal(bootstrap.form.url, PLATFORM_LOGIN_URL);
+  assert.equal(bootstrap.form.method, 'GET');
   assert.equal(bootstrap.fields_to_fill['Alamat email'], 'a+1@b.co');
-  // Token CSRF wajib diambil browser saat itu juga; tidak boleh ada di payload.
-  assert.equal(bootstrap.csrf, '');
+  // Tidak ada token CSRF: halaman login platform bukan endpoint NextAuth.
+  assert.equal(bootstrap.csrf, undefined);
+  assert.ok(!JSON.stringify(bootstrap).includes('csrfToken'));
+  assert.ok(bootstrap.steps.some((line) => /Continue/.test(line)));
+  assert.ok(!JSON.stringify(bootstrap).includes('/api/auth/signin'));
+  assert.ok(!JSON.stringify(bootstrap).includes('login_with'));
 });
 
 test('analyzeReturnUrl membedakan halaman error, host asing, dan email yang benar-benar terkirim', () => {
   const email = 'kotak+1@mail.tm';
 
-  const error = analyzeReturnUrl('https://chatgpt.com/auth/error?error=OAuthSignin', email);
+  const error = analyzeReturnUrl('https://platform.openai.com/error?error=OAuthSignin', email);
   assert.equal(error.ok, false);
   assert.equal(error.status, 'masih_error');
 
@@ -136,7 +123,7 @@ test('analyzeReturnUrl membedakan halaman error, host asing, dan email yang bena
   // Halaman awal (belum menekan Continue) tetap ditolak — baik halaman baru
   // (formulir Auth0) maupun halaman lama.
   for (const startUrl of [
-    'https://chatgpt.com/auth/login',
+    'https://platform.openai.com/login',
     'https://auth.openai.com/log-in',
     'https://auth.openai.com/log-in?auth_page=abc',
     'https://auth.openai.com/create-account?auth_page=abc',
@@ -189,7 +176,7 @@ test('pencocokan email verifikasi memakai pengirim, kata kunci, penerima, dan wa
 
   // Email lama (sebelum pendaftaran dimulai) tidak boleh dianggap verifikasi.
   const old = scoreVerificationMessage({
-    subject: 'ChatGPT verification code',
+    subject: 'OpenAI verification code',
     from: 'noreply@openai.com',
     to: 'kotak+1@mail.tm',
     createdAt: '2026-11-20T10:00:00Z',
@@ -197,19 +184,19 @@ test('pencocokan email verifikasi memakai pengirim, kata kunci, penerima, dan wa
   assert.ok(old.reasons.includes('diterima sebelum pendaftaran dimulai'));
 });
 
-test('/api/chatgpt-signup hanya untuk admin dan melaporkan bahwa POST server tidak didukung', async () => {
+test('/api/openai-signup hanya untuk admin dan melaporkan bahwa POST server tidak didukung', async () => {
   const oldFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     const target = String(url);
     if (target.includes('/auth/v1/user')) {
       return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     }
-    if (target.includes('/rest/v1/chatgpt_signup_attempts')) return Response.json([]);
+    if (target.includes('/rest/v1/openai_signup_attempts')) return Response.json([]);
     if (target.includes('/rest/v1/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm' }]);
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup'), ENV);
+    const res = await worker.fetch(request('/openai-signup'), ENV);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.config.supported.server_side_post, false);
@@ -220,22 +207,22 @@ test('/api/chatgpt-signup hanya untuk admin dan melaporkan bahwa POST server tid
   }
 });
 
-test('/api/chatgpt-signup menolak non-admin dan aksi asing', async () => {
+test('/api/openai-signup menolak non-admin dan aksi asing', async () => {
   const oldFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     const target = String(url);
     if (target.includes('/auth/v1/user')) {
       return Response.json({ id: 'user-1', app_metadata: { role: 'user' } });
     }
-    if (target.includes('/rest/v1/chatgpt_signup_attempts')) return Response.json([]);
+    if (target.includes('/rest/v1/openai_signup_attempts')) return Response.json([]);
     if (target.includes('/rest/v1/tempmail_user_aliases')) return Response.json([]);
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup'), ENV);
+    const res = await worker.fetch(request('/openai-signup'), ENV);
     assert.equal(res.status, 403);
 
-    const bad = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'hack' } }), ENV);
+    const bad = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'hack' } }), ENV);
     assert.equal(bad.status, 403);
   } finally {
     globalThis.fetch = oldFetch;
@@ -247,10 +234,10 @@ test('/api/chatgpt-signup menolak non-admin dan aksi asing', async () => {
 // apa pun. Panel harus membuka tab kosong SEBELUM menunggu server.
 test('panel pendaftaran membuka tab sebelum await dan menyediakan tautan manual', async () => {
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
   const prepareBody = source.slice(source.indexOf('async function prepare()'), source.indexOf('async function mark('));
   const openIndex = prepareBody.indexOf("window.open('', '_blank')");
-  const awaitIndex = prepareBody.indexOf('chatGptSignupApi.prepare(');
+  const awaitIndex = prepareBody.indexOf('openAiSignupApi.prepare(');
   assert.ok(openIndex > -1, 'tab kosong harus dibuka lewat window.open');
   assert.ok(awaitIndex > -1, 'prepare harus memanggil API');
   assert.ok(openIndex < awaitIndex, 'window.open harus dipanggil sebelum await, bukan sesudahnya');
@@ -265,25 +252,25 @@ test('panel pendaftaran membuka tab sebelum await dan menyediakan tautan manual'
 test('migrasi pendaftaran menyediakan unique constraint (user_id, email) untuk upsert', async () => {
   const { readFileSync, readdirSync } = await import('node:fs');
   const dir = new URL('../supabase/migrations/', import.meta.url);
-  const files = readdirSync(dir).filter((name) => name.includes('chatgpt_signup_attempts') || name.includes('chatgpt_signup_on_conflict'));
+  const files = readdirSync(dir).filter((name) => name.includes('openai_signup_attempts') || name.includes('openai_signup_on_conflict'));
   assert.ok(files.length >= 2, 'migrasi awal + migrasi perbaikan harus ada');
   const sql = files.map((name) => readFileSync(new URL(name, dir), 'utf8')).join('\n');
   assert.ok(
     /unique\s*\(\s*user_id\s*,\s*email\s*\)/i.test(sql),
     'harus ada unique (user_id, email) agar ON CONFLICT (user_id, email) sah',
   );
-  assert.ok(/on_conflict=user_id,email/.test(readFileSync(new URL('../src/lib/chatgptSignupRoute.js', import.meta.url), 'utf8')));
+  assert.ok(/on_conflict=user_id,email/.test(readFileSync(new URL('../src/lib/openaiSignupRoute.js', import.meta.url), 'utf8')));
 });
 
 // Aksi `confirm` harus menolak URL yang tidak membuktikan apa pun, dan hanya
 // menandai `email_dikirim` bila URL memang memuat email TempMail.
-test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-email', async () => {
+test('/api/openai-signup confirm menolak halaman error dan menerima URL ber-email', async () => {
   const oldFetch = globalThis.fetch;
   const attempt = {
     id: '22222222-2222-4222-8222-222222222222',
     user_id: 'admin-1',
     email: 'kotak+1@mail.tm',
-    signup_url: 'https://chatgpt.com/auth/login?login_hint=kotak%2B1%40mail.tm',
+    signup_url: 'https://platform.openai.com/login',
     step: 'dibuka',
     note: '',
     verification_message_id: '',
@@ -296,7 +283,7 @@ test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-ema
     const target = String(url);
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if ((init.method || 'GET') === 'PATCH') {
         patched = JSON.parse(String(init.body));
         return Response.json([{ ...attempt, ...patched }]);
@@ -308,9 +295,9 @@ test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-ema
     return new Response('not found', { status: 404 });
   };
   try {
-    const bad = await worker.fetch(request('/chatgpt-signup', {
+    const bad = await worker.fetch(request('/openai-signup', {
       method: 'POST',
-      body: { action: 'confirm', id: attempt.id, url: 'https://chatgpt.com/auth/error?error=OAuthSignin' },
+      body: { action: 'confirm', id: attempt.id, url: 'https://platform.openai.com/error?error=OAuthSignin' },
     }), ENV);
     const badBody = await bad.json();
     assert.equal(bad.status, 200);
@@ -318,7 +305,7 @@ test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-ema
     assert.equal(badBody.analysis.status, 'masih_error');
     assert.equal(patched, null, 'URL error tidak boleh mengubah langkah');
 
-    const good = await worker.fetch(request('/chatgpt-signup', {
+    const good = await worker.fetch(request('/openai-signup', {
       method: 'POST',
       body: { action: 'confirm', id: attempt.id, url: 'https://auth.openai.com/u/signup/identifier?login_hint=kotak%2B1%40mail.tm' },
     }), ENV);
@@ -336,30 +323,23 @@ test('/api/chatgpt-signup confirm menolak halaman error dan menerima URL ber-ema
 // kolom "Alamat email" KOSONG — OpenAI mengabaikan login_hint di sana. UI tidak
 // boleh lagi menjanjikan isian otomatis, dan harus menyediakan penyalinan email
 // satu klik (dengan fallback bila Clipboard API ditolak).
-test('panel tidak menjanjikan autofill email dan menyediakan salin email dengan fallback', async () => {
+test('panel jujur soal isi email manual dan menyediakan salin email dengan fallback', async () => {
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
   assert.ok(source.includes('tidak terisi otomatis'), 'harus menyatakan kolom email tidak terisi otomatis');
-  assert.ok(source.includes('login_hint'));
-  // Klaim "OpenAI mengabaikan login_hint" TIDAK lagi dipakai: setelah halaman
-  // pindah ke formulir Auth0, yang terbukti hanya bahwa isian otomatis tidak
-  // terjadi. Menyatakan sebabnya tanpa bukti = mengarang.
-  assert.ok(!/mengabaikan\s*\n?\s*<code>login_hint/.test(source));
-  assert.ok(source.includes('tidak terbukti dipakai'));
-  assert.ok(source.includes('Salin email'), 'harus ada tombol salin email');
-  assert.ok(!/login_hint\. Ketik email itu/.test(source), 'janji autofill lama tidak boleh kembali');
-  // Klaim baru: autofill hanya lewat bookmarklet yang diklik pengguna.
-  assert.ok(source.includes('Opsional: isi otomatis'));
   assert.ok(source.includes('same-origin'));
-  assert.ok(source.includes('bookmarklet'));
+  assert.ok(source.includes('login_hint'), 'alasan teknisnya harus tetap disebut');
+  assert.ok(source.includes('Salin email'), 'harus ada tombol salin email');
   // Fallback wajib: navigator.clipboard sering ditolak di iframe/preview.
   assert.ok(source.includes('execCommand'), 'harus ada fallback execCommand');
   assert.ok(source.includes('Clipboard tidak tersedia di browser ini'));
+  // Panel hanya satu jalur: pemilih route/openai tidak boleh kembali.
+  assert.ok(!/name="cga-route"/.test(source), 'pemilih jalur sudah dihapus');
 });
 
-// Autofill lintas-origin tidak mungkin dari halaman BLEA (same-origin policy)
-// dan OpenAI mengabaikan login_hint. Satu-satunya jalan sah: bookmarklet yang
-// dijalankan DI halaman chatgpt.com atas klik pengguna.
+// Autofill lintas-origin tidak mungkin dari halaman BLEA (same-origin policy).
+// Satu-satunya jalan sah: bookmarklet yang dijalankan DI halaman platform atas
+// klik pengguna.
 test('bookmarklet pengisi email: aman, tidak mengirim, dan menargetkan kolom email', () => {
   const { buildAutofillBookmarklet } = globalThis.__signup;
   const email = 'sugionoofficial88+1@gmail.com';
@@ -382,16 +362,17 @@ test('bootstrap menyertakan bookmarklet dan langkah yang tidak mengklaim otomati
   const { buildSigninBootstrap } = globalThis.__signup;
   const bootstrap = buildSigninBootstrap('kotak+1@mail.tm');
   assert.ok(bootstrap.autofill_bookmarklet.startsWith('javascript:'));
+  assert.ok(bootstrap.autofill_userscript.startsWith('// ==UserScript=='));
   assert.ok(bootstrap.steps.some((line) => /bookmarklet|tempel/i.test(line)));
-  // Langkah menyebut tombol yang benar-benar ada di formulir OpenAI.
+  // Langkah menyebut tombol yang benar-benar ada di halaman login platform.
   assert.ok(bootstrap.steps.some((line) => /Continue/.test(line)));
   assert.ok(bootstrap.steps.some((line) => /BLEA tidak pernah menekan/i.test(line)));
 });
 
-// Userscript harus benar-benar mengisi kolom di DOM halaman ChatGPT palsu —
+// Userscript harus benar-benar mengisi kolom di DOM halaman OpenAI palsu —
 // bukan cuma lolos pemeriksaan string. Kolom telepon (type=tel) tidak boleh
 // dipilih, dan skrip tidak boleh menekan tombol apa pun.
-test('userscript mengisi kolom email di DOM tiruan chatgpt.com tanpa menekan tombol', async () => {
+test('userscript mengisi kolom email di DOM tiruan platform tanpa menekan tombol', async () => {
   const { JSDOM } = await import('jsdom');
   const { buildAutofillUserscript } = globalThis.__signup;
   const email = 'sugionoofficial88+1@gmail.com';
@@ -404,7 +385,7 @@ test('userscript mengisi kolom email di DOM tiruan chatgpt.com tanpa menekan tom
       <div><input type="email" name="email" placeholder="Alamat email" autocomplete="username"></div>
       <button type="submit" id="submit-btn">Lanjutkan</button>
     </form></body></html>`;
-  const dom = new JSDOM(html, { url: 'https://chatgpt.com/auth/login', runScripts: 'outside-only' });
+  const dom = new JSDOM(html, { url: 'https://platform.openai.com/login', runScripts: 'outside-only' });
   const { window } = dom;
   let clicks = 0;
   let submits = 0;
@@ -428,7 +409,7 @@ test('userscript mengisi kolom email di DOM tiruan chatgpt.com tanpa menekan tom
   assert.ok(!/document\.cookie/.test(body));
 });
 
-test('/api/chatgpt-signup/userscript hanya untuk admin dan menyajikan berkas .user.js', async () => {
+test('/api/openai-signup/userscript hanya untuk admin dan menyajikan berkas .user.js', async () => {
   const oldFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     const target = String(url);
@@ -438,33 +419,30 @@ test('/api/chatgpt-signup/userscript hanya untuk admin dan menyajikan berkas .us
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup/userscript'), ENV);
+    const res = await worker.fetch(request('/openai-signup/userscript'), ENV);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') || '', /text\/javascript/);
     assert.match(res.headers.get('content-disposition') || '', /\.user\.js/);
     const text = await res.text();
     assert.ok(text.startsWith('// ==UserScript=='));
     assert.ok(text.includes('"kotak@mail.tm"'), 'email alias aktif harus dipakai');
-    assert.ok(text.includes('@match        https://chatgpt.com/*'));
+    assert.ok(text.includes('@match        https://platform.openai.com/*'));
 
-    const bad = await worker.fetch(request('/chatgpt-signup/userscript?email=bukan-email'), ENV);
+    const bad = await worker.fetch(request('/openai-signup/userscript?email=bukan-email'), ENV);
     assert.equal(bad.status, 400);
   } finally {
     globalThis.fetch = oldFetch;
   }
 });
 
-// Panel tidak boleh terasa "wajib pasang sesuatu". Alur manual adalah jalur
-// utama; bingkai otomatis hanya opsi di dalam <details> yang tertutup.
-test('alur manual tetap utama dan bingkai otomatis dilipat sebagai opsional', async () => {
+// Panel tidak boleh terasa "wajib pasang sesuatu": tidak ada langkah opsional
+// yang menonjol, dan salin email tetap jalur utama.
+test('alur manual tetap utama tanpa langkah opsional yang menonjol', async () => {
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  assert.ok(source.includes('isi email manual'));
-  assert.ok(source.includes('Cukup tempel manual'));
-  assert.ok(/<details className="cga-signup-optional">/.test(source), 'bingkai otomatis harus di dalam <details>');
-  assert.ok(source.includes('Opsional: isi otomatis (tidak wajib)'));
-  // Label lama yang menonjolkan unduhan sebagai "disarankan" tidak boleh kembali.
-  assert.ok(!/Unduh userscript \(disarankan\)/.test(source));
+  const source = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('Salin email'));
+  assert.ok(!/Unduh userscript/.test(source), 'unduhan userscript tidak lagi ditampilkan di panel');
+  assert.ok(!/cga-signup-optional/.test(source));
 });
 
 // Email OpenAI berisi KODE (bukan tautan yang cukup diklik). Ekstraksi harus
@@ -483,7 +461,7 @@ test('extractVerificationCode mengambil kode 6 digit dan menolak angka lain', ()
   assert.equal(extractVerificationCode({ bodyText: 'Total Rp 1250000 dibayar' }).code, '');
 });
 
-test('/api/chatgpt-signup verify membaca isi email dan mengembalikan kode', async () => {
+test('/api/openai-signup verify membaca isi email dan mengembalikan kode', async () => {
   const oldFetch = globalThis.fetch;
   const attempt = {
     id: '33333333-3333-4333-8333-333333333333',
@@ -504,7 +482,7 @@ test('/api/chatgpt-signup verify membaca isi email dan mengembalikan kode', asyn
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if ((init.method || 'GET') === 'PATCH') {
         patched = JSON.parse(String(init.body));
         return Response.json([{ ...attempt, ...patched }]);
@@ -535,7 +513,7 @@ test('/api/chatgpt-signup verify membaca isi email dan mengembalikan kode', asyn
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.matched, true);
@@ -551,8 +529,8 @@ test('/api/chatgpt-signup verify membaca isi email dan mengembalikan kode', asyn
 // pengguna mencari tautan verifikasi. OpenAI mengirim KODE.
 test('tidak ada lagi instruksi "klik tautan" verifikasi di panel/konfigurasi', async () => {
   const { readFileSync } = await import('node:fs');
-  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
+  const lib = readFileSync(new URL('../src/lib/openaiSignup.js', import.meta.url), 'utf8');
   // Komentar boleh menyebut istilah lama untuk menjelaskan sejarah; yang
   // dilarang adalah teks yang dilihat pengguna.
   const visible = (source) => source
@@ -587,7 +565,7 @@ test('kode di subjek email tetap ditemukan', () => {
 
 // Kode harus tetap bisa dilihat setelah panel dimuat ulang, tanpa memanggil
 // Gmail lagi dan tanpa me-reset verified_at.
-test('/api/chatgpt-signup action=code membaca kode tersimpan tanpa menyentuh inbox', async () => {
+test('/api/openai-signup action=code membaca kode tersimpan tanpa menyentuh inbox', async () => {
   const oldFetch = globalThis.fetch;
   const attempt = {
     id: '44444444-4444-4444-8444-444444444444',
@@ -609,14 +587,14 @@ test('/api/chatgpt-signup action=code membaca kode tersimpan tanpa menyentuh inb
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if (target.includes('id=eq.55555555-5555-4555-8555-555555555555')) return Response.json([]);
       return Response.json([attempt]);
     }
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id: attempt.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'code', id: attempt.id } }), ENV);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.code, '483920');
@@ -625,7 +603,7 @@ test('/api/chatgpt-signup action=code membaca kode tersimpan tanpa menyentuh inb
     assert.ok(!visited.some((line) => line.includes('mail.tm') || line.includes('gmail') || line.startsWith('PATCH')), visited.join('\n'));
 
     // Permintaan milik user lain tidak boleh membocorkan kode.
-    const other = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id: '55555555-5555-4555-8555-555555555555' } }), ENV);
+    const other = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'code', id: '55555555-5555-4555-8555-555555555555' } }), ENV);
     assert.equal(other.status, 404);
   } finally {
     globalThis.fetch = oldFetch;
@@ -676,11 +654,11 @@ test('action=code menandai kode tersimpan yang sudah basi', async () => {
     const target = String(url);
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
-    if (target.includes('/chatgpt_signup_attempts')) return Response.json([attempt]);
+    if (target.includes('/openai_signup_attempts')) return Response.json([attempt]);
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id: attempt.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'code', id: attempt.id } }), ENV);
     const body = await res.json();
     assert.equal(body.code, '483920');
     assert.equal(body.code_expired, true);
@@ -715,7 +693,7 @@ test('kode dari pengirim tak dikenal disimpan tanpa menaikkan langkah', async ()
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if ((init.method || 'GET') === 'PATCH') {
         patched = JSON.parse(String(init.body));
         return Response.json([{ ...attempt, ...patched }]);
@@ -746,7 +724,7 @@ test('kode dari pengirim tak dikenal disimpan tanpa menaikkan langkah', async ()
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
     const body = await res.json();
     assert.equal(body.matched, false, 'pengirim tak dikenal tidak boleh dianggap verifikasi');
     assert.equal(body.code, '730145');
@@ -769,7 +747,7 @@ test('halaman TempMail menampilkan kode + Salin kode dari isi pesan', async () =
   const { readFileSync } = await import('node:fs');
   const page = readFileSync(new URL('../src/auth/TempMailPage.jsx', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../src/auth/tempmail.css', import.meta.url), 'utf8');
-  assert.ok(page.includes("from '../lib/chatgptSignup'"), 'harus memakai extractVerificationCode yang sama');
+  assert.ok(page.includes("from '../lib/openaiSignup'"), 'harus memakai extractVerificationCode yang sama');
   assert.match(page, /extractVerificationCode\(/);
   assert.ok(/Salin kode/.test(page));
   assert.match(page, /className="tempmail-code"/);
@@ -803,7 +781,7 @@ test('verify tidak membaca isi email lama sebelum pendaftaran dimulai', async ()
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if ((init.method || 'GET') === 'PATCH') return Response.json([attempt]);
       return Response.json([attempt]);
     }
@@ -824,7 +802,7 @@ test('verify tidak membaca isi email lama sebelum pendaftaran dimulai', async ()
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
     const body = await res.json();
     assert.equal(body.code, '', 'kode dari email lama tidak boleh diambil');
     assert.equal(detailFetches.length, 0, 'isi email lama tidak boleh dibaca sama sekali');
@@ -858,7 +836,7 @@ test('verify tetap membaca email baru pada baris yang dibuat beberapa hari lalu'
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if ((init.method || 'GET') === 'PATCH') return Response.json([attempt]);
       return Response.json([attempt]);
     }
@@ -878,7 +856,7 @@ test('verify tetap membaca email baru pada baris yang dibuat beberapa hari lalu'
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'verify', id: attempt.id } }), ENV);
     const body = await res.json();
     assert.equal(body.code, '908172');
   } finally {
@@ -896,14 +874,14 @@ test('prepare mengosongkan kode verifikasi dari ronde sebelumnya', async () => {
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       sent = JSON.parse(String(init.body))[0];
       return Response.json([{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ...sent }]);
     }
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'prepare', email: 'kotak@mail.tm' } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'prepare', email: 'kotak@mail.tm' } }), ENV);
     assert.equal(res.status, 201);
     assert.equal(sent.verification_code, '');
     assert.equal(sent.verification_message_id, '');
@@ -945,7 +923,7 @@ test('verify ulang tetap menemukan email yang sama setelah percobaan pertama', a
     if (target.includes('/auth/v1/user')) return Response.json({ id: 'admin-1', app_metadata: { role: 'admin' } });
     if (target.includes('/profiles')) return Response.json([]);
     if (target.includes('/tempmail_user_aliases')) return Response.json([{ email: 'kotak@mail.tm', provider: 'mailtm', token: '{"token":"t","password":"p"}' }]);
-    if (target.includes('/chatgpt_signup_attempts')) {
+    if (target.includes('/openai_signup_attempts')) {
       if ((init.method || 'GET') === 'PATCH') return Response.json([base]);
       return Response.json([base]);
     }
@@ -965,7 +943,7 @@ test('verify ulang tetap menemukan email yang sama setelah percobaan pertama', a
     return new Response('not found', { status: 404 });
   };
   try {
-    const res = await worker.fetch(request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id: base.id } }), ENV);
+    const res = await worker.fetch(request('/openai-signup', { method: 'POST', body: { action: 'verify', id: base.id } }), ENV);
     const body = await res.json();
     assert.equal(body.code, '121314');
   } finally {
@@ -973,35 +951,28 @@ test('verify ulang tetap menemukan email yang sama setelah percobaan pertama', a
   }
 });
 
-// Laporan nyata 2026-11-23: /auth/login berakhir di error "tidak dapat
-// menyiapkan pemuatan ini", lalu setelah cookie dihapus tab langsung masuk ke
-// beranda tanpa formulir. Jangan kembali ke halaman itu sebagai tombol utama.
-test('panel tidak memakai chatgpt.com/auth/login sebagai tombol utama', async () => {
+// Satu jalur saja: panel tidak boleh lagi menyusun URL daftar sendiri-sendiri,
+// dan tidak boleh ada sisa jalur konsumen (auth.login_with) di kode.
+test('panel dan rute hanya memakai jalur platform', async () => {
   const { readFileSync } = await import('node:fs');
-  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
-  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  const route = readFileSync(new URL('../src/lib/chatgptSignupRoute.js', import.meta.url), 'utf8');
-  // Badan buildSignupUrl sendiri tidak boleh lagi mengembalikan /auth/login.
-  const start = lib.indexOf('export function buildSignupUrl(');
-  const end = lib.indexOf('export function buildLegacySignupUrl(');
-  assert.ok(start > 0 && end > start, 'kedua fungsi harus ada');
-  const body = lib.slice(start, end);
-  assert.ok(!body.includes('SIGNUP_PAGE_URL'), 'buildSignupUrl tidak boleh kembali ke /auth/login');
-  assert.ok(body.includes('SIGNUP_FORM_URL'), 'buildSignupUrl harus memakai formulir Auth0');
-  // Rute memakai buildSignupUrl, bukan menyusun URL sendiri.
-  assert.ok(/buildSignupUrl\(/.test(route));
-  assert.ok(!/SIGNUP_PAGE_URL/.test(route));
-  // UI memakai nama tombol yang benar-benar ada di formulir OpenAI.
+  const lib = readFileSync(new URL('../src/lib/openaiSignup.js', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
+  const route = readFileSync(new URL('../src/lib/openaiSignupRoute.js', import.meta.url), 'utf8');
+  assert.match(route, /buildPlatformSignupUrl\(/);
+  assert.ok(!/buildSignupUrl|SIGNUP_FORM_URL|login_with/.test(route));
+  assert.ok(!/SIGNUP_FORM_URL|login_with|auth\.openai\.com\/log-in/.test(lib));
+  // UI memakai nama tombol yang benar-benar ada di halaman login platform.
   assert.ok(panel.includes('Continue'));
-  assert.ok(!/tekan <b>Lanjutkan<\/b>/.test(panel), 'tombol "Lanjutkan" tidak ada di formulir Auth0');
+  assert.ok(!/tekan <b>Lanjutkan<\/b>/.test(panel));
+  assert.ok(panel.includes('Buka login platform'));
 });
 
 // Regresi: pemeriksaan sesi otomatis TIDAK BOLEH kembali. Endpoint itu tanpa
 // header CORS, jadi hasilnya selalu "Failed to fetch" di browser pengguna.
 test('panel memakai panduan sesi manual, bukan fetch lintas-origin', async () => {
   const { readFileSync } = await import('node:fs');
-  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
+  const lib = readFileSync(new URL('../src/lib/openaiSignup.js', import.meta.url), 'utf8');
   assert.match(panel, /sessionCheckGuide/);
   assert.match(panel, /Failed to fetch/);
   // Komentar boleh menyebut nama endpoint (untuk menjelaskan sejarah); yang
@@ -1015,7 +986,7 @@ test('panel memakai panduan sesi manual, bukan fetch lintas-origin', async () =>
   assert.equal(guide.automatic, false);
   assert.ok(guide.steps.length >= 2);
   assert.match(guide.why, /CORS|Failed to fetch/i);
-  assert.match(guide.note, /Continue with ChatGPT/);
+  assert.match(guide.note, /Akun OpenAI/);
 });
 
 // Setelah kode berhasil, akses disimpan lewat OAuth resmi — BUKAN dengan
@@ -1023,25 +994,23 @@ test('panel memakai panduan sesi manual, bukan fetch lintas-origin', async () =>
 // kredensial yang layak disimpan).
 test('panel menyimpan akses lewat OAuth resmi, bukan cookie sesi', async () => {
   const { readFileSync } = await import('node:fs');
-  const panel = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  const oauth = readFileSync(new URL('../src/studio/ChatGptOAuthPanel.jsx', import.meta.url), 'utf8');
-  const lib = readFileSync(new URL('../src/lib/chatgptSignup.js', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../src/studio/OpenAiSignupPanel.jsx', import.meta.url), 'utf8');
+  const oauth = readFileSync(new URL('../src/studio/OpenAiOAuthPanel.jsx', import.meta.url), 'utf8');
+  const lib = readFileSync(new URL('../src/lib/openaiSignup.js', import.meta.url), 'utf8');
   // Satu tombol penyimpan akses saja, di panel OAuth. Dulu tombol ini hanya
   // muncul saat `step === 'terverifikasi'` (buntu tanpa penjelasan), lalu
   // sempat terduplikasi di dua panel. Panel pendaftaran hanya menunjuk ke sana.
   assert.ok(!/active\.step === 'terverifikasi'/.test(panel), 'tombol simpan tidak boleh disembunyikan oleh status langkah');
-  assert.ok(!/beginChatGptSignIn/.test(panel), 'panel pendaftaran tidak boleh punya tombol simpan sendiri');
+  assert.ok(!/beginOpenAiSignIn/.test(panel), 'panel pendaftaran tidak boleh punya tombol simpan sendiri');
   assert.match(oauth, /Simpan aksesnya ke pool/);
-  assert.match(panel, /Continue with ChatGPT/);
-  assert.match(panel, /Simpan aksesnya ke pool/);
-  // Tidak boleh ada pembacaan cookie sesi chatgpt.com dari mana pun.
+  assert.match(panel, /Connect OpenAI/);
+  // Tidak boleh ada pembacaan cookie sesi openai.com dari mana pun.
   for (const [name, source] of [['panel', panel], ['lib', lib]]) {
     assert.ok(!/document\.cookie/.test(source), `${name}: jangan baca document.cookie`);
-    assert.ok(!/__Secure-next-auth|next-auth\.session-token/.test(source), `${name}: jangan menyentuh cookie sesi ChatGPT`);
+    assert.ok(!/__Secure-next-auth|next-auth\.session-token/.test(source), `${name}: jangan menyentuh cookie sesi`);
   }
   // Penjelasan yang diberikan ke pengguna harus jujur soal masa berlaku.
-  assert.match(panel, /1 jam/);
-  assert.match(panel, /refresh/);
+  assert.match(oauth, /1 jam|refresh/);
 });
 
 // Diagnosa kegagalan OAuth: halaman error `invalid_state` dari auth.openai.com
@@ -1053,7 +1022,7 @@ test('pesan invalid_state menjelaskan sebab dan langkah konkret', () => {
   const notFound = explainOAuthError({ error: 'invalid_state', detail: '', hasPendingAttempt: false });
   assert.equal(notFound.code, 'invalid_state');
   assert.match(notFound.cause, /percobaan OAuth yang sah/i);
-  assert.match(notFound.fix, /Continue with ChatGPT/i);
+  assert.match(notFound.fix, /Connect/i);
 
   const mismatch = explainOAuthError({ error: 'invalid_state', detail: '', hasPendingAttempt: true });
   assert.match(mismatch.cause, /tidak cocok|beda/i);
@@ -1088,14 +1057,14 @@ test('resolveOAuthRedirectUri mengikuti aturan loopback OpenAI', () => {
 
 // Deep link aplikasi: setelah kode verifikasi, OpenAI menawarkan "buka
 // aplikasi" dan halaman verifikasi berputar terus. Panduannya harus ada dan
-// harus jujur bahwa callback aplikasi (chatgpt://) tidak bisa diselesaikan
+// harus jujur bahwa callback aplikasi tidak bisa diselesaikan
 // browser — bukan disuruh mencoba lagi.
 test('panduan handoff aplikasi menjelaskan halaman yang berputar', () => {
   const { APP_HANDOFF_GUIDE, describeOAuthCallbackPath, summarizeAccessStorage } = globalThis.__signup;
   assert.match(APP_HANDOFF_GUIDE.summary, /buka aplikasi/i);
-  assert.match(APP_HANDOFF_GUIDE.why, /chatgpt:\/\//);
+  assert.match(APP_HANDOFF_GUIDE.why, /aplikasi/);
   assert.ok(APP_HANDOFF_GUIDE.steps.length >= 3);
-  assert.match(APP_HANDOFF_GUIDE.steps.join(' '), /Simpan aksesnya ke pool/);
+  assert.match(APP_HANDOFF_GUIDE.steps.join(' '), /API key/i);
 
   // Callback otomatis hanya mungkin di 127.0.0.1; di domain publik langkahnya
   // harus menyebut tempel URL, bukan "tunggu kembali sendiri".
@@ -1116,9 +1085,9 @@ test('panduan handoff aplikasi menjelaskan halaman yang berputar', () => {
 
 // OAuth harus dibuka di TAB BARU: kalau halaman BLEA digantikan, panel hilang
 // dan callback mendarat di 127.0.0.1 tanpa sesi login BLEA.
-test('beginChatGptSignIn membuka tab baru, bukan menggantikan halaman panel', async () => {
+test('beginOpenAiSignIn membuka tab baru, bukan menggantikan halaman panel', async () => {
   const { readFileSync } = await import('node:fs');
-  const client = readFileSync(new URL('../src/studio/chatgptOAuthClient.js', import.meta.url), 'utf8');
+  const client = readFileSync(new URL('../src/studio/openaiOAuthClient.js', import.meta.url), 'utf8');
   assert.ok(!/window\.location\.assign/.test(client), 'jangan menavigasi halaman panel ke OpenAI');
   assert.match(client, /window\.open\(authorizeUrl, '_blank'\)/);
   assert.match(client, /tab = null/);
@@ -1130,7 +1099,7 @@ test('beginChatGptSignIn membuka tab baru, bukan menggantikan halaman panel', as
 // memeriksa `state` yang tersimpan — tempelan URL yang sah jadi gagal.
 test('URL callback bisa diselesaikan dari perangkat lain (state dicari di server)', async () => {
   const { readFileSync } = await import('node:fs');
-  const client = readFileSync(new URL('../src/studio/chatgptOAuthClient.js', import.meta.url), 'utf8');
+  const client = readFileSync(new URL('../src/studio/openaiOAuthClient.js', import.meta.url), 'utf8');
   assert.ok(!/pending\.state !== returnedState/.test(client), 'jangan menolak state sebelum server memeriksanya');
   assert.match(client, /pendingAttemptId/);
   assert.match(client, /server mencari barisnya lewat `state`/);
@@ -1148,31 +1117,24 @@ test('explainOAuthError membedakan invalid_state alur daftar dan OAuth BLEA', ()
 // Jalur platform.openai.com: titik masuk yang sah (semua halaman platform 302
 // ke /login saat belum masuk), `next` dibatasi daftar path tetap, dan email
 // tidak dikirim sebagai parameter karena formulirnya tidak memakainya.
-test('jalur platform memakai login platform.openai.com dengan next terbatas', () => {
-  const { buildPlatformSignupUrl, PLATFORM_LOGIN_URL, PLATFORM_STEPS, PLATFORM_NEXT_PATHS } = globalThis.__signup;
+test('langkah platform menunjuk API keys dan billing, bukan OAuth', () => {
   assert.equal(PLATFORM_LOGIN_URL, 'https://platform.openai.com/login');
-  assert.equal(buildPlatformSignupUrl('a@b.co'), 'https://platform.openai.com/login');
-  assert.equal(buildPlatformSignupUrl('a@b.co', { next: '/api-keys' }), 'https://platform.openai.com/login?next=%2Fapi-keys');
-  // Domain lain / path di luar daftar tidak boleh jadi open redirect.
-  assert.equal(buildPlatformSignupUrl('a@b.co', { next: 'https://evil.example/x' }), PLATFORM_LOGIN_URL);
-  assert.equal(buildPlatformSignupUrl('a@b.co', { next: '/home?x=1' }), PLATFORM_LOGIN_URL);
-  assert.deepEqual(PLATFORM_NEXT_PATHS, ['/home', '/api-keys', '/settings/organization/billing/overview']);
-  // Email tidak boleh masuk URL: bukan parameter yang dipakai halaman itu.
-  assert.ok(!buildPlatformSignupUrl('kotak+1@mail.tm').includes('mail.tm'));
-  // Langkahnya harus menyebut API key, bukan OAuth.
+  assert.equal(PLATFORM_HOME_URL, 'https://platform.openai.com/home');
+  assert.equal(PLATFORM_API_KEYS_URL, 'https://platform.openai.com/api-keys');
+  assert.ok(PLATFORM_NEXT_PATHS.includes('/api-keys'));
+  assert.ok(!PLATFORM_NEXT_PATHS.includes('/settings/organization/usage'));
+  // Langkahnya harus menyebut API key, bukan alur OAuth.
   assert.match(PLATFORM_STEPS.join(' '), /API key/i);
-  assert.ok(!/Continue with ChatGPT/.test(PLATFORM_STEPS.join(' ')));
+  assert.ok(!/Connect OpenAI|OAuth/.test(PLATFORM_STEPS.join(' ')));
 });
 
-// Route default harus platform: itu jalur yang diminta dan satu-satunya yang
-// tidak bergantung pada paket ChatGPT.
-test('prepare default ke jalur platform dan menyimpan langkahnya', async () => {
+test('prepare hanya menyimpan jalur platform (tanpa cabang route)', async () => {
   const { readFileSync } = await import('node:fs');
-  const route = readFileSync(new URL('../src/lib/chatgptSignupRoute.js', import.meta.url), 'utf8');
-  assert.match(route, /input\?\.route \|\| ''\)\.toLowerCase\(\) === 'chatgpt' \? 'chatgpt' : 'platform'/);
+  const route = readFileSync(new URL('../src/lib/openaiSignupRoute.js', import.meta.url), 'utf8');
+  assert.ok(!/normalizeRoute/.test(route), 'pemilih route sudah dihapus');
   assert.match(route, /buildPlatformSignupUrl/);
-  const client = readFileSync(new URL('../src/studio/ChatGptSignupPanel.jsx', import.meta.url), 'utf8');
-  assert.match(client, /useState\('platform'\)/);
-  assert.match(client, /Buka login platform/);
-  assert.match(client, /PLATFORM_API_KEYS_URL/);
+  assert.match(route, /route: 'platform'/);
+  const client = readFileSync(new URL('../src/studio/OpenAiSignupClient.js', import.meta.url).pathname.replace('/OpenAiSignupClient.js','/openaiSignupClient.js'), 'utf8');
+  assert.match(client, /openAiSignupApi/);
+  assert.ok(!/chatGptSignupApi/.test(client));
 });

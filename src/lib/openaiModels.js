@@ -1,14 +1,14 @@
-// Model ChatGPT/OpenAI yang dipakai Studio.
+// Model OpenAI yang dipakai Studio.
 //
 // Studio sengaja TIDAK memakai katalog model provider yang terdaftar di Admin
-// (unorouter/alibaba/cloudflare). Studio adalah ruang kerja ChatGPT: modelnya
-// datang dari akun yang admin tambahkan di /studio/chatgpt-accounts, dan
+// (unorouter/alibaba/cloudflare). Studio adalah ruang kerja OpenAI: modelnya
+// datang dari akun yang admin tambahkan di /studio/openai-accounts, dan
 // permintaannya lewat pool akun itu (prioritas, kuota harian, cooldown).
 //
 // Kenapa daftar ini statis: `/v1/models` milik OpenAI hanya mengembalikan model
 // yang memang tersedia untuk kunci itu, dan daftarnya berbeda antar akun. Jadi
 // daftar di bawah adalah pilihan yang wajar + setiap akun punya `model_default`
-// sendiri. Admin bisa menimpanya lewat env `CHATGPT_STUDIO_MODELS`
+// sendiri. Admin bisa menimpanya lewat env `OPENAI_STUDIO_MODELS`
 // (dipisah koma), dan model yang tidak ada di daftar tetap bisa dipilih bila
 // ditulis manual di form akun.
 //
@@ -17,7 +17,7 @@
 // tetap berlaku di Worker, jadi model gambar tidak pernah dipanggil dari ruang
 // chat.
 
-export const STUDIO_CHATGPT_MODELS = [
+export const STUDIO_OPENAI_MODELS = [
   // ---- Chat & agen (teks) ----
   { id: 'gpt-5.1', label: 'GPT-5.1', capabilities: ['chat', 'agent'], note: 'Flagship untuk penalaran panjang & agen.' },
   { id: 'gpt-5', label: 'GPT-5', capabilities: ['chat', 'agent'], note: 'Penalaran kuat, lebih murah dari 5.1.' },
@@ -41,10 +41,10 @@ export const STUDIO_CHATGPT_MODELS = [
 
 /** Daftar model untuk satu kapabilitas tool Studio (chat/agent/image/...). */
 export function studioModelsForCapability(capability, env) {
-  const override = String(env?.CHATGPT_STUDIO_MODELS || '').trim();
+  const override = String(env?.OPENAI_STUDIO_MODELS || '').trim();
   const list = override
     ? override.split(',').map((id) => id.trim()).filter(Boolean).map((id) => ({ id, label: id, capabilities: ['chat', 'agent'], note: '' }))
-    : STUDIO_CHATGPT_MODELS;
+    : STUDIO_OPENAI_MODELS;
   return list.filter((model) => model.capabilities.includes(String(capability || 'chat')));
 }
 
@@ -63,6 +63,6 @@ export function studioModelItems(capabilities, env) {
   return items;
 }
 
-export function isStudioChatGptModel(id) {
-  return STUDIO_CHATGPT_MODELS.some((model) => model.id === String(id || '').trim());
+export function isStudioOpenAiModel(id) {
+  return STUDIO_OPENAI_MODELS.some((model) => model.id === String(id || '').trim());
 }

@@ -1,5 +1,5 @@
 // Jembatan antara payload gaya Chat Completions (yang sudah dipakai seluruh
-// BLEA) dan Responses API milik OpenAI untuk jalur OAuth "Continue with ChatGPT".
+// BLEA) dan Responses API milik OpenAI untuk jalur OAuth.
 //
 // Kenapa perlu jembatan: jalur OAuth hanya boleh memanggil
 // POST https://api.openai.com/v1/responses dengan `store:false` dan
@@ -66,7 +66,7 @@ export function buildResponsesBody(payload = {}, { model } = {}) {
   const body = {
     model: String(model || payload.model || ''),
     input,
-    // Wajib pada jalur paket ChatGPT.
+    // Wajib pada jalur paket akun (OAuth).
     store: false,
     stream: true,
   };
@@ -154,7 +154,7 @@ export function responsesToChatCompletion(response, model = '') {
   };
 }
 
-/** Error-code khusus jalur paket ChatGPT yang berarti "akun ini sedang habis". */
+/** Error-code khusus jalur paket akun yang berarti "akun ini sedang habis". */
 export function isSubscriptionLimitError(code, message = '') {
   const clean = `${code || ''} ${message || ''}`;
   return /subscription_sharing_usage_limit_exceeded|subscription_sharing_usage_unavailable|usage_limit|rate.?limit|quota/i.test(clean);

@@ -13,26 +13,18 @@ import {
   Trash2,
 } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
-import { ChatGptOAuthPanel } from './ChatGptOAuthPanel';
-import { ChatGptSignupPanel } from './ChatGptSignupPanel';
+import { OpenAiOAuthPanel } from './OpenAiOAuthPanel';
+import { OpenAiSignupPanel } from './OpenAiSignupPanel';
+import { OPENAI_CAPABILITY_LABELS, OPENAI_CAPABILITY_MATRIX, unpipedCapabilities, wiredCapabilities } from '../lib/openaiCapabilities';
+import { PLATFORM_API_KEYS_URL } from '../lib/openaiSignup';
 import {
-  createChatGptAccount,
-  deleteChatGptAccount,
-  fetchChatGptAccounts,
-  testChatGptAccount,
-  updateChatGptAccount,
+  createOpenAiAccount,
+  deleteOpenAiAccount,
+  fetchOpenAiAccounts,
+  testOpenAiAccount,
+  updateOpenAiAccount,
 } from './studioClient';
-import './chatgpt-accounts.css';
-
-const CAPABILITY_LABELS = {
-  chat: 'Chat',
-  agent: 'Agen',
-  image: 'Gambar',
-  video: 'Video',
-  audio: 'Audio',
-  music: 'Musik',
-  metadata: 'Metadata',
-};
+import './openai-accounts.css';
 
 const STATE_META = {
   siap: { label: 'Siap dipakai', tone: 'ok' },
@@ -65,9 +57,11 @@ function relTime(iso) {
   return new Date(iso).toLocaleDateString('id-ID');
 }
 
-export function ChatGptAccountsPage() {
+export function OpenAiAccountsPage() {
   const [accounts, setAccounts] = useState([]);
-  const [capabilities, setCapabilities] = useState(Object.keys(CAPABILITY_LABELS));
+  const [capabilities, setCapabilities] = useState(Object.keys(OPENAI_CAPABILITY_LABELS));
+  const wired = wiredCapabilities();
+  const unpiped = unpipedCapabilities();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -86,7 +80,7 @@ export function ChatGptAccountsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
-    const res = await fetchChatGptAccounts();
+    const res = await fetchOpenAiAccounts();
     if (!res.ok) {
       setError(res.data?.error || 'Daftar akun tidak dapat dimuat.');
       setAccounts([]);
@@ -123,7 +117,7 @@ export function ChatGptAccountsPage() {
       };
       if (form.priority !== '' && form.priority !== null) payload.priority = Number(form.priority);
       if (form.api_base.trim()) payload.api_base = form.api_base.trim();
-      const res = await createChatGptAccount(payload);
+      const res = await createOpenAiAccount(payload);
       if (!res.ok) throw new Error(res.data?.error || 'Akun gagal ditambahkan.');
       setForm(EMPTY_FORM);
       setFormOpen(false);
@@ -138,7 +132,7 @@ export function ChatGptAccountsPage() {
 
   const patch = useCallback(async (id, body, successMessage) => {
     setBusyId(id);
-    const res = await updateChatGptAccount({ id, ...body });
+    const res = await updateOpenAiAccount({ id, ...body });
     setBusyId('');
     if (!res.ok) {
       setBanner(res.data?.error || 'Perubahan gagal disimpan.', 'error');
@@ -150,7 +144,7 @@ export function ChatGptAccountsPage() {
 
   const runTest = useCallback(async (account) => {
     setBusyId(account.id);
-    const res = await testChatGptAccount(account.id);
+    const res = await testOpenAiAccount(account.id);
     setBusyId('');
     if (!res.ok) {
       setBanner(res.data?.error || 'Uji akun gagal.', 'error');
@@ -162,7 +156,7 @@ export function ChatGptAccountsPage() {
 
   const remove = useCallback(async (id) => {
     setBusyId(id);
-    const res = await deleteChatGptAccount(id);
+    const res = await deleteOpenAiAccount(id);
     setBusyId('');
     setConfirmDeleteId('');
     if (!res.ok) {
@@ -183,7 +177,7 @@ export function ChatGptAccountsPage() {
 
   return (
     <DropXLayout
-      title="Akun ChatGPT"
+      title="Akun OpenAI"
       description="Pool akun manual: bila batas harian akun pertama habis, permintaan pindah ke akun berikutnya."
       actions={(
         <button type="button" className="studio-home-connection" onClick={load} disabled={loading}>
@@ -191,14 +185,14 @@ export function ChatGptAccountsPage() {
         </button>
       )}
     >
-      <div className="chatgpt-accounts">
+      <div className="openai-accounts">
         <section className="cga-hero">
           <span className="cga-badge"><KeyRound size={12} /> Admin · Koneksi</span>
-          <h1>ChatGPT disambungkan seperti freebeat.</h1>
+          <h1>Akun OpenAI tersambung seperti freebeat.</h1>
           <p>
-            Jalur utama: daftar akun lewat <b>platform.openai.com</b> dengan email TempMail,
-            lalu tempel <b>API key</b>-nya di “Tambah akun manual”. Jalur ChatGPT (OAuth) tetap
-            tersedia bila akun Anda punya paket Plus/Pro.
+            Daftar akun lewat <b>platform.openai.com</b> dengan email TempMail, lalu tempel
+            <b> API key</b>-nya di “Tambah akun manual”. OAuth tetap tersedia sebagai jalur
+            alternatif tanpa API key (khusus teks).
           </p>
           <ul className="cga-stats">
             <li><b>{summary.total}</b><small>akun di pool</small></li>
@@ -216,14 +210,46 @@ export function ChatGptAccountsPage() {
               <Plus size={13} /> {formOpen ? 'Tutup form' : 'Tambah akun manual'}
             </button>
             <Link className="cga-link" to="/studio/connection">Lihat status koneksi</Link>
+            <a className="cga-link" href={PLATFORM_API_KEYS_URL} target="_blank" rel="noopener noreferrer">
+              Buka API keys OpenAI
+            </a>
           </div>
         </section>
 
+        {/* Kemampuan platform → tool Studio. Ditampilkan supaya admin tahu
+            kenapa sebagian baris di tab "Kemampuan API" tetap nol: BLEA belum
+            memanggil rute itu, dan itu ditulis apa adanya. */}
+        <details className="cga-signup-advanced cga-matrix">
+          <summary>Kemampuan OpenAI ↔ tool Studio ({wired.length} dipakai, {unpiped.length} belum)</summary>
+          <table className="cga-matrix-table">
+            <thead>
+              <tr><th>Kemampuan OpenAI</th><th>Tool Studio</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {OPENAI_CAPABILITY_MATRIX.map((row) => (
+                <tr key={row.key} className={row.capability ? '' : 'is-idle'}>
+                  <td>
+                    <b>{row.platform}</b>
+                    <small>{row.api}</small>
+                  </td>
+                  <td>{row.toolLabel || '—'}</td>
+                  <td>
+                    <em className={`cga-matrix-state is-${row.status === 'dipakai' ? 'ok' : 'idle'}`}>
+                      {row.status === 'dipakai' ? 'Dipakai' : 'Belum dipakai'}
+                    </em>
+                    <small>{row.note}</small>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+
         {/* Pendaftaran akun baru (langkah 1) lalu penyimpanan aksesnya
             (langkah 3). Urutan ini mengikuti alur yang dipakai pengguna. */}
-        <ChatGptSignupPanel onVerified={load} />
+        <OpenAiSignupPanel onVerified={load} />
 
-        <ChatGptOAuthPanel onLinked={load} />
+        <OpenAiOAuthPanel onLinked={load} />
 
         {notice && (
           <p className={`cga-notice is-${noticeTone}`}>
@@ -267,7 +293,7 @@ export function ChatGptAccountsPage() {
                   required
                 />
                 <small>
-                  Untuk pemakaian nyata pakai API key dari platform.openai.com. Token sesi ChatGPT
+                  Untuk pemakaian nyata pakai API key dari platform.openai.com. Token sesi konsumen
                   bisa disimpan sebagai catatan, tetapi tidak dipanggil ke backend non-publik.
                 </small>
               </label>
@@ -278,7 +304,7 @@ export function ChatGptAccountsPage() {
                   onChange={(event) => setForm({ ...form, credential_kind: event.target.value })}
                 >
                   <option value="api_key">API key resmi (bisa dipanggil)</option>
-                  <option value="session">Token sesi ChatGPT (catatan)</option>
+                  <option value="session">Token sesi konsumen (catatan)</option>
                 </select>
               </label>
               <label>
@@ -331,7 +357,7 @@ export function ChatGptAccountsPage() {
                     checked={form.capabilities.includes(capability)}
                     onChange={() => toggleCapability(capability)}
                   />
-                  {CAPABILITY_LABELS[capability] || capability}
+                  {OPENAI_CAPABILITY_LABELS[capability] || capability}
                 </label>
               ))}
             </fieldset>
@@ -386,7 +412,7 @@ export function ChatGptAccountsPage() {
 
                 <div className="cga-caps-row">
                   {account.capabilities.map((capability) => (
-                    <em key={capability}>{CAPABILITY_LABELS[capability] || capability}</em>
+                    <em key={capability}>{OPENAI_CAPABILITY_LABELS[capability] || capability}</em>
                   ))}
                 </div>
 
@@ -447,4 +473,4 @@ export function ChatGptAccountsPage() {
   );
 }
 
-export default ChatGptAccountsPage;
+export default OpenAiAccountsPage;

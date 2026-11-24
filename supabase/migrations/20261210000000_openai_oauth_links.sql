@@ -1,7 +1,7 @@
--- BLEA AI — tautan "Continue with ChatGPT" (Sign in with ChatGPT, TANPA API key).
+-- BLEA AI — tautan OAuth OpenAI (TANPA API key).
 --
--- Kenapa ada tabel ini padahal sudah ada chatgpt_accounts:
---   chatgpt_accounts = kredensial yang SIAP dipakai pool (API key / token yang
+-- Kenapa ada tabel ini padahal sudah ada openai_accounts:
+--   openai_accounts = kredensial yang SIAP dipakai pool (API key / token yang
 --   sudah lolos uji). Tabel ini menyimpan jejak OAuth: state & PKCE yang sedang
 --   menunggu callback, client_id terbitan OpenAI per akun (oaiapp_…), scope yang
 --   disetujui, dan token tersegel untuk refresh. Tanpa tabel ini, refresh token
@@ -12,11 +12,11 @@
 -- admin (select/delete). Tidak ada insert/update dari klien — Worker memakai
 -- service_role setelah memeriksa JWT pengguna.
 
-create table if not exists public.chatgpt_oauth_links (
+create table if not exists public.openai_oauth_links (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   -- pending  → menunggu callback
-  -- linked   → paket ChatGPT disetujui (chatgpt.tokens.use.direct)
+  -- linked   → izin paket akun disetujui (scope chatgpt.tokens.use.direct)
   -- linked_identity_only → login berhasil tapi izin pemakaian paket tidak dicentang
   -- denied / failed → pengguna menolak / pertukaran kode gagal
   status text not null default 'pending' check (status in ('pending', 'linked', 'linked_identity_only', 'denied', 'failed')),
@@ -39,25 +39,25 @@ create table if not exists public.chatgpt_oauth_links (
   updated_at timestamptz not null default now()
 );
 
-comment on table public.chatgpt_oauth_links is
-  'Sign in with ChatGPT (OAuth PKCE) links: pending attempts, issued client_ids, sealed tokens. service_role only for writes.';
+comment on table public.openai_oauth_links is
+  'OAuth OpenAI (PKCE) links: pending attempts, issued client_ids, sealed tokens. service_role only for writes.';
 
-create index if not exists chatgpt_oauth_links_user_idx
-  on public.chatgpt_oauth_links (user_id, created_at desc);
+create index if not exists openai_oauth_links_user_idx
+  on public.openai_oauth_links (user_id, created_at desc);
 
-drop trigger if exists chatgpt_oauth_links_set_updated_at on public.chatgpt_oauth_links;
-create trigger chatgpt_oauth_links_set_updated_at
-  before update on public.chatgpt_oauth_links
+drop trigger if exists openai_oauth_links_set_updated_at on public.openai_oauth_links;
+create trigger openai_oauth_links_set_updated_at
+  before update on public.openai_oauth_links
   for each row execute function public.set_projects_updated_at();
 
-alter table public.chatgpt_oauth_links enable row level security;
-revoke all on table public.chatgpt_oauth_links from anon, authenticated;
-grant select on table public.chatgpt_oauth_links to authenticated;
+alter table public.openai_oauth_links enable row level security;
+revoke all on table public.openai_oauth_links from anon, authenticated;
+grant select on table public.openai_oauth_links to authenticated;
 
-drop policy if exists chatgpt_oauth_links_select_own on public.chatgpt_oauth_links;
-create policy chatgpt_oauth_links_select_own on public.chatgpt_oauth_links
+drop policy if exists openai_oauth_links_select_own on public.openai_oauth_links;
+create policy openai_oauth_links_select_own on public.openai_oauth_links
   for select to authenticated using (auth.uid() = user_id);
 
-drop policy if exists chatgpt_oauth_links_admin_select on public.chatgpt_oauth_links;
-create policy chatgpt_oauth_links_admin_select on public.chatgpt_oauth_links
+drop policy if exists openai_oauth_links_admin_select on public.openai_oauth_links;
+create policy openai_oauth_links_admin_select on public.openai_oauth_links
   for select to authenticated using (public.is_admin());

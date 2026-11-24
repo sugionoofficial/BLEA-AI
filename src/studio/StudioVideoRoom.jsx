@@ -20,7 +20,7 @@ const SIZES = [
 ];
 
 /**
- * Ruang video Studio (Sora lewat pool akun ChatGPT).
+ * Ruang video Studio (Sora lewat pool akun OpenAI).
  *
  * Tidak ada potongan kredit BLEA di sini: yang berbayar adalah akun OpenAI
  * milik admin, dan kuota harian akun itu yang membatasi pemakaian. Karena video
@@ -86,8 +86,8 @@ export function StudioVideoRoom() {
     <div className="studio-video">
       {config && !ready && (
         <div className="studio-video-banner" role="status">
-          <span>{config.hint || 'Pool akun ChatGPT belum siap untuk video.'}</span>
-          <Link to="/studio/chatgpt-accounts">Kelola akun</Link>
+          <span>{config.hint || 'Pool akun OpenAI belum siap untuk video.'}</span>
+          <Link to="/studio/openai-accounts">Kelola akun</Link>
         </div>
       )}
 
@@ -128,7 +128,7 @@ export function StudioVideoRoom() {
           <button type="submit" className="studio-video-submit" disabled={!ready || busy || !prompt.trim()}>
             <Clapperboard size={15} /> {busy ? 'Mengirim…' : 'Buat video'}
           </button>
-          <span className="studio-video-hint">Kuota akun ChatGPT, bukan kredit BLEA.</span>
+          <span className="studio-video-hint">Kuota akun OpenAI, bukan kredit BLEA.</span>
         </div>
       </form>
 
@@ -150,7 +150,7 @@ export function StudioVideoRoom() {
           </header>
           <p className="studio-video-prompt">{job.prompt}</p>
           <small>
-            {job.model} · {job.metadata?.seconds || seconds} detik · akun {job.chatgpt_account_label || 'pool ChatGPT'}
+            {job.model} · {job.metadata?.seconds || seconds} detik · akun {job.openai_account_label || 'pool OpenAI'}
           </small>
           {job.status === 'completed' && job.media_url && (
             <video className="studio-video-player" src={job.media_url} controls playsInline />

@@ -277,7 +277,7 @@ export function AIStudio() {
   const [enabledModels, setEnabledModels] = useState([]);
   const [modelItems, setModelItems] = useState([]);
   const [selectedModel, setSelectedModel] = useState('gpt-oss-120b:free');
-  // Ruang Studio memakai model ChatGPT (pool akun manual), BUKAN katalog
+  // Ruang Studio memakai model OpenAI (pool akun manual), BUKAN katalog
   // provider yang terdaftar di Admin Panel. Di luar /studio/* perilakunya tetap
   // seperti sebelumnya supaya halaman lain tidak ikut berubah.
   const [studioMode] = useState(() => {
@@ -418,7 +418,7 @@ export function AIStudio() {
     return () => { cancelled = true; };
   }, []);
 
-  // Studio: model ChatGPT dari pool akun manual + status kesiapan pool.
+  // Studio: model OpenAI dari pool akun manual + status kesiapan pool.
   useEffect(() => {
     if (!studioMode) return undefined;
     let cancelled = false;
@@ -594,7 +594,7 @@ export function AIStudio() {
 
   const resolveProviderForModel = useCallback((modelId) => {
     const found = modelItems.find((item) => item.id === modelId);
-    // Di Studio, model apa pun berasal dari pool ChatGPT, jadi provider
+    // Di Studio, model apa pun berasal dari pool OpenAI, jadi provider
     // default-nya 'openai' — bukan 'unorouter'.
     return found?.provider || (studioMode ? 'openai' : 'unorouter');
   }, [modelItems, studioMode]);
@@ -1091,7 +1091,7 @@ export function AIStudio() {
             <div className="studio-not-connected">
               <Sparkles size={13} />
               <span>
-                Pool akun ChatGPT belum siap — {studioPool.hint || 'admin perlu menambahkan akun di Studio → Akun ChatGPT.'}
+                Pool akun OpenAI belum siap — {studioPool.hint || 'admin perlu menambahkan akun di Studio → Akun OpenAI.'}
               </span>
             </div>
           )}

@@ -1426,7 +1426,7 @@
 }
 
 
-/* Hasil gambar dari pool akun ChatGPT (ruang /studio/image). */
+/* Hasil gambar dari pool akun OpenAI (ruang /studio/image). */
 .generate-studio-result {
   display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start;
   margin: 0 0 14px; padding: 12px; border-radius: 16px;

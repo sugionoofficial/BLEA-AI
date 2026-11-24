@@ -163,7 +163,7 @@ export function AgentPage() {
   const [error, setError] = useState('');
   const [modelItems, setModelItems] = useState([]);
   const [model, setModel] = useState('');
-  // Di dalam Studio, agen memakai model ChatGPT (pool akun manual), sama seperti
+  // Di dalam Studio, agen memakai model OpenAI (pool akun manual), sama seperti
   // ruang chat — bukan katalog provider yang terdaftar di Admin Panel.
   const [studioMode] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -209,7 +209,7 @@ export function AgentPage() {
       if (resolved.resolved) setModel(resolved.model);
       else if (!items.length) {
         setError(studioMode
-          ? 'Belum ada model ChatGPT yang siap. Admin perlu menambahkan API key di Studio → Akun ChatGPT.'
+          ? 'Belum ada model OpenAI yang siap. Admin perlu menambahkan API key di Studio → Akun OpenAI.'
           : 'Belum ada model chat aktif. Admin perlu mengaktifkan model di Admin Panel → Model.');
       }
     })();
@@ -471,7 +471,7 @@ export function AgentPage() {
       <div className="agent-toolbar">
         <span className="agent-model-note">
           <Cpu size={12} /> {activeModelMeta.model || 'belum ada model'}
-          {studioMode && <em className="agent-model-source">ChatGPT{studioPool?.ready === false ? ' · pool belum siap' : ''}</em>}
+          {studioMode && <em className="agent-model-source">OpenAI{studioPool?.ready === false ? ' · pool belum siap' : ''}</em>}
           {lastCredits > 0 && <em> · {lastCredits} kredit/giliran</em>}
         </span>
         <button type="button" className="agent-ghost-btn" onClick={clearThread} disabled={!messages.length && !running}>

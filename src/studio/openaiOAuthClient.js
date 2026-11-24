@@ -1,4 +1,4 @@
-// Klien "Continue with ChatGPT" di browser.
+// Klien OAuth OpenAI di browser.
 //
 // Kenapa PKCE dikerjakan di browser: OpenAI mewajibkan redirect_uri berupa
 // loopback `http://127.0.0.1:<port>/auth/callback`, artinya callback hanya bisa
@@ -9,7 +9,7 @@
 
 import { getAccessToken } from '../api/client';
 import { parseCallbackInput } from './oauthCallbackUrl';
-import { resolveOAuthRedirectUri } from '../lib/chatgptSignup';
+import { resolveOAuthRedirectUri } from '../lib/openaiSignup';
 
 const AUTHORIZE_ENDPOINT = 'https://auth.openai.com/api/accounts/authorize';
 const SCOPES = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
@@ -17,7 +17,7 @@ const RESOURCE = 'https://api.openai.com/v1';
 const CALLBACK_PATH = '/auth/callback';
 const DYNAMIC_CLIENT_ID = 'dynamic_agent_client';
 const AGENT_NAME_HINT = 'BLEA AI';
-const PENDING_KEY = 'blea.chatgpt.oauth.pending';
+const PENDING_KEY = 'blea.openai.oauth.pending';
 
 function randomString(bytes = 48) {
   const array = new Uint8Array(bytes);
@@ -56,12 +56,12 @@ async function api(path, options = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
-export const chatGptOAuthApi = {
-  status: () => api('/chatgpt-oauth'),
-  start: (body) => api('/chatgpt-oauth/start', { method: 'POST', body }),
-  complete: (body) => api('/chatgpt-oauth/complete', { method: 'POST', body }),
-  refresh: (id) => api('/chatgpt-oauth/refresh', { method: 'POST', body: { id } }),
-  disconnect: (id) => api('/chatgpt-oauth/disconnect', { method: 'POST', body: { id } }),
+export const openAiOAuthApi = {
+  status: () => api('/openai-oauth'),
+  start: (body) => api('/openai-oauth/start', { method: 'POST', body }),
+  complete: (body) => api('/openai-oauth/complete', { method: 'POST', body }),
+  refresh: (id) => api('/openai-oauth/refresh', { method: 'POST', body: { id } }),
+  disconnect: (id) => api('/openai-oauth/disconnect', { method: 'POST', body: { id } }),
 };
 
 /**
@@ -73,7 +73,7 @@ export const chatGptOAuthApi = {
  * /auth/callback dan alur selesai otomatis. Bila dibuka dari domain publik
  * (blea.ai), tidak ada yang mendengarkan di 127.0.0.1 — untuk itu UI
  * menyediakan jalur tempel-URL callback. Domain publik butuh client ID partner
- * dari OpenAI (formulir Sign in with ChatGPT) supaya bisa memakai redirect https.
+ * dari OpenAI (formulir sign-in resmi) supaya bisa memakai redirect https.
  */
 export function oauthAutoCallbackSupported() {
   if (typeof window === 'undefined') return false;
@@ -108,7 +108,7 @@ export function clearPendingAttempt() {
  * Mulai login: daftarkan attempt (state/nonce/PKCE disimpan server), lalu buka
  * halaman izin OpenAI di tab yang sama. Return value hanya untuk UI.
  */
-export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '', tab = null } = {}) {
+export async function beginOpenAiSignIn({ issuedClientId = '', loginHint = '', tab = null } = {}) {
   // Port callback: pakai port halaman HANYA bila BLEA memang dibuka dari
   // 127.0.0.1 (di situ ada server yang mendengarkan, jadi callback mendarat
   // otomatis). Di domain publik tidak ada yang mendengarkan di perangkat
@@ -136,14 +136,14 @@ export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '', 
   // dan itulah satu-satunya cara membedakan "pendaftaran pertama" dari
   // "mendaftar ulang padahal client sudah terbit".
   const authorizeClientId = issuedClientId && issuedClientId !== DYNAMIC_CLIENT_ID ? issuedClientId : '';
-  const res = await chatGptOAuthApi.start({
+  const res = await openAiOAuthApi.start({
     state,
     nonce,
     code_verifier: codeVerifier,
     redirect_uri: redirectUri,
     client_id: authorizeClientId,
   });
-  if (!res.ok) return { ok: false, error: res.data?.error || 'Tidak bisa memulai sesi login ChatGPT.' };
+  if (!res.ok) return { ok: false, error: res.data?.error || 'Tidak bisa memulai sesi login OpenAI.' };
 
   try {
     window.localStorage.setItem(PENDING_KEY, JSON.stringify({
@@ -203,10 +203,10 @@ export async function beginChatGptSignIn({ issuedClientId = '', loginHint = '', 
 // mengaitkan pemakaian paket dengan perangkat, bukan untuk autentikasi.
 function hostId() {
   try {
-    const existing = window.localStorage.getItem('blea.chatgpt.hostId');
+    const existing = window.localStorage.getItem('blea.openai.hostId');
     if (existing && /^[0-9a-f-]{36}$/i.test(existing)) return existing;
     const fresh = crypto.randomUUID();
-    window.localStorage.setItem('blea.chatgpt.hostId', fresh);
+    window.localStorage.setItem('blea.openai.hostId', fresh);
     return fresh;
   } catch {
     return crypto.randomUUID();
@@ -226,7 +226,7 @@ function hostId() {
 let inFlightExchange = null;
 let exchangedCode = '';
 
-export async function finishChatGptSignIn(search = '') {
+export async function finishOpenAiSignIn(search = '') {
   const params = new URLSearchParams(search || (typeof window !== 'undefined' ? window.location.search : ''));
   const codeForExchange = params.get('code') || '';
   if (codeForExchange && exchangedCode === codeForExchange && inFlightExchange) {
@@ -261,18 +261,18 @@ async function runExchange(params) {
   const pendingMatches = Boolean(pending && pending.state === returnedState);
   const pendingAttemptId = pendingMatches ? pending.attemptId : '';
   if (params.get('error')) {
-    const res = await chatGptOAuthApi.complete({
+    const res = await openAiOAuthApi.complete({
       ...(pendingAttemptId ? { attempt_id: pendingAttemptId } : {}),
       state: returnedState,
       error: params.get('error'),
       error_description: params.get('error_description') || '',
     });
-    return { ok: false, error: res.data?.error || 'Izin ChatGPT ditolak.' };
+    return { ok: false, error: res.data?.error || 'Izin OpenAI ditolak.' };
   }
   const code = params.get('code') || '';
   if (!code) return { ok: false, error: 'Kode otorisasi tidak ada di URL callback.' };
 
-  const res = await chatGptOAuthApi.complete({
+  const res = await openAiOAuthApi.complete({
     ...(pendingAttemptId ? { attempt_id: pendingAttemptId } : {}),
     state: returnedState,
     code,
@@ -289,13 +289,13 @@ async function runExchange(params) {
  * Selesaikan callback dari URL yang ditempel pengguna.
  *
  * Dipakai ketika halaman loopback 127.0.0.1:<port> tidak bisa dibuka (mis. BLEA
- * diakses dari domain publik): setelah menyetujui di ChatGPT, browser berhenti
+ * diakses dari domain publik): setelah menyetujui di OpenAI, browser berhenti
  * di alamat yang memuat ?code=…&state=… — alamat itu ditempel di sini. state
  * tetap divalidasi terhadap attempt yang tersimpan, jadi tempelan URL sembarang
  * tidak bisa menyelesaikan login.
  */
-export async function finishChatGptSignInFromUrl(rawUrl) {
+export async function finishOpenAiSignInFromUrl(rawUrl) {
   const params = parseCallbackInput(rawUrl);
   if (!params) return { ok: false, error: 'Tempel URL callback dari browser (alamat yang memuat ?code=…&state=…).' };
-  return finishChatGptSignIn(params);
+  return finishOpenAiSignIn(params);
 }

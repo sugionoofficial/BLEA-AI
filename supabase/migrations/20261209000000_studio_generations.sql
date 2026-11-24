@@ -1,9 +1,9 @@
--- BLEA AI — hasil ChatGPT untuk tool Studio (gambar/video/audio/teks)
+-- BLEA AI — hasil OpenAI untuk tool Studio (gambar/video/audio/teks)
 --
 -- Kenapa perlu tabel sendiri, bukan meneruskan ke freebeat:
---   Pool akun ChatGPT menghasilkan output yang harus tetap bisa diambil
+--   Pool akun OpenAI menghasilkan output yang harus tetap bisa diambil
 --   pengguna (unduh/copy) tanpa bergantung pada provider lain. Setiap baris
---   mencatat tool mana yang membuatnya, model ChatGPT yang dipakai, dan status
+--   mencatat tool mana yang membuatnya, model OpenAI yang dipakai, dan status
 --   kuota/akun — sehingga halaman Hasil & Unduhan tetap akurat dan isolasi
 --   kapabilitas tidak perlu ditebak dari isi kolom.
 --
@@ -23,15 +23,15 @@ create table if not exists public.studio_generations (
   download_url text,
   status text not null default 'completed' check (status in ('queued', 'processing', 'completed', 'failed', 'cancelled')),
   error_message text,
-  chatgpt_account_id uuid,
-  chatgpt_account_label text,
+  openai_account_id uuid,
+  openai_account_label text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 comment on table public.studio_generations is
-  'Hasil tool Studio yang dibuat lewat pool akun ChatGPT (gambar/video/audio/teks), dipakai halaman Hasil & Unduhan.';
+  'Hasil tool Studio yang dibuat lewat pool akun OpenAI (gambar/video/audio/teks), dipakai halaman Hasil & Unduhan.';
 
 create index if not exists studio_generations_user_created_idx
   on public.studio_generations (user_id, created_at desc);

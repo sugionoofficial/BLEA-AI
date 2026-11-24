@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
-import { STUDIO_CHATGPT_MODELS, studioModelItems, studioModelsForCapability, isStudioChatGptModel } from '../src/lib/openaiModels.js';
+import { STUDIO_OPENAI_MODELS, studioModelItems, studioModelsForCapability, isStudioOpenAiModel } from '../src/lib/openaiModels.js';
 import { SKILL_CATALOG, SKILL_CATALOG_COUNT, OUTPUT_CAPABILITIES, searchSkillCatalog, toolForCategory } from '../src/studio/skillCatalog.js';
 import { assertStudioModel } from '../src/agent/modelRouting.js';
-import { sealChatGptToken } from '../src/lib/chatgptPool.js';
+import { sealOpenAiToken } from '../src/lib/openaiPool.js';
 import { capabilityForApiPath, canToolUseCapability } from '../src/lib/toolCapabilities.js';
 
 const ENC_KEY = 'test-encryption-key-for-studio-suite-32b';
@@ -39,7 +39,7 @@ function stubUpstream({ accounts = [], accountsRows = null, imageOk = true, vide
     const url = typeof input === 'string' ? input : input.url;
     state.fetchCalls.push(url);
     if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1', email: 'creator@example.com' });
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_accounts')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_accounts')) {
       if (accountsRows) return Response.json(accountsRows);
       return Response.json(accounts);
     }
@@ -73,10 +73,10 @@ function stubUpstream({ accounts = [], accountsRows = null, imageOk = true, vide
   return { state, restore: () => { globalThis.fetch = realFetch; } };
 }
 
-// Baris chatgpt_accounts seperti yang dikembalikan PostgREST (token tersegel
+// Baris openai_accounts seperti yang dikembalikan PostgREST (token tersegel
 // dengan kunci enkripsi yang sama seperti di Worker).
 async function account(overrides = {}) {
-  const sealed = await sealChatGptToken(createEnv({ PROVIDER_CREDENTIAL_ENCRYPTION_KEY: ENC_KEY }), 'sk-studio-test');
+  const sealed = await sealOpenAiToken(createEnv({ PROVIDER_CREDENTIAL_ENCRYPTION_KEY: ENC_KEY }), 'sk-studio-test');
   return {
     id: '11111111-1111-1111-1111-111111111111',
     account_label: 'Akun Studio',
@@ -131,10 +131,10 @@ test('studio output table: setiap output punya status live/partial', () => {
   assert.ok(OUTPUT_CAPABILITIES.some((output) => /Excel/i.test(output.label) && output.status === 'live'));
 });
 
-test('studio models: hanya model ChatGPT, gambar/video tidak bocor ke ruang chat', () => {
-  assert.ok(STUDIO_CHATGPT_MODELS.length >= 10);
-  for (const model of STUDIO_CHATGPT_MODELS) assert.equal(isStudioChatGptModel(model.id), true);
-  assert.equal(isStudioChatGptModel('qwen-max'), false);
+test('studio models: hanya model OpenAI, gambar/video tidak bocor ke ruang chat', () => {
+  assert.ok(STUDIO_OPENAI_MODELS.length >= 10);
+  for (const model of STUDIO_OPENAI_MODELS) assert.equal(isStudioOpenAiModel(model.id), true);
+  assert.equal(isStudioOpenAiModel('qwen-max'), false);
   const chat = studioModelsForCapability('chat').map((model) => model.id);
   assert.ok(chat.includes('gpt-5.1'));
   assert.ok(!chat.includes('gpt-image-1'));
@@ -146,11 +146,11 @@ test('studio models: hanya model ChatGPT, gambar/video tidak bocor ke ruang chat
   assert.ok(items.length > 0);
   for (const item of items) assert.equal(item.provider, 'openai');
   // Override env hanya untuk ruang chat/agen, tidak pernah menambah model gambar.
-  const override = studioModelsForCapability('image', { CHATGPT_STUDIO_MODELS: 'gpt-4o' });
+  const override = studioModelsForCapability('image', { OPENAI_STUDIO_MODELS: 'gpt-4o' });
   assert.deepEqual(override, []);
 });
 
-test('studio routing: provider non-ChatGPT ditolak di ruang Studio', () => {
+test('studio routing: provider non-OpenAI ditolak di ruang Studio', () => {
   assert.equal(assertStudioModel({ provider: 'openai', model: 'gpt-5.1' }, { studioMode: true }), null);
   const mismatch = assertStudioModel({ provider: 'unorouter', model: 'qwen-max' }, { studioMode: true });
   assert.equal(mismatch.code, 'studio_provider_mismatch');
@@ -213,7 +213,7 @@ test('/api/studio/image/generate gagal rapi bila pool kosong', async () => {
     );
     assert.equal(res.status, 503);
     const data = await res.json();
-    assert.match(data.error, /Akun ChatGPT/);
+    assert.match(data.error, /Akun OpenAI/);
   } finally {
     stub.restore();
   }
@@ -245,7 +245,7 @@ test('studio media routes butuh login', async () => {
   }
 });
 
-test('/api/studio/image/generate memakai pool akun ChatGPT dan mencatat hasil', async () => {
+test('/api/studio/image/generate memakai pool akun OpenAI dan mencatat hasil', async () => {
   const stub = stubUpstream({ accountsRows: [await account()] });
   try {
     const res = await worker.fetch(
@@ -256,7 +256,7 @@ test('/api/studio/image/generate memakai pool akun ChatGPT dan mencatat hasil', 
     const data = await res.json();
     assert.equal(data.generation.status, 'completed');
     assert.equal(data.generation.media_url, 'https://cdn.example/img-1.png');
-    assert.equal(data.generation.chatgpt_account_label, 'Akun Studio');
+    assert.equal(data.generation.openai_account_label, 'Akun Studio');
     assert.equal(stub.state.imageBodies[0].model, 'gpt-image-1');
     assert.equal(stub.state.imageBodies[0].prompt, 'kucing astronot');
     assert.ok(stub.state.patches.some((patch) => patch.body.status === 'completed'));

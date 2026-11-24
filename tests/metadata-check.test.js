@@ -53,7 +53,7 @@ function buildAiPng() {
 function buildAiJpeg() {
   const soi = new Uint8Array([0xff, 0xd8]);
   const app0 = concat(new Uint8Array([0xff, 0xe0]), u16be(2 + 5), enc.encode('JFIF\0'));
-  const xmpPayload = enc.encode('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta><rdf:RDF><rdf:Description xmp:CreatorTool="OpenAI ChatGPT" iptcExt:DigitalSourceType="http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"/></rdf:RDF></x:xmpmeta>');
+  const xmpPayload = enc.encode('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta><rdf:RDF><rdf:Description xmp:CreatorTool="OpenAI OpenAI" iptcExt:DigitalSourceType="http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"/></rdf:RDF></x:xmpmeta>');
   const app1Xmp = concat(new Uint8Array([0xff, 0xe1]), u16be(2 + xmpPayload.length), xmpPayload);
   const iccPayload = enc.encode('ICC_PROFILE\0test-icc');
   const app2Icc = concat(new Uint8Array([0xff, 0xe2]), u16be(2 + iccPayload.length), iccPayload);
@@ -164,7 +164,7 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   const jpg = buildAiJpeg();
   const jpgScan = await scanMediaMetadata(jpg, { fileName: 'ai.jpg', mimeType: 'image/jpeg' });
   assert.equal(jpgScan.aiDetected, true);
-  assert.ok(jpgScan.detectedTools.includes('OpenAI (Sora / DALL-E / ChatGPT)'));
+  assert.ok(jpgScan.detectedTools.includes('OpenAI (Sora / DALL-E)'));
   assert.ok(jpgScan.detectedTools.includes('Midjourney'));
   assert.ok(jpgScan.detectedTools.includes('C2PA / Content Credentials'));
   const jpgClean = await stripMediaMetadata(jpg, { fileName: 'ai.jpg', mimeType: 'image/jpeg' });
@@ -198,7 +198,7 @@ test('scanMediaMetadata & stripMediaMetadata mendeteksi AI dan membersihkan loss
   const mp4Scan = await scanMediaMetadata(mp4, { fileName: 'sora.mp4', mimeType: 'video/mp4' });
   assert.equal(mp4Scan.mediaKind, 'video');
   assert.equal(mp4Scan.aiDetected, true);
-  assert.ok(mp4Scan.detectedTools.includes('OpenAI (Sora / DALL-E / ChatGPT)'));
+  assert.ok(mp4Scan.detectedTools.includes('OpenAI (Sora / DALL-E)'));
   assert.ok(mp4Scan.detectedTools.includes('C2PA / Content Credentials'));
   assert.ok(mp4Scan.entries.some((e) => e.key === 'hdlr.name' && e.value.includes('OpenAI Sora Handler')));
   const mp4Clean = await stripMediaMetadata(mp4, { fileName: 'sora.mp4', mimeType: 'video/mp4' });
@@ -702,7 +702,7 @@ test('Worker /api/metadata/* mengenakan 100 kredit, muncul di /api/generations/l
         mime_type: 'video/mp4',
         media_kind: 'video',
         original_size: bigVideoSize,
-        scan_before: { aiDetected: true, detectedTools: ['OpenAI (Sora / DALL-E / ChatGPT)'], totalEntries: 2 },
+        scan_before: { aiDetected: true, detectedTools: ['OpenAI (Sora / DALL-E)'], totalEntries: 2 },
       },
     }), env);
     assert.equal(bigStartRes.status, 200);

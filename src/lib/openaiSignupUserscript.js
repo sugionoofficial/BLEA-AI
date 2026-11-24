@@ -1,4 +1,4 @@
-// Rute `/api/chatgpt-signup/userscript` — unduh userscript pengisi email.
+// Rute `/api/openai-signup/userscript` — unduh userscript pengisi email.
 //
 // Kenapa berkas terpisah (bukan hanya salin-tempel di panel):
 //   1. Tampermonkey bisa memasang langsung dari URL `.user.js`, jadi pengguna
@@ -10,9 +10,9 @@
 // Isi skrip TIDAK memuat kredensial apa pun: hanya email TempMail aktif milik
 // admin itu sendiri, yang memang sudah ditampilkan di halaman TempMail.
 
-import { buildAutofillUserscript, validateSignupInput } from './chatgptSignup.js';
+import { buildAutofillUserscript, validateSignupInput } from './openaiSignup.js';
 
-export const USERSCRIPT_PATH = '/api/chatgpt-signup/userscript';
+export const USERSCRIPT_PATH = '/api/openai-signup/userscript';
 
 /**
  * @param {string} email email TempMail aktif
@@ -27,7 +27,7 @@ export function buildUserscriptResponse(email, origin = '') {
       // `text/javascript` + nama berkas `.user.js` membuat Tampermonkey
       // menawarkan dialog pemasangan, bukan menampilkan teks mentah.
       'content-type': 'text/javascript; charset=utf-8',
-      'content-disposition': 'inline; filename="blea-chatgpt-autofill.user.js"',
+      'content-disposition': 'inline; filename="blea-openai-autofill.user.js"',
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
     },

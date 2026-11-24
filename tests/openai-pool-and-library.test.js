@@ -2,19 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import {
-  CHATGPT_CAPABILITIES,
+  OPENAI_CAPABILITIES,
   jakartaDate,
-  sanitizeChatGptAccount,
-  sealChatGptToken,
-  unsealChatGptToken,
-  validateChatGptAccountInput,
-} from '../src/lib/chatgptPool.js';
+  sanitizeOpenAiAccount,
+  sealOpenAiToken,
+  unsealOpenAiToken,
+  validateOpenAiAccountInput,
+} from '../src/lib/openaiPool.js';
 import {
   agentToolsForStudioTool,
   capabilityForApiPath,
   toolCapabilityViolation,
 } from '../src/lib/toolCapabilities.js';
 import { STUDIO_TOOLS } from '../src/studio/toolCatalog.js';
+import {
+  OPENAI_CAPABILITY_MATRIX,
+  capabilitiesForTool,
+  unpipedCapabilities,
+  wiredCapabilities,
+} from '../src/lib/openaiCapabilities.js';
 
 const BASE = 'https://app.example';
 const ENV = {
@@ -39,12 +45,12 @@ function request(path, { method = 'POST', body, token = 'user-jwt', headers = {}
 }
 
 test('kredensial pool disegel AES-GCM dan tidak bisa dibuka dengan kunci lain', async () => {
-  const sealed = await sealChatGptToken(ENV, 'sk-uji-1234567890abcdef');
+  const sealed = await sealOpenAiToken(ENV, 'sk-uji-1234567890abcdef');
   assert.match(sealed, /^[^.]+\.[^.]+$/);
-  assert.equal(await unsealChatGptToken(ENV, sealed), 'sk-uji-1234567890abcdef');
+  assert.equal(await unsealOpenAiToken(ENV, sealed), 'sk-uji-1234567890abcdef');
   const otherEnv = { ...ENV, PROVIDER_CREDENTIAL_ENCRYPTION_KEY: 'kunci-lain-yang-tidak-sama-0123456789abcdef0123456789abcdef' };
-  assert.equal(await unsealChatGptToken(otherEnv, sealed), '');
-  assert.equal(await unsealChatGptToken(ENV, 'bukan-segel'), '');
+  assert.equal(await unsealOpenAiToken(otherEnv, sealed), '');
+  assert.equal(await unsealOpenAiToken(ENV, 'bukan-segel'), '');
 });
 
 test('tanggal kuota memakai WIB, bukan UTC', () => {
@@ -53,7 +59,7 @@ test('tanggal kuota memakai WIB, bukan UTC', () => {
   assert.equal(jakartaDate(new Date('2026-11-23T16:59:00Z')), '2026-11-23');
 });
 
-test('sanitizeChatGptAccount tidak pernah membocorkan kredensial dan menandai kuota habis', () => {
+test('sanitizeOpenAiAccount tidak pernah membocorkan kredensial dan menandai kuota habis', () => {
   const base = {
     id: '11111111-1111-4111-8111-111111111111',
     account_email: 'admin@example.com',
@@ -69,18 +75,18 @@ test('sanitizeChatGptAccount tidak pernah membocorkan kredensial dan menandai ku
     capabilities: ['chat'],
     consecutive_failures: 0,
   };
-  const row = sanitizeChatGptAccount(base);
+  const row = sanitizeOpenAiAccount(base);
   assert.equal(row.state, 'kuota-habis');
   assert.equal(row.remaining, 0);
   assert.equal(row.usable, false);
   assert.equal(JSON.stringify(row).includes('tersegel'), false);
   assert.equal(JSON.stringify(row).includes('sealed_token'), false);
 
-  const reset = sanitizeChatGptAccount({ ...base, quota_date: '2020-01-01' });
+  const reset = sanitizeOpenAiAccount({ ...base, quota_date: '2020-01-01' });
   assert.equal(reset.used_today, 0);
   assert.equal(reset.state, 'siap');
 
-  const cooling = sanitizeChatGptAccount({
+  const cooling = sanitizeOpenAiAccount({
     ...base,
     used_today: 0,
     cooldown_until: new Date(Date.now() + 60_000).toISOString(),
@@ -88,26 +94,26 @@ test('sanitizeChatGptAccount tidak pernah membocorkan kredensial dan menandai ku
   assert.equal(cooling.state, 'cooldown');
   assert.equal(cooling.usable, false);
 
-  // Token sesi ChatGPT bisa disimpan, tetapi tidak pernah dianggap bisa dipanggil.
-  const session = sanitizeChatGptAccount({ ...base, used_today: 0, credential_kind: 'session' });
+  // Token sesi OpenAI bisa disimpan, tetapi tidak pernah dianggap bisa dipanggil.
+  const session = sanitizeOpenAiAccount({ ...base, used_today: 0, credential_kind: 'session' });
   assert.equal(session.state, 'tidak-bisa-dipanggil');
   assert.equal(session.usable, false);
 });
 
 test('validasi input menolak base URL tidak aman dan kapabilitas asing', () => {
-  assert.throws(() => validateChatGptAccountInput({ api_base: 'http://api.openai.com' }), /HTTPS/);
-  assert.throws(() => validateChatGptAccountInput({ api_base: 'https://user:pass@api.openai.com' }), /HTTPS/);
-  assert.deepEqual(validateChatGptAccountInput({ api_base: 'https://api.openai.com/v1' }).api_base, 'https://api.openai.com');
-  assert.deepEqual(validateChatGptAccountInput({ capabilities: ['chat', 'image'] }).capabilities, ['chat', 'image']);
+  assert.throws(() => validateOpenAiAccountInput({ api_base: 'http://api.openai.com' }), /HTTPS/);
+  assert.throws(() => validateOpenAiAccountInput({ api_base: 'https://user:pass@api.openai.com' }), /HTTPS/);
+  assert.deepEqual(validateOpenAiAccountInput({ api_base: 'https://api.openai.com/v1' }).api_base, 'https://api.openai.com');
+  assert.deepEqual(validateOpenAiAccountInput({ capabilities: ['chat', 'image'] }).capabilities, ['chat', 'image']);
   // Kapabilitas di luar daftar dibuang, bukan diteruskan diam-diam.
-  assert.deepEqual(validateChatGptAccountInput({ capabilities: ['chat', 'video-ajaib'] }).capabilities, ['chat']);
+  assert.deepEqual(validateOpenAiAccountInput({ capabilities: ['chat', 'video-ajaib'] }).capabilities, ['chat']);
 });
 
 test('setiap tool Studio mendeklarasikan kapabilitasnya sendiri', () => {
   for (const tool of STUDIO_TOOLS) {
     assert.ok(Array.isArray(tool.capabilities), `${tool.id}: capabilities wajib ada`);
     for (const capability of tool.capabilities) {
-      assert.ok(CHATGPT_CAPABILITIES.includes(capability) || ['search', 'library'].includes(capability), `${tool.id}: kapabilitas ${capability} tidak dikenal`);
+      assert.ok(OPENAI_CAPABILITIES.includes(capability) || ['search', 'library'].includes(capability), `${tool.id}: kapabilitas ${capability} tidak dikenal`);
     }
   }
   const library = STUDIO_TOOLS.find((tool) => tool.id === 'library');
@@ -123,11 +129,42 @@ test('isolasi tool: ruang gambar tidak boleh memanggil video, riset tidak boleh 
   assert.equal(toolCapabilityViolation('image', '/api/video/generate').code, 'tool_capability_mismatch');
   assert.equal(toolCapabilityViolation('image', '/api/image/generate'), null);
   assert.equal(toolCapabilityViolation('research', '/api/image/generate').code, 'tool_capability_mismatch');
+  // Jalur agen: ruang yang mendeklarasikan `agent` boleh memakai /api/agent,
+  // walau rute API itu memetakan ke kapabilitas `agent` (dulu ditolak).
   assert.equal(toolCapabilityViolation('research', '/api/search'), null);
+  assert.equal(toolCapabilityViolation('research', '/api/agent'), null);
+  assert.equal(toolCapabilityViolation('chat', '/api/agent').code, 'tool_capability_mismatch');
   assert.equal(toolCapabilityViolation('connect-ai', '/api/chat').code, 'tool_capability_mismatch');
   assert.deepEqual(agentToolsForStudioTool('research'), ['web_search', 'read_url', 'load_skill']);
   assert.equal(agentToolsForStudioTool('research').includes('propose_clips'), false);
   assert.equal(agentToolsForStudioTool('image'), null);
+});
+
+test('matriks kemampuan OpenAI ↔ tool Studio konsisten dengan katalog tool', () => {
+  assert.ok(OPENAI_CAPABILITY_MATRIX.length >= 12, 'semua baris tab Kemampuan API harus terwakili');
+  const toolIds = new Set(STUDIO_TOOLS.map((tool) => tool.id));
+  for (const row of OPENAI_CAPABILITY_MATRIX) {
+    if (!row.capability) {
+      // Baris yang belum dipakai tidak boleh menunjuk tool.
+      assert.equal(row.tool, '', `${row.key}: baris belum dipakai tidak boleh punya tool`);
+      continue;
+    }
+    assert.ok(OPENAI_CAPABILITIES.includes(row.capability), `${row.key}: kapabilitas pool tidak dikenal`);
+    assert.ok(toolIds.has(row.tool), `${row.key}: tool "${row.tool}" tidak ada di katalog`);
+    assert.ok(['dipakai', 'belum-dipakai'].includes(row.status), `${row.key}: status tidak dikenal`);
+    assert.ok(row.api, `${row.key}: rute API harus disebut`);
+  }
+  // Kemampuan yang benar-benar dipanggil BLEA harus ditandai "dipakai".
+  const byKey = Object.fromEntries(OPENAI_CAPABILITY_MATRIX.map((row) => [row.key, row]));
+  assert.equal(byKey.responses.status, 'dipakai');
+  assert.equal(byKey.images.status, 'dipakai');
+  assert.equal(byKey['web-search'].status, 'dipakai');
+  // Yang belum punya rute ditulis apa adanya, bukan disembunyikan.
+  assert.equal(byKey.embeddings.status, 'belum-dipakai');
+  assert.equal(byKey.moderations ? byKey.moderations.status : byKey.moderation.status, 'belum-dipakai');
+  assert.ok(unpipedCapabilities().length >= 5);
+  assert.ok(wiredCapabilities().every((row) => row.capability));
+  assert.deepEqual(capabilitiesForTool('image').map((row) => row.capability), ['image']);
 });
 
 test('worker menolak permintaan lintas-tool lewat header ruang Studio', async () => {
@@ -148,7 +185,7 @@ test('tanpa header ruang Studio jalur lama tetap jalan (bukan 403)', async () =>
     if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'u1', app_metadata: { role: 'user' } });
     if (url.startsWith('https://supabase.example/rest/v1/profiles')) return Response.json([]);
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([]);
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_accounts')) return Response.json([]);
+    if (url.startsWith('https://supabase.example/rest/v1/openai_accounts')) return Response.json([]);
     if (url.startsWith('https://supabase.example/rest/v1/')) return Response.json([]);
     return Response.json({});
   };
@@ -160,14 +197,14 @@ test('tanpa header ruang Studio jalur lama tetap jalan (bukan 403)', async () =>
   }
 });
 
-test('rute pool akun ChatGPT hanya untuk admin dan tidak mengirim kredensial', async () => {
+test('rute pool akun OpenAI hanya untuk admin dan tidak mengirim kredensial', async () => {
   const realFetch = globalThis.fetch;
   const row = {
     id: '11111111-1111-4111-8111-111111111111',
     account_email: 'admin@example.com',
     account_label: 'Utama',
     credential_kind: 'api_key',
-    sealed_token: await sealChatGptToken(ENV, 'sk-rahasia-panjang-1234'),
+    sealed_token: await sealOpenAiToken(ENV, 'sk-rahasia-panjang-1234'),
     token_hint: '••••1234',
     enabled: true,
     priority: 10,
@@ -183,7 +220,7 @@ test('rute pool akun ChatGPT hanya untuk admin dan tidak mengirim kredensial', a
       const bearer = (init?.headers?.authorization || '').replace('Bearer ', '');
       return Response.json({ id: `uid-${bearer}`, app_metadata: { role: bearer.startsWith('admin') ? 'admin' : 'user' } });
     }
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_accounts')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_accounts')) {
       const method = init.method || 'GET';
       if (method === 'POST') return Response.json([{ ...row, ...JSON.parse(init.body) }]);
       if (method === 'PATCH') return Response.json([{ ...row, ...JSON.parse(init.body), id: row.id }]);
@@ -194,18 +231,18 @@ test('rute pool akun ChatGPT hanya untuk admin dan tidak mengirim kredensial', a
     throw new Error(`Unexpected fetch: ${url}`);
   };
   try {
-    const denied = await worker.fetch(request('/api/chatgpt-accounts', { method: 'GET', token: 'user-jwt' }), ENV);
+    const denied = await worker.fetch(request('/api/openai-accounts', { method: 'GET', token: 'user-jwt' }), ENV);
     assert.equal(denied.status, 403);
 
-    const list = await worker.fetch(request('/api/chatgpt-accounts', { method: 'GET', token: 'admin-jwt' }), ENV);
+    const list = await worker.fetch(request('/api/openai-accounts', { method: 'GET', token: 'admin-jwt' }), ENV);
     assert.equal(list.status, 200);
     const body = await list.json();
     assert.equal(body.accounts.length, 1);
     assert.equal(body.accounts[0].state, 'siap');
     assert.equal(JSON.stringify(body).includes('sk-rahasia'), false);
-    assert.deepEqual(body.capabilities, CHATGPT_CAPABILITIES);
+    assert.deepEqual(body.capabilities, OPENAI_CAPABILITIES);
 
-    const created = await worker.fetch(request('/api/chatgpt-accounts', {
+    const created = await worker.fetch(request('/api/openai-accounts', {
       token: 'admin-jwt',
       body: { account_email: 'baru@example.com', token: 'sk-kunci-baru-1234', daily_limit: 50, capabilities: ['chat', 'agent'] },
     }), ENV);
@@ -269,7 +306,7 @@ test('/api/library menolak permintaan tanpa login', async () => {
 // Halaman baru diuji dengan SSR karena build produksi bisa lolos walau ada
 // identifier yang tidak pernah diimpor. Kalau halaman ini error saat render,
 // pengguna hanya melihat layar kosong.
-test('halaman Hasil & Unduhan serta Akun ChatGPT bisa dirender tanpa navigasi sendiri', async () => {
+test('halaman Hasil & Unduhan serta Akun OpenAI bisa dirender tanpa navigasi sendiri', async () => {
   const { createServer } = await import('vite');
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -298,7 +335,7 @@ test('halaman Hasil & Unduhan serta Akun ChatGPT bisa dirender tanpa navigasi se
     const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
     const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
     const { LibraryPage } = await vite.ssrLoadModule('/src/studio/LibraryPage.jsx');
-    const { ChatGptAccountsPage } = await vite.ssrLoadModule('/src/studio/ChatGptAccountsPage.jsx');
+    const { OpenAiAccountsPage } = await vite.ssrLoadModule('/src/studio/OpenAiAccountsPage.jsx');
 
     const libraryHtml = renderToStaticMarkup(
       React.createElement(MemoryRouter, null,
@@ -310,12 +347,12 @@ test('halaman Hasil & Unduhan serta Akun ChatGPT bisa dirender tanpa navigasi se
 
     const accountsHtml = renderToStaticMarkup(
       React.createElement(MemoryRouter, null,
-        React.createElement(AuthProvider, { initialSession: null }, React.createElement(ChatGptAccountsPage))),
+        React.createElement(AuthProvider, { initialSession: null }, React.createElement(OpenAiAccountsPage))),
     );
-    // Sejak jalur OAuth resmi ("Continue with ChatGPT") ditambahkan, halaman ini
+    // Sejak jalur OAuth resmi ("Continue with OpenAI") ditambahkan, halaman ini
     // menonjolkan koneksi tanpa API key, bukan lagi "ditambahkan manual".
-    assert.ok(accountsHtml.includes('ChatGPT disambungkan seperti freebeat.'));
-    assert.ok(accountsHtml.includes('Continue with ChatGPT'));
+    assert.ok(accountsHtml.includes('Akun OpenAI tersambung seperti freebeat.'));
+    assert.ok(accountsHtml.includes('Connect OpenAI'));
     assert.ok(accountsHtml.includes('Tambah akun manual'));
     assert.ok(accountsHtml.includes('Bagaimana pemilihan akun bekerja'));
   } finally {
@@ -323,10 +360,10 @@ test('halaman Hasil & Unduhan serta Akun ChatGPT bisa dirender tanpa navigasi se
   }
 });
 
-// Regresi: halaman Koneksi pernah menulis "Tersambung" untuk ChatGPT padahal
+// Regresi: halaman Koneksi pernah menulis "Tersambung" untuk OpenAI padahal
 // tidak ada satu pun akun OAuth di server — klaim tanpa bukti. Sekarang label
 // itu hanya muncul bila server melaporkan tautan berstatus linked.
-test('halaman Koneksi tidak mengklaim ChatGPT tersambung tanpa bukti', async () => {
+test('halaman Koneksi tidak mengklaim OpenAI tersambung tanpa bukti', async () => {
   const { createServer } = await import('vite');
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -347,7 +384,7 @@ test('halaman Koneksi tidak mengklaim ChatGPT tersambung tanpa bukti', async () 
         React.createElement(AuthProvider, { initialSession: null }, React.createElement(ConnectionPage))),
     );
     // Sebelum diperiksa, status tidak boleh diklaim.
-    assert.ok(!/ChatGPT[\s\S]{0,400}Tersambung/.test(html), 'tidak boleh ada klaim Tersambung untuk ChatGPT sebelum diukur');
+    assert.ok(!/OpenAI[\s\S]{0,400}Tersambung/.test(html), 'tidak boleh ada klaim Tersambung untuk OpenAI sebelum diukur');
     assert.ok(html.includes('Status dari server, bukan label di halaman ini.'));
     assert.ok(html.includes('Belum diperiksa'));
   } finally {

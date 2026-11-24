@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CircleAlert, CircleCheck, Link2, Loader2, LogIn, RefreshCw, ShieldCheck, Unlink } from 'lucide-react';
 import {
-  beginChatGptSignIn,
-  chatGptOAuthApi,
+  beginOpenAiSignIn,
+  openAiOAuthApi,
   clearPendingAttempt,
-  finishChatGptSignIn,
-  finishChatGptSignInFromUrl,
+  finishOpenAiSignIn,
+  finishOpenAiSignInFromUrl,
   isOAuthCallbackPage,
   oauthAutoCallbackSupported,
   readPendingAttempt,
-} from './chatgptOAuthClient';
-import { explainOAuthError, resolveOAuthRedirectUri } from '../lib/chatgptSignup';
+} from './openaiOAuthClient';
+import { explainOAuthError, resolveOAuthRedirectUri } from '../lib/openaiSignup';
 
 const STATUS_META = {
   pending: { label: 'Menunggu persetujuan', tone: 'warn' },
@@ -24,20 +24,24 @@ const STATUS_META = {
 // Izin paket terbukti dari `scope` yang dikirim callback (disimpan server
 // sebelum penukaran). Dipakai supaya saran "centang izin" tidak diulang saat
 // buktinya sudah ada.
+// Nama scope milik OpenAI; tidak bisa diganti sesuka hati, jadi ditulis apa
+// adanya di satu tempat.
+const PLAN_SCOPE = 'chatgpt.tokens.use.direct';
+
 function planGranted(link) {
-  return Array.isArray(link?.scopes) && link.scopes.includes('chatgpt.tokens.use.direct');
+  return Array.isArray(link?.scopes) && link.scopes.includes(PLAN_SCOPE);
 }
 
 const PLAN_LIMITS = [
   'Hanya untuk chat & agen (Responses API teks). Gambar, video, dan audio tidak tersedia lewat jalur ini.',
-  'Kuota memakai paket ChatGPT pemilik akun (Plus/Pro/Go), bukan saldo API.',
-  'Token disegel di server dan bisa diputus kapan saja dari sini atau ChatGPT → Settings → Apps.',
+  'Kuota memakai paket akun OpenAI pemiliknya, bukan saldo API.',
+  'Token disegel di server dan bisa diputus kapan saja dari sini atau pengaturan aplikasi akun OpenAI.',
 ];
 
 // Tiga keadaan: halaman callback 127.0.0.1, halaman admin (mulai login + daftar
 // akun), dan keadaan gagal (dijelaskan apa yang harus dicentang).
 
-export function ChatGptOAuthPanel({ onLinked }) {
+export function OpenAiOAuthPanel({ onLinked }) {
   const callbackPage = isOAuthCallbackPage();
   const [callbackUrl, setCallbackUrl] = useState(() => (typeof window === 'undefined' ? '' : window.location.href));
   const [needsLogin, setNeedsLogin] = useState(false);
@@ -67,13 +71,13 @@ export function ChatGptOAuthPanel({ onLinked }) {
   const load = useCallback(async () => {
     if (callbackPage) return;
     setLoading(true);
-    const res = await chatGptOAuthApi.status();
+    const res = await openAiOAuthApi.status();
     if (res.ok) {
       setLinks(Array.isArray(res.data?.links) ? res.data.links : []);
       setConfig(res.data?.config || null);
       setRetained(res.data?.retained_client || null);
     } else {
-      setError(res.data?.error || 'Status tautan ChatGPT tidak bisa dimuat.');
+      setError(res.data?.error || 'Status tautan OpenAI tidak bisa dimuat.');
     }
     setLoading(false);
   }, [callbackPage]);
@@ -85,16 +89,16 @@ export function ChatGptOAuthPanel({ onLinked }) {
     if (!callbackPage) return;
     let cancelled = false;
     (async () => {
-      const result = await finishChatGptSignIn();
+      const result = await finishOpenAiSignIn();
       if (cancelled) return;
       clearPendingAttempt();
       if (result.ok) {
         setCallbackState('done');
-        setNotice(result.hint || 'Akun ChatGPT tersambung tanpa API key.');
+        setNotice(result.hint || 'Akun OpenAI tersambung tanpa API key.');
         onLinked?.();
       } else {
         setCallbackState('failed');
-        setError(result.error || 'Login ChatGPT gagal.');
+        setError(result.error || 'Login OpenAI gagal.');
       }
     })();
     return () => { cancelled = true; };
@@ -106,20 +110,20 @@ export function ChatGptOAuthPanel({ onLinked }) {
     setNotice('');
     // Login ulang memakai client_id terbitan yang dipertahankan (bukan
     // mendaftar ulang), sesuai panduan OpenAI untuk pemulihan invalid_grant.
-    const res = await beginChatGptSignIn({
+    const res = await beginOpenAiSignIn({
       issuedClientId: retained?.client_id || '',
       loginHint: retained?.email || '',
     });
     // Kalau berhasil, halaman langsung dialihkan ke OpenAI; tidak ada state lagi.
     if (!res.ok) {
       setBusy('');
-      setError(res.error || 'Tidak bisa memulai login ChatGPT.');
+      setError(res.error || 'Tidak bisa memulai login OpenAI.');
     }
   }
 
   async function refreshLink(id) {
     setBusy(`refresh:${id}`);
-    const res = await chatGptOAuthApi.refresh(id);
+    const res = await openAiOAuthApi.refresh(id);
     setBusy('');
     if (!res.ok) { setError(res.data?.error || 'Refresh token gagal.'); return; }
     setNotice('Token OAuth diperbarui.');
@@ -128,10 +132,10 @@ export function ChatGptOAuthPanel({ onLinked }) {
 
   async function disconnectLink(id) {
     setBusy(`disconnect:${id}`);
-    const res = await chatGptOAuthApi.disconnect(id);
+    const res = await openAiOAuthApi.disconnect(id);
     setBusy('');
     if (!res.ok) { setError(res.data?.error || 'Gagal memutus tautan.'); return; }
-    setNotice(res.data?.note || 'Tautan ChatGPT dihapus. Pool menyesuaikan otomatis.');
+    setNotice(res.data?.note || 'Tautan OpenAI dihapus. Pool menyesuaikan otomatis.');
     load();
     onLinked?.();
   }
@@ -140,7 +144,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
   // supaya daftar akun di bawah tidak tertinggal menampilkan keadaan lama.
   async function refreshStatus() {
     setBusy('status');
-    const res = await chatGptOAuthApi.status();
+    const res = await openAiOAuthApi.status();
     setBusy('');
     if (res.ok && Array.isArray(res.data?.links)) {
       setLinks(res.data.links);
@@ -171,7 +175,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
     setPasteBusy(true);
     setError('');
     setNotice('');
-    const res = await finishChatGptSignInFromUrl(pasteUrl);
+    const res = await finishOpenAiSignInFromUrl(pasteUrl);
     setPasteBusy(false);
     if (!res.ok) {
       setError(res.error || 'URL callback tidak bisa diselesaikan.');
@@ -182,7 +186,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
     }
     setPasteUrl('');
     setHasPending(false);
-    setNotice(res.hint || 'Akun ChatGPT tersambung tanpa API key.');
+    setNotice(res.hint || 'Akun OpenAI tersambung tanpa API key.');
     load();
     onLinked?.();
   }
@@ -191,10 +195,10 @@ export function ChatGptOAuthPanel({ onLinked }) {
     return (
       <section className="oauth-panel oauth-callback">
         <header>
-          <span className="oauth-badge"><LogIn size={12} /> Continue with ChatGPT</span>
+          <span className="oauth-badge"><LogIn size={12} /> Connect OpenAI</span>
           <h2>
             {callbackState === 'working' && 'Menyelesaikan login…'}
-            {callbackState === 'done' && 'Akun ChatGPT tersambung.'}
+            {callbackState === 'done' && 'Akun OpenAI tersambung.'}
             {callbackState === 'failed' && 'Login belum berhasil.'}
           </h2>
         </header>
@@ -211,15 +215,15 @@ export function ChatGptOAuthPanel({ onLinked }) {
               <button type="button" onClick={() => navigator.clipboard?.writeText(callbackUrl)}>Salin alamat</button>
             </div>
             <p className="oauth-note">
-              Kembali ke <a href="/studio/chatgpt-accounts">Studio → Akun ChatGPT</a> untuk melihat kuota akun ini.
+              Kembali ke <a href="/studio/openai-accounts">Studio → Akun OpenAI</a> untuk melihat kuota akun ini.
             </p>
           </>
         )}
         {needsLogin && (
           <p className="oauth-error">
             <CircleAlert size={14} /> Login BLEA di halaman ini belum aktif. Buka{' '}
-            <a href="/studio/chatgpt-accounts">Studio → Akun ChatGPT</a> (sudah login), lalu tempel alamat di atas
-            pada kolom “Sudah menyetujui di ChatGPT?”.
+            <a href="/studio/openai-accounts">Studio → Akun OpenAI</a> (sudah login), lalu tempel alamat di atas
+            pada kolom “Sudah menyetujui di OpenAI?”.
           </p>
         )}
       </section>
@@ -231,16 +235,16 @@ export function ChatGptOAuthPanel({ onLinked }) {
       <header className="oauth-head">
         <div>
           <span className="oauth-badge"><LogIn size={12} /> Langkah 3 · Tanpa API key</span>
-          <h2>Continue with ChatGPT</h2>
+          <h2>Connect OpenAI (OAuth)</h2>
           <p>
-            Simpan akses akun ChatGPT yang sudah dibuat ke pool. Satu tombol, izin di browser,
+            Simpan akses akun OpenAI yang sudah dibuat ke pool. Satu tombol, izin di browser,
             lalu tempel alamat callback-nya kembali di sini.
           </p>
         </div>
         <div className="oauth-head-actions">
           <button type="button" className="oauth-start" onClick={start} disabled={busy === 'start'}>
             {busy === 'start' ? <Loader2 size={14} className="agent-spin" /> : <Link2 size={14} />}
-            {busy === 'start' ? 'Membuka ChatGPT…' : 'Simpan aksesnya ke pool'}
+            {busy === 'start' ? 'Membuka OpenAI…' : 'Simpan aksesnya ke pool'}
           </button>
           <button type="button" className="oauth-refresh" onClick={refreshStatus} disabled={busy === 'status'}>
             {busy === 'status' ? <Loader2 size={13} className="agent-spin" /> : <RefreshCw size={13} />} Perbarui status
@@ -266,7 +270,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
       {/* Kolom tempel URL callback — harus ada di halaman admin, bukan di
           cabang halaman callback. */}
       <div className="oauth-manual">
-        <b><Link2 size={13} /> Sudah menyetujui di ChatGPT?</b>
+        <b><Link2 size={13} /> Sudah menyetujui di OpenAI?</b>
         <p>
           Tempel <b>seluruh</b> alamat halaman <code>127.0.0.1:&lt;port&gt;/auth/callback?code=…&amp;state=…</code>{' '}
           di sini. Halaman itu memang tampil “tidak bisa diakses” — itu normal.
@@ -279,7 +283,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
             value={pasteUrl}
             onChange={(event) => setPasteUrl(event.target.value)}
             placeholder="http://127.0.0.1:1455/auth/callback?code=…&state=…"
-            aria-label="URL callback ChatGPT"
+            aria-label="URL callback OpenAI"
           />
           <button type="submit" disabled={pasteBusy || !pasteUrl.trim()}>
             {pasteBusy ? <Loader2 size={13} className="agent-spin" /> : <CircleCheck size={13} />} Selesaikan
@@ -349,7 +353,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
         <p className="oauth-note"><Loader2 size={14} className="agent-spin" /> Memuat tautan…</p>
       ) : links.length === 0 ? (
         <p className="oauth-note">
-          Belum ada akun ChatGPT yang ditautkan. Menekan tombol di atas akan membuka halaman izin OpenAI;
+          Belum ada akun OpenAI yang ditautkan. Menekan tombol di atas akan membuka halaman izin OpenAI;
           setelah disetujui, akun ini otomatis masuk pool untuk chat & agen.
         </p>
       ) : (
@@ -359,7 +363,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
             return (
               <li key={link.id} className={`oauth-link is-${meta.tone}`}>
                 <div className="oauth-link-main">
-                  <b>{link.email || 'Akun ChatGPT'}</b>
+                  <b>{link.email || 'Akun OpenAI'}</b>
                   <span className={`oauth-state is-${meta.tone}`}>{meta.label}</span>
                   {link.plan_usage && <span className="oauth-state is-ok">paket aktif</span>}
                 </div>
@@ -379,7 +383,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
                     {link.status === 'failed' && (
                       <p>
                         OpenAI menolak penukaran kode. {planGranted(link)
-                          ? 'Izin “gunakan paket ChatGPT saya” sudah tercatat di callback, jadi bukan itu sebabnya. '
+                          ? 'Izin pemakaian paket akun sudah tercatat di callback, jadi bukan itu sebabnya. '
                           : 'Izin paket tidak terlihat di callback — centang saat menyetujui. '}
                         Sisa kemungkinan: paket akun harus Plus/Pro pada akun pribadi (bukan Free/Go
                         atau workspace kerja), atau kode sudah kedaluwarsa. Ulangi dengan
@@ -396,7 +400,7 @@ export function ChatGptOAuthPanel({ onLinked }) {
                       value={pasteUrl}
                       onChange={(event) => setPasteUrl(event.target.value)}
                       placeholder="Tempel URL callback (…?code=…&state=…)"
-                      aria-label="URL callback ChatGPT"
+                      aria-label="URL callback OpenAI"
                     />
                     <button type="submit" disabled={pasteBusy || !pasteUrl.trim()}>
                       {pasteBusy ? <Loader2 size={12} className="agent-spin" /> : <CircleCheck size={12} />} Selesaikan
@@ -422,4 +426,4 @@ export function ChatGptOAuthPanel({ onLinked }) {
   );
 }
 
-export default ChatGptOAuthPanel;
+export default OpenAiOAuthPanel;

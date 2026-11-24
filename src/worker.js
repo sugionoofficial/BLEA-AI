@@ -72,17 +72,17 @@ import {
 } from './lib/freebeatMcp.js';
 import { isUncertainReply, parseSearchRequests, parseUpstreamSsePayload, stripSearchBlocks } from './lib/chatStream.js';
 import {
-  CHATGPT_CAPABILITIES,
-  chatGptPoolSummary,
-  createChatGptAccount,
-  deleteChatGptAccount,
-  listChatGptAccounts,
-  pickChatGptAccountsFor,
+  OPENAI_CAPABILITIES,
+  openAiPoolSummary,
+  createOpenAiAccount,
+  deleteOpenAiAccount,
+  listOpenAiAccounts,
+  pickOpenAiAccountsFor,
   sendOAuthResponses,
-  sendWithChatGptPool,
-  testChatGptAccount,
-  updateChatGptAccount,
-} from './lib/chatgptPool.js';
+  sendWithOpenAiPool,
+  testOpenAiAccount,
+  updateOpenAiAccount,
+} from './lib/openaiPool.js';
 import { agentToolsForStudioTool, capabilityForApiPath, toolCapabilityViolation } from './lib/toolCapabilities.js';
 import { studioModelItems } from './lib/openaiModels.js';
 import {
@@ -97,7 +97,7 @@ import {
   OPENAI_RESOURCE,
   OPENAI_SCOPES,
   refreshOAuthLink,
-} from './lib/chatgptOAuth.js';
+} from './lib/openaiOAuth.js';
 import {
   generateStudioImage,
   generateStudioVideo,
@@ -122,8 +122,8 @@ import {
   stripAgentToolCalls,
 } from './agent/tools.js';
 import { createMailtmAlias, fetchMailtmMessage, fetchMailtmMessages, parseMailtmCredentials, refreshMailtmToken, serializeMailtmCredentials } from './lib/mailtmProvider.js';
-import { handleChatgptSignup } from './lib/chatgptSignupRoute.js';
-import { buildUserscriptResponse } from './lib/chatgptSignupUserscript.js';
+import { handleOpenAiSignup } from './lib/openaiSignupRoute.js';
+import { buildUserscriptResponse } from './lib/openaiSignupUserscript.js';
 import { buildGmailAuthUrl, createGmailApiAlias, deleteGmailConnection, getGmailConnection, getGmailMessage, handleGmailOAuthCallback, isGmailApiConfigured, listGmailMessages } from './lib/gmailProvider.js';
 import {
   handleMetadataContent,
@@ -165,7 +165,7 @@ function aliasBelongsToGmailConnection(alias, connection) {
 }
 
 /**
- * Pembaca inbox TempMail untuk satu user admin, dipakai /api/chatgpt-signup
+ * Pembaca inbox TempMail untuk satu user admin, dipakai /api/openai-signup
  * supaya logika alias/penyedia tidak diduplikasi di dua tempat.
  * Email yang diminta WAJIB sama dengan alias aktif milik user tersebut.
  */
@@ -253,7 +253,7 @@ async function handleTempmail(request, url, env) {
     const response = await servicePostgrest(env, `/tempmail_user_aliases?user_id=eq.${encodeURIComponent(user.id)}`, { method: 'DELETE' });
     if (!response.ok) throw Object.assign(new Error('Gagal menghapus alias TempMail.'), { status: 503 });
   };
-  // Dipakai juga oleh /api/chatgpt-signup: pencocokan pesan verifikasi hanya
+  // Dipakai juga oleh /api/openai-signup: pencocokan pesan verifikasi hanya
   // boleh memakai alias milik admin ini.
   const aliasBelongsToConnection = aliasBelongsToGmailConnection;
   const createGmailAliasForUser = async (connection, requestedTag = '') => {
@@ -2974,17 +2974,16 @@ async function handleApi(request, url, env) {
       return handleTempmail(request, url, env);
     }
 
-    // ---- /chatgpt-signup: "Daftar ChatGPT pakai email TempMail" (admin) ----
+    // ---- /openai-signup: "Daftar akun OpenAI pakai email TempMail" (admin) ----
     //
-    // Sengaja TIDAK mem-POST ke chatgpt.com/api/auth/signin/openai: Workerd
-    // diblokir ke domain itu, endpointnya butuh cookie sesi + Turnstile, dan
-    // pendaftaran otomatis melanggar ToS OpenAI. Rute ini menyiapkan URL daftar
-    // resmi berisi `login_hint` = email TempMail, mencatat langkah manual, dan
-    // mencocokkan email verifikasi di inbox TempMail. Detail: chatgptSignup.js
-    // ---- /chatgpt-signup/userscript: unduh userscript pengisi email ----
+    // Sengaja TIDAK mem-POST formulir dari server: Workerd diblokir ke domain
+    // OpenAI dan pendaftaran otomatis melanggar ToS. Rute ini menyiapkan URL
+    // login resmi platform.openai.com, mencatat langkah manual, dan
+    // mencocokkan email verifikasi di inbox TempMail. Detail: openaiSignup.js
+    // ---- /openai-signup/userscript: unduh userscript pengisi email ----
     // Tampermonkey memasang langsung dari URL ini; pengguna tidak perlu
     // menyalin-tempel skrip (itu titik gagal yang membuat panel terasa rusak).
-    if (path === 'chatgpt-signup/userscript' && method === 'GET') {
+    if (path === 'openai-signup/userscript' && method === 'GET') {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const user = token ? await getUser(env, token) : null;
@@ -3000,12 +2999,12 @@ async function handleApi(request, url, env) {
       }
     }
 
-    if (path === 'chatgpt-signup') {
+    if (path === 'openai-signup') {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       if (!['GET', 'POST'].includes(method)) return jsonResponse({ error: 'Method tidak diizinkan.' }, 405);
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const user = token ? await getUser(env, token) : null;
-      const result = await handleChatgptSignup(request, env, user, {
+      const result = await handleOpenAiSignup(request, env, user, {
         listInbox: user ? await tempmailInboxReader(env, user).catch(() => null) : null,
         readMessage: user ? await tempmailMessageReader(env, user).catch(() => null) : null,
       });
@@ -3600,10 +3599,10 @@ async function handleApi(request, url, env) {
       return jsonResponse({ ok: true, supported: false, consoleUrl: CONSOLE_URLS[provider] || '', message: 'Provider ini tidak mengekspos kuota lewat API key; pantau dari konsol provider.' });
     }
 
-    // ---- /studio/image|video: generasi media lewat pool akun ChatGPT ----
+    // ---- /studio/image|video: generasi media lewat pool akun OpenAI ----
     //
     // Tidak memotong kredit BLEA: yang berbayar adalah akun OpenAI milik admin,
-    // dan yang dibatasi adalah kuota harian per akun (lihat chatgptPool.js).
+    // dan yang dibatasi adalah kuota harian per akun (lihat openaiPool.js).
     if ((path === 'studio/image/config' || path === 'studio/video/config') && (method === 'GET' || method === 'POST')) {
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const user = token ? await getUser(env, token) : null;
@@ -3649,10 +3648,10 @@ async function handleApi(request, url, env) {
       }
     }
 
-    // ---- /studio/models: model ChatGPT untuk Studio ----
+    // ---- /studio/models: model OpenAI untuk Studio ----
     //
-    // Sengaja TERPISAH dari /api/enabled-models. Studio memakai model ChatGPT
-    // (pool akun manual di /studio/chatgpt-accounts), bukan katalog provider
+    // Sengaja TERPISAH dari /api/enabled-models. Studio memakai model OpenAI
+    // (pool akun manual di /studio/openai-accounts), bukan katalog provider
     // yang terdaftar di Admin Panel. `ready` hanya true bila ada minimal satu
     // akun API key yang siap, supaya UI bisa jujur soal keadaan koneksi.
     if ((path === 'studio/models' || path === 'studio/ping') && (method === 'GET' || method === 'POST')) {
@@ -3661,7 +3660,7 @@ async function handleApi(request, url, env) {
       if (!user) return jsonResponse({ error: 'Login diperlukan' }, 401, { 'cache-control': 'no-store' });
       const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
       const capability = String(body.capability || url.searchParams.get('capability') || 'chat').toLowerCase();
-      const summary = await chatGptPoolSummary(env);
+      const summary = await openAiPoolSummary(env);
       const ready = summary.usable > 0;
       const models = studioModelItems([capability, 'chat'], env);
       const payload = {
@@ -3672,15 +3671,15 @@ async function handleApi(request, url, env) {
         models,
         modelItems: models,
         pool: summary,
-        source: 'pool akun ChatGPT: OAuth Continue with ChatGPT + API key (/studio/chatgpt-accounts)',
+        source: 'pool akun OpenAI: OAuth Connect OpenAI + API key (/studio/openai-accounts)',
         ...(ready ? {} : {
-          hint: 'Belum ada akun ChatGPT yang siap. Buka Studio → Akun ChatGPT lalu tekan “Continue with ChatGPT” (tanpa API key); API key hanya perlu untuk tool gambar/video.',
+          hint: 'Belum ada akun OpenAI yang siap. Buka Studio → Akun OpenAI lalu tekan “Connect OpenAI” (tanpa API key); API key hanya perlu untuk tool gambar/video.',
         }),
       };
       if (path === 'studio/ping') {
         // Ping ringan: panggil endpoint resmi termurah (/v1/models) memakai akun
         // pertama yang siap, tanpa menaikkan kuota harian akun.
-        const picked = await pickChatGptAccountsFor(env, { capability: 'chat', limit: 1 });
+        const picked = await pickOpenAiAccountsFor(env, { capability: 'chat', limit: 1 });
         if (!picked.length) return jsonResponse({ ...payload, ok: false, ping: { ok: false, message: 'Tidak ada akun pool yang siap dipakai.' } });
         const account = picked[0];
         let ping;
@@ -3695,7 +3694,7 @@ async function handleApi(request, url, env) {
             ok: res.ok,
             status: res.status,
             account: account.accountLabel || account.accountEmail || account.id.slice(0, 8),
-            message: res.ok ? 'Model ChatGPT bisa dihubungi.' : `API menolak kunci (HTTP ${res.status}).`,
+            message: res.ok ? 'Model OpenAI bisa dihubungi.' : `API menolak kunci (HTTP ${res.status}).`,
           };
         } catch (error) {
           ping = { ok: false, status: 0, account: account.accountLabel || '', message: String(error?.message || error).slice(0, 200) };
@@ -3979,19 +3978,19 @@ async function handleApi(request, url, env) {
       }
     }
 
-    // ---- /chatgpt-oauth: "Continue with ChatGPT" (TANPA API key) ----
+    // ---- /openai-oauth: "Connect OpenAI" (TANPA API key) ----
     //
-    // Alur resmi Sign in with ChatGPT. OAuth diselesaikan di browser pengguna
+    // Alur resmi Sign in with OpenAI. OAuth diselesaikan di browser pengguna
     // (redirect_uri wajib http://127.0.0.1:<port>/auth/callback, PKCE, tanpa
     // client secret), lalu tokennya dikirim sekali ke sini untuk disegel dan
     // didaftarkan ke pool. Browser tidak pernah menyimpan token; yang hidup di
     // klien hanya `state`, `nonce`, dan `code_verifier` sementara.
-    if (path === 'chatgpt-oauth' || path.startsWith('chatgpt-oauth/')) {
+    if (path === 'openai-oauth' || path.startsWith('openai-oauth/')) {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const user = token ? await getUser(env, token) : null;
       if (!user) return jsonResponse({ error: 'Login diperlukan.' }, 401, { 'cache-control': 'no-store' });
-      const action = path.slice('chatgpt-oauth'.length).replace(/^\//, '');
+      const action = path.slice('openai-oauth'.length).replace(/^\//, '');
       try {
         if (!action && method === 'GET') {
           return jsonResponse({
@@ -4008,7 +4007,7 @@ async function handleApi(request, url, env) {
               callback_path: OPENAI_LOOPBACK_PATH,
               client_id_first_time: OPENAI_DYNAMIC_CLIENT_ID,
               agent_name_hint: OPENAI_AGENT_NAME_HINT,
-              note: 'Tanpa API key. Kuota mengikuti paket ChatGPT pemilik akun; hanya untuk chat & agen (Responses API teks).',
+              note: 'Tanpa API key. Kuota mengikuti paket OpenAI pemilik akun; hanya untuk chat & agen (Responses API teks).',
             },
           }, 200, { 'cache-control': 'no-store' });
         }
@@ -4028,28 +4027,28 @@ async function handleApi(request, url, env) {
           const body = await request.json().catch(() => ({}));
           return jsonResponse({ ok: true, ...(await disconnectOAuthLink(env, user, String(body.id || ''))) }, 200, { 'cache-control': 'no-store' });
         }
-        return jsonResponse({ error: 'Aksi OAuth ChatGPT tidak dikenal.' }, 404);
+        return jsonResponse({ error: 'Aksi OAuth OpenAI tidak dikenal.' }, 404);
       } catch (error) {
-        return jsonResponse({ error: error?.message || 'Alur Continue with ChatGPT gagal.' }, error?.status || 500, { 'cache-control': 'no-store' });
+        return jsonResponse({ error: error?.message || 'Alur Connect OpenAI gagal.' }, error?.status || 500, { 'cache-control': 'no-store' });
       }
     }
 
-    // ---- /chatgpt-accounts: pool akun ChatGPT/OpenAI manual (admin) ----
+    // ---- /openai-accounts: pool akun OpenAI manual (admin) ----
     //
     // Sama seperti pool freebeat: kredensial hanya ada di server, browser cuma
     // menerima sidik jari (token_hint). Semua aksi di sini wajib admin.
-    if (path === 'chatgpt-accounts' || path.startsWith('chatgpt-accounts/')) {
+    if (path === 'openai-accounts' || path.startsWith('openai-accounts/')) {
       if (!sameOrigin(request, url)) return jsonResponse({ error: 'Origin tidak diizinkan' }, 403);
       const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
       const admin = token ? await isAdmin(env, token) : false;
-      if (!admin) return jsonResponse({ error: 'Pool akun ChatGPT hanya untuk admin.' }, 403, { 'cache-control': 'no-store' });
-      const action = path.slice('chatgpt-accounts'.length).replace(/^\//, '');
+      if (!admin) return jsonResponse({ error: 'Pool akun OpenAI hanya untuk admin.' }, 403, { 'cache-control': 'no-store' });
+      const action = path.slice('openai-accounts'.length).replace(/^\//, '');
       try {
         if (!action && method === 'GET') {
           return jsonResponse({
             ok: true,
-            accounts: await listChatGptAccounts(env),
-            capabilities: CHATGPT_CAPABILITIES,
+            accounts: await listOpenAiAccounts(env),
+            capabilities: OPENAI_CAPABILITIES,
             policy: {
               order: 'prioritas naik → paling sedikit dipakai hari ini → paling lama dibuat',
               quotaReset: 'tenggat harian dihitung pada tanggal Asia/Jakarta',
@@ -4065,30 +4064,30 @@ async function handleApi(request, url, env) {
             userId = caller?.id ?? null;
           } catch { userId = null; }
           const body = await request.json().catch(() => null);
-          return jsonResponse({ ok: true, account: await createChatGptAccount(env, body, userId) }, 201);
+          return jsonResponse({ ok: true, account: await createOpenAiAccount(env, body, userId) }, 201);
         }
         if (!action && method === 'PATCH') {
           const body = await request.json().catch(() => null);
-          return jsonResponse({ ok: true, account: await updateChatGptAccount(env, body) });
+          return jsonResponse({ ok: true, account: await updateOpenAiAccount(env, body) });
         }
         if (!action && method === 'DELETE') {
           const body = await request.json().catch(() => null);
           if (!body || typeof body !== 'object' || Object.keys(body).some((key) => key !== 'id')) {
             return jsonResponse({ error: 'Hanya parameter id yang diterima.' }, 400);
           }
-          return jsonResponse(await deleteChatGptAccount(env, body.id));
+          return jsonResponse(await deleteOpenAiAccount(env, body.id));
         }
         if (action === 'test' && method === 'POST') {
           const body = await request.json().catch(() => null);
-          const result = await testChatGptAccount(env, body?.id);
+          const result = await testOpenAiAccount(env, body?.id);
           return jsonResponse({ ok: true, result });
         }
         if (action === 'summary' && (method === 'GET' || method === 'POST')) {
-          return jsonResponse({ ok: true, ...(await chatGptPoolSummary(env)) });
+          return jsonResponse({ ok: true, ...(await openAiPoolSummary(env)) });
         }
-        return jsonResponse({ error: 'Aksi pool akun ChatGPT tidak dikenal.' }, 404);
+        return jsonResponse({ error: 'Aksi pool akun OpenAI tidak dikenal.' }, 404);
       } catch (error) {
-        return jsonResponse({ error: error?.message || 'Pool akun ChatGPT gagal diproses.' }, error?.status || 500);
+        return jsonResponse({ error: error?.message || 'Pool akun OpenAI gagal diproses.' }, error?.status || 500);
       }
     }
 
@@ -4799,7 +4798,7 @@ async function handleApi(request, url, env) {
         });
       }
 
-      // Hasil dari pool akun ChatGPT (gambar/video/teks Studio).
+      // Hasil dari pool akun OpenAI (gambar/video/teks Studio).
       const STUDIO_TOOL_LABEL = { chat: 'Chat & Tulis', agent: 'Agen Otonom', image: 'Buat Gambar', video: 'Buat Video', audio: 'Audio', library: 'Hasil' };
       for (const row of studioRows) {
         if (!wanted(row.kind === 'text' ? (row.tool === 'agent' ? 'agent' : 'chat') : row.kind)) continue;
@@ -5433,20 +5432,20 @@ async function handleApi(request, url, env) {
         // Dipakai agen saat akun pool berupa OAuth (tanpa API key).
         sendOAuthResponses,
         chatUpstreamTimeoutMs,
-        // Studio memakai model ChatGPT (pool akun manual). Ruang lain tetap
+        // Studio memakai model OpenAI (pool akun manual). Ruang lain tetap
         // memakai katalog provider seperti sebelumnya.
         assertStudioProvider: (provider, model) => {
           if (!studioTool) return null;
           if (provider === 'openai') return null;
           return {
             code: 'studio_provider_mismatch',
-            message: `Ruang "${studioTool}" hanya memakai model ChatGPT (openai), bukan "${provider}" (${model}).`,
+            message: `Ruang "${studioTool}" hanya memakai model OpenAI (openai), bukan "${provider}" (${model}).`,
           };
         },
         recordTurnText: async (payload) => (studioTool
           ? recordStudioText(env, user.id, { ...payload, metadata: { room: studioTool } })
           : null),
-        pickPoolAccounts: (capability = 'agent', options = {}) => pickChatGptAccountsFor(env, {
+        pickPoolAccounts: (capability = 'agent', options = {}) => pickOpenAiAccountsFor(env, {
           capability,
           limit: Number(options?.limit) || 4,
         }),
@@ -5549,25 +5548,25 @@ async function handleApi(request, url, env) {
         keyByProvider.set('alibaba', { provider: 'alibaba', api_key: alibabaCandidates[0].api_key, base_url: alibabaCandidates[0].base_url });
       }
       const alibabaPoolMap = new Map(alibabaCandidates.length ? [['alibaba', alibabaCandidates]] : []);
-      // Pool akun ChatGPT manual (dikelola di /studio/chatgpt-accounts) ikut
+      // Pool akun OpenAI manual (dikelola di /studio/openai-accounts) ikut
       // menjadi kandidat provider `openai` — termasuk untuk rantai fallback,
       // supaya akun yang ditambahkan admin benar-benar terpakai.
-      const chatgptCandidates = env.CHATGPT_POOL_DISABLED === '1' || env.CHATGPT_POOL_DISABLED === 'true'
+      const openaiCandidates = env.OPENAI_POOL_DISABLED === '1' || env.OPENAI_POOL_DISABLED === 'true'
         ? []
-        : await pickChatGptAccountsFor(env, { capability: 'chat', limit: 4 }).catch(() => []);
-      if (chatgptCandidates.length) {
+        : await pickOpenAiAccountsFor(env, { capability: 'chat', limit: 4 }).catch(() => []);
+      if (openaiCandidates.length) {
         if (!keyByProvider.get('openai')?.api_key) {
           keyByProvider.set('openai', {
             provider: 'openai',
-            api_key: chatgptCandidates[0].apiKey,
-            base_url: `${chatgptCandidates[0].apiBase}/v1`,
-            label: 'Pool akun ChatGPT (manual)',
+            api_key: openaiCandidates[0].apiKey,
+            base_url: `${openaiCandidates[0].apiBase}/v1`,
+            label: 'Pool akun OpenAI (manual)',
           });
         }
-        alibabaPoolMap.set('openai', chatgptCandidates.map((account) => ({
+        alibabaPoolMap.set('openai', openaiCandidates.map((account) => ({
           api_key: account.apiKey,
           base_url: `${account.apiBase}/v1`,
-          label: account.accountLabel || account.accountEmail || 'Pool ChatGPT',
+          label: account.accountLabel || account.accountEmail || 'Pool OpenAI',
         })));
       }
       const primaryKeyRow = primaryProvider === 'alibaba' ? (alibabaCandidates[0] || null) : keyByProvider.get(primaryProvider);
@@ -5612,9 +5611,9 @@ async function handleApi(request, url, env) {
           let alibabaPrimaryCand = null;
           let probed = null;
           if (activeProvider === 'openai') {
-            // Round-robin lintas akun pool ChatGPT manual: akun yang kuota
+            // Round-robin lintas akun pool OpenAI manual: akun yang kuota
             // hariannya habis atau sedang cooldown dilewati di dalam pool.
-            const pooled = await sendWithChatGptPool({
+            const pooled = await sendWithOpenAiPool({
               env,
               capability: 'chat',
               model: activeModel,
@@ -5789,7 +5788,7 @@ async function handleApi(request, url, env) {
         let alibabaPrimaryCand2 = null;
         let attempt = null;
         if (activeProvider === 'openai') {
-          const pooled = await sendWithChatGptPool({
+          const pooled = await sendWithOpenAiPool({
             env,
             capability: 'chat',
             model: activeModel,

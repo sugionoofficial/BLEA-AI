@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Copy, Inbox, Mail, RefreshCw, RotateCcw, ShieldCheck, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { extractVerificationCode } from '../lib/chatgptSignup';
+import { extractVerificationCode } from '../lib/openaiSignup';
 import './tempmail.css';
 
 const POLL_MS = 15_000;

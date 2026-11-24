@@ -66,9 +66,9 @@ const AI_SIGNATURES = [
     reason: 'Menyertakan manifestasi Content Credentials / C2PA (penanda asal konten AI).',
   },
   {
-    tool: 'OpenAI (Sora / DALL-E / ChatGPT)',
-    pattern: /(?:openai|dall-?e|com\.openai\.sora|openai[\s_-]*sora|\bsora[\s_-]?[12]\b|chatgpt|gpt-image|truepic)/i,
-    reason: 'Mengandung jejak generator atau penanda OpenAI (Sora / DALL-E / ChatGPT).',
+    tool: 'OpenAI (Sora / DALL-E)',
+    pattern: /(?:openai|dall-?e|com\.openai\.sora|openai[\s_-]*sora|\bsora[\s_-]?[12]\b|gpt-image|truepic)/i,
+    reason: 'Mengandung jejak generator atau penanda OpenAI (Sora / DALL-E).',
   },
   {
     tool: 'Google AI (Veo / Imagen / SynthID)',
