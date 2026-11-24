@@ -1365,3 +1365,98 @@ test('/api/chat stream:true dialihkan ke provider lain saat provider utama 401',
   assert.match(text, /fallbackFrom/);
   assert.match(text, /Halo dari qwen\./);
 });
+
+// Cermin konfigurasi produksi (24 Nov 2026): pool OpenAI berisi 1 akun yang
+// kehabisan kredit, kunci alibaba di provider_key_pool dengan base berakhiran
+// /api/v1, dan katalog didominasi model openai + freebeat. Yang diuji: chat
+// TIDAK berakhir di pesan pool, melainkan dijawab alibaba, dan URL yang
+// dipanggil benar (base /api/v1 harus dinormalkan, bukan digandakan).
+test('/api/chat menjawab lewat alibaba pada konfigurasi produksi (kredit OpenAI habis)', async () => {
+  const realFetch = globalThis.fetch;
+  const calledUrls = [];
+  const alibabaBase = 'https://ws-d67pyhqq525u3ztt.ap-southeast-1.maas.aliyuncs.com/api/v1';
+  const alibabaChatModels = [
+    'qwen3.8-max', 'qwen3.7-max', 'qwen4-max', 'qwen3.5-plus', 'qwen3.7-plus',
+    'qwen3.8-flash', 'qwen-flash', 'qwen3-vl-plus', 'qwen3.5-omni-plus', 'gui-plus',
+  ];
+  const openAiModels = Array.from({ length: 102 }, (_v, i) => ({ provider: 'openai', model: `gpt-4o-${i}` }));
+  const freebeatModels = Array.from({ length: 109 }, (_v, i) => ({ provider: 'freebeat', model: `${100 + i}` }));
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1', email: 'sugionoofficial88@gmail.com' });
+    if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
+      return Response.json([
+        { provider: 'alibaba', api_key: 'sk-ws-alibaba', base_url: 'https://ws-d67pyhqq525u3ztt.ap-southeast-1.maas.aliyuncs.com' },
+        { provider: 'cloudflare', api_key: 'binding:AI', base_url: null },
+        { provider: 'ollama', api_key: 'ollama=', base_url: 'https://assessed-arbor-enhanced-pdf.trycloudflare.com' },
+      ]);
+    }
+    if (url.includes('/rest/v1/openai_accounts')) {
+      return Response.json([{
+        id: '55555555-5555-4555-8555-555555555555',
+        account_email: 'sugionoofficial88+1@gmail.com',
+        credential_kind: 'api_key',
+        enabled: true,
+        capabilities: ['chat'],
+        model_default: 'gpt-4o-mini',
+        daily_limit: 0,
+        used_today: 3,
+        quota_date: new Date().toISOString().slice(0, 10),
+        last_error: 'You have no credits remaining. Add credits to continue using the API.',
+        consecutive_failures: 3,
+        cooldown_until: null,
+      }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_key_pool')) {
+      return Response.json([{
+        id: 'pool-alibaba-1',
+        provider: 'alibaba',
+        label: 'sugionoofficial88@gmail.com',
+        api_key: 'sk-ws-alibaba',
+        base_url: alibabaBase,
+        priority: 10,
+        consecutive_failures: 0,
+        cooldown_until: null,
+      }]);
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
+      const limit = Number(new URL(url).searchParams.get('limit')) || 1000;
+      return Response.json([
+        ...openAiModels,
+        ...freebeatModels,
+        ...alibabaChatModels.map((model) => ({ provider: 'alibaba', model })),
+      ].slice(0, limit));
+    }
+    if (url.startsWith('https://ws-d67pyhqq525u3ztt.ap-southeast-1.maas.aliyuncs.com/')) {
+      calledUrls.push(url);
+      return Response.json({ choices: [{ message: { content: 'Halo! Saya qwen, provider cadangan BLEA.' } }] });
+    }
+    if (url.startsWith('https://supabase.example/rest/v1/ai_messages')) {
+      return Response.json([{ id: 'msg-prod-1' }]);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  let res;
+  let data;
+  try {
+    res = await worker.fetch(apiRequest('/api/chat', {
+      body: {
+        conversationId: 'conv-produksi',
+        provider: 'openai',
+        model: 'gpt-5.6-luna',
+        messages: [{ role: 'user', content: 'Halo BLEA' }],
+      },
+    }), createEnv());
+    data = await res.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 200, `chat harus dijawab provider cadangan: ${JSON.stringify(data)}`);
+  assert.equal(data.provider, 'alibaba');
+  assert.equal(data.reply, 'Halo! Saya qwen, provider cadangan BLEA.');
+  assert.equal(data.fallbackReason, 'openai_pool_needs_attention');
+  // Base /api/v1 harus dinormalkan lalu ditambah /compatible-mode/v1 — bukan
+  // menjadi /api/v1/compatible-mode/v1 dan bukan path ganda.
+  assert.equal(calledUrls.length, 1);
+  assert.equal(calledUrls[0], 'https://ws-d67pyhqq525u3ztt.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions');
+});
