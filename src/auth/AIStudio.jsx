@@ -256,6 +256,11 @@ const OPENAI_ERROR_HINTS = {
   openai_pool_billing: 'billing',
   openai_pool_unauthorized: 'auth',
   openai_pool_failed: 'other',
+  // Pool ada isinya tetapi tidak ada satu pun akun yang bisa dipakai (kredit
+  // habis, kunci mati, paket OAuth tidak boleh dibagikan). Kalimatnya sudah
+  // disusun server lengkap dengan tindakannya, jadi jangan ditimpa di klien.
+  openai_pool_needs_attention: 'permanent',
+  openai_pool_not_usable: 'permanent',
 };
 
 function formatChatErrorMessage(chatData, status) {

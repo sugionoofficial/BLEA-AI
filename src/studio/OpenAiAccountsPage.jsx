@@ -550,7 +550,12 @@ export function OpenAiAccountsPage() {
                 {account.last_error && <p className="cga-meta cga-meta-error"><CircleAlert size={11} /> {account.last_error}</p>}
                 <p className="cga-meta">
                   Sukses terakhir: {relTime(account.last_ok_at)} · Uji terakhir: {relTime(account.last_test_at)}
-                  {account.last_test_ok === false ? ' (gagal)' : account.last_test_ok === true ? ' (berhasil)' : ''}
+                  {/* "berhasil" dari uji lama menyesatkan begitu akun terhalang
+                      permanen: dulu baris ini tetap berbunyi "(berhasil)" untuk
+                      akun yang sudah kehabisan kredit. */}
+                  {account.usable
+                    ? (account.last_test_ok === false ? ' (gagal)' : account.last_test_ok === true ? ' (berhasil)' : '')
+                    : (account.last_test_ok === true ? ' (berhasil sebelum masalah ini muncul)' : account.last_test_ok === false ? ' (gagal)' : '')}
                 </p>
 
                 <div className="cga-item-actions">
