@@ -44,6 +44,15 @@ const COOLDOWN_MAX_MINUTES = 60;
 // Cooldown untuk 429 = batas laju, bukan kunci mati. Cukup untuk melewati
 // jendela rate limit, tanpa membuat akun tampak "kuota habis" selama sejam.
 const RATE_LIMIT_COOLDOWN_MINUTES = 1;
+// Berapa kali kegagalan sejenis harus berulang sebelum akun berhenti dicoba
+// sampai keadaan itu diperbaiki. Billing = 1 karena pesan OpenAI definitif
+// ("you have no credits remaining"); kunci ditolak butuh 3 karena kunci
+// pengganti kadang butuh waktu menyebar di sisi OpenAI.
+const BILLING_STALE_FAILURES = 1;
+// Model termurah untuk uji saldo. Override lewat env bila akun tidak punya akses
+// ke model ini, supaya "Uji" tidak menjadi palsu-gagal.
+const PROBE_MODEL = 'gpt-4o-mini';
+const AUTH_STALE_FAILURES = 3;
 
 function supabaseBase(env) {
   return (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
@@ -244,9 +253,45 @@ function effectiveUsedToday(row, today = jakartaDate()) {
   return Number.isFinite(used) && used > 0 ? Math.trunc(used) : 0;
 }
 
-function isCoolingDown(row, now = Date.now()) {
+/**
+ * Kenapa akun ini masih dilewati walau `cooldown_until` sudah lewat.
+ *
+ * Cooldown adalah satuan WAKTU, sedangkan "kredit habis" dan "kunci ditolak"
+ * adalah keadaan yang tidak berubah hanya karena waktu berjalan. Dulu keduanya
+ * bergantung pada `cooldown_until` saja: begitu jamnya lewat, akun dianggap
+ * siap, dipanggil lagi, gagal 429 lagi, lalu di-cooldown lagi — dari layar
+ * kelihatan seperti "akun sedang cooldown" terus tanpa sebab yang jelas.
+ *
+ * Mengembalikan null bila tidak ada penghalang lama.
+ */
+export function stalePoolBlock(row, now = Date.now()) {
+  if (withinCooldownWindow(row, now)) return null; // masih cooldown biasa, itu sebabnya
+  const kind = classifyOpenAiFailure(429, row?.last_error);
+  if (!row?.last_error) return null;
+  const failures = Number(row?.consecutive_failures) || 0;
+  if (kind === 'billing' && failures >= BILLING_STALE_FAILURES) {
+    return { kind, reason: 'billing', message: String(row.last_error).slice(0, 300) };
+  }
+  if (kind === 'auth' && failures >= AUTH_STALE_FAILURES) {
+    return { kind, reason: 'auth', message: String(row.last_error).slice(0, 300) };
+  }
+  return null;
+}
+
+/**
+ * Cooldown yang masih berlaku untuk penjadwalan. `stalePoolBlock` membuat akun
+ * dengan kredit habis/kunci mati TIDAK pernah dipilih lagi sampai diperbaiki —
+ * jadi satu akun bermasalah tidak lagi menghabiskan satu percobaan pengguna
+ * setiap kali cooldown-nya habis.
+ */
+function withinCooldownWindow(row, now = Date.now()) {
   const until = row?.cooldown_until ? Date.parse(row.cooldown_until) : NaN;
   return Number.isFinite(until) && until > now;
+}
+
+function isCoolingDown(row, now = Date.now()) {
+  if (withinCooldownWindow(row, now)) return true;
+  return stalePoolBlock(row, now) !== null;
 }
 
 function quotaExhausted(row, today = jakartaDate()) {
@@ -261,17 +306,23 @@ export function sanitizeOpenAiAccount(row, now = Date.now()) {
   const today = jakartaDate(new Date(now));
   const used = effectiveUsedToday(row, today);
   const limit = Number.isFinite(Number(row.daily_limit)) ? Number(row.daily_limit) : 0;
-  const cooling = isCoolingDown(row, now);
+  const blocked = stalePoolBlock(row, now);
+  const cooling = isCoolingDown(row, now) && !blocked;
   const exhausted = quotaExhausted(row, today);
   const credentialKind = credentialKindOf(row);
   const enabled = row.enabled !== false;
   const enabledKind = credentialKind === 'api_key' || credentialKind === 'oauth';
-  const usable = enabled && !cooling && !exhausted && enabledKind;
+  const usable = enabled && !cooling && !blocked && !exhausted && enabledKind;
+  // Urutan penting: keadaan PERMANEN (kredit habis / kunci ditolak) lebih dulu
+  // daripada cooldown. "Cooldown" membuat admin menunggu, padahal menunggu
+  // tidak akan memulihkan kredit.
   let state = 'siap';
   if (!enabled) state = 'nonaktif';
   else if (!enabledKind) state = 'tidak-bisa-dipanggil';
-  else if (cooling) state = 'cooldown';
   else if (exhausted) state = 'kuota-habis';
+  else if (blocked?.kind === 'billing') state = 'kredit-habis';
+  else if (blocked?.kind === 'auth') state = 'kunci-ditolak';
+  else if (cooling) state = 'cooldown';
   return {
     id: row.id,
     account_email: String(row.account_email || '').trim(),
@@ -289,6 +340,9 @@ export function sanitizeOpenAiAccount(row, now = Date.now()) {
     capabilities: normalizeCapabilities(row.capabilities),
     consecutive_failures: Number.isFinite(Number(row.consecutive_failures)) ? Number(row.consecutive_failures) : 0,
     cooldown_until: cooling ? row.cooldown_until : null,
+    // Penghalang permanen: UI memakainya untuk menampilkan sebab + tombol
+    // perbaikan, bukan sekadar "cooldown".
+    blocked_reason: blocked?.reason || null,
     last_error: typeof row.last_error === 'string' && row.last_error ? row.last_error : null,
     last_ok_at: row.last_ok_at || null,
     last_test_at: row.last_test_at || null,
@@ -321,6 +375,26 @@ export async function openAiPoolSummary(env) {
   }
 }
 
+function emptyStaleCounts() {
+  return {
+    stale_accounts: [],
+    retry_after_sec: 0,
+    last_error: '',
+  };
+}
+
+// Catat akun yang terhalang permanen (kredit habis / kunci ditolak) supaya
+// pesan error menyebut SEBAB + tindakannya, bukan "cooldown".
+function registerStale(counts, row, kind) {
+  counts.stale_accounts.push({
+    id: row.id,
+    label: String(row.account_label || row.account_email || String(row.id || '').slice(0, 8)),
+    reason: kind,
+    error: String(row.last_error || '').slice(0, 300),
+  });
+  if (!counts.last_error && row.last_error) counts.last_error = String(row.last_error).slice(0, 300);
+}
+
 /**
  * Diagnosa kenapa sebuah kapabilitas tidak bisa dipakai. Hanya menghitung,
  * tidak membuka token, jadi aman dipanggil saat menyusun pesan error.
@@ -338,7 +412,13 @@ export async function openAiPoolDiagnostic(env, capability = 'chat') {
   }
   const now = Date.now();
   const today = jakartaDate(new Date(now));
-  const counts = { readable: true, total: rows.length, match_capability: 0, enabled: 0, unsupported_kind: 0, cooling: 0, quota_exhausted: 0, sealed_missing: 0, usable: 0 };
+  const counts = {
+    readable: true, total: rows.length, match_capability: 0, enabled: 0,
+    unsupported_kind: 0, cooling: 0, quota_exhausted: 0, sealed_missing: 0, usable: 0,
+    // Penghalang yang TIDAK hilang hanya karena waktu berjalan.
+    billing: 0, unauthorized: 0,
+    ...emptyStaleCounts(),
+  };
   for (const row of rows) {
     const caps = Array.isArray(row.capabilities) ? row.capabilities : normalizeCapabilities(row.capabilities);
     if (!caps.includes(cap)) continue;
@@ -347,6 +427,11 @@ export async function openAiPoolDiagnostic(env, capability = 'chat') {
     counts.enabled += 1;
     // Sama seperti pickOpenAiAccount: hanya kredensial yang bisa dipanggil.
     if (!['api_key', 'oauth'].includes(credentialKindOf(row))) { counts.unsupported_kind += 1; continue; }
+    // Kredit habis / kunci ditolak disebut sebagai dirinya sendiri, bukan
+    // "cooldown": menunggu tidak akan memulihkannya.
+    const stale = stalePoolBlock(row, now);
+    if (stale?.kind === 'billing') { counts.billing += 1; registerStale(counts, row, 'billing'); continue; }
+    if (stale?.kind === 'auth') { counts.unauthorized += 1; registerStale(counts, row, 'auth'); continue; }
     if (isCoolingDown(row, now)) { counts.cooling += 1; continue; }
     if (quotaExhausted(row, today)) { counts.quota_exhausted += 1; continue; }
     if (!row.sealed_token) { counts.sealed_missing += 1; continue; }
@@ -361,6 +446,15 @@ export async function openAiPoolDiagnostic(env, capability = 'chat') {
       if (!refresh) { counts.sealed_missing += 1; continue; }
     }
     counts.usable += 1;
+  }
+  // Kalau satu-satunya penghalang adalah cooldown, sebutkan berapa lama lagi —
+  // "tunggu sebentar" tanpa angka membuat admin menebak.
+  if (!counts.billing && !counts.unauthorized && counts.cooling) {
+    const waits = rows
+      .filter((row) => isCoolingDown(row, now))
+      .map((row) => (Date.parse(row.cooldown_until || '') - now) / 1000)
+      .filter((sec) => Number.isFinite(sec) && sec > 0);
+    counts.retry_after_sec = waits.length ? Math.ceil(Math.min(...waits)) : 0;
   }
   return counts;
 }
@@ -382,12 +476,28 @@ export async function openAiPoolBlockedMessage(env, capability = 'chat') {
   if (pool.match_capability === 0) blockers.push(`tidak ada akun dengan kapabilitas "${label}" dicentang`);
   if (pool.match_capability > 0 && pool.enabled === 0) blockers.push('semua akun yang cocok sedang nonaktif');
   if (pool.unsupported_kind) blockers.push(`${pool.unsupported_kind} akun memakai jenis kredensial yang tidak bisa dipanggil`);
-  if (pool.cooling) blockers.push(`${pool.cooling} akun sedang cooldown`);
-  if (pool.quota_exhausted) blockers.push(`${pool.quota_exhausted} akun sudah habis kuota harian`);
+  // Sebab permanen disebut lebih dulu dan dengan tindakannya: inilah yang
+  // membuat pesan "sedang cooldown" terus muncul padahal yang habis kredit.
+  if (pool.billing) {
+    blockers.push(`${pool.billing} akun kehabisan kredit OpenAI — isi saldo di platform.openai.com → Billing, lalu tekan Uji`);
+  }
+  if (pool.unauthorized) {
+    blockers.push(`${pool.unauthorized} akun ditolak OpenAI (kunci tidak valid) — ganti API key-nya, lalu tekan Uji`);
+  }
+  if (pool.cooling) {
+    const wait = Number(pool.retry_after_sec) || 0;
+    blockers.push(wait > 0
+      ? `${pool.cooling} akun sedang cooldown sementara (±${wait} detik lagi)`
+      : `${pool.cooling} akun sedang cooldown sementara`);
+  }
+  if (pool.quota_exhausted) blockers.push(`${pool.quota_exhausted} akun sudah habis kuota harian BLEA — reset kuota atau tunggu tanggal WIB berikutnya`);
   if (pool.sealed_missing) blockers.push(`${pool.sealed_missing} akun tersegel dengan secret lain — simpan ulang API key-nya`);
+  const permanent = pool.billing || pool.unauthorized;
   return {
+    // Kredit habis / kunci mati tidak akan membaik dengan menunggu; kode
+    // berbeda supaya klien bisa membedakan tindakannya (bukan "coba lagi").
     status: 503,
-    code: 'openai_pool_not_usable',
+    code: permanent ? 'openai_pool_needs_attention' : 'openai_pool_not_usable',
     error: `Akun OpenAI ada ${pool.total} di pool, ${pool.usable} siap dipakai: ${blockers.join('; ') || 'tidak ada yang lolos penyaringan pool'}.`,
     pool,
   };
@@ -932,7 +1042,12 @@ export function isOpenAiPoolFailure(status, detail = '') {
 export function classifyOpenAiFailure(status, detail = '') {
   const code = Number(status) || 0;
   const text = String(detail || '');
-  if (/insufficient_quota|billing_hard_limit|billing_not_active|exceeded your current quota|credit balance|payment/i.test(text)) return 'billing';
+  // Pesan asli OpenAI untuk saldo habis (HTTP 429, BUKAN 402):
+  //   "You have no credits remaining. Add credits to continue using the API at
+  //    https://platform.openai.com/settings/organization/billing/"
+  // Dulu teks ini tidak cocok dengan pola mana pun, jatuh ke cabang 429, lalu
+  // dilaporkan sebagai "batas laju" — persis gejala yang membingungkan.
+  if (/insufficient_quota|billing|no credits?|credits? remaining|add credits|credit balance|out of credits|payment/i.test(text)) return 'billing';
   if (code === 402) return 'billing';
   if (/invalid_api_key|incorrect api key|unauthorized|deactivated/i.test(text)) return 'auth';
   if (code === 401 || code === 403) return 'auth';
@@ -1095,10 +1210,69 @@ export async function testOpenAiAccount(env, id) {
   } catch (error) {
     return await finish(false, `Tidak bisa menghubungi ${base}: ${String(error?.message || error).slice(0, 160)}`, null);
   }
-  if (res.ok) {
-    await res.body?.cancel().catch?.(() => {});
-    return await finish(true, 'Kunci diterima API OpenAI.', res.status);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const kind = classifyOpenAiFailure(res.status, text);
+    if (kind === 'billing') {
+      return await finish(
+        false,
+        // Jangan pernah bilang "berhasil" untuk akun tanpa kredit: /v1/models
+        // memang tetap 200, jadi pemeriksaan kunci saja menyesatkan.
+        `Kunci diterima, tetapi kredit OpenAI habis: ${text.slice(0, 160) || 'no credits remaining'}. Isi saldo di platform.openai.com → Billing.`,
+        res.status,
+      );
+    }
+    return await finish(false, `API menolak kunci (HTTP ${res.status}). ${text.slice(0, 200)}`.trim(), res.status);
   }
-  const text = await res.text().catch(() => '');
-  return await finish(false, `API menolak kunci (HTTP ${res.status}). ${text.slice(0, 200)}`.trim(), res.status);
+  await res.body?.cancel().catch?.(() => {});
+  // /v1/models tidak memotong kredit, jadi ia membuktikan KUNCI saja. Untuk
+  // menjawab "bisa dipakai atau tidak", satu panggilan termurah ke
+  // /v1/chat/completions adalah bukti billing yang sebenarnya.
+  const completion = await probeOpenAiCredit({ base, token });
+  if (completion && !completion.ok) {
+    if (completion.kind === 'billing') {
+      return await finish(
+        false,
+        `Kunci diterima, tetapi kredit OpenAI habis: ${String(completion.detail || '').slice(0, 160)}. Isi saldo di platform.openai.com → Billing.`,
+        completion.status,
+      );
+    }
+    if (completion.kind === 'rate_limit') {
+      // Batas laju bukan tanda akun rusak, jadi jangan dilaporkan sebagai gagal.
+      return await finish(true, 'Kunci diterima dan saldo tersedia (sedang kena batas laju sesaat).', completion.status);
+    }
+  }
+  return await finish(true, completion?.ok ? 'Kunci diterima dan kredit OpenAI tersedia.' : 'Kunci diterima API OpenAI.', res.status);
+}
+
+/**
+ * Satu panggilan chat termurah untuk membuktikan saldo. Best-effort: kalau
+ * endpoint chat tidak bisa dihubungi, hasil `null` dan akun tidak dihukum.
+ */
+async function probeOpenAiCredit({ base, token }) {
+  try {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: PROBE_MODEL,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (res.ok) {
+      await res.body?.cancel?.().catch?.(() => {});
+      return { ok: true, status: res.status };
+    }
+    const text = await res.text().catch(() => '');
+    let detail = text;
+    try {
+      const parsed = JSON.parse(text);
+      detail = parsed?.error?.message || parsed?.message || text;
+    } catch { /* teks mentah sudah cukup */ }
+    return { ok: false, status: res.status, kind: classifyOpenAiFailure(res.status, detail), detail };
+  } catch (error) {
+    return { ok: false, status: 0, kind: 'other', detail: String(error?.message || error).slice(0, 160) };
+  }
 }

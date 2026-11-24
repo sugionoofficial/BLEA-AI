@@ -17,7 +17,7 @@ import { DropXLayout } from '../dropx/DropXLayout';
 import { OpenAiOAuthPanel } from './OpenAiOAuthPanel';
 import { OpenAiSignupPanel } from './OpenAiSignupPanel';
 import { OPENAI_CAPABILITY_LABELS, OPENAI_CAPABILITY_MATRIX, unpipedCapabilities, wiredCapabilities } from '../lib/openaiCapabilities';
-import { PLATFORM_API_KEYS_URL } from '../lib/openaiSignup';
+import { PLATFORM_API_KEYS_URL, PLATFORM_BILLING_URL } from '../lib/openaiSignup';
 import {
   createOpenAiAccount,
   deleteOpenAiAccount,
@@ -29,10 +29,29 @@ import './openai-accounts.css';
 
 const STATE_META = {
   siap: { label: 'Siap dipakai', tone: 'ok' },
-  'kuota-habis': { label: 'Kuota harian habis', tone: 'warn' },
-  cooldown: { label: 'Cooldown', tone: 'warn' },
+  'kuota-habis': { label: 'Kuota harian BLEA habis', tone: 'warn' },
+  // Dua keadaan di bawah ini bukan soal waktu: menunggu tidak memulihkannya.
+  // Dulu keduanya tampil sebagai "Cooldown", jadi admin menunggu tanpa hasil.
+  'kredit-habis': { label: 'Kredit OpenAI habis', tone: 'bad' },
+  'kunci-ditolak': { label: 'Kunci ditolak OpenAI', tone: 'bad' },
+  cooldown: { label: 'Cooldown sementara', tone: 'warn' },
   nonaktif: { label: 'Nonaktif', tone: 'muted' },
   'tidak-bisa-dipanggil': { label: 'Token sesi (tidak dipanggil)', tone: 'muted' },
+};
+
+// Tindakan yang benar untuk tiap penghalang. Ditampilkan sebagai tautan supaya
+// admin tidak perlu menebak halaman mana yang harus dibuka.
+const BLOCKED_ACTION = {
+  billing: {
+    label: 'Isi saldo di platform.openai.com → Billing',
+    href: PLATFORM_BILLING_URL,
+    note: 'Kredit OpenAI habis. Menunggu tidak akan memulihkannya; setelah saldo terisi tekan Uji.',
+  },
+  auth: {
+    label: 'Ganti API key di platform.openai.com → API keys',
+    href: PLATFORM_API_KEYS_URL,
+    note: 'Kunci ditolak OpenAI. Buat kunci baru, tempel lewat Ubah → kunci, lalu tekan Uji.',
+  },
 };
 
 const EMPTY_FORM = {
@@ -502,6 +521,14 @@ export function OpenAiAccountsPage() {
 
                 {account.cooldown_until && (
                   <p className="cga-meta"><Clock size={11} /> Cooldown sampai {new Date(account.cooldown_until).toLocaleTimeString('id-ID')}</p>
+                )}
+                {BLOCKED_ACTION[account.blocked_reason] && (
+                  <div className="cga-blocked" role="status">
+                    <p>{BLOCKED_ACTION[account.blocked_reason].note}</p>
+                    <a href={BLOCKED_ACTION[account.blocked_reason].href} target="_blank" rel="noopener noreferrer">
+                      {BLOCKED_ACTION[account.blocked_reason].label} ↗
+                    </a>
+                  </div>
                 )}
                 {account.last_error && <p className="cga-meta cga-meta-error"><CircleAlert size={11} /> {account.last_error}</p>}
                 <p className="cga-meta">
