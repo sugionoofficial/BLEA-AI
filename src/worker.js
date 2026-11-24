@@ -5643,7 +5643,10 @@ async function handleApi(request, url, env) {
         if (primaryProvider === 'openai') {
           const blocked = await openAiPoolBlockedMessage(env, 'chat').catch(() => null);
           if (blocked) {
-            return jsonResponse({ error: blocked.error, code: blocked.code, pool: blocked.pool }, blocked.status);
+            // `hint` diteruskan: untuk kasus paket OAuth, satu-satunya jalan
+            // keluar berbeda (API key berbayar), dan UI membutuhkannya tanpa
+            // harus menebak dari kalimat.
+            return jsonResponse({ error: blocked.error, code: blocked.code, hint: blocked.hint, pool: blocked.pool }, blocked.status);
           }
           return jsonResponse({
             error: 'Belum ada akun OpenAI di pool. Tambahkan API key di Studio → Akun OpenAI.',

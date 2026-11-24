@@ -140,7 +140,7 @@ export async function handleAgentTurn(request, url, env, deps) {
         ? await deps.poolBlockedMessage(poolCapability).catch(() => null)
         : null;
       if (blocked) {
-        return Response.json({ error: blocked.error, code: blocked.code, pool: blocked.pool }, { status: blocked.status });
+        return Response.json({ error: blocked.error, code: blocked.code, hint: blocked.hint, pool: blocked.pool }, { status: blocked.status });
       }
       return Response.json({
         error: 'Belum ada akun OpenAI di pool. Tambahkan API key di Studio → Akun OpenAI.',
