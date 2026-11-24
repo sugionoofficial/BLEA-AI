@@ -1,4 +1,4 @@
-/* Ruang video Studio (Sora lewat pool akun ChatGPT). */
+/* Ruang video Studio (Sora lewat pool akun OpenAI). */
 .studio-video { display: flex; flex-direction: column; gap: 14px; padding: 4px 2px 24px; }
 .studio-video-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

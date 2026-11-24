@@ -38,7 +38,7 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 // yang menghubungkan provider. Panel ini tidak pernah melihat token.
 export function GenerateImagePanel({ initialPrompt = '' }) {
   const { user } = useAuth();
-  // Di dalam Studio, gambar dibuat lewat pool akun ChatGPT (gpt-image-1), bukan
+  // Di dalam Studio, gambar dibuat lewat pool akun OpenAI (gpt-image-1), bukan
   // freebeat/Alibaba. Kredit BLEA tidak dipotong; yang dibatasi kuota harian
   // akun. Halaman /generate di luar Studio tetap memakai jalur lama.
   const studioMode = typeof window !== 'undefined' && /^\/studio(\/|$)/.test(window.location.pathname || '');
@@ -222,7 +222,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
         size: size || '1024x1024',
       });
       if (!studioRes.ok) {
-        setError(studioRes.data?.error || 'Generasi gambar gagal di pool akun ChatGPT.');
+        setError(studioRes.data?.error || 'Generasi gambar gagal di pool akun OpenAI.');
         setBusy(false);
         setSubmitStartedAt(null);
         return;
@@ -230,7 +230,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       const studioRow = studioRes.data?.generation || null;
       if (studioRow) {
         setStudioGeneration(studioRow);
-        setNotice('Gambar selesai dibuat lewat akun ChatGPT. Tidak ada kredit BLEA yang dipotong.');
+        setNotice('Gambar selesai dibuat lewat akun OpenAI. Tidak ada kredit BLEA yang dipotong.');
       }
       setBusy(false);
       setSubmitStartedAt(null);
@@ -298,9 +298,9 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
     </div>
 
     {loading && <p className="generate-hint" role="status">Memuat konfigurasi provider…</p>}
-    {!loading && models.length === 0 && studioMode && <div className="generate-banner" role="status"><span>Ruang gambar Studio memakai model ChatGPT. Muat ulang bila daftar model kosong, atau tambahkan akun di Studio → Akun ChatGPT.</span><Link className="generate-banner-link" to="/studio/chatgpt-accounts">Kelola akun</Link></div>}
+    {!loading && models.length === 0 && studioMode && <div className="generate-banner" role="status"><span>Ruang gambar Studio memakai model OpenAI. Muat ulang bila daftar model kosong, atau tambahkan akun di Studio → Akun OpenAI.</span><Link className="generate-banner-link" to="/studio/openai-accounts">Kelola akun</Link></div>}
     {!loading && models.length === 0 && !studioMode && <div className="generate-banner" role="status"><span>Belum ada model gambar yang diaktifkan admin. Minta admin membuka Katalog Model dan menetapkannya.</span></div>}
-    {studioMode && !studioConfig?.ready && <div className="generate-banner" role="status"><span>{studioConfig?.hint || 'Pool akun ChatGPT belum siap, jadi gambar belum bisa dikirim. Tidak ada kredit yang dipotong.'}</span><Link className="generate-banner-link" to="/studio/chatgpt-accounts">Kelola akun</Link></div>}
+    {studioMode && !studioConfig?.ready && <div className="generate-banner" role="status"><span>{studioConfig?.hint || 'Pool akun OpenAI belum siap, jadi gambar belum bisa dikirim. Tidak ada kredit yang dipotong.'}</span><Link className="generate-banner-link" to="/studio/openai-accounts">Kelola akun</Link></div>}
     {!loading && Array.isArray(config?.alibaba_unpriced) && config.alibaba_unpriced.length > 0 && <div className="generate-banner" role="status"><span>{config.alibaba_unpriced.length} model gambar Alibaba sudah aktif di Katalog Model tetapi belum punya harga kredit BLEA, sehingga belum tampil di daftar ini ({config.alibaba_unpriced.slice(0, 3).map((m) => m.model).join(', ')}{config.alibaba_unpriced.length > 3 ? ', …' : ''}).</span><Link className="generate-banner-link" to="/admin?tab=api-keys&sub=catalog">Atur harga kredit</Link></div>}
     {!loading && active && !ready && active.provider === 'freebeat' && <div className="generate-banner" role="status"><span>Provider gambar belum dihubungkan oleh admin, jadi generasi belum dapat dikirim. Tidak ada kredit yang dipotong.</span></div>}
     {!loading && active && !ready && active.provider === 'alibaba' && <div className="generate-banner" role="status"><span>{active.credits == null || price === null ? 'Harga kredit untuk model ini belum diatur admin. Buka Admin → API Key → Katalog Model untuk mengisinya.' : 'Belum ada akun Alibaba Cloud yang terhubung di pool admin, jadi generasi belum dapat dikirim.'}</span><Link className="generate-banner-link" to="/admin?tab=api-keys&sub=catalog">Atur di admin</Link></div>}
@@ -311,10 +311,10 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
 
     {studioGeneration && studioGeneration.media_url && (
       <div className="generate-studio-result">
-        <img src={studioGeneration.media_url} alt={studioGeneration.prompt || 'Hasil gambar ChatGPT'} />
+        <img src={studioGeneration.media_url} alt={studioGeneration.prompt || 'Hasil gambar OpenAI'} />
         <div className="generate-studio-result-meta">
           <b>{studioGeneration.model || 'gpt-image-1'}</b>
-          <small>Akun: {studioGeneration.chatgpt_account_label || 'pool ChatGPT'} · tanpa potongan kredit BLEA</small>
+          <small>Akun: {studioGeneration.openai_account_label || 'pool OpenAI'} · tanpa potongan kredit BLEA</small>
           <a href={studioGeneration.media_url} download={`blea-studio-${String(studioGeneration.id || '').slice(0, 8)}.png`}>Unduh gambar</a>
         </div>
       </div>
@@ -333,7 +333,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
             const badge = formatProviderBadge(model.provider);
             const displayName = formatModelDisplayName(model.name, model.provider);
             const creditLabel = studioMode
-              ? 'kuota akun ChatGPT'
+              ? 'kuota akun OpenAI'
               : (Number.isSafeInteger(model.credits) ? `${formatCredits(model.credits)} kredit` : 'Belum bertarif');
             return {
               value: `${model.provider}:${model.model}`,

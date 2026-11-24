@@ -1,14 +1,14 @@
-// "Continue with ChatGPT" — alur OAuth resmi OpenAI, TANPA API key.
+// OAuth resmi OpenAI — jalur alternatif tanpa API key.
 //
 // Kenapa modul ini ada: permintaan pengguna "koneksikan seperti freebeat tanpa
-// apikey". Sejak DevDay 29 Sep 2026 OpenAI membuka **Sign in with ChatGPT**
+// apikey". OpenAI membuka **Sign in with OpenAI**
 // untuk proyek open-source / self-hosted: pengguna menekan satu tombol,
-// menyetujui di browser ChatGPT, lalu aplikasi memakai kuota paket ChatGPT
+// menyetujui di browser, lalu aplikasi memakai kuota paket akun itu
 // pengguna itu. Tidak ada API key, tidak ada client secret, tidak ada API
 // berbayar per token. Rujukan: https://developers.openai.com/siwc/token-sharing-open-source
 //
 // Yang SENGAJA tidak dilakukan (dan tidak akan):
-//   • menyalin token sesi chatgpt.com dan memanggil `backend-api` privat
+//   • menyalin token sesi konsumen dan memanggil API privat
 //     (jalur abu-abu yang dilarang eksplisit di dokumentasi);
 //   • login dengan email + kata sandi user; password tidak pernah menyentuh BLEA.
 //
@@ -18,17 +18,17 @@
 //   (PKCE, tanpa client secret), dan hasil tokennya dikirim SEKALI ke Worker
 //   untuk disegel AES-GCM lalu dipakai sebagai kredensial pool. Tidak ada token
 //   di localStorage; satu-satunya tempat token hidup adalah tabel
-//   `chatgpt_oauth_links` (service_role) dan pool `chatgpt_accounts`.
+//   `openai_oauth_links` (service_role) dan pool `openai_accounts`.
 //
 // Preview limitation yang relevan (lihat preview-limitations): jalur ini hanya
 // untuk teks/agen. Gambar, video, audio, dan file tool tidak tersedia, jadi
 // tool media tetap memakai API key di pool yang sama.
 
 import {
-  createChatGptAccount,
-  sealChatGptToken,
-  unsealChatGptToken,
-} from './chatgptPool.js';
+  createOpenAiAccount,
+  sealOpenAiToken,
+  unsealOpenAiToken,
+} from './openaiPool.js';
 
 export const OPENAI_AUTH_BASE = 'https://auth.openai.com';
 export const OPENAI_RESOURCE = 'https://api.openai.com/v1';
@@ -40,7 +40,7 @@ export const OPENAI_AGENT_NAME_HINT = 'BLEA AI';
 export const OPENAI_DYNAMIC_CLIENT_ID = 'dynamic_agent_client';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const TABLE = '/chatgpt_oauth_links';
+const TABLE = '/openai_oauth_links';
 
 function supabaseBase(env) {
   return (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
@@ -142,7 +142,7 @@ export async function createOAuthAttempt(env, user, input = {}) {
 
 /**
  * Menukar authorization code menjadi token, lalu menyimpannya ke pool
- * `chatgpt_accounts` sebagai akun berkapabilitas chat/agent.
+ * `openai_accounts` sebagai akun berkapabilitas chat/agent.
  *
  * Catatan jujur: token OpenAI ini HANYA berlaku untuk Responses API teks
  * (bukan /v1/images atau /v1/videos). Akun seperti ini karena itu tidak boleh
@@ -158,14 +158,14 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   // percobaan dicari lewat `state`, yang hanya berlaku 30 menit. `attempt_id`
   // dari klien tetap divalidasi milik pengguna yang login.
   if (!attemptId) {
-    if (!returnedState) throw fail('Sesi login tidak ditemukan. Mulai lagi dari tombol Continue with ChatGPT.', 400);
+    if (!returnedState) throw fail('Sesi login tidak ditemukan. Mulai lagi dari tombol Connect.', 400);
     const found = await dbJson(env, `${TABLE}?select=id,status,created_at&user_id=eq.${encodeURIComponent(user.id)}&state=eq.${encodeURIComponent(returnedState)}&status=eq.pending&order=created_at.desc&limit=1`);
     const row = Array.isArray(found) ? found[0] : null;
     if (!row) {
-      throw fail('Sesi login tidak ditemukan atau sudah dipakai (berlaku 30 menit). Mulai lagi dari tombol Continue with ChatGPT.', 404);
+      throw fail('Sesi login tidak ditemukan atau sudah dipakai (berlaku 30 menit). Mulai lagi dari tombol Connect.', 404);
     }
     if (Date.now() - Date.parse(row.created_at || 0) > 30 * 60 * 1000) {
-      throw fail('Sesi login sudah kedaluwarsa (30 menit). Mulai lagi dari tombol Continue with ChatGPT.', 400);
+      throw fail('Sesi login sudah kedaluwarsa (30 menit). Mulai lagi dari tombol Connect.', 400);
     }
     attemptId = row.id;
   }
@@ -176,13 +176,13 @@ export async function completeOAuthAttempt(env, user, input = {}) {
       prefer: 'return=minimal',
       body: { status: 'denied', error_message: cleanText(input.error_description || input.error, 240), updated_at: new Date().toISOString() },
     }).catch(() => {});
-    throw fail('Login dibatalkan atau ditolak di halaman ChatGPT.', 400);
+    throw fail('Login dibatalkan atau ditolak di halaman persetujuan OpenAI.', 400);
   }
 
   const rows = await dbJson(env, `${TABLE}?select=*&id=eq.${encodeURIComponent(attemptId)}&user_id=eq.${encodeURIComponent(user.id)}&limit=1`);
   const attempt = Array.isArray(rows) ? rows[0] : null;
   if (!attempt) throw fail('Percobaan login tidak ditemukan.', 404);
-  if (attempt.status !== 'pending') throw fail('Percobaan login ini sudah dipakai. Mulai lagi dari tombol Continue with ChatGPT.', 409);
+  if (attempt.status !== 'pending') throw fail('Percobaan login ini sudah dipakai. Mulai lagi dari tombol Connect.', 409);
   const code = cleanText(input.code, 4000);
   const clientId = cleanText(input.client_id, 120) || attempt.requested_client_id || '';
   if (!code) throw fail('Kode otorisasi tidak ada di callback.', 400);
@@ -203,7 +203,7 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   // `invalid_grant` tanpa penjelasan, dan kode yang sebenarnya sah ikut hangus
   // karena sudah "diklaim" di baris ini.
   if (returnedState && attempt.state && returnedState !== attempt.state) {
-    throw fail('state callback tidak cocok dengan sesi login yang tersimpan. Mulai lagi dari tombol Continue with ChatGPT.', 409);
+    throw fail('state callback tidak cocok dengan sesi login yang tersimpan. Mulai lagi dari tombol Connect.', 409);
   }
   // `state` adalah parameter wajib di callback (dokumen OpenAI). Kalau kosong,
   // itu bukan "tidak ada yang perlu dicocokkan" — callback-nya tidak sah.
@@ -222,7 +222,7 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   if (attempt.exchanged_code_fingerprint) {
     throw fail(attempt.exchanged_code_fingerprint === codeFingerprint
       ? 'Kode ini sudah pernah ditukar. Kalau akun belum muncul, muat ulang halaman; kalau tidak, ulangi login.'
-      : 'Percobaan login ini sudah dipakai untuk kode lain. Ulangi dari tombol Continue with ChatGPT.', 409);
+      : 'Percobaan login ini sudah dipakai untuk kode lain. Ulangi dari tombol Connect.', 409);
   }
   // Dokumen OpenAI: bila callback memberi client_id BERBEDA dari yang dipakai
   // percobaan ini, TOLAK — jangan mengganti registrasi akun yang sudah terpilih.
@@ -353,7 +353,7 @@ export async function completeOAuthAttempt(env, user, input = {}) {
       throw fail(
         'OpenAI menolak penukaran kode (invalid_grant) tanpa menyebut sebab. Fakta percobaan ini: '
         + (planGrantedInCallback
-          ? 'izin "gunakan paket ChatGPT saya" SUDAH dicentang (terlihat di callback), '
+          ? 'izin pemakaian paket akun SUDAH dicentang di callback, '
           : 'izin paket TIDAK terlihat di callback, ')
         + `kode baru ditukar SEKALI, dan percobaan ini berumur ${attemptAgeSec} detik. `
         + 'Sisa penyebab yang paling mungkin: '
@@ -371,14 +371,14 @@ export async function completeOAuthAttempt(env, user, input = {}) {
   const planUsage = scopes.includes('chatgpt.tokens.use.direct');
   const claims = decodeJwtPayload(token.id_token || token.access_token || '');
   const email = cleanText(claims?.email || '', 320);
-  const label = cleanText(input.label, 100) || email || 'ChatGPT (OAuth)';
+  const label = cleanText(input.label, 100) || email || 'OpenAI (OAuth)';
 
   // Simpan kredensial di tabel tautan (audit + refresh), lalu daftarkan ke pool.
   // Impor statis (bukan dinamis) supaya bundel Worker tidak bergantung pada
   // resolusi modul saat runtime, dan supaya tidak ada siklus impor.
-  const sealedAccess = await sealChatGptToken(env, token.access_token);
-  const sealedRefresh = token.refresh_token ? await sealChatGptToken(env, token.refresh_token) : '';
-  const sealedIdToken = token.id_token ? await sealChatGptToken(env, token.id_token) : '';
+  const sealedAccess = await sealOpenAiToken(env, token.access_token);
+  const sealedRefresh = token.refresh_token ? await sealOpenAiToken(env, token.refresh_token) : '';
+  const sealedIdToken = token.id_token ? await sealOpenAiToken(env, token.id_token) : '';
   await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(attemptId)}`, {
     method: 'PATCH',
     prefer: 'return=minimal',
@@ -399,7 +399,7 @@ export async function completeOAuthAttempt(env, user, input = {}) {
 
   let account = null;
   if (planUsage) {
-    account = await createChatGptAccount(env, {
+    account = await createOpenAiAccount(env, {
       account_email: email,
       account_label: label,
       credential_kind: 'oauth',
@@ -424,8 +424,8 @@ export async function completeOAuthAttempt(env, user, input = {}) {
     },
     account,
     hint: planUsage
-      ? 'Akun ChatGPT tersambung tanpa API key. Kuota mengikuti paket ChatGPT pemilik akun.'
-      : 'Identitas ChatGPT tersambung, tetapi izin pemakaian paket (chatgpt.tokens.use.direct) belum dicentang saat persetujuan. Ulangi login lalu centang "gunakan paket ChatGPT saya".',
+      ? 'Akun OpenAI tersambung tanpa API key. Kuota mengikuti paket akun pemiliknya.'
+      : 'Identitas OpenAI tersambung, tetapi izin pemakaian paket belum dicentang saat persetujuan. Ulangi login lalu centang izin pemakaian paket akun.',
   };
 }
 
@@ -434,9 +434,9 @@ export async function refreshOAuthLink(env, id) {
   if (!isOAuthLinkId(id)) throw fail('ID tautan tidak valid.', 400);
   const rows = await dbJson(env, `${TABLE}?select=*&id=eq.${encodeURIComponent(id)}&limit=1`);
   const row = Array.isArray(rows) ? rows[0] : null;
-  if (!row) throw fail('Tautan ChatGPT tidak ditemukan.', 404);
-  const refreshToken = await unsealChatGptToken(env, row.sealed_refresh_token || '');
-  if (!refreshToken) throw fail('Tautan ini tidak punya refresh token. Sambungkan ulang akun ChatGPT.', 400);
+  if (!row) throw fail('Tautan OpenAI tidak ditemukan.', 404);
+  const refreshToken = await unsealOpenAiToken(env, row.sealed_refresh_token || '');
+  if (!refreshToken) throw fail('Tautan ini tidak punya refresh token. Sambungkan ulang akun lewat tombol Connect.', 400);
   const form = new URLSearchParams({
     grant_type: 'refresh_token',
     client_id: row.issued_client_id,
@@ -454,11 +454,11 @@ export async function refreshOAuthLink(env, id) {
     throw fail(`Refresh ditolak OpenAI (HTTP ${res.status}). ${data?.error_description || data?.error || ''}`.trim(), 400);
   }
   const patch = {
-    sealed_access_token: await sealChatGptToken(env, data.access_token),
+    sealed_access_token: await sealOpenAiToken(env, data.access_token),
     access_expires_at: new Date(Date.now() + (Number(data.expires_in) || 3600) * 1000).toISOString(),
     updated_at: new Date().toISOString(),
   };
-  if (data.refresh_token) patch.sealed_refresh_token = await sealChatGptToken(env, data.refresh_token);
+  if (data.refresh_token) patch.sealed_refresh_token = await sealOpenAiToken(env, data.refresh_token);
   await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', prefer: 'return=minimal', body: patch });
   return { ok: true, expires_at: patch.access_expires_at };
 }
@@ -483,7 +483,7 @@ export async function retainedClientId(env, user) {
   return { client_id: clientId, email: cleanText(row?.account_email, 320) || '' };
 }
 
-/** Daftar tautan ChatGPT milik satu pengguna (tanpa token). */
+/** Daftar tautan OpenAI milik satu pengguna (tanpa token). */
 export async function listOAuthLinks(env, user) {
   const rows = await dbJson(env, `${TABLE}?select=id,status,account_email,subject,scopes,plan_usage,issued_client_id,access_expires_at,error_message,created_at,updated_at&user_id=eq.${encodeURIComponent(user.id)}&order=created_at.desc&limit=50`).catch(() => []);
   const now = Date.now();
@@ -515,8 +515,8 @@ export async function disconnectOAuthLink(env, user, id) {
   if (!isOAuthLinkId(id)) throw fail('ID tautan tidak valid.', 400);
   const rows = await dbJson(env, `${TABLE}?select=*&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(user.id)}&limit=1`);
   const row = Array.isArray(rows) ? rows[0] : null;
-  if (!row) throw fail('Tautan ChatGPT tidak ditemukan.', 404);
-  const refreshToken = await unsealChatGptToken(env, row.sealed_refresh_token || '');
+  if (!row) throw fail('Tautan OpenAI tidak ditemukan.', 404);
+  const refreshToken = await unsealOpenAiToken(env, row.sealed_refresh_token || '');
   let revoked = false;
   if (refreshToken && row.issued_client_id) {
     try {
@@ -535,10 +535,10 @@ export async function disconnectOAuthLink(env, user, id) {
     } catch { revoked = false; }
   }
   await dbRequest(env, `${TABLE}?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', prefer: 'return=minimal' });
-  return { ok: true, revoked, note: revoked ? 'Sesi ChatGPT dicabut di sisi OpenAI.' : 'Tautan dihapus di BLEA; pencabutan di OpenAI tidak terkonfirmasi. Cabut manual di ChatGPT → Settings → Apps.' };
+  return { ok: true, revoked, note: revoked ? 'Sesi OpenAI dicabut di sisi OpenAI.' : 'Tautan dihapus di BLEA; pencabutan di OpenAI tidak terkonfirmasi. Cabut manual di pengaturan aplikasi akun OpenAI.' };
 }
 
-/** Model yang tersedia untuk akun ChatGPT hasil login (dipakai model picker). */
+/** Model yang tersedia untuk akun OpenAI hasil login (dipakai model picker). */
 export async function listOAuthAccountModels(env, accessToken) {
   const res = await fetch(`${OPENAI_RESOURCE}/models`, {
     headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },

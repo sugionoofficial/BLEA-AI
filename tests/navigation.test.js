@@ -52,7 +52,7 @@ test('navigation contains only working app routes and gates Admin Panel to admin
       { title: 'History', href: '/history' },
       { title: 'Admin Panel', href: '/admin' },
       { title: 'Freebeat MCP', href: '/admin/freebeat' },
-      { title: 'Akun ChatGPT', href: '/studio/chatgpt-accounts' },
+      { title: 'Akun OpenAI', href: '/studio/openai-accounts' },
       { title: 'TempMail', href: '/tempmail' },
       { title: 'Setting', href: '/settings' },
     ],

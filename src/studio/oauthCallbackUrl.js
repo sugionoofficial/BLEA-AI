@@ -1,4 +1,4 @@
-// Normalisasi URL callback OAuth "Continue with ChatGPT".
+// Normalisasi URL callback OAuth "Connect OpenAI".
 //
 // Modul ini SENGAJA tanpa dependensi apa pun supaya bisa diuji langsung dengan
 // Node (tanpa bundler). Logikanya lahir dari satu kegagalan nyata: URL callback

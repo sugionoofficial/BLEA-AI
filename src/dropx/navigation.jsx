@@ -98,13 +98,13 @@ export const navigation = [
         keywords: ['freebeat', 'mcp', 'koneksi'],
       },
       {
-        title: 'Akun ChatGPT',
-        href: '/studio/chatgpt-accounts',
+        title: 'Akun OpenAI',
+        href: '/studio/openai-accounts',
         icon: KeyRound,
         adminOnly: true,
         badge: 'Admin',
-        description: 'Pool akun ChatGPT manual: prioritas, kuota harian, cooldown',
-        keywords: ['chatgpt', 'openai', 'akun', 'pool', 'kuota', 'api key', 'manual'],
+        description: 'Pool akun OpenAI manual: prioritas, kuota harian, cooldown',
+        keywords: ['openai', 'akun', 'pool', 'kuota', 'api key', 'manual'],
       },
       {
         title: 'TempMail',

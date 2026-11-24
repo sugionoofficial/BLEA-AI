@@ -1,4 +1,4 @@
--- BLEA AI — pool akun ChatGPT/OpenAI yang ditambahkan MANUAL oleh admin.
+-- BLEA AI — pool akun OpenAI yang ditambahkan MANUAL oleh admin.
 --
 -- Kenapa manual: OpenAI tidak menyediakan API pendaftaran akun. Satu-satunya
 -- cara membuat akun otomatis adalah mengotomasi halaman signup mereka, yang
@@ -14,17 +14,17 @@
 -- dan hanya dibaca server-side lewat service_role. Baris tidak pernah dikirim
 -- ke browser: halaman admin hanya menerima sidik jari (token_hint).
 
-create table if not exists public.chatgpt_accounts (
+create table if not exists public.openai_accounts (
   id uuid primary key default gen_random_uuid(),
   account_email text not null default '' check (char_length(account_email) <= 320),
   account_label text not null default '' check (char_length(account_label) <= 100),
   -- Jenis kredensial:
   --   'api_key'  → kunci resmi dari platform.openai.com (dipakai ke /v1/*)
-  --   'session'  → token sesi ChatGPT (chatgpt.com/api/auth/session)
+  --   'session'  → token sesi konsumen (hanya catatan, tidak dipanggil)
   --                Disimpan sebagai catatan/koneksi milik admin; TIDAK dipakai
   --                untuk memanggil backend non-publik, karena itu melanggar
   --                ToS dan akunnya berisiko ditutup.
-  --   'oauth'    → hasil "Continue with ChatGPT" (Sign in with ChatGPT). Tidak
+  --   'oauth'    → hasil OAuth resmi tanpa API key. Tidak
   --                ada API key; token hanya sah untuk Responses API teks.
   credential_kind text not null default 'api_key' check (credential_kind in ('api_key', 'session', 'oauth')),
   -- Kolom khusus OAuth: client_id terbitan OpenAI per akun, masa berlaku access
@@ -57,24 +57,24 @@ create table if not exists public.chatgpt_accounts (
   updated_at timestamptz not null default now()
 );
 
-comment on table public.chatgpt_accounts is
-  'Manual ChatGPT/OpenAI account pool with per-account daily quota and round-robin failover (worker service_role only).';
+comment on table public.openai_accounts is
+  'Manual OpenAI account pool with per-account daily quota and round-robin failover (worker service_role only).';
 
-comment on column public.chatgpt_accounts.sealed_token is
+comment on column public.openai_accounts.sealed_token is
   'AES-GCM sealed credential (AES key derived from PROVIDER_CREDENTIAL_ENCRYPTION_KEY). Never sent to the browser.';
 
-create index if not exists chatgpt_accounts_lookup_idx
-  on public.chatgpt_accounts (enabled, priority, created_at);
+create index if not exists openai_accounts_lookup_idx
+  on public.openai_accounts (enabled, priority, created_at);
 
-create index if not exists chatgpt_accounts_email_idx
-  on public.chatgpt_accounts (lower(account_email));
+create index if not exists openai_accounts_email_idx
+  on public.openai_accounts (lower(account_email));
 
-drop trigger if exists chatgpt_accounts_set_updated_at on public.chatgpt_accounts;
-create trigger chatgpt_accounts_set_updated_at
-  before update on public.chatgpt_accounts
+drop trigger if exists openai_accounts_set_updated_at on public.openai_accounts;
+create trigger openai_accounts_set_updated_at
+  before update on public.openai_accounts
   for each row execute function public.set_projects_updated_at();
 
-alter table public.chatgpt_accounts enable row level security;
+alter table public.openai_accounts enable row level security;
 -- Sama seperti freebeat_oauth_accounts: tidak ada akses langsung dari klien.
 -- Semua akses lewat Worker (service_role) setelah memeriksa peran admin.
-revoke all on table public.chatgpt_accounts from anon, authenticated;
+revoke all on table public.openai_accounts from anon, authenticated;

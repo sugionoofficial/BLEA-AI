@@ -9,14 +9,14 @@
 -- Kolom ini hanya menyimpan WAKTU, bukan kode tambahan; kodenya tetap di
 -- verification_code dan tetap bukan kredensial login.
 
-alter table public.chatgpt_signup_attempts
+alter table public.openai_signup_attempts
   add column if not exists verification_code_at timestamptz;
 
-comment on column public.chatgpt_signup_attempts.verification_code_at is
+comment on column public.openai_signup_attempts.verification_code_at is
   'Waktu kode verifikasi terakhir diekstrak. Dipakai untuk menandai kode yang lewat ±10 menit. Bukan kredensial.';
 
 -- Baris lama: samakan dengan verified_at supaya penanda kedaluwarsa tetap jalan.
-update public.chatgpt_signup_attempts
+update public.openai_signup_attempts
    set verification_code_at = verified_at
  where verification_code_at is null
    and verified_at is not null

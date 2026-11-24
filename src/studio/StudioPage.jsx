@@ -79,7 +79,7 @@ export function StudioPage() {
           <span className="studio-home-badge"><Sparkles size={12} /> Studio</span>
           <h1>Pilih alat, lalu mulai.</h1>
           <p>
-            Studio memakai <b>model ChatGPT</b> lewat pool akun yang ditambahkan admin, bukan katalog
+            Studio memakai <b>model OpenAI</b> lewat pool akun yang ditambahkan admin, bukan katalog
             model provider lain. Setiap alat punya ruang kerjanya sendiri: pengaturan, biaya, dan
             riwayatnya terpisah supaya tidak tercampur.
           </p>

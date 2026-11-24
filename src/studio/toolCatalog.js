@@ -1,5 +1,5 @@
 // Katalog tool Studio: satu entri per kemampuan yang benar-benar ada di mesin
-// BLEA. Ini bukan daftar fitur ChatGPT — setiap entri harus punya rute yang
+// BLEA. Ini bukan daftar fitur OpenAI — setiap entri harus punya rute yang
 // jalan, kalau tidak ia hanya tombol yang mengecewakan.
 //
 // Field `capabilities`: rute API yang boleh dipanggil dari ruang tool ini
@@ -52,9 +52,9 @@ export const STUDIO_TOOLS = [
     href: '/studio/image',
     icon: 'Image',
     group: 'Visual',
-    description: 'Text-to-image dengan model ChatGPT (gpt-image-1).',
+    description: 'Text-to-image dengan model OpenAI (gpt-image-1).',
     skills: ['prompt-gambar', 'rasio & ukuran', 'referensi gambar'],
-    note: 'Dibuat lewat pool akun ChatGPT. Kuota akun, bukan kredit BLEA.',
+    note: 'Dibuat lewat pool akun OpenAI. Kuota akun, bukan kredit BLEA.',
     capabilities: ['image'],
     status: 'ready',
     cta: 'Buka ruang gambar',
@@ -67,7 +67,7 @@ export const STUDIO_TOOLS = [
     group: 'Visual',
     description: 'Video dari teks, gambar, atau klip yang sudah ada.',
     skills: ['prompt-video', 'durasi & rasio', 'image-to-video'],
-    note: 'Dibuat lewat pool akun ChatGPT (Sora). Kuota akun, bukan kredit BLEA.',
+    note: 'Dibuat lewat pool akun OpenAI (Sora). Kuota akun, bukan kredit BLEA.',
     capabilities: ['video'],
     status: 'ready',
     cta: 'Buka ruang video',

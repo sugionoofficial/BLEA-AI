@@ -15,7 +15,7 @@ function studioToolHeader() {
   const match = /^\/studio\/([a-z0-9-]+)/i.exec(window.location.pathname || '');
   if (!match) return {};
   let id = match[1].toLowerCase();
-  if (id === 'chatgpt-accounts') return {};
+  if (id === 'openai-accounts') return {};
   if (id === 'connection') id = 'connect-ai';
   return { 'x-blea-studio-tool': id };
 }

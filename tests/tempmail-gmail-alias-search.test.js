@@ -16,7 +16,7 @@ const ENV = {
 test('pencarian Gmail untuk alias +tag memakai alamat dasar dan tetap menemukan pesannya', async () => {
   const gmailProvider = await import('../src/lib/gmailProvider.js');
   // Format enkripsi milik gmailProvider (AES-GCM, iv terpisah) — bukan format
-  // chatgptPool, karena kuncinya diturunkan berbeda.
+  // openaiPool, karena kuncinya diturunkan berbeda.
   const rawKey = Uint8Array.from(Buffer.from(ENV.PROVIDER_CREDENTIAL_ENCRYPTION_KEY, 'hex'));
   const cryptoKey = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['encrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));

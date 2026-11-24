@@ -53,7 +53,7 @@ export const STUDIO_TOOL_CAPABILITIES = {
 // Peta rute API → kapabilitas. Prefix terpanjang menang, supaya
 // /api/agent/transcribe tidak dianggap bagian dari kapabilitas `agent`.
 const API_CAPABILITY_RULES = [
-  // Media Studio lewat pool akun ChatGPT. Seedikit mungkin: prefix `studio/*`
+  // Media Studio lewat pool akun OpenAI. Seedikit mungkin: prefix `studio/*`
   // hanya boleh dipanggil ruang yang kapabilitasnya cocok, jadi ruang chat
   // tidak bisa menembak generasi video.
   ['studio/image', 'image'],
@@ -106,6 +106,10 @@ export function toolCapabilityViolation(toolId, apiPath) {
   const capability = capabilityForApiPath(apiPath);
   if (!capability) return null;
   if (entry.capabilities.includes(capability)) return null;
+  // Jalur agen boleh memakai kapabilitas `agent` (loop alat + Responses API).
+  // Tanpa ini ruang riset dan analisis berkas ditolak walau katalog tool
+  // menyatakan `agent` sebagai salah satu kapabilitasnya.
+  if (capability === 'agent' && entry.capabilities.includes('agent')) return null;
   return {
     code: 'tool_capability_mismatch',
     message: `Ruang "${declared}" tidak boleh memanggil kapabilitas "${capability}". Setiap tool hanya menjalankan fungsinya sendiri.`,

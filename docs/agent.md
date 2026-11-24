@@ -194,7 +194,7 @@ menampilkan form yang pasti gagal.
 
 ### Yang sengaja tidak dibangun
 
-Alur "klik CONNECTION → BLEA membuat email temp → mendaftarkan akun ChatGPT →
+Alur "klik CONNECTION → BLEA membuat email temp → mendaftarkan akun OpenAI →
 mengambil kode verifikasi → akun terhubung". Itu tidak diimplementasikan karena
 tidak ada API pendaftaran resmi (hanya otomasi halaman signup, yang melanggar
 ToS), rapuh terhadap captcha, dan menempatkan risiko banned pada pemilik akun

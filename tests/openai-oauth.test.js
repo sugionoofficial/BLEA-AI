@@ -17,11 +17,11 @@ import {
   OPENAI_DYNAMIC_CLIENT_ID,
   OPENAI_LOOPBACK_PATH,
   OPENAI_SCOPES,
-} from '../src/lib/chatgptOAuth.js';
-import { sendOAuthResponses, pickChatGptAccountsFor } from '../src/lib/chatgptPool.js';
+} from '../src/lib/openaiOAuth.js';
+import { sendOAuthResponses, pickOpenAiAccountsFor } from '../src/lib/openaiPool.js';
 import { parseCallbackInput } from '../src/studio/oauthCallbackUrl.js';
-import { listOAuthLinks, retainedClientId } from '../src/lib/chatgptOAuth.js';
-import { sealChatGptToken } from '../src/lib/chatgptPool.js';
+import { listOAuthLinks, retainedClientId } from '../src/lib/openaiOAuth.js';
+import { sealOpenAiToken } from '../src/lib/openaiPool.js';
 
 const ENC_KEY = 'test-encryption-key-for-oauth-suite-32b';
 
@@ -78,8 +78,8 @@ test('buildResponsesBody memindahkan system ke instructions dan membuang field t
   }, { model: 'gpt-5.1' });
 
   assert.equal(body.model, 'gpt-5.1');
-  assert.equal(body.store, false, 'store:false wajib di jalur paket ChatGPT');
-  assert.equal(body.stream, true, 'stream:true wajib di jalur paket ChatGPT');
+  assert.equal(body.store, false, 'store:false wajib di jalur paket OpenAI');
+  assert.equal(body.stream, true, 'stream:true wajib di jalur paket OpenAI');
   assert.equal(body.instructions, 'Kamu BLEA.');
   assert.equal(body.temperature, undefined);
   assert.equal(body.top_p, undefined);
@@ -172,7 +172,7 @@ test('state OAuth disimpan di server; redirect non-loopback ditolak', async () =
   const realFetch = globalThis.fetch;
   const inserted = [];
   globalThis.fetch = async (url, init = {}) => {
-    if (url.endsWith('/rest/v1/chatgpt_oauth_links')) {
+    if (url.endsWith('/rest/v1/openai_oauth_links')) {
       inserted.push(JSON.parse(init.body));
       return Response.json([{ id: '11111111-1111-1111-1111-111111111111', ...JSON.parse(init.body) }]);
     }
@@ -209,12 +209,12 @@ test('completeOAuthAttempt menukar kode dan mendaftarkan akun oauth ke pool', as
   const idToken = `x.${Buffer.from(JSON.stringify({ email: 'me@example.com', sub: 'sub-1' })).toString('base64url')}.y`;
   globalThis.fetch = async (url, init = {}) => {
     // PATCH ke baris tunggal harus dicek lebih dulu: URL-nya juga berawalan
-    // `chatgpt_oauth_links?`, jadi urutan pencocokan menentukan hasil.
-    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.')) {
+    // `openai_oauth_links?`, jadi urutan pencocokan menentukan hasil.
+    if (url.includes('/rest/v1/openai_oauth_links?id=eq.')) {
       if ((init.method || 'GET') === 'PATCH') calls.linkPatch = JSON.parse(init.body);
       return new Response(null, { status: 204 });
     }
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_oauth_links?')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_oauth_links?')) {
       return Response.json([{
         id: '11111111-1111-1111-1111-111111111111',
         status: 'pending',
@@ -235,10 +235,10 @@ test('completeOAuthAttempt menukar kode dan mendaftarkan akun oauth ke pool', as
         scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
       });
     }
-    if (url.endsWith('/rest/v1/chatgpt_accounts?select=*&order=priority.asc,created_at.asc&limit=200')) {
+    if (url.endsWith('/rest/v1/openai_accounts?select=*&order=priority.asc,created_at.asc&limit=200')) {
       return Response.json([]);
     }
-    if (url.endsWith('/rest/v1/chatgpt_accounts')) {
+    if (url.endsWith('/rest/v1/openai_accounts')) {
       calls.accountInsert = JSON.parse(init.body);
       return Response.json([{ id: '22222222-2222-2222-2222-222222222222', ...calls.accountInsert }]);
     }
@@ -269,7 +269,7 @@ test('completeOAuthAttempt menukar kode dan mendaftarkan akun oauth ke pool', as
 test('completeOAuthAttempt menolak callback tanpa client_id terbitan', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_oauth_links?')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_oauth_links?')) {
       return Response.json([{
         id: '11111111-1111-1111-1111-111111111111',
         status: 'pending',
@@ -296,14 +296,14 @@ test('completeOAuthAttempt menolak callback tanpa client_id terbitan', async () 
 test('disconnectOAuthLink mencabut refresh token lalu menghapus baris', async () => {
   const realFetch = globalThis.fetch;
   const env = createEnv();
-  const sealedRefresh = await sealChatGptToken(env, 'oa-refresh');
+  const sealedRefresh = await sealOpenAiToken(env, 'oa-refresh');
   const seen = { revoke: null, deleted: false };
   globalThis.fetch = async (url, init = {}) => {
-    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.')) {
+    if (url.includes('/rest/v1/openai_oauth_links?id=eq.')) {
       if ((init.method || 'GET') === 'DELETE') seen.deleted = true;
       return new Response(null, { status: 204 });
     }
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_oauth_links?')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_oauth_links?')) {
       return Response.json([{
         id: '11111111-1111-1111-1111-111111111111',
         issued_client_id: 'oaiapp_test',
@@ -331,15 +331,15 @@ test('disconnectOAuthLink mencabut refresh token lalu menghapus baris', async ()
 test('akun oauth dipakai pool dan token kedaluwarsa di-refresh lebih dulu', async () => {
   const realFetch = globalThis.fetch;
   const env = createEnv();
-  const sealedAccess = await sealChatGptToken(env, 'stale-access');
-  const sealedRefresh = await sealChatGptToken(env, 'oa-refresh');
+  const sealedAccess = await sealOpenAiToken(env, 'stale-access');
+  const sealedRefresh = await sealOpenAiToken(env, 'oa-refresh');
   const seen = { refresh: null, patched: null };
   globalThis.fetch = async (url, init = {}) => {
-    if (url.includes('/rest/v1/chatgpt_accounts?id=eq.')) {
+    if (url.includes('/rest/v1/openai_accounts?id=eq.')) {
       if ((init.method || 'GET') === 'PATCH') seen.patched = JSON.parse(init.body);
       return new Response(null, { status: 204 });
     }
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_accounts?')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_accounts?')) {
       return Response.json([{
         id: '22222222-2222-2222-2222-222222222222',
         account_label: 'OAuth',
@@ -364,7 +364,7 @@ test('akun oauth dipakai pool dan token kedaluwarsa di-refresh lebih dulu', asyn
     throw new Error(`Unexpected fetch: ${url}`);
   };
   try {
-    const accounts = await pickChatGptAccountsFor(env, { capability: 'chat', limit: 1 });
+    const accounts = await pickOpenAiAccountsFor(env, { capability: 'chat', limit: 1 });
     assert.equal(accounts.length, 1);
     assert.equal(accounts[0].oauth, true, 'akun OAuth harus ditandai supaya dipanggil lewat Responses API');
     assert.equal(accounts[0].apiKey, 'fresh-access', 'access token baru dipakai setelah refresh');
@@ -375,19 +375,19 @@ test('akun oauth dipakai pool dan token kedaluwarsa di-refresh lebih dulu', asyn
   }
 });
 
-test('/api/chatgpt-oauth butuh login dan mengembalikan konfigurasi resmi', async () => {
+test('/api/openai-oauth butuh login dan mengembalikan konfigurasi resmi', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     if (url === 'https://supabase.example/auth/v1/user') return Response.json({ id: 'user-1', email: 'a@b.c' });
     if (url.endsWith('/rest/v1/profiles?select=status&limit=1')) return Response.json([{ status: 'active' }]);
-    if (url.includes('/rest/v1/chatgpt_oauth_links?')) return Response.json([]);
+    if (url.includes('/rest/v1/openai_oauth_links?')) return Response.json([]);
     throw new Error(`Unexpected fetch: ${url}`);
   };
   try {
-    const unauthorized = await worker.fetch(apiRequest('/chatgpt-oauth', { token: '' }), createEnv());
+    const unauthorized = await worker.fetch(apiRequest('/openai-oauth', { token: '' }), createEnv());
     assert.equal(unauthorized.status, 401);
 
-    const res = await worker.fetch(apiRequest('/chatgpt-oauth'), createEnv());
+    const res = await worker.fetch(apiRequest('/openai-oauth'), createEnv());
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(data.ok, true);
@@ -436,7 +436,7 @@ test('listOAuthLinks menandai percobaan pending yang kedaluwarsa', async () => {
   const realFetch = globalThis.fetch;
   const old = new Date(Date.now() - 45 * 60 * 1000).toISOString();
   globalThis.fetch = async (url) => {
-    if (url.includes('/rest/v1/chatgpt_oauth_links?')) {
+    if (url.includes('/rest/v1/openai_oauth_links?')) {
       return Response.json([
         { id: 'a', status: 'pending', created_at: old },
         { id: 'b', status: 'pending', created_at: new Date().toISOString() },
@@ -462,13 +462,13 @@ test('completeOAuthAttempt bisa dipanggil dengan state saja (tanpa attempt_id)',
   const idToken = `x.${Buffer.from(JSON.stringify({ email: 'me@example.com', sub: 's1' })).toString('base64url')}.y`;
   globalThis.fetch = async (url, init = {}) => {
     // Pencarian baris lewat state (callback dari domain lain).
-    if (url.includes('/rest/v1/chatgpt_oauth_links?select=id,status,created_at')) {
+    if (url.includes('/rest/v1/openai_oauth_links?select=id,status,created_at')) {
       return Response.json([{ id: '11111111-1111-1111-1111-111111111111', status: 'pending', created_at: new Date().toISOString() }]);
     }
-    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.')) {
+    if (url.includes('/rest/v1/openai_oauth_links?id=eq.')) {
       return new Response(null, { status: 204 });
     }
-    if (url.startsWith('https://supabase.example/rest/v1/chatgpt_oauth_links?')) {
+    if (url.startsWith('https://supabase.example/rest/v1/openai_oauth_links?')) {
       return Response.json([{
         id: '11111111-1111-1111-1111-111111111111',
         status: 'pending',
@@ -486,10 +486,10 @@ test('completeOAuthAttempt bisa dipanggil dengan state saja (tanpa attempt_id)',
         scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
       });
     }
-    if (url.endsWith('/rest/v1/chatgpt_accounts?select=*&order=priority.asc,created_at.asc&limit=200')) {
+    if (url.endsWith('/rest/v1/openai_accounts?select=*&order=priority.asc,created_at.asc&limit=200')) {
       return Response.json([]);
     }
-    if (url.endsWith('/rest/v1/chatgpt_accounts')) {
+    if (url.endsWith('/rest/v1/openai_accounts')) {
       return Response.json([{ id: '22222222-2222-2222-2222-222222222222', ...JSON.parse(init.body) }]);
     }
     throw new Error(`Unexpected fetch: ${url}`);
@@ -511,7 +511,7 @@ test('completeOAuthAttempt bisa dipanggil dengan state saja (tanpa attempt_id)',
 test('completeOAuthAttempt menolak state yang tidak dikenal', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    if (url.includes('/rest/v1/chatgpt_oauth_links?select=id,status,created_at')) return Response.json([]);
+    if (url.includes('/rest/v1/openai_oauth_links?select=id,status,created_at')) return Response.json([]);
     throw new Error(`Unexpected fetch: ${url}`);
   };
   try {
@@ -527,9 +527,9 @@ test('completeOAuthAttempt menolak state yang tidak dikenal', async () => {
 // 3. Callback bisa mendarat di origin yang tidak punya sesi login BLEA
 //    (127.0.0.1:1455). Worker menolak 401, dan UI harus menjelaskan bahwa
 //    penyelesaiannya dilakukan di halaman BLEA yang sudah login.
-test('/api/chatgpt-oauth/complete menolak 401 tanpa sesi BLEA', async () => {
+test('/api/openai-oauth/complete menolak 401 tanpa sesi BLEA', async () => {
   const res = await worker.fetch(
-    apiRequest('/chatgpt-oauth/complete', {
+    apiRequest('/openai-oauth/complete', {
       method: 'POST',
       body: { state: 'VwqxTXi69L78pLlRyBJHeYPNmmsqlnQwbtXq1_iMzkA', code: 'ac.1.x', client_id: 'oaiapp_x' },
       token: '',
@@ -540,11 +540,11 @@ test('/api/chatgpt-oauth/complete menolak 401 tanpa sesi BLEA', async () => {
   assert.match((await res.json()).error, /Login diperlukan/);
 });
 
-// Regresi penempatan JSX: blok "Sudah menyetujui di ChatGPT?" dulu tidak
+// Regresi penempatan JSX: blok "Sudah menyetujui di OpenAI?" dulu tidak
 // sengaja tersisip di cabang `if (callbackPage)`, sehingga kolomnya hanya
-// muncul di halaman 127.0.0.1 — bukan di halaman Akun ChatGPT tempat pengguna
+// muncul di halaman 127.0.0.1 — bukan di halaman Akun OpenAI tempat pengguna
 // mencarinya. Tes ini merender halaman yang sebenarnya.
-test('kolom tempel URL callback muncul di halaman Akun ChatGPT', async () => {
+test('kolom tempel URL callback muncul di halaman Akun OpenAI', async () => {
   const { createServer } = await import('vite');
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -567,17 +567,17 @@ test('kolom tempel URL callback muncul di halaman Akun ChatGPT', async () => {
   try {
     const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
     const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
-    const { ChatGptAccountsPage } = await vite.ssrLoadModule('/src/studio/ChatGptAccountsPage.jsx');
+    const { OpenAiAccountsPage } = await vite.ssrLoadModule('/src/studio/OpenAiAccountsPage.jsx');
     const html = renderToStaticMarkup(
       React.createElement(MemoryRouter, null,
-        React.createElement(AuthProvider, { initialSession: null }, React.createElement(ChatGptAccountsPage))),
+        React.createElement(AuthProvider, { initialSession: null }, React.createElement(OpenAiAccountsPage))),
     );
-    assert.ok(html.includes('Sudah menyetujui di ChatGPT?'), 'judul kolom harus ada di halaman Akun ChatGPT');
-    assert.ok(html.includes('aria-label="URL callback ChatGPT"'), 'input URL harus dirender');
-    assert.ok(html.includes('Continue with ChatGPT'), 'tombol mulai login tetap ada');
+    assert.ok(html.includes('Sudah menyetujui di OpenAI?'), 'judul kolom harus ada di halaman Akun OpenAI');
+    assert.ok(html.includes('aria-label="URL callback OpenAI"'), 'input URL harus dirender');
+    assert.ok(html.includes('Connect OpenAI'), 'tombol mulai login tetap ada');
     // `invalid_state` terjadi sebelum callback kita, jadi satu-satunya bantuan
     // yang bisa diberikan adalah diagnosa + redirect_uri yang benar-benar
-    // dipakai. Keduanya harus tampil di halaman Akun ChatGPT.
+    // dipakai. Keduanya harus tampil di halaman Akun OpenAI.
     assert.ok(html.includes('Ada kode error di halaman OpenAI?'), 'blok diagnosa error harus dirender');
     assert.ok(html.includes('http://127.0.0.1:'), 'redirect_uri yang dipakai harus terlihat');
   } finally {
@@ -593,14 +593,14 @@ function oauthEnvWith({ attempt, tokenResponses = [] } = {}) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const method = init.method || 'GET';
-    if (url.includes('/rest/v1/chatgpt_oauth_links?select=*')) return Response.json([attempt]);
+    if (url.includes('/rest/v1/openai_oauth_links?select=*')) return Response.json([attempt]);
     // Klaim penukaran sekali-pakai.
-    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.') && method === 'PATCH' && url.includes('exchanged_code_fingerprint=is.null')) {
+    if (url.includes('/rest/v1/openai_oauth_links?id=eq.') && method === 'PATCH' && url.includes('exchanged_code_fingerprint=is.null')) {
       state.claims += 1;
       state.claimBody = JSON.parse(init.body || '{}');
       return Response.json(state.claims > 1 ? [] : [{ id: attempt.id }]);
     }
-    if (url.includes('/rest/v1/chatgpt_oauth_links?id=eq.') && method === 'PATCH') {
+    if (url.includes('/rest/v1/openai_oauth_links?id=eq.') && method === 'PATCH') {
       state.patches.push(JSON.parse(init.body));
       return new Response(null, { status: 204 });
     }
@@ -609,7 +609,7 @@ function oauthEnvWith({ attempt, tokenResponses = [] } = {}) {
       const next = tokenResponses.shift();
       return new Response(JSON.stringify(next.body), { status: next.status });
     }
-    if (url.includes('/rest/v1/chatgpt_accounts')) return Response.json([]);
+    if (url.includes('/rest/v1/openai_accounts')) return Response.json([]);
     throw new Error(`Unexpected fetch: ${url}`);
   };
   return { state, restore: () => { globalThis.fetch = realFetch; } };
@@ -771,7 +771,7 @@ test('issued client_id tetap tersimpan walau penukaran kode gagal', async () => 
 test('retainedClientId mengembalikan id terbitan terakhir, bukan dynamic_agent_client', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    if (url.includes('/rest/v1/chatgpt_oauth_links?')) {
+    if (url.includes('/rest/v1/openai_oauth_links?')) {
       return Response.json([{ issued_client_id: 'oaiapp_LAST', account_email: 'me@example.com' }]);
     }
     throw new Error(`Unexpected fetch: ${url}`);

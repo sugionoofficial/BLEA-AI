@@ -21,7 +21,7 @@ export function resolveAgentModel(enabledModels, requestedModel = '') {
 }
 
 /**
- * Ruang Studio memakai model ChatGPT saja. Dipakai UI sebelum mengirim giliran
+ * Ruang Studio memakai model OpenAI saja. Dipakai UI sebelum mengirim giliran
  * agen: model dari katalog provider lain tidak boleh lolos ke ruang Studio,
  * meski pengguna memaksa lewat state/URL.
  */
@@ -29,11 +29,11 @@ export function assertStudioModel(item, { studioMode = false } = {}) {
   const model = String(item?.model || '').trim();
   const provider = String(item?.provider || '').trim().toLowerCase();
   if (!studioMode) return null;
-  if (!model) return { code: 'model_missing', message: 'Pilih model ChatGPT terlebih dulu.' };
+  if (!model) return { code: 'model_missing', message: 'Pilih model OpenAI terlebih dulu.' };
   if (provider && provider !== 'openai') {
     return {
       code: 'studio_provider_mismatch',
-      message: `Studio hanya memakai model ChatGPT (openai), bukan "${provider}".`,
+      message: `Studio hanya memakai model OpenAI, bukan "${provider}".`,
     };
   }
   return null;

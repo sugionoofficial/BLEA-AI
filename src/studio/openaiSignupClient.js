@@ -1,9 +1,8 @@
-// Klien "Daftar ChatGPT pakai email TempMail" (halaman Akun ChatGPT).
+// Klien "Daftar akun OpenAI pakai email TempMail" (halaman Akun OpenAI).
 //
-// yang dilakukan: minta URL daftar resmi berisi login_hint = email TempMail,
-// mencatat langkah manual, dan meminta pencocokan email verifikasi di inbox.
-// Yang TIDAK dilakukan: mengirim kata sandi, mem-POST chatgpt.com dari server,
-// atau menyimpan cookie sesi chatgpt.com.
+// Yang dilakukan: minta URL login resmi platform, mencatat langkah manual, dan
+// meminta pencocokan email verifikasi di inbox. Yang TIDAK dilakukan: mengirim
+// kata sandi, mem-POST formulir dari server, atau menyimpan cookie sesi.
 
 import { getAccessToken } from '../api/client';
 
@@ -35,7 +34,7 @@ async function request(path, { method = 'GET', body } = {}) {
 export async function fetchAutofillUserscript(email = '') {
   const token = await getAccessToken();
   const query = email ? `?email=${encodeURIComponent(email)}` : '';
-  const res = await fetch(`/api/chatgpt-signup/userscript${query}`, {
+  const res = await fetch(`/api/openai-signup/userscript${query}`, {
     method: 'GET',
     cache: 'no-store',
     headers: token ? { authorization: `Bearer ${token}` } : {},
@@ -47,37 +46,21 @@ export async function fetchAutofillUserscript(email = '') {
   return { ok: true, text: await res.text() };
 }
 
-export const chatGptSignupApi = {
-  status: () => request('/chatgpt-signup'),
-  // `route`: 'platform' (default) membuka platform.openai.com; 'chatgpt'
-  // membuka chatgpt.com untuk alur OAuth. `next` hanya dipakai jalur platform
-  // dan divalidasi server (daftar path tetap).
-  prepare: (email, authSessionLoggingId = '', { route = 'platform', next = '' } = {}) => request('/chatgpt-signup', {
+export const openAiSignupApi = {
+  status: () => request('/openai-signup'),
+  // `next` dibatasi daftar path tetap di server, jadi tidak bisa dipakai
+  // mengarahkan ke domain lain.
+  prepare: (email, { next = '' } = {}) => request('/openai-signup', {
     method: 'POST',
-    body: {
-      action: 'prepare',
-      email,
-      route,
-      ...(next ? { next } : {}),
-      ...(authSessionLoggingId ? { auth_session_logging_id: authSessionLoggingId } : {}),
-    },
+    body: { action: 'prepare', email, ...(next ? { next } : {}) },
   }),
-  mark: (id, step, note = '') => request('/chatgpt-signup', { method: 'POST', body: { action: 'mark', id, step, note } }),
-  verify: (id) => request('/chatgpt-signup', { method: 'POST', body: { action: 'verify', id } }),
+  mark: (id, step, note = '') => request('/openai-signup', { method: 'POST', body: { action: 'mark', id, step, note } }),
+  verify: (id) => request('/openai-signup', { method: 'POST', body: { action: 'verify', id } }),
   // Baca ulang kode yang sudah tersimpan (tanpa panggilan Gmail baru).
-  code: (id) => request('/chatgpt-signup', { method: 'POST', body: { action: 'code', id } }),
-  // Bukti langkah: URL setelah pengguna menekan "Lanjutkan" di halaman ChatGPT.
-  confirm: (id, url) => request('/chatgpt-signup', { method: 'POST', body: { action: 'confirm', id, url } }),
+  code: (id) => request('/openai-signup', { method: 'POST', body: { action: 'code', id } }),
+  // Bukti langkah: URL setelah pengguna menekan "Continue" di halaman platform.
+  confirm: (id, url) => request('/openai-signup', { method: 'POST', body: { action: 'confirm', id, url } }),
 };
-
-/** UUID acak untuk `auth_session_logging_id` (parameter yang sama seperti di browser ChatGPT). */
-export function newLoggingId() {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return '';
-  }
-}
 
 export const SIGNUP_STEP_META = {
   dibuka: { label: 'URL daftar disiapkan', tone: 'muted' },

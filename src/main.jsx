@@ -26,11 +26,11 @@ const StudioPage = lazy(() => import('./studio/StudioPage').then((module) => ({ 
 const StudioRoomPage = lazy(() => import('./studio/StudioRoomPage').then((module) => ({ default: module.StudioRoomPage })));
 const ConnectionPage = lazy(() => import('./studio/ConnectionPage').then((module) => ({ default: module.ConnectionPage })));
 const LibraryPage = lazy(() => import('./studio/LibraryPage').then((module) => ({ default: module.LibraryPage })));
-const ChatGptAccountsPage = lazy(() => import('./studio/ChatGptAccountsPage').then((module) => ({ default: module.ChatGptAccountsPage })));
-// Halaman callback OAuth "Continue with ChatGPT". OpenAI hanya mengizinkan
+const OpenAiAccountsPage = lazy(() => import('./studio/OpenAiAccountsPage').then((module) => ({ default: module.OpenAiAccountsPage })));
+// Halaman callback OAuth OpenAI. OpenAI hanya mengizinkan
 // redirect loopback http://127.0.0.1:<port>/auth/callback, jadi rute ini harus
 // ada di klien (bukan di Worker) supaya kode otorisasi bisa ditukar.
-const ChatGptOAuthCallbackPage = lazy(() => import('./studio/ChatGptOAuthCallbackPage').then((module) => ({ default: module.ChatGptOAuthCallbackPage })));
+const OpenAiOAuthCallbackPage = lazy(() => import('./studio/OpenAiOAuthCallbackPage').then((module) => ({ default: module.OpenAiOAuthCallbackPage })));
 import './dropx/dropx.css';
 import './auth/studio.css';
 import './agent/agent.css';
@@ -77,16 +77,16 @@ function App() {
                 diarahkan ke ruang Studio yang memakai shell navigasi yang sama. */}
             <Route path="/agent" element={<Navigate to="/studio/agent" replace />} />
             <Route path="/metadata" element={<Navigate to="/studio/metadata" replace />} />
-            <Route path="/auth/callback" element={<StudioErrorBoundary><ChatGptOAuthCallbackPage /></StudioErrorBoundary>} />
+            <Route path="/auth/callback" element={<StudioErrorBoundary><OpenAiOAuthCallbackPage /></StudioErrorBoundary>} />
             <Route path="/settings" element={<AccountSettings />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin" element={<AdminPage />} />
               <Route path="/admin/freebeat-oauth" element={<AdminPage initialTab="freebeat-oauth" />} />
               <Route path="/admin/freebeat" element={<FreebeatPage />} />
               <Route path="/tempmail" element={<TempMailPage />} />
-              {/* Pool akun ChatGPT manual: halaman admin sendiri, sejajar
+              {/* Pool akun OpenAI manual: halaman admin sendiri, sejajar
                   dengan Freebeat MCP dan TempMail. */}
-              <Route path="/studio/chatgpt-accounts" element={<StudioErrorBoundary><ChatGptAccountsPage /></StudioErrorBoundary>} />
+              <Route path="/studio/openai-accounts" element={<StudioErrorBoundary><OpenAiAccountsPage /></StudioErrorBoundary>} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

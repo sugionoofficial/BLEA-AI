@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Check, CircleAlert, Loader2, Plug, ShieldAlert } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { supabase } from '../lib/supabase';
-import { chatGptOAuthApi } from './chatgptOAuthClient';
+import { openAiOAuthApi } from './openaiOAuthClient';
 import './connection.css';
 
 async function getAccessToken() {
@@ -18,7 +18,7 @@ async function getAccessToken() {
 async function fetchPoolSummary() {
   try {
     const token = await getAccessToken();
-    const res = await fetch('/api/chatgpt-accounts/summary', {
+    const res = await fetch('/api/openai-accounts/summary', {
       method: 'GET',
       cache: 'no-store',
       headers: { Authorization: `Bearer ${token}` },
@@ -68,17 +68,17 @@ const PROVIDERS = [
     state: 'degraded',
   },
   {
-    id: 'chatgpt',
-    label: 'ChatGPT (Continue with ChatGPT, tanpa API key)',
-    note: 'OAuth resmi OpenAI: satu tombol, izin di browser, lalu kuota paket ChatGPT dipakai untuk chat & agen.',
+    id: 'openai',
+    label: 'OpenAI (Connect OpenAI, tanpa API key)',
+    note: 'OAuth resmi OpenAI: satu tombol, izin di browser, lalu kuota paket OpenAI dipakai untuk chat & agen.',
     // Statusnya TIDAK ditulis di sini. Label "Tersambung" hanya muncul kalau
     // server melaporkan ada tautan yang benar-benar berstatus linked.
     state: 'unknown',
     check: 'oauth',
   },
   {
-    id: 'chatgpt-api',
-    label: 'ChatGPT API key (untuk gambar & video)',
+    id: 'openai-api',
+    label: 'OpenAI API key (untuk gambar & video)',
     note: 'Jalur cadangan admin. Izin OAuth hanya berlaku untuk teks, jadi tool gambar/video tetap butuh API key di pool yang sama.',
     state: 'degraded',
   },
@@ -94,7 +94,7 @@ const PROVIDERS = [
  * Halaman koneksi.
  *
  * Yang TIDAK ada di sini: alur "klik CONNECTION lalu BLEA mendaftarkan akun
- * ChatGPT/OpenAI secara otomatis memakai email temp + kode verifikasi".
+ * OpenAI/OpenAI secara otomatis memakai email temp + kode verifikasi".
  * Fitur itu tidak dibangun karena:
  *   1. Tidak ada API pendaftaran akun resmi — satu-satunya jalan adalah
  *      mengotomasi halaman signup mereka, yang dilarang ToS.
@@ -125,9 +125,9 @@ export function ConnectionPage() {
         setError(String(err?.message || err));
       }
 
-      // ChatGPT: dibaca dari server. "Tersambung" hanya berarti tautan OAuth
+      // OpenAI: dibaca dari server. "Tersambung" hanya berarti tautan OAuth
       // benar-benar berstatus linked — bukan sekadar tombolnya ada.
-      const oauth = await chatGptOAuthApi.status();
+      const oauth = await openAiOAuthApi.status();
       if (oauth.ok) {
         const links = Array.isArray(oauth.data?.links) ? oauth.data.links : [];
         const linked = links.filter((link) => link.status === 'linked');
@@ -138,7 +138,7 @@ export function ConnectionPage() {
           email: linked[0]?.email || '',
         });
       } else {
-        setOauthState({ error: oauth.data?.error || 'Status ChatGPT tidak bisa dibaca.' });
+        setOauthState({ error: oauth.data?.error || 'Status OpenAI tidak bisa dibaca.' });
       }
 
       // Pool akun (API key) — dipakai tool gambar/video.
@@ -166,7 +166,7 @@ export function ConnectionPage() {
           <span className="studio-connection-badge"><Plug size={12} /> Koneksi</span>
           <h1>Status dari server, bukan label di halaman ini.</h1>
           <p>
-            Tekan <b>Periksa koneksi</b> untuk membaca keadaan sebenarnya: berapa akun ChatGPT yang
+            Tekan <b>Periksa koneksi</b> untuk membaca keadaan sebenarnya: berapa akun OpenAI yang
             benar-benar siap dipakai pool, dan apakah saluran email hidup. BLEA hanya memakai
             koneksi resmi: OAuth pemilik akun dan API key provider.
           </p>
@@ -195,10 +195,10 @@ export function ConnectionPage() {
               } else {
                 state = 'degraded';
                 detail = oauthState.pending > 0
-                  ? `${oauthState.pending} percobaan login belum selesai — tempel URL callback di halaman Akun ChatGPT.`
-                  : 'Belum ada akun yang benar-benar tertaut. Tekan Continue with ChatGPT di halaman Akun ChatGPT.';
+                  ? `${oauthState.pending} percobaan login belum selesai — tempel URL callback di halaman Akun OpenAI.`
+                  : 'Belum ada akun yang benar-benar tertaut. Tekan Connect OpenAI di halaman Akun OpenAI.';
               }
-            } else if (provider.id === 'chatgpt-api') {
+            } else if (provider.id === 'openai-api') {
               if (!poolState || poolState.restricted) state = 'unknown';
               else if (poolState.error) { state = 'unknown'; detail = poolState.error; }
               else if (poolState.usable > 0) { state = 'connected'; detail = `${poolState.usable} akun ber-API key siap (dari ${poolState.total}).`; }
@@ -227,29 +227,29 @@ export function ConnectionPage() {
         <section className="studio-connection-explain">
           <h2>“Koneksikan seperti freebeat, tanpa API key” — sudah ada</h2>
           <p>
-            Sejak OpenAI membuka <b>Sign in with ChatGPT</b>, akun ChatGPT bisa disambungkan lewat
+            Sejak OpenAI membuka <b>Sign in with OpenAI</b>, akun OpenAI bisa disambungkan lewat
             OAuth resmi: tidak ada API key, tidak ada client secret, dan kuota yang terpakai adalah
-            paket ChatGPT pemilik akun. Tombolnya ada di
-            <b> Studio → Akun ChatGPT → Continue with ChatGPT</b>.
+            paket OpenAI pemilik akun. Tombolnya ada di
+            <b> Studio → Akun OpenAI → Connect OpenAI</b>.
           </p>
           <ol>
-            <li>Tekan tombol, lalu setujui di halaman ChatGPT. BLEA mendaftarkan client-nya sendiri saat login pertama.</li>
-            <li>Izin yang diminta: <code>openid profile email offline_access resource.invoke chatgpt.tokens.use.direct</code>.</li>
+            <li>Tekan tombol, lalu setujui di halaman OpenAI. BLEA mendaftarkan client-nya sendiri saat login pertama.</li>
+            <li>Izin yang diminta: <code>openid profile email offline_access resource.invoke</code> ditambah izin paket akun dari OpenAI.</li>
             <li>Akses hanya untuk chat &amp; agen (Responses API teks). Gambar, video, audio, dan unggah berkas tidak tercakup izin ini.</li>
-            <li>Token disimpan tersegel di server; koneksi bisa diputus kapan saja di halaman yang sama atau di ChatGPT → Settings → Apps.</li>
+            <li>Token disimpan tersegel di server; koneksi bisa diputus kapan saja di halaman yang sama atau di OpenAI → Settings → Apps.</li>
           </ol>
           <p>
             Satu catatan teknis yang perlu diketahui: OpenAI mewajibkan hasil login dikirim ke
             <code>http://127.0.0.1:&lt;port&gt;/auth/callback</code>. Kalau BLEA dibuka dari domain
             publik (blea.ai), alamat itu tidak bisa dibuka otomatis — tempel URL callback-nya di
-            halaman Akun ChatGPT, atau jalankan BLEA di mesin sendiri lewat 127.0.0.1 agar selesai
-            otomatis. Domain publik butuh client ID partner dari OpenAI (formulir Sign in with ChatGPT).
+            halaman Akun OpenAI, atau jalankan BLEA di mesin sendiri lewat 127.0.0.1 agar selesai
+            otomatis. Domain publik butuh client ID partner dari OpenAI (formulir Sign in with OpenAI).
           </p>
 
           <h2>Yang tetap tidak dilakukan: mendaftarkan akun otomatis</h2>
           <p>
             Permintaan itu berarti BLEA membuat email sekali pakai, mendaftarkannya ke akun
-            ChatGPT, lalu mengambil kode verifikasi secara otomatis. Itu tidak saya bangun, dan
+            OpenAI, lalu mengambil kode verifikasi secara otomatis. Itu tidak saya bangun, dan
             bukan karena teknisnya sulit saja:
           </p>
           <ol>
@@ -260,14 +260,14 @@ export function ConnectionPage() {
           </ol>
           <h2>Jalur yang tersedia sekarang</h2>
           <p>
-            <b>Continue with ChatGPT</b> (OAuth, tanpa API key) dan <b>API key admin</b> masuk ke pool
-            yang sama di <b>Studio → Akun ChatGPT</b>. Halaman itu menampilkan prioritas, sisa kuota
+            <b>Connect OpenAI</b> (OAuth, tanpa API key) dan <b>API key admin</b> masuk ke pool
+            yang sama di <b>Studio → Akun OpenAI</b>. Halaman itu menampilkan prioritas, sisa kuota
             harian, status cooldown, dan sumber kredensial tiap akun; bila akun pertama tidak bisa
             dipakai, permintaan otomatis pindah ke akun berikutnya. Hasil semua tool bisa diambil di
             <b> Studio → Hasil</b>.
           </p>
           <p className="studio-connection-links">
-            <Link className="studio-connection-link" to="/studio/chatgpt-accounts">Kelola akun ChatGPT</Link>
+            <Link className="studio-connection-link" to="/studio/openai-accounts">Kelola akun OpenAI</Link>
             <Link className="studio-connection-link" to="/studio/library">Lihat hasil & unduhan</Link>
             <Link className="studio-connection-link" to="/studio">Kembali ke Studio</Link>
           </p>

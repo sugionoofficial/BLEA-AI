@@ -1,8 +1,8 @@
-// Rute /api/chatgpt-signup — "Daftar ChatGPT pakai email TempMail" untuk admin.
+// Rute /api/openai-signup — "Daftar akun OpenAI pakai email TempMail" untuk admin.
 //
-// Lihat src/lib/chatgptSignup.js untuk alasan mengapa server TIDAK mem-POST ke
-// chatgpt.com. Modul ini hanya:
-//   1. menyiapkan URL HALAMAN formulir resmi OpenAI (auth.openai.com/log-in);
+// Lihat src/lib/openaiSignup.js untuk alasan mengapa server TIDAK mem-POST ke
+// OpenAI. Modul ini hanya:
+//   1. menyiapkan URL halaman login resmi OpenAI (platform.openai.com/login);
 //   2. mencatat langkah manual admin (dibuka → email dikirim → menunggu → terverifikasi);
 //   3. mencocokkan pesan verifikasi di inbox TempMail.
 //
@@ -16,17 +16,15 @@ import {
   describeStoredCode,
   extractVerificationCode,
   buildPlatformSignupUrl,
-  buildSigninBootstrap,
-  buildSignupUrl,
   PLATFORM_STEPS,
   normalizeSignupRequest,
   scoreVerificationMessage,
   signupConfig,
   validateSignupInput,
   SIGNUP_STEPS,
-} from './chatgptSignup.js';
+} from './openaiSignup.js';
 
-const TABLE = '/chatgpt_signup_attempts';
+const TABLE = '/openai_signup_attempts';
 
 function supabaseBase(env) {
   return (env.SUPABASE_URL || 'https://lwknqvgnxgecptkvtkfb.supabase.co').replace(/\/+$/, '');
@@ -86,19 +84,9 @@ async function activeTempEmail(env, userId) {
   return row ? { email: String(row.email || ''), provider: String(row.provider || '') } : null;
 }
 
-// Jalur mana yang dipakai: `platform` (platform.openai.com → akun API) atau
-// `chatgpt` (chatgpt.com → sesi ChatGPT + OAuth). Default `platform` karena itu
-// yang diminta dan satu-satunya jalur yang tidak bergantung pada paket ChatGPT.
-function normalizeRoute(input) {
-  return String(input?.route || '').toLowerCase() === 'chatgpt' ? 'chatgpt' : 'platform';
-}
-
 async function saveAttempt(env, userId, input) {
-  const { email, auth_session_logging_id, plus_address } = validateSignupInput(input);
-  const route = normalizeRoute(input);
-  const signupUrl = route === 'platform'
-    ? buildPlatformSignupUrl(email, { next: String(input.next || '') })
-    : buildSignupUrl(email, { authSessionLoggingId: auth_session_logging_id });
+  const { email, plus_address } = validateSignupInput(input);
+  const signupUrl = buildPlatformSignupUrl(email, { next: String(input.next || '') });
   const now = new Date().toISOString();
   // Upsert per (user_id, lower(email)): mengulang alamat yang sama memperbarui
   // satu baris, bukan membuat riwayat pendaftaran ganda.
@@ -111,12 +99,12 @@ async function saveAttempt(env, userId, input) {
       signup_url: signupUrl,
       step: 'dibuka',
       note: [
-        route === 'platform' ? 'Jalur platform.openai.com (akun API).' : 'Jalur chatgpt.com (sesi ChatGPT/OAuth).',
+        'Jalur platform.openai.com (akun API).',
         plus_address ? 'Alamat +tag Gmail: sebagian formulir OpenAI menolak tanda +.' : '',
       ].filter(Boolean).join(' '),
       // Upsert per (user_id, email): tanpa pengosongan eksplisit, kode dan id
       // pesan dari ronde sebelumnya tetap menempel dan tampil seolah milik
-      // permintaan yang baru — lalu ditempel ke ChatGPT dan gagal.
+      // permintaan yang baru — lalu ditempel ke halaman platform dan gagal.
       verification_message_id: '',
       verification_code: '',
       verification_code_at: null,
@@ -127,19 +115,14 @@ async function saveAttempt(env, userId, input) {
   });
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) throw fail('Permintaan pendaftaran gagal disimpan.', 500);
-  // `url` adalah HALAMAN formulir OpenAI (GET), bukan endpoint POST NextAuth —
-  // lihat catatan di chatgptSignup.js. `signin` berisi langkah manual yang sama
-  // (nama field `login_hint` di sana hanya mengikuti formulir NextAuth, bukan
-  // janji bahwa email akan terisi).
+  // `url` adalah halaman login platform (GET), bukan endpoint POST apa pun.
+  // Langkahnya tetap dan tidak butuh bootstrap CSRF.
   return {
     attempt: normalizeSignupRequest(row),
     url: signupUrl,
-    route,
+    route: 'platform',
     plus_address,
-    // Langkah manual hanya relevan untuk jalur ChatGPT. Untuk jalur platform,
-    // langkahnya tetap dan tidak butuh bootstrap NextAuth apa pun.
-    signin: route === 'chatgpt' ? buildSigninBootstrap(email) : null,
-    platform_steps: route === 'platform' ? PLATFORM_STEPS : null,
+    platform_steps: PLATFORM_STEPS,
   };
 }
 
@@ -272,7 +255,7 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
       candidates: scored.slice(0, 5),
       attempt: normalizeSignupRequest(attemptRow),
       hint: verificationCode
-        ? `Kode ditemukan di inbox walau pengirim tidak dikenali: ${verificationCode}. Cocokkan sendiri dengan email OpenAI, lalu tempel di tab ChatGPT.`
+        ? `Kode ditemukan di inbox walau pengirim tidak dikenali: ${verificationCode}. Cocokkan sendiri dengan email OpenAI, lalu tempel di tab platform.`
         : 'Belum ada pesan verifikasi yang cocok. Tunggu email dari OpenAI, klik "Refresh inbox" di TempMail, lalu coba lagi.',
     };
   }
@@ -282,7 +265,7 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
     body: {
       step: 'terverifikasi',
       verification_message_id: String(best.id || ''),
-      // Kode disimpan HANYA untuk ditempel ke tab ChatGPT oleh admin; bukan
+      // Kode disimpan HANYA untuk ditempel ke tab platform oleh admin; bukan
       // kredensial dan tidak dipakai untuk autentikasi otomatis.
       verification_code: verificationCode || '',
       // Waktu kode diambil, terpisah dari verified_at: kode bisa ada tanpa
@@ -306,7 +289,7 @@ async function verifyAttempt(env, userId, input, listInbox, readMessage) {
 }
 
 /**
- * Cocokkan URL setelah pengguna menekan "Lanjutkan" di halaman ChatGPT dengan
+ * Cocokkan URL setelah pengguna menekan "Lanjutkan" di halaman platform dengan
  * permintaan pendaftaran. Dipakai untuk membuktikan langkah benar-benar
  * berjalan, bukan berhenti di halaman error.
  *
@@ -329,7 +312,7 @@ async function confirmAttempt(env, userId, input) {
     prefer: 'return=representation',
     body: {
       step: 'email_dikirim',
-      note: `Terkonfirmasi di halaman ChatGPT (${analysis.status}).`,
+      note: `Terkonfirmasi di halaman OpenAI (${analysis.status}).`,
       updated_at: new Date().toISOString(),
     },
   });
@@ -366,15 +349,15 @@ async function readStoredCode(env, userId, input) {
     verified_at: row.verified_at || null,
     attempt: normalizeSignupRequest(row),
     hint: stored.code
-      ? (stored.note || 'Kode tersimpan ini sekali pakai. Kalau sudah dipakai atau kedaluwarsa, minta kode baru di ChatGPT.')
+      ? (stored.note || 'Kode tersimpan ini sekali pakai. Kalau sudah dipakai atau kedaluwarsa, minta kode baru di halaman platform.')
       : 'Belum ada kode tersimpan untuk permintaan ini.',
   };
 }
 
-export async function handleChatgptSignup(request, env, user, { listInbox, readMessage } = {}) {
+export async function handleOpenAiSignup(request, env, user, { listInbox, readMessage } = {}) {
   if (!user) return { status: 401, body: { error: 'Login diperlukan.' } };
   if (user.app_metadata?.role !== 'admin') {
-    return { status: 403, body: { error: 'Pendaftaran ChatGPT hanya tersedia untuk admin.' } };
+    return { status: 403, body: { error: 'Pendaftaran OpenAI hanya tersedia untuk admin.' } };
   }
   const method = request.method;
   try {
@@ -404,9 +387,9 @@ export async function handleChatgptSignup(request, env, user, { listInbox, readM
     if (action === 'code') return { status: 200, body: await readStoredCode(env, user.id, body) };
     return { status: 400, body: { error: 'Aksi pendaftaran tidak dikenal.' } };
   } catch (error) {
-    return { status: Number(error?.status) || 500, body: { error: String(error?.message || 'Pendaftaran ChatGPT gagal diproses.') } };
+    return { status: Number(error?.status) || 500, body: { error: String(error?.message || 'Pendaftaran OpenAI gagal diproses.') } };
   }
 }
 
-export default handleChatgptSignup;
+export default handleOpenAiSignup;
 export { listAttempts, saveAttempt, markAttempt, verifyAttempt, confirmAttempt };
