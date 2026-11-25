@@ -924,9 +924,28 @@ test('upload quote rejection is diagnosed without leaking prose; unknown-price h
     assert.equal(rejected.unknown_cost_allowed, true);
     assert.doesNotMatch(JSON.stringify(rejected), /PRIVATE|private.example/);
     assert.equal((await call('image-upload-host', consent)).status, 200);
+    // The reported UI had quote_rejected without an RPC code: generic SDK
+    // tool failures must not depend on English unsupported/enum vocabulary.
+    for (const text of ['Unable to quote requested operation PRIVATE', 'Biaya tool ini belum tersedia PRIVATE']) {
+      f.setUploadConfig({ host: true, quoteToolText: text, result: { success: true, image_urls: ['https://static.freebeat.ai/photo.png'] } });
+      const before = count('upload_image');
+      const body = await (await call('image-upload-quote')).json();
+      assert.equal(body.unknown_cost_allowed, true);
+      assert.deepEqual(body.diagnostic, { stage: 'upload_quote', kind: 'tool_rejected' });
+      assert.doesNotMatch(JSON.stringify(body), /PRIVATE/);
+      assert.equal(count('upload_image'), before);
+      assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 0 })).status, 409);
+      assert.equal((await call('image-upload-host', consent)).status, 200);
+      assert.equal(count('upload_image'), before + 1);
+    }
     for (const config of [
       { quoteToolText: 'upload_image not supported: unauthorized PRIVATE' },
       { quoteToolText: 'Internal server error PRIVATE' },
+      { quoteToolText: 'upload_image request timeout PRIVATE' },
+      { quoteToolText: 'Authentication required PRIVATE' },
+      { quoteToolError: { error: { message: 'permission denied PRIVATE' } } },
+      { quoteToolError: { error: { message: 'Insufficient credits PRIVATE' } } },
+      { quoteError: { code: -32603, message: 'PRIVATE' } },
       { quoteError: { code: -32000, message: 'Forbidden PRIVATE' } },
       { quoteError: { code: -32602, message: 'Unauthorized PRIVATE' } },
       { quoteError: { code: -32602, message: 'insufficient credits PRIVATE' } },
