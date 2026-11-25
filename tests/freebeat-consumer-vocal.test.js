@@ -606,6 +606,7 @@ test('GeneratePage UI: mendukung mode Singing Video dan Lip-Sync Video beserta f
     access_token: 'user-token-ui',
     user: { id: 'u1', email: 'creator@example.com', user_metadata: { full_name: 'Kreator' }, app_metadata: {} },
   };
+  const oldStorageFrom = supabase.storage.from;
   const oldGet = supabase.auth.getSession;
   const oldOn = supabase.auth.onAuthStateChange;
   supabase.auth.getSession = async () => ({ data: { session: userSession }, error: null });
@@ -722,6 +723,35 @@ test('GeneratePage UI: mendukung mode Singing Video dan Lip-Sync Video beserta f
     assert.match(lipHtml, /Video Sumber \(Wajib\)/);
     assert.match(lipHtml, /Judul Klip \(Opsional\)/);
 
+    // A file below the application's 100 MB cap can still be rejected by
+    // Storage's global setting. Handle both SDK return and rejected promise.
+    let uploadCalls = 0;
+    for (const shouldThrow of [false, true]) {
+      supabase.storage.from = () => ({
+        upload: async () => {
+          uploadCalls += 1;
+          const error = { statusCode: '413', message: 'The object exceeded the maximum allowed size' };
+          if (shouldThrow) throw error;
+          return { data: null, error };
+        },
+        getPublicUrl: () => assert.fail('rejected file must not become a media URL'),
+      });
+      const uploadInput = dom.window.document.querySelector('input[aria-label="Upload Video"]');
+      assert.ok(uploadInput);
+      Object.defineProperty(uploadInput, 'files', { configurable: true, value: [{
+        name: 'source.mp4', type: 'video/mp4', size: 60 * 1024 * 1024,
+      }] });
+      await act(async () => {
+        uploadInput.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+      });
+      assert.match(dom.window.document.body.textContent, /Ukuran video \(60\.0 MB\) ditolak/);
+      assert.match(dom.window.document.body.textContent, /URL HTTPS publik/);
+      assert.ok(!dom.window.document.body.textContent.includes('The object exceeded'));
+      assert.ok(!dom.window.document.body.textContent.includes('Mengunggah...'));
+      assert.equal(submitted.length, 0);
+    }
+    assert.equal(uploadCalls, 2);
+
     const nativeSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
     const vidInput = dom.window.document.querySelector('input[aria-label="URL Video HTTPS"]');
     const audInput = dom.window.document.querySelector('input[aria-label="URL Lagu HTTPS"]');
@@ -749,6 +779,7 @@ test('GeneratePage UI: mendukung mode Singing Video dan Lip-Sync Video beserta f
     assert.equal(submitted[0].video_duration_ms, 9500);
   } finally {
     if (mountedRoot) await act(async () => { mountedRoot.unmount(); });
+    supabase.storage.from = oldStorageFrom;
     supabase.auth.getSession = oldGet;
     supabase.auth.onAuthStateChange = oldOn;
     await supabase.auth.dispose();
