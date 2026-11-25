@@ -13,3 +13,5 @@
 .history-music-track{display:flex;flex-direction:column;gap:8px}
 .history-music-track audio{width:100%;height:38px;border-radius:8px}
 
+
+@media(max-width:640px){.history-empty{padding:28px 16px}.dropx-shell .generate-history{margin-top:0;padding-top:10px}}
