@@ -186,8 +186,18 @@ parameter request.
 
 Tidak ada request otomatis saat panel dimuat. **Periksa informasi Hailuo #106**
 memanggil endpoint admin `video-model-help` → `get_model_help(type=video,
-model_id=106)`. Untuk **Periksa quote Hailuo #106**, isi URL HTTPS gambar dan
-prompt, pilih rasio parameter, lalu setujui pengiriman prompt/URL ke Freebeat.
+model_id=106)`. Alur foto Hailuo sekarang tersedia pada halaman yang sama:
+
+1. Pilih **JPG/PNG maksimal 10 MB**. Memilih file tidak mengunggah apa pun.
+2. Centang izin penyimpanan publik BLEA dan pemeriksaan biaya. Klik **Unggah foto & periksa biaya upload Freebeat**. File diunggah melalui helper Storage yang sudah ada ke bucket publik `ai-studio-uploads`, lalu `image-upload-quote` meminta quote `upload_image` untuk URL sumber tersebut.
+3. Periksa quote upload foto (bukan quote video), lalu centang persetujuan biaya upload dan klik **Kirim foto ke Freebeat**. Quote harus berupa integer 0–100 kredit; biaya tidak diketahui/di luar batas diblokir. Server memeriksa ulang quote dan menolak kenaikan di atas nilai yang disetujui sebelum memanggil `upload_image`. Tool ini tidak menyediakan batas kredit keras; quote tidak menjamin tagihan akhir atau refund.
+4. Respons hosting menyediakan `outcome` dan `image_url`. Hanya satu URL HTTPS terstruktur, tanpa kredensial/fragment, maksimal 2048 karakter pada domain `freebeat.ai`/`freebeatfit.com` atau subdomainnya yang dipakai. Pesan bebas dan URL sumber yang dipantulkan tidak dianggap URL hosting. String respons lain tetap disembunyikan.
+5. URL hasil otomatis mengisi kolom **URL HTTPS gambar untuk quote Hailuo** dan mereset persetujuan quote sebelumnya. Periksa prompt/rasio, centang izin quote terpisah, lalu klik **Periksa quote Hailuo #106**. Tidak ada quote video atau generasi otomatis.
+
+URL HTTPS yang sudah tersedia tetap dapat diisi manual; ini bukan klaim bahwa semua URL eksternal ditolak provider. Hosting memakai akun OAuth admin yang sama dan memerlukan izin generasi/upload. Timeout, respons gagal atau URL hasil tidak valid menghasilkan status tidak pasti; upload tidak diulang otomatis, tombol pengiriman dinonaktifkan setelah satu percobaan pada halaman tersebut. Lock ini lokal, bukan idempotensi server lintas reload: jangan memuat ulang atau mengulang sebelum memeriksa akun Freebeat. Biaya/salinan mungkin sudah tercatat.
+
+Tombol **Hapus foto dari BLEA** menghapus sumber dengan verifikasi hasil Storage, bukan salinan Freebeat. Hapus sumber sebelum meninggalkan halaman; setelah navigasi, kelola objek tertinggal melalui Supabase Storage. URL Freebeat yang berhasil diperoleh tetap tersedia setelah sumber BLEA dihapus. Retensi salinan Freebeat mengikuti kebijakan penyedia.
+
 Tombol quote menampilkan daftar syarat yang belum terpenuhi: pemeriksaan sesi selesai,
 sesi tersedia, tidak ada permintaan berjalan, URL HTTPS berdomain publik valid,
 prompt terisi, serta izin pengiriman dicentang. Isi URL/prompt dan pilih rasio
@@ -206,8 +216,7 @@ diteruskan ke MCP. Opsi dinormalisasi terhadap help live; periksa `settings`,
 Pemeriksaan tetap bisa dilakukan saat ID belum terlihat di katalog yang dimuat,
 karena daftar dapat dibatasi. Ini tidak menambahkan ID palsu ke daftar model,
 tidak mengaktifkan model konsumen, dan tidak memberi izin pengiriman berbayar.
-Panel hanya punya informasi/quote: tidak memanggil upload, prepare, submit,
-generate, atau RPC kredit. Hasil adalah respons yang disaring dan bisa disalin;
+Panel kini juga mempunyai hosting foto dengan persetujuan terpisah, tetapi tetap tidak memanggil prepare, submit, generate video, atau RPC kredit BLEA. Hasil informasi/quote adalah respons yang disaring dan bisa disalin;
 hasil/consent dihapus saat input berubah atau koneksi diputus, dan respons lama
 yang tiba setelah pergantian input/koneksi diabaikan.
 

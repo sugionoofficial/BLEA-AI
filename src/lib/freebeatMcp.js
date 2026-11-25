@@ -3757,6 +3757,7 @@ async function dispatchFreebeat(request, url, env, user) {
     if (action === 'image-upload-quote' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      await requireImageSession(session);
       const input = await imageJson(request);
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'image_url')) throw fail('Permintaan tidak valid.', 400);
       const photoUrl = consumerImageUrl(typeof input.image_url === 'string' ? input.image_url : '');
@@ -3766,6 +3767,7 @@ async function dispatchFreebeat(request, url, env, user) {
     if (action === 'image-upload-host' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
+      await requireImageSession(session);
       const input = await imageJson(request);
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['image_url', 'expected_credits', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi biaya diperlukan.', 400);
       const photoUrl = consumerImageUrl(typeof input.image_url === 'string' ? input.image_url : '');
@@ -5137,21 +5139,41 @@ async function imageUploadQuote(accessToken, photoUrl) {
   const credits = quotedCredits(content);
   return { credits, status: typeof content?.status === 'string' ? content.status : null, quote: safeQuote(content) };
 }
+// Only return a structured, validated Freebeat URL for quote handoff. Never
+// scrape arbitrary message text or treat an echoed external source as hosted.
+function hostedUploadImageUrl(content) {
+  if (!content || typeof content !== 'object' || Array.isArray(content) || content.success === false || ['failed', 'error', 'rejected'].includes(content.status)) return null;
+  const raw = content.image_urls ?? content.urls ?? content.uploaded_urls ?? content.images ?? content.files ?? content.items ?? content.data?.image_urls ?? content.data?.urls ?? content.data?.uploaded_urls ?? content.data?.files ?? (Array.isArray(content.data) ? content.data : null);
+  let candidate;
+  if (Array.isArray(raw)) {
+    if (raw.length !== 1) return null;
+    candidate = typeof raw[0] === 'string' ? raw[0] : (raw[0]?.download_url ?? raw[0]?.image_url ?? raw[0]?.url);
+  } else candidate = content.download_url ?? content.image_url ?? content.url ?? content.data?.download_url ?? content.data?.image_url ?? content.data?.url;
+  const url = consumerImageUrl(candidate);
+  return url && url.length <= 2048 && isFreebeatHostedMediaUrl(url) ? url : null;
+}
 async function imageUploadHost(accessToken, photoUrl) {
-  const headers = await openMcp(accessToken);
-  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'upload_image', arguments: { urls: [photoUrl] } } }, 'upload', headers, 262144);
-  const content = modelContent(result);
-  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('upload', 'response');
-  // Semua string disensor (URL hasil tetap ditampilkan: itu yang kita butuhkan).
+  let content;
+  try {
+    const headers = await openMcp(accessToken);
+    const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'upload_image', arguments: { urls: [photoUrl] } } }, 'upload', headers, 262144);
+    content = modelContent(result);
+    if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('upload', 'response');
+  } catch {
+    // No retries: even a lost response can mean the photo was stored/charged.
+    return { outcome: 'unknown', image_url: null, upload: null };
+  }
+  // Arbitrary strings stay hidden; only the structured validated image_url is exposed.
   const redact = (value, depth = 0) => {
     if (depth > 4) return '[terlalu dalam]';
-    if (typeof value === 'string') return privateFailureReason(value)?.slice(0, 600) ?? null;
+    if (typeof value === 'string') return '[teks disembunyikan]';
     if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
     if (Array.isArray(value)) return value.slice(0, 10).map((item) => redact(item, depth + 1));
     if (typeof value === 'object') return Object.fromEntries(Object.entries(value).slice(0, 25).map(([key, child]) => [key, redact(child, depth + 1)]));
     return null;
   };
-  return { upload: redact(content) };
+  const image_url = hostedUploadImageUrl(content);
+  return { outcome: image_url ? 'uploaded' : 'unknown', image_url, upload: redact(content) };
 }
 // Helper bersama untuk fase berikutnya (generate_music_video, generate_lyric_video,
 // generate_effect): unggah URL gambar eksternal lewat tool upload_image dan

@@ -1,23 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
+import { FreebeatHailuoImageUpload } from './FreebeatHailuoImageUpload';
 
 // Observed in a user-provided Freebeat WEB request, not verified MCP metadata.
 // Never use this preset to authorize a paid call or populate consumer models.
 const CANDIDATE = Object.freeze({ model_id: 106, duration: 10, resolution: '768p', aspect_ratio: '16:9' });
 
-export function FreebeatHailuoDiagnostic({ connected, loading, request, videoModels }) {
+export function FreebeatHailuoDiagnostic({ connected, loading, request, videoModels, imageAccess = false, storage, userId }) {
   const [imageUrl, setImageUrl] = useState('');
   const [prompt, setPrompt] = useState('Gerakan kamera perlahan, subjek dan penampilan tetap konsisten dengan gambar referensi.');
   const [aspectRatio, setAspectRatio] = useState(CANDIDATE.aspect_ratio);
   const [consent, setConsent] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [requestBusy, setBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const busy = requestBusy || uploadBusy;
   const [help, setHelp] = useState(null);
   const [quote, setQuote] = useState(null);
   const [error, setError] = useState('');
   const version = useRef(0);
   useEffect(() => {
     version.current += 1;
-    setHelp(null); setQuote(null); setError(''); setConsent(false);
+    setHelp(null); setQuote(null); setError(''); setConsent(false); setImageUrl('');
     return () => { version.current += 1; };
   }, [connected]);
   function change(setter, value) {
@@ -33,7 +36,7 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
   if (loading) quoteBlockers.push('Menunggu pemeriksaan sesi Freebeat selesai.');
   else if (!connected) quoteBlockers.push('Sesi Freebeat belum tersedia. Hubungkan akun melalui halaman utama Freebeat MCP, lalu buka kembali halaman ini.');
   if (busy) quoteBlockers.push('Tunggu pemeriksaan MCP yang sedang berjalan selesai.');
-  if (!imageUrl.trim()) quoteBlockers.push('Isi URL HTTPS gambar yang boleh dibagikan. File lokal tidak dapat dipakai langsung; panel ini tidak mengunggah gambar.');
+  if (!imageUrl.trim()) quoteBlockers.push('Unggah foto melalui langkah 1 untuk mendapatkan URL Freebeat, atau isi URL HTTPS gambar yang sudah tersedia.');
   else if (!safeUrl) quoteBlockers.push('Perbaiki URL gambar: gunakan HTTPS dengan domain publik, maksimal 2048 karakter, tanpa username/password atau fragment (#).');
   if (!prompt.trim()) quoteBlockers.push('Isi prompt pemeriksaan Hailuo.');
   if (!consent) quoteBlockers.push('Setelah URL, prompt, dan rasio selesai diisi, centang izin pengiriman untuk quote saja.');
@@ -51,7 +54,7 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
         images: [safeUrl], prompt: prompt.trim(),
       } : { model_id: CANDIDATE.model_id };
       // These existing admin-only endpoints call get_model_help/quote_generation
-      // only. There is intentionally no upload, prepare, submit or generate here.
+      // only. Photo hosting above is a separate consented action; no video is generated.
       const result = await request(action, 'POST', payload);
       if (stamp !== version.current) return;
       if (isQuote) setQuote(result); else setHelp(result);
@@ -63,6 +66,8 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
     <h3>Hailuo 2.3 Pro · ID 106 · pemeriksaan MCP tanpa generate</h3>
     <p>Preset berasal dari request web: hailuo-2.3-pro, 10 detik, 768p, rasio 16:9. Ini bukan MiniMax 3.0 dan belum membuktikan dukungan MCP. Angka generationType web tidak dikirim; satu gambar dipetakan ke mode image oleh Worker.</p>
     <p>{listed ? 'ID 106 terlihat pada katalog MCP yang dimuat; akses dan opsi tetap perlu diperiksa.' : 'ID 106 belum terlihat pada katalog yang dimuat (daftar dapat tidak lengkap). Pemeriksaan baca-saja tetap tersedia; model tidak otomatis diaktifkan di Generate.'}</p>
+    <FreebeatHailuoImageUpload connected={connected} imageAccess={imageAccess} loading={loading} disabled={requestBusy} request={request} storage={storage} userId={userId} onBusyChange={setUploadBusy} onImageUrl={(url) => change(setImageUrl, url)} />
+    <h4>2. URL hasil → periksa quote video Hailuo</h4>
     <label className="freebeat-field">URL HTTPS gambar untuk quote Hailuo
       <input type="url" aria-label="URL gambar Hailuo" value={imageUrl} maxLength={2048} placeholder="https://domain-publik.example/foto.jpg" aria-invalid={Boolean(imageUrl.trim() && !safeUrl)} aria-describedby="freebeat-hailuo-quote-help" disabled={loading || busy || !connected} onChange={(e) => change(setImageUrl, e.target.value)} />
     </label>

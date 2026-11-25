@@ -76,7 +76,7 @@ function fixture() {
         assert.deepEqual(body.params.arguments, { tool: 'upload_image', parameters: { urls: ['https://images.example/input.png'] } });
         data = uploadConfig.quote;
       } else if (body.params.name === 'upload_image') {
-        assert.deepEqual(body.params.arguments, { urls: ['https://images.example/input.png'], max_credits: 0 });
+        assert.deepEqual(body.params.arguments, { urls: ['https://images.example/input.png'], ...(uploadConfig.host ? {} : { max_credits: 0 }) });
         if (uploadConfig.lost) throw new Error('PRIVATE-NETWORK-ERROR');
         data = uploadConfig.result || { success: true, image_urls: ['https://cdn.example/private?token=SECRET'], message: 'PRIVATE MESSAGE' };
       } else if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: '186', name: 'Model 186' }] }; }
@@ -821,4 +821,66 @@ test('Hailuo web-observed model 106 is inspected/quoted via MCP without paid cal
     assert.ok(f.calls.every((c) => !c.params?.name || ['get_model_help', 'quote_generation'].includes(c.params.name)));
     assert.equal(f.rows.size, 0);
   } finally { globalThis.fetch = original; }
+});
+
+
+test('admin image hosting returns only a validated Freebeat quote URL, rechecks cost, and never retries uncertain uploads', async () => {
+  const original = globalThis.fetch, warn = console.warn, f = fixture(); globalThis.fetch = f.fetch; console.warn = () => {};
+  const photo = { image_url: 'https://images.example/input.png' };
+  try {
+    const cookie = await connect();
+    const call = (action, data = photo, extra = {}) => api(action, { cookie, method: 'POST', data, ...extra });
+    const uploads = () => f.calls.filter((c) => c.params?.name === 'upload_image').length;
+    f.setUploadConfig({ host: true, quote: { status: 'quoted', credits: 7 }, result: { success: true, image_urls: ['https://static.freebeat.ai/photo.png'], secret: 'DO_NOT_EXPOSE' } });
+    assert.equal((await call('image-upload-host', photo)).status, 400);
+    assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: -1 })).status, 400);
+    assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 6 })).status, 409);
+    assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 }, { token: 'user' })).status, 403);
+    assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 }, { origin: 'https://evil.example' })).status, 403);
+    assert.equal(uploads(), 0);
+    const quoted = await (await call('image-upload-quote')).json();
+    assert.equal(quoted.credits, 7);
+    assert.equal(uploads(), 0);
+    let response = await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 });
+    assert.equal(response.status, 200);
+    const hosted = await response.json();
+    assert.equal(hosted.outcome, 'uploaded');
+    assert.equal(hosted.image_url, 'https://static.freebeat.ai/photo.png');
+    assert.equal(hosted.quote_credits, 7);
+    assert.doesNotMatch(JSON.stringify(hosted), /DO_NOT_EXPOSE/);
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(uploads(), 1);
+    for (const result of [
+      { success: true, urls: [{ url: 'https://static.freebeat.ai/photo.png' }] },
+      { success: true, data: { image_url: 'https://cdn.freebeatfit.com/photo.png' } },
+    ]) {
+      f.setUploadConfig({ host: true, quote: { status: 'quoted', credits: 0 }, result });
+      assert.equal((await (await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 0 })).json()).outcome, 'uploaded');
+    }
+    for (const config of [
+      { lost: true },
+      { result: { success: false, image_urls: ['https://static.freebeat.ai/photo.png'] } },
+      { result: { success: true, image_urls: ['https://images.example/input.png'] } },
+      { result: { success: true, image_urls: ['https://static.freebeat.ai.evil.example/photo.png'] } },
+      { result: { success: true, image_urls: ['https://u:p@static.freebeat.ai/photo.png'] } },
+      { result: { success: true, image_urls: ['https://static.freebeat.ai/photo.png', 'https://static.freebeat.ai/other.png'] } },
+      { result: { success: true, message: 'https://static.freebeat.ai/not-a-structured-url.png' } },
+    ]) {
+      f.setUploadConfig({ host: true, quote: { status: 'quoted', credits: 7 }, ...config });
+      const before = uploads();
+      const body = await (await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 })).json();
+      assert.equal(body.outcome, 'unknown');
+      assert.equal(body.image_url, null);
+      assert.equal(uploads(), before + 1, 'upload must not retry');
+    }
+    for (const quote of [{ status: 'quoted', credits: 8 }, { status: 'unavailable' }]) {
+      f.setUploadConfig({ host: true, quote });
+      const before = uploads();
+      assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 })).status, 409);
+      assert.equal(uploads(), before);
+    }
+    f.setScope('freebeat:read'); const readOnly = await connect();
+    assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 }, { cookie: readOnly })).status, 403);
+    assert.equal(f.calls.some((c) => c.params?.name === 'generate_video'), false);
+  } finally { globalThis.fetch = original; console.warn = warn; }
 });
