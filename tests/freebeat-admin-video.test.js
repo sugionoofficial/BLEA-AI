@@ -1067,3 +1067,134 @@ test('uncertain Hailuo dispatch retains persistent lock and cannot be retried wi
     assert.equal(tests.tests[0].status, 'unknown'); assert.equal(tests.tests[0].canPoll, false);
   } finally { globalThis.fetch = original; console.warn = warn; }
 });
+
+const ltxInput = { ...hailuoInput, model_id: 97, duration: 6, resolution: '1080p', aspect_ratio: '16:9' };
+const ltxHelp = { model: { model_id: 97, available: true }, generation_types: ['image'], durations: [6, 8], resolutions: ['1080p'], aspect_ratios: ['16:9', '9:16'] };
+function ltxFixture() {
+  const f = fixture(); f.setModel(97, 37); f.setQuote({ status: 'quoted', credits: 37 }); f.setHelp(ltxHelp);
+  f.setVideoPreset({ duration: 6, resolution: '1080p', aspect_ratio: '16:9' }); return f;
+}
+
+test('LTX 97 preparation is admin-only, catalog-independent and requires explicit single-image settings', async () => {
+  const original = globalThis.fetch, f = ltxFixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect();
+    const ready = (data = ltxInput, extra = {}) => api('ltx-prepare', { cookie, method: 'POST', data, ...extra });
+    assert.equal((await ready(ltxInput, { token: 'user' })).status, 403);
+    assert.equal((await ready(ltxInput, { token: 'other-admin' })).status, 401);
+    assert.equal((await ready(ltxInput, { origin: 'https://evil.example' })).status, 403);
+    assert.equal((await ready(ltxInput, { cookie: undefined })).status, 401);
+    f.setScope('freebeat:read'); const readonly = await connect();
+    assert.equal((await ready(ltxInput, { cookie: readonly })).status, 403);
+    f.setScope('freebeat:read freebeat:generate');
+    const count = f.calls.length;
+    for (const patch of [{ model_id: 106 }, { model_id: 182 }, { duration: undefined }, { duration: 0 }, { duration: 601 }, { resolution: undefined }, { aspect_ratio: undefined }, { images: [] }, { images: [...ltxInput.images, ...ltxInput.images] }, { input_mode: 'omni_reference' }, { generation_type: 'text', images: [] }, { max_credits: 999 }, { images: ['http://localhost/photo.png'] }]) {
+      assert.equal((await ready({ ...ltxInput, ...patch })).status, 400, JSON.stringify(patch));
+    }
+    assert.equal(f.calls.length, count);
+    const response = await ready(); assert.equal(response.status, 200);
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    const receipt = await response.json();
+    assert.deepEqual(receipt.settings, { model_id: 97, generation_type: 'image', duration: 6, resolution: '1080p', aspect_ratio: '16:9' });
+    assert.equal(receipt.credits, 37); assert.equal(receipt.max_credits, 47);
+    assert.equal(receipt.prompt, 'test prompt'); assert.deepEqual(receipt.images, ltxInput.images);
+    assert.equal(typeof receipt.expiresAt, 'number');
+    assert.equal(f.rows.size, 0);
+    assert.ok(f.calls.every((call) => !call.params?.name || ['get_model_help', 'quote_generation'].includes(call.params.name)));
+    assert.equal((await api('video-prepare', { cookie, method: 'POST', data: ltxInput })).status, 400);
+    assert.equal((await api('hailuo-prepare', { cookie, method: 'POST', data: ltxInput })).status, 400);
+  } finally { globalThis.fetch = original; }
+});
+
+test('LTX live help identity/availability/options and numeric quote block preparation without dispatch', async () => {
+  const original = globalThis.fetch, f = ltxFixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect(); const ready = () => api('ltx-prepare', { cookie, method: 'POST', data: ltxInput });
+    for (const help of [{ model_id: 97 }, { ...ltxHelp, model: { model_id: 106, available: true } }, { ...ltxHelp, model: { model_id: 97, available: false } }, { ...ltxHelp, model: { model_id: 97 } }, { ...ltxHelp, durations: [8] }, { ...ltxHelp, resolutions: ['720p'] }, { ...ltxHelp, aspect_ratios: ['9:16'] }, { ...ltxHelp, generation_types: ['text'] }]) {
+      f.setHelp(help); assert.equal((await ready()).status, 409);
+    }
+    f.setHelp({ ...ltxHelp, model: { ...ltxHelp.model, member_only: true } }); env.FREEBEAT_ALLOW_MEMBER_ONLY = '0';
+    assert.equal((await ready()).status, 409); delete env.FREEBEAT_ALLOW_MEMBER_ONLY;
+    f.setHelp(ltxHelp);
+    for (const quote of [{ status: 'unavailable' }, { status: 'quoted', credits: '37' }, { status: 'quoted', credits: -1 }]) {
+      f.setQuote(quote); assert.equal((await ready()).status, 409);
+    }
+    assert.equal(f.rows.size, 0); assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+  } finally { globalThis.fetch = original; delete env.FREEBEAT_ALLOW_MEMBER_ONLY; }
+});
+
+test('LTX exact receipt is requoted, session/expiry bound, rechecks help, dispatches once with cap and reads private failures', async () => {
+  const original = globalThis.fetch, f = ltxFixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect(); const receipt = await (await api('ltx-prepare', { cookie, method: 'POST', data: ltxInput })).json();
+    const other = await connect(); assert.equal((await submit(other, receipt.approval)).status, 400);
+    const realNow = Date.now;
+    try { Date.now = () => receipt.expiresAt + 1; const expired = await submit(cookie, receipt.approval); assert.equal(expired.status, 400); }
+    finally { Date.now = realNow; }
+    f.setQuote({ status: 'quoted', credits: 38 });
+    const drift = await submit(cookie, receipt.approval); assert.equal(drift.status, 409); assert.equal((await drift.json()).video_dispatch, 'not_sent');
+    f.setQuote({ status: 'quoted', credits: 37 });
+    f.setHelp({ ...ltxHelp, resolutions: ['720p'] });
+    const changed = await submit(cookie, receipt.approval); assert.equal(changed.status, 409); assert.equal((await changed.json()).video_dispatch, 'not_sent');
+    f.setHelp({ ...ltxHelp, model: { model_id: 97, available: false } }); assert.equal((await submit(cookie, receipt.approval)).status, 409);
+    assert.equal(f.rows.size, 0);
+    f.setHelp(ltxHelp);
+    const responses = await Promise.all([submit(cookie, receipt.approval), submit(cookie, receipt.approval)]);
+    assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+    const accepted = await responses.find((r) => r.status === 200).json(); assert.equal(accepted.status, 'submitted');
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+    assert.equal([...f.rows.values()][0].max_credits, 47);
+    const history = await (await api('video-tests', { cookie })).json(); assert.equal(history.tests[0].model_id, 97);
+    f.setTaskResult({ status: 'failed', billing: { charged: 0 }, items: [{ status: 'failed', error_message: 'No specific reason https://private.example?token=SECRET' }] });
+    const task = await (await api('video-task', { cookie, method: 'POST', data: { id: accepted.id } })).json();
+    assert.equal(task.task.status, 'failed'); assert.equal(task.task.billing.charged, 0); assert.equal(task.task.item_failures[0].reason_hidden, true);
+    const detail = () => api('video-private-failure', { cookie, method: 'POST', data: { id: accepted.id, acknowledge: true } });
+    const privateResult = await (await detail()).text(); assert.match(privateResult, /No specific reason/); assert.doesNotMatch(privateResult, /private\.example|SECRET/);
+    assert.equal((await submit(cookie, receipt.approval)).status, 409);
+  } finally { globalThis.fetch = original; }
+});
+
+test('LTX storage failures and uncertain dispatch never create a second paid request', async () => {
+  const original = globalThis.fetch, warn = console.warn, f = ltxFixture(); globalThis.fetch = f.fetch; console.warn = () => {};
+  try {
+    const cookie = await connect(); const ready = async () => (await api('ltx-prepare', { cookie, method: 'POST', data: ltxInput })).json();
+    const receipt = await ready(); f.setDbMode('unavailable'); assert.equal((await submit(cookie, receipt.approval)).status, 503);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+    f.setDbMode('ok'); f.setGenerateMode('lost');
+    const result = await (await submit(cookie, receipt.approval)).json(); assert.equal(result.status, 'unknown');
+    assert.equal([...f.rows.values()][0].status, 'unknown');
+    assert.equal((await submit(cookie, receipt.approval)).status, 409);
+    const next = await ready(); const blocked = await submit(cookie, next.approval); assert.equal(blocked.status, 409); assert.equal((await blocked.json()).video_dispatch, undefined);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+  } finally { globalThis.fetch = original; console.warn = warn; }
+});
+
+test('LTX incomplete options never authorize paid dispatch, including metadata disappearing between prepare and submit', async () => {
+  const original = globalThis.fetch, f = ltxFixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect(); const ready = () => api('ltx-prepare', { cookie, method: 'POST', data: ltxInput });
+    const receipt = await (await ready()).json();
+    for (const help of [
+      { model: ltxHelp.model },
+      { ...ltxHelp, generation_types: [] }, { ...ltxHelp, generation_types: undefined },
+      { ...ltxHelp, durations: [] }, { ...ltxHelp, durations: undefined },
+      { ...ltxHelp, resolutions: [] }, { ...ltxHelp, resolutions: undefined },
+      { ...ltxHelp, aspect_ratios: [] }, { ...ltxHelp, aspect_ratios: undefined },
+      { ...ltxHelp, durations: [], min_duration: 4 },
+      { ...ltxHelp, durations: [], min_duration: 8, max_duration: 12 },
+    ]) {
+      f.setHelp(help);
+      const quoteCount = f.calls.filter((c) => c.params?.name === 'quote_generation').length;
+      const response = await ready(); assert.equal(response.status, 409, JSON.stringify(help));
+      assert.match((await response.json()).error, /belum mengonfirmasi opsi terpilih/);
+      const submitted = await submit(cookie, receipt.approval); assert.equal(submitted.status, 409);
+      assert.equal((await submitted.json()).video_dispatch, 'not_sent');
+      assert.equal(f.calls.filter((c) => c.params?.name === 'quote_generation').length, quoteCount, 'incomplete metadata must block before pricing/dispatch');
+      assert.equal(f.rows.size, 0);
+    }
+    f.setHelp({ ...ltxHelp, durations: [], min_duration: 4, max_duration: 12 });
+    const range = await ready(); assert.equal(range.status, 200, 'explicit duration range may authorize the selected duration');
+    const accepted = await submit(cookie, (await range.json()).approval); assert.equal(accepted.status, 200);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+  } finally { globalThis.fetch = original; }
+});

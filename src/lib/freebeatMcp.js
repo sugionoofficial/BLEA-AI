@@ -1852,9 +1852,32 @@ async function videoMark(env, uid, id, status, taskId = null) {
   const rows = await videoDb(env, `?id=eq.${encodeURIComponent(id)}&admin_id=eq.${encodeURIComponent(uid)}&status=eq.dispatching`, { method: 'PATCH', body: { status, task_id: taskId, updated_at: new Date().toISOString() } });
   if (rows.length !== 1) throw fail('Status penyimpanan uji video tidak dapat dipastikan.', 503);
 }
-async function prepareVideo(env, user, session, input, hailuo = false) {
+// Narrow admin experiments only; never populate or bypass the consumer catalog.
+function diagnosticModelId(kind) { return kind === 'hailuo' ? 106 : kind === 'ltx' ? 97 : null; }
+function assertSingleImageDiagnostic(input, kind) {
+  const modelId = diagnosticModelId(kind);
+  if (!modelId || input.model_id !== modelId || input.generation_type !== 'image' || input.input_mode !== 'keyframe' || !Array.isArray(input.images) || input.images.length !== 1 || !Number.isSafeInteger(input.duration) || input.duration < 1 || input.duration > 600 || !input.resolution || !input.aspect_ratio
+    || (kind === 'hailuo' && (input.duration !== 10 || input.resolution !== '768p' || !['16:9', '9:16', '1:1'].includes(input.aspect_ratio)))) throw fail(`Uji model ${modelId || '-'} hanya untuk satu gambar keyframe/image dengan durasi, resolusi dan rasio eksplisit yang valid.`, 400);
+}
+// Unknown options are not evidence of support for an unverified paid model.
+// Hailuo retains its existing fixed-preset policy; this stricter gate is LTX-only.
+function assertExplicitLtxOptions(help, settings) {
+  const options = collectHelpOptions(help, 'image');
+  const durationCovered = options.durations.length
+    ? options.durations.includes(settings.duration)
+    : Number.isInteger(options.minDuration) && Number.isInteger(options.maxDuration)
+      && options.minDuration <= options.maxDuration && settings.duration >= options.minDuration && settings.duration <= options.maxDuration;
+  const missing = [
+    ...(!options.generations.includes('image') ? ['generation_type=image'] : []),
+    ...(!durationCovered ? ['duration'] : []),
+    ...(!options.resolutions.includes(settings.resolution) ? ['resolution'] : []),
+    ...(!options.aspectRatios.includes(settings.aspect_ratio) ? ['aspect_ratio'] : []),
+  ];
+  if (missing.length) throw fail(`Help live LTX belum mengonfirmasi opsi terpilih: ${missing.join(', ')}. Generasi diblokir; jangan menebak dukungan dari quote.`, 409);
+}
+async function prepareVideo(env, user, session, input, diagnostic = null) {
   await requireImageSession(session);
-  if (!hailuo) {
+  if (!diagnostic) {
     const models = await getModels(session.accessToken, 'video');
     const found = models.models.some((model) => {
       const id = model.model_id;
@@ -1862,7 +1885,8 @@ async function prepareVideo(env, user, session, input, hailuo = false) {
     });
     if (!found) throw fail('Model tidak ditemukan dalam daftar video Freebeat saat ini. Muat ulang daftar model.', 400);
   }
-  const opened = hailuo ? await openMcpSession(env, session) : null;
+  if (diagnostic) assertSingleImageDiagnostic(input, diagnostic);
+  const opened = diagnostic ? await openMcpSession(env, session) : null;
   if (opened) { session = opened.session; await requireImageSession(session); }
   const exact = { prompt: input.prompt, images: input.images, image_url: input.images[0] || '', input_mode: input.input_mode };
   const base = {
@@ -1873,15 +1897,16 @@ async function prepareVideo(env, user, session, input, hailuo = false) {
     ...(input.aspect_ratio ? { aspect_ratio: input.aspect_ratio } : {}),
   };
   const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, base, opened?.headers);
-  if (hailuo && (help.model?.model_id !== 106 || help.model?.available !== true)) throw fail('Help live belum mengonfirmasi model 106 tersedia. Generasi Hailuo diblokir.', 409);
+  if (diagnostic && (help.model?.model_id !== diagnosticModelId(diagnostic) || help.model?.available !== true)) throw fail(`Help live belum mengonfirmasi model ${diagnosticModelId(diagnostic)} tersedia. Generasi diblokir.`, 409);
   assertModelUsable(help, input.model_id, env);
+  if (diagnostic === 'ltx') assertExplicitLtxOptions(help, base);
   const normalized = normalizeVideoSettings(help, base, input.generation_type);
   const settings = normalized.settings;
-  if (hailuo && normalized.adjusted.length) throw fail('Preset Hailuo berubah menurut help live. Periksa informasi/quote baru; tidak ada video dikirim.', 409);
+  if (diagnostic && normalized.adjusted.length) throw fail('Parameter berubah menurut help live. Sesuaikan input dengan informasi/quote baru; tidak ada video dikirim.', 409);
   const credits = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, settings, opened?.headers));
   if (credits === null) throw fail('Freebeat tidak memberikan quote numerik yang dapat digunakan. Generasi tidak diaktifkan.', 409);
   const expires = Date.now() + APPROVAL_LIFETIME;
-  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, prompt: exact.prompt, images: exact.images, credits, expires, ...(hailuo ? { hailuo: true } : {}) }, env, 'video-approval');
+  const approval = await seal({ id: crypto.randomUUID(), uid: user.id, sessionHash: await sessionHash(session), settings, prompt: exact.prompt, images: exact.images, credits, expires, ...(diagnostic === 'hailuo' ? { hailuo: true } : diagnostic === 'ltx' ? { ltx: true } : {}) }, env, 'video-approval');
   if (approval.length > 14000) throw fail('Input terlalu besar untuk persetujuan uji.', 400);
   return {
     approval,
@@ -1909,17 +1934,20 @@ async function submitVideo(env, user, session, request) {
   if (exact.prompt !== ticket.prompt || exact.images.length !== rawImages.length || exact.images.some((url, idx) => url !== rawImages[idx])) throw fail('Persetujuan tidak valid.', 400);
   if (ticket.expires <= Date.now()) throw videoNotSent('Persetujuan kedaluwarsa; tidak ada video dikirim.', 400);
   let recoveredHeaders = null;
-  if (ticket.hailuo === true) {
-    if (ticket.settings.model_id !== 106 || ticket.settings.generation_type !== 'image' || ticket.settings.duration !== 10 || ticket.settings.resolution !== '768p' || !['16:9', '9:16', '1:1'].includes(ticket.settings.aspect_ratio) || exact.images.length !== 1) throw fail('Preset persetujuan Hailuo tidak valid.', 400);
+  const diagnostic = ticket.hailuo === true ? 'hailuo' : ticket.ltx === true ? 'ltx' : null;
+  if (diagnostic) {
+    const modelId = diagnosticModelId(diagnostic);
+    assertSingleImageDiagnostic({ ...ticket.settings, images: exact.images, input_mode: 'keyframe' }, diagnostic);
     const opened = await openMcpSession(env, session);
     session = opened.session; recoveredHeaders = opened.headers;
     await requireImageSession(session);
-    if (ticket.sessionHash !== await sessionHash(session)) throw videoNotSent('Sesi persetujuan Hailuo berubah; buat quote baru.', 400);
+    if (ticket.sessionHash !== await sessionHash(session)) throw videoNotSent('Sesi persetujuan berubah; buat quote baru.', 400);
     const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, ticket.settings, recoveredHeaders);
-    if (help.model?.model_id !== 106 || help.model?.available !== true) throw videoNotSent('Model 106 tidak lagi terkonfirmasi tersedia. Tidak ada video dikirim.');
+    if (help.model?.model_id !== modelId || help.model?.available !== true) throw videoNotSent(`Model ${modelId} tidak lagi terkonfirmasi tersedia. Tidak ada video dikirim.`);
     try {
-      assertModelUsable(help, 106, env);
-      if (normalizeVideoSettings(help, ticket.settings, 'image').adjusted.length) throw fail('Kemampuan model Hailuo berubah. Tidak ada video dikirim; periksa quote baru.', 409);
+      assertModelUsable(help, modelId, env);
+      if (diagnostic === 'ltx') assertExplicitLtxOptions(help, ticket.settings);
+      if (normalizeVideoSettings(help, ticket.settings, 'image').adjusted.length) throw fail('Kemampuan model berubah. Tidak ada video dikirim; periksa quote baru.', 409);
     } catch (error) { if (error?.status === 409) throw videoNotSent(error.message); throw error; }
   }
   const current = quotedCredits(await videoDiagnostic(session.accessToken, 'video-quote', exact, true, ticket.settings, recoveredHeaders));
@@ -4022,14 +4050,15 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'music-submit' && request.method === 'POST') return response({ ok: true, ...(await submitMusic(env, user, session, request)) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'music-task' && request.method === 'POST') return response({ ok: true, task: await pollMusic(env, user, session, request) }, 200, { 'referrer-policy': 'no-referrer' });
     }
-    // Narrow admin-only diagnostic: model 106 need not be in a truncated
-    // catalog, but live help must positively confirm this exact preset model.
-    if (action === 'hailuo-prepare' && request.method === 'POST') {
+    // These two explicit experiments can inspect models absent from truncated
+    // catalogs; all generic/catalog and consumer generation guards stay intact.
+    if (['hailuo-prepare', 'ltx-prepare'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       const input = await parseVideoPrepare(request);
-      if (input.model_id !== 106 || input.generation_type !== 'image' || input.images.length !== 1 || input.input_mode !== 'keyframe' || input.duration !== 10 || input.resolution !== '768p' || !['16:9', '9:16', '1:1'].includes(input.aspect_ratio)) throw fail('Uji Hailuo hanya untuk model 106, satu gambar, keyframe/image, 10 detik, 768p dan rasio 16:9/9:16/1:1.', 400);
-      return response({ ok: true, ...(await prepareVideo(env, user, session, input, true)) }, 200, { 'referrer-policy': 'no-referrer' });
+      const diagnostic = action === 'hailuo-prepare' ? 'hailuo' : 'ltx';
+      assertSingleImageDiagnostic(input, diagnostic);
+      return response({ ok: true, ...(await prepareVideo(env, user, session, input, diagnostic)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (['video-prepare', 'video-submit', 'video-tests', 'video-task', 'video-private-failure'].includes(action)) {
       const session = await readSession(request, env, user.id);

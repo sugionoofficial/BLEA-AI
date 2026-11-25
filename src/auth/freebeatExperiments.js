@@ -7,6 +7,7 @@ export const FREEBEAT_EXPERIMENTS = Object.freeze([
   { id: 'image-job', category: 'Gambar', title: 'Status job gambar', description: 'Periksa status, tagihan, dan kegagalan job yang sudah ada.', access: 'Baca saja' },
   { id: 'video', category: 'Video', title: 'Model & generasi video', description: 'Katalog video, parameter model, quote, dan uji dengan persetujuan.', access: 'Uji berbayar' },
   { id: 'hailuo', category: 'Video', title: 'Hailuo 2.3 Pro · #106', description: 'Upload foto, quote preset 10 detik/768p, persetujuan satu video dan pemantauan hasil.', access: 'Uji berbayar' },
+  { id: 'ltx', category: 'Video', title: 'LTX 2.3 · #97', description: 'Help live, upload foto, quote parameter pilihan, persetujuan satu video dan diagnosis hasil.', access: 'Uji berbayar' },
   { id: 'dance', category: 'Video', title: 'Dance Video', description: 'Uji video dance dari lagu dan foto karakter.', access: 'Uji berbayar' },
   { id: 'singing', category: 'Video', title: 'Singing Video', description: 'Uji video bernyanyi dari foto penyanyi dan audio.', access: 'Uji berbayar' },
   { id: 'lip-sync', category: 'Video', title: 'Lip-Sync Video', description: 'Uji sinkronisasi bibir pada video sumber dengan audio.', access: 'Uji berbayar' },
