@@ -8,7 +8,7 @@
 </head>
 <body>
   <main>
-    <header><span class="eyebrow">BLEA · PREVIEW</span><h1>Browser Companion</h1><p>Hubungkan tab aplikasi, lalu biarkan BLEA Agent mengoperasikan tab tujuan.</p></header>
+    <header><span class="eyebrow">BLEA · PREVIEW</span><h1>Browser Companion</h1><p>BLEA Agent membuka tab task baru otomatis. Pilihan tab di bawah hanya dipakai oleh runner manual.</p></header>
     <section class="target-picker">
       <label for="targets">Tab tujuan</label>
       <div class="target-row"><select id="targets" aria-label="Pilih tab tujuan"><option value="">Muat tab…</option></select><button id="refreshTabs" class="secondary">↻</button></div>
@@ -29,7 +29,7 @@
       <button id="confirmRun" class="primary">Konfirmasi langkah berikutnya</button>
     </section>
     <div id="status" role="status" aria-live="polite">Siap. Contoh: “cari … di Google”, “buka https://…”, “baca halaman”, “salin teks …”, “tempel ke kolom …”, “klik tombol …”, “isi kolom … dengan …”.</div>
-    <p class="safety">STOP menghentikan langkah berikutnya; klik yang sudah berjalan tidak bisa ditarik kembali. Pembayaran dan penghapusan diblokir. Task AI dimulai dari BLEA Agent → Browser live.</p>
+    <p class="safety">STOP menghentikan langkah berikutnya; klik yang sudah berjalan tidak bisa ditarik kembali. Pembayaran dan penghapusan diblokir. Izin Debugger dipakai untuk klik/ketik terlihat dan menampilkan peringatan Chrome. Task AI dimulai dari BLEA Agent → Browser live.</p>
   </main>
   <script type="module" src="popup.js"></script>
 </body>

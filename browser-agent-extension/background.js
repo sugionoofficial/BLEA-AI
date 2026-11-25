@@ -27,11 +27,100 @@ async function getTarget() {
 
 async function withAuthorizedTarget(fn) {
   const target = await getTarget();
-  if (!target) throw new Error('Pilih tab tujuan di side panel ekstensi terlebih dahulu.');
+  if (!target) throw new Error('Belum ada tab task. Mulai task dari BLEA Agent untuk membuka tab otomatis.');
   const url = new URL(target.url);
   const allowed = await chrome.permissions.contains({ origins: [`${url.origin}/*`] });
-  if (!allowed) throw new Error(`Izin situs belum diberikan untuk ${url.origin}. Pilih ulang tab itu di side panel lalu izinkan akses.`);
+  if (!allowed) throw new Error(`Izin situs belum diberikan untuk ${url.origin}. Berikan izin origin itu dari side panel ekstensi.`);
   return fn(target);
+}
+
+async function focusTarget(target) {
+  const tab = await chrome.tabs.get(target.tabId);
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await chrome.tabs.update(tab.id, { active: true });
+}
+
+function waitForTabComplete(tabId, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const finish = (error, tab) => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(tab);
+    };
+    const listener = (updatedId, changeInfo, tab) => {
+      if (updatedId === tabId && changeInfo.status === 'complete') finish(null, tab);
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    timer = setTimeout(() => finish(new Error('Waktu tunggu halaman task habis.')), timeoutMs);
+    chrome.tabs.get(tabId).then((tab) => { if (tab.status === 'complete') finish(null, tab); }).catch((error) => finish(error));
+  });
+}
+
+async function cdp(target, method, params = {}) {
+  return chrome.debugger.sendCommand({ tabId: target.tabId }, method, params);
+}
+
+async function withDebugger(target, fn) {
+  const debuggee = { tabId: target.tabId };
+  await chrome.debugger.attach(debuggee, '1.3');
+  try { return await fn(); }
+  finally { try { await chrome.debugger.detach(debuggee); } catch {} }
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function typeInto(target, label, value) {
+  const geometry = await chrome.scripting.executeScript({
+    target: { tabId: target.tabId },
+    func: (wanted) => {
+      const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const controls = [...document.querySelectorAll('input:not([type="password"]):not([type="hidden"]),textarea,[contenteditable="true"],[role="textbox"]')];
+      const name = (el) => [el.labels ? [...el.labels].map((x) => x.innerText).join(' ') : '', el.getAttribute('aria-label'), el.placeholder, el.name].join(' ');
+      const el = controls.find((item) => item.getClientRects().length && !item.disabled && !item.readOnly && norm(name(item)) === norm(wanted));
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, args: [label],
+  });
+  const point = geometry?.[0]?.result;
+  if (!point) throw new Error(`Kolom “${label}” tidak ditemukan sebagai kontrol yang terlihat.`);
+  await withDebugger(target, async () => {
+    await cdp(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, pointerType: 'mouse' });
+    await cdp(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await cdp(target, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'CTRL', code: 'ControlLeft', modifiers: 2 });
+    await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2 });
+    await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2 });
+    await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'CTRL', code: 'ControlLeft' });
+    for (const char of String(value)) { await cdp(target, 'Input.insertText', { text: char }); await delay(35); }
+  });
+  return { ok: true, message: `Pointer diarahkan ke “${label}” dan ${String(value).length} karakter diketik satu per satu.` };
+}
+
+async function clickVisible(target, label) {
+  const geometry = await chrome.scripting.executeScript({
+    target: { tabId: target.tabId },
+    func: (wanted) => {
+      const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const el = [...document.querySelectorAll('button,[role="button"],a[href],input[type="submit"]')]
+        .find((item) => item.getClientRects().length && norm(item.innerText || item.getAttribute('aria-label') || item.title || item.value) === norm(wanted));
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, args: [label],
+  });
+  const point = geometry?.[0]?.result;
+  if (!point) throw new Error(`Kontrol “${label}” tidak ditemukan.`);
+  await withDebugger(target, async () => {
+    await cdp(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, pointerType: 'mouse' });
+    await delay(120);
+    await cdp(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await cdp(target, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+  });
+  return { ok: true, message: `Pointer mengklik “${label}”.` };
 }
 
 function snapshotPage() {
@@ -134,10 +223,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return { error: 'Permintaan extension tidak dikenal.' };
     }
 
+    if (type === 'open-task-tab') {
+      const created = await chrome.tabs.create({ url: 'https://www.google.com/', active: true });
+      const tab = await waitForTabComplete(created.id);
+      await chrome.storage.session.set({ [TARGET_KEY]: { tabId: tab.id, windowId: tab.windowId } });
+      return { result: { tabId: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title || 'Google' } };
+    }
     if (type === 'ping') return { result: { connected: true } };
     if (type === 'get-target') return { result: await getTarget() };
     if (type === 'snapshot') {
       return await withAuthorizedTarget(async (target) => {
+        await focusTarget(target);
         const results = await chrome.scripting.executeScript({ target: { tabId: target.tabId }, func: snapshotPage });
         return { result: results?.[0]?.result || null };
       });
@@ -145,12 +241,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (type === 'act') {
       const action = message.payload?.action;
       return await withAuthorizedTarget(async (target) => {
-        const url = new URL(target.url);
+        await focusTarget(target);
         if (action?.type === 'navigate') {
           const next = new URL(String(action.url || ''));
           const permission = await chrome.permissions.contains({ origins: [`${next.origin}/*`] });
-          if (!permission) throw new Error(`Situs ${next.origin} belum diizinkan. Pilih tab tersebut di side panel untuk meminta izin, lalu lanjutkan task.`);
+          if (!permission) throw new Error(`Situs ${next.origin} belum diizinkan. Masukkan origin tersebut pada kolom izin tambahan di side panel ekstensi, lalu lanjutkan task.`);
         }
+        if (action?.type === 'fill') return { result: await typeInto(target, action.label, action.value) };
+        if (action?.type === 'click') return { result: await clickVisible(target, action.label) };
         const results = await chrome.scripting.executeScript({ target: { tabId: target.tabId }, func: performAction, args: [action] });
         return { result: results?.[0]?.result || { ok: true } };
       });
