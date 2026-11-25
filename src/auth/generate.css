@@ -1439,3 +1439,64 @@
 .generate-studio-result-meta small { opacity: .72; }
 .generate-studio-result-meta a { color: var(--primary, #8b8bff); font-weight: 600; text-decoration: none; }
 .generate-studio-result-meta a:hover { text-decoration: underline; }
+
+.dropx-shell .generate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .dropx-shell .generate-mode-tabs {
+    gap: 6px;
+  }
+
+  .dropx-shell .generate-mode-tabs button {
+    min-height: 44px;
+    padding: 7px 6px;
+    line-height: 1.2;
+  }
+
+  .dropx-shell .generate-card,
+  .dropx-shell .generate-form,
+  .dropx-shell .generate-stage-col {
+    gap: 10px;
+  }
+
+  .dropx-shell .generate-banner {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .dropx-shell .generate-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 0;
+  }
+
+  .dropx-shell .generate-actions .generate-submit-btn {
+    width: auto;
+    flex: 1 1 160px;
+  }
+
+  .dropx-shell .generate-actions .generate-secondary-btn {
+    flex: 1 1 auto;
+  }
+
+  .dropx-shell .generate-actions button {
+    min-height: 44px;
+  }
+
+  .dropx-shell .generate-history {
+    margin-top: 0;
+    padding-top: 10px;
+  }
+
+  .dropx-shell .generate-img-live-stage {
+    margin-top: 0;
+    min-height: 180px;
+    padding: 16px 12px;
+  }
+}

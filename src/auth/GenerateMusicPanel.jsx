@@ -310,7 +310,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
         </div>
       )}
 
-      <form onSubmit={submit}>
+      <form className="generate-form" onSubmit={submit}>
         {models.length > 0 && (
           <div className="generate-field">
             <div className="generate-label-row">
@@ -385,7 +385,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
         </label>
 
         {supportsInstrumental !== false && !requiresLyrics && (
-          <label className="generate-toggle" style={{ marginTop: 6 }}>
+          <label className="generate-toggle">
             <input
               type="checkbox"
               checked={instrumental}
@@ -403,7 +403,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
         )}
 
         {supportsLyrics !== false && (
-          <label className="generate-field" style={{ marginTop: 10 }}>
+          <label className="generate-field">
             <div className="generate-label-row">
               <span className="generate-label">
                 Lirik lagu {requiresLyrics ? '(wajib)' : '(opsional)'}
@@ -425,7 +425,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
         )}
 
         {supportsDuration && (
-          <label className="generate-field" style={{ marginTop: 10 }}>
+          <label className="generate-field">
             <div className="generate-label-row">
               <span className="generate-label">Target durasi (opsional, 10–300 detik)</span>
             </div>
@@ -443,7 +443,7 @@ export function GenerateMusicPanel({ initialPrompt = '' }) {
           </label>
         )}
 
-        <div className="generate-actions" style={{ marginTop: 12 }}>
+        <div className="generate-actions">
           <button
             className="generate-submit-btn"
             type="submit"

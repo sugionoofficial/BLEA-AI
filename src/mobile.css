@@ -91,6 +91,17 @@ iframe {
     gap: 8px;
   }
 
+  .dropx-footer {
+    margin-top: 18px;
+    padding-top: 12px;
+  }
+
+  .dropx-shell .live-page,
+  .dropx-shell .meta-page {
+    gap: 10px;
+    padding: 0 0 12px;
+  }
+
   .dropx-page-title h1 {
     font-size: 16.5px;
   }

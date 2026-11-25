@@ -320,7 +320,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
       </div>
     )}
 
-    <form onSubmit={submit}>
+    <form className="generate-form" onSubmit={submit}>
       {models.length > 0 && <div className="generate-field">
         <div className="generate-label-row">
           <span className="generate-label">Model gambar</span>
@@ -399,7 +399,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
         </div>
         <textarea className="generate-textarea" rows={4} maxLength={maxPromptChars} value={prompt} placeholder="Contoh: potret studio seekor kucing hitam, cahaya lembut, latar abu-abu" onChange={(event) => { setPrompt(event.target.value); setNotice(''); }} />
       </label>
-      <div className="generate-actions" style={{ marginTop: 10 }}>
+      <div className="generate-actions">
         <button className="generate-submit-btn" type="submit" disabled={busy || uploading || !ready || insufficient || missingRequiredImage || !prompt.trim()}>
           {(busy || uploading) && <span className="generate-btn-spinner" aria-hidden="true" />}
           {busy ? 'Mengirim…' : 'Buat gambar'}
