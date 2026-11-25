@@ -3762,23 +3762,34 @@ async function dispatchFreebeat(request, url, env, user) {
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'image_url')) throw fail('Permintaan tidak valid.', 400);
       const photoUrl = consumerImageUrl(typeof input.image_url === 'string' ? input.image_url : '');
       if (!photoUrl) throw fail('URL foto tidak valid. Gunakan URL HTTPS publik.', 400);
-      return response({ ok: true, ...(await imageUploadQuote(session.accessToken, photoUrl)) });
+      const opened = await openMcpSession(env, session);
+      await requireImageSession(opened.session);
+      return response({ ok: true, ...(await imageUploadQuote(opened.session.accessToken, photoUrl, opened.headers)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (action === 'image-upload-host' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
       await requireImageSession(session);
       const input = await imageJson(request);
-      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['image_url', 'expected_credits', 'acknowledge'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi biaya diperlukan.', 400);
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['image_url', 'expected_credits', 'acknowledge', 'accept_unknown_cost'].includes(key)) || input.acknowledge !== true) throw fail('Konfirmasi biaya diperlukan.', 400);
       const photoUrl = consumerImageUrl(typeof input.image_url === 'string' ? input.image_url : '');
       if (!photoUrl) throw fail('URL foto tidak valid. Gunakan URL HTTPS publik.', 400);
+      const unknownConsent = input.accept_unknown_cost === true;
+      if ((input.accept_unknown_cost !== undefined && !unknownConsent) || (unknownConsent && input.expected_credits !== undefined)) throw fail('Pilih persetujuan biaya numerik atau biaya tidak diketahui, bukan keduanya.', 400);
       const expected = Number.isSafeInteger(input.expected_credits) && input.expected_credits >= 0 && input.expected_credits <= 100 ? input.expected_credits : null;
-      if (expected === null) throw fail('Batas biaya yang disetujui tidak valid.', 400);
-      // Quote ulang di server: biaya harus pasti dan tidak melebihi persetujuan.
-      const quoted = await imageUploadQuote(session.accessToken, photoUrl);
-      if (quoted.credits === null) throw fail(`Provider tidak memberi quote untuk upload_image (status ${quoted.status || 'tidak diketahui'}); upload tidak dikirim.`, 409);
-      if (quoted.credits > expected) throw fail(`Biaya upload ${quoted.credits} kredit melebihi batas ${expected} yang Anda setujui; upload tidak dikirim.`, 409);
-      return response({ ok: true, quote_credits: quoted.credits, ...(await imageUploadHost(session.accessToken, photoUrl)) }, 200, { 'referrer-policy': 'no-referrer' });
+      if (!unknownConsent && expected === null) throw fail('Batas biaya yang disetujui tidak valid.', 400);
+      const opened = await openMcpSession(env, session);
+      await requireImageSession(opened.session);
+      // A read-only quote rejection is never silently treated as free. An
+      // unknown-price upload needs its own explicit, mutually exclusive consent.
+      const quoted = await imageUploadQuote(opened.session.accessToken, photoUrl, opened.headers);
+      if (unknownConsent) {
+        if (quoted.credits !== null || quoted.unknown_cost_allowed !== true) throw fail('Kondisi quote berubah atau akses gagal. Periksa biaya lagi; upload tidak dikirim.', 409);
+      } else {
+        if (quoted.credits === null) throw fail('Quote upload_image tidak tersedia. Upload tidak dikirim; periksa diagnosis dan persetujuan biaya terpisah.', 409);
+        if (quoted.credits > expected) throw fail(`Biaya upload ${quoted.credits} kredit melebihi batas ${expected} yang Anda setujui; upload tidak dikirim.`, 409);
+      }
+      return response({ ok: true, quote_credits: quoted.credits, accept_unknown_cost: unknownConsent, ...(await imageUploadHost(opened.session.accessToken, photoUrl, opened.headers)) }, 200, { 'referrer-policy': 'no-referrer' });
     }
     if (action === 'image-quote-probe' && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
@@ -5130,14 +5141,32 @@ function imageFailureReasons(content) {
   const codes = (value) => (typeof value === 'string' && IMAGE_FAILURE_REASONS.has(value.trim().toLowerCase()) ? value.trim().toLowerCase() : null);
   return [...new Set(imageFailureFields(content).map(codes).filter(Boolean))];
 }
-// Dugaan penyebab gagalnya edit_image: backend Freebeat tidak mengambil URL
-// eksternal, jadi foto harus di-host lebih dulu lewat tool upload_image (web
-// mengirim URL static.freebeat.ai). Skema upload_image TIDAK punya max_credits,
-// maka biayanya dipastikan lewat quote_generation sebelum upload dijalankan.
-async function imageUploadQuote(accessToken, photoUrl) {
-  const content = await rawToolQuote(accessToken, 'upload_image', { urls: [photoUrl] });
+// Upload is a separate tool: some MCP deployments reject its quote while
+// accepting the OAuth session. Keep diagnostics fixed/numeric, never raw prose.
+async function imageUploadQuote(accessToken, photoUrl, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
+  const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'quote_generation', arguments: { tool: 'upload_image', parameters: { urls: [photoUrl] } } } }, 'quote', headers, 262144, true);
+  if (result?.isError || result?.error) {
+    const exhausted = isFreebeatBalanceExhausted(result);
+    const rpcCode = Number.isSafeInteger(result?.error?.code) ? result.error.code : null;
+    const content = modelContent(result);
+    // Some MCP SDKs encode argument-enum validation as isError text rather
+    // than JSON-RPC -32602. Classify only explicit upload_image quote/schema
+    // rejection vocabulary; never expose the text or open this for auth errors.
+    const text = Array.isArray(result.content) ? result.content.slice(0, 10).filter((item) => item?.type === 'text' && typeof item.text === 'string').map((item) => item.text.slice(0, 2000)).join(' ') : '';
+    const accessText = [text, result.error?.message, content?.message, content?.status, content?.error_code].filter((item) => typeof item === 'string').map((item) => item.slice(0, 2000)).join(' ');
+    const accessDenied = /unauthori[sz]ed|forbidden|access[ _-]denied|permission[ _-]denied|invalid[ _-]token|expired[ _-]token/i.test(accessText);
+    const explicitToolRejection = result.isError === true && /\bupload_image\b/i.test(text) && /not supported|unsupported|input should be|not (?:an? )?allowed|invalid (?:tool|enum)/i.test(text);
+    const unsupported = !accessDenied && ([-32601, -32602].includes(rpcCode) || explicitToolRejection || ['unavailable', 'unsupported', 'not_supported', 'unquotable', 'no_quote'].includes(content?.status));
+    return { credits: null, status: exhausted ? 'insufficient_credits' : 'quote_rejected', unknown_cost_allowed: !exhausted && unsupported,
+      diagnostic: { stage: 'upload_quote', kind: exhausted ? 'insufficient_credits' : 'rpc_rejected', ...(rpcCode !== null ? { rpc_code: rpcCode } : {}) }, quote: null };
+  }
+  const content = modelContent(result);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');
   const credits = quotedCredits(content);
-  return { credits, status: typeof content?.status === 'string' ? content.status : null, quote: safeQuote(content) };
+  const statuses = new Set(['quoted', 'available', 'unavailable', 'unsupported', 'insufficient_credits']);
+  const status = statuses.has(content.status) ? content.status : 'unknown';
+  return { credits, status, unknown_cost_allowed: credits === null && ['unavailable', 'unsupported'].includes(status), quote: safeQuote(content) };
 }
 // Only return a structured, validated Freebeat URL for quote handoff. Never
 // scrape arbitrary message text or treat an echoed external source as hosted.
@@ -5152,10 +5181,10 @@ function hostedUploadImageUrl(content) {
   const url = consumerImageUrl(candidate);
   return url && url.length <= 2048 && isFreebeatHostedMediaUrl(url) ? url : null;
 }
-async function imageUploadHost(accessToken, photoUrl) {
+async function imageUploadHost(accessToken, photoUrl, existingHeaders = null) {
   let content;
   try {
-    const headers = await openMcp(accessToken);
+    const headers = existingHeaders || await openMcp(accessToken);
     const { result } = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'upload_image', arguments: { urls: [photoUrl] } } }, 'upload', headers, 262144);
     content = modelContent(result);
     if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('upload', 'response');
