@@ -8,6 +8,7 @@ import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { FreebeatDanceDiagnostic } from './FreebeatDanceDiagnostic';
 import { FreebeatSingingLipSyncDiagnostic } from './FreebeatSingingLipSyncDiagnostic';
 import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
+import { FreebeatHailuoDiagnostic } from './FreebeatHailuoDiagnostic';
 import { FreebeatVocalSchemaDiagnostic } from './FreebeatVocalSchemaDiagnostic';
 import { FreebeatRemainingSchemaDiagnostic } from './FreebeatRemainingSchemaDiagnostic';
 import { FreebeatCatalogInspector } from './FreebeatCatalogInspector';
@@ -399,6 +400,7 @@ export function FreebeatPage() {
         </div>
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
         {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
+        <FreebeatHailuoDiagnostic key={`hailuo-${user?.id || ''}`} connected={connected} loading={loading} request={request} videoModels={videoModels} />
         <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} videoModels={videoModels} videoBusy={videoBusy} />
       </section>
       <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />

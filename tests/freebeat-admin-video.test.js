@@ -774,3 +774,51 @@ test('Open RPC batch numeric error_code, used_credits, and zero-accepted submit 
 
 
 
+
+test('Hailuo web-observed model 106 is inspected/quoted via MCP without paid calls or catalog activation', async () => {
+  const original = globalThis.fetch, f = fixture();
+  let available = true;
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input) === 'https://freebeat.ai/api/mcp') {
+      const body = JSON.parse(init.body);
+      if (body.params?.name === 'get_model_help') {
+        f.calls.push(body);
+        assert.deepEqual(body.params.arguments, { type: 'video', model_id: 106 });
+        return Response.json({ id: body.id, result: { structuredContent: {
+          model: { model_id: 106, available }, generation_types: ['image'], durations: [10],
+          resolutions: ['768p'], aspect_ratios: ['16:9', '9:16'],
+        } } });
+      }
+      if (body.params?.name === 'quote_generation') {
+        f.calls.push(body);
+        assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: {
+          model_id: 106, generation_type: 'image', duration: 10, resolution: '768p', aspect_ratio: '16:9',
+          prompt: 'test prompt', images: ['https://images.example/input.png'],
+        } });
+        return Response.json({ id: body.id, result: { structuredContent: { status: 'quoted', credits: 220 } } });
+      }
+    }
+    return f.fetch(input, init);
+  };
+  try {
+    const cookie = await connect();
+    const payload = { model_id: 106, input_mode: 'keyframe', duration: 10, resolution: '768p', aspect_ratio: '16:9', prompt: 'test prompt', images: ['https://images.example/input.png'] };
+    assert.equal((await api('video-model-help', { cookie, token: 'user', method: 'POST', data: { model_id: 106 } })).status, 403);
+    assert.equal((await api('video-model-help', { token: 'other-admin', cookie, method: 'POST', data: { model_id: 106 } })).status, 401);
+    assert.equal((await api('video-model-quote', { cookie, method: 'POST', origin: 'https://evil.example', data: payload })).status, 403);
+    assert.equal((await api('video-model-help', { cookie, method: 'POST', data: { model_id: 106 } })).status, 200);
+    const result = await api('video-model-quote', { cookie, method: 'POST', data: payload });
+    assert.equal(result.status, 200);
+    const data = await result.json();
+    assert.equal(data.settings.model_id, 106);
+    assert.equal(data.settings.generation_type, 'image');
+    assert.equal(data.quote.status, 'quoted');
+    assert.equal(data.quote.credits, 220); // fixture only, not a live provider price
+    available = false;
+    const unavailable = await api('video-model-quote', { cookie, method: 'POST', data: payload });
+    assert.equal(unavailable.status, 409);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'quote_generation').length, 1);
+    assert.ok(f.calls.every((c) => !c.params?.name || ['get_model_help', 'quote_generation'].includes(c.params.name)));
+    assert.equal(f.rows.size, 0);
+  } finally { globalThis.fetch = original; }
+});

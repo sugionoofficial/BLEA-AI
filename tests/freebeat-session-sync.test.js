@@ -55,7 +55,7 @@ async function harness({ eager = false, rotate = true, rejectedStatus = 401, wro
       ] } });
       calls.push({ name: body.params.name, token });
       if (rejectTool) return new Response(null, { status: 401 });
-      assert.ok(['quote_generation', 'get_credit_balance'].includes(body.params.name), 'must never generate or upload');
+      assert.ok(['quote_generation', 'get_credit_balance', 'get_model_help'].includes(body.params.name), 'must never generate or upload');
       return Response.json({ id: body.id, result: { structuredContent: body.params.name === 'quote_generation' ? { status: 'quoted', credits: 100 } : { credits: 500 } } });
     }
     throw new Error(`Unexpected host: ${url.hostname}`);
@@ -64,7 +64,7 @@ async function harness({ eager = false, rotate = true, rejectedStatus = 401, wro
     inits, calls, legacyReads: () => legacyReads,
     request: (action) => worker.fetch(new Request(`${base}/api/freebeat/${action}`, {
       method: 'POST', headers: { authorization: 'Bearer admin-jwt', cookie: `__Host-blea_freebeat_session=${sealedOld}`, origin: base, 'content-type': 'application/json' },
-      body: JSON.stringify(action === 'vocal-quote' ? { tool: 'generate_lip_sync_video', video_url: 'https://cdn.example/source.mp4', video_duration_ms: 15000, music_id: 123 } : {}),
+      body: JSON.stringify(action === 'vocal-quote' ? { tool: 'generate_lip_sync_video', video_url: 'https://cdn.example/source.mp4', video_duration_ms: 15000, music_id: 123 } : action === 'video-model-help' ? { model_id: 106 } : action === 'video-model-quote' ? { model_id: 106, input_mode: 'keyframe', images: ['https://cdn.example/source.png'], prompt: 'A quiet scene', duration: 10, resolution: '768p', aspect_ratio: '16:9' } : {}),
     }), env),
     restore: () => { globalThis.fetch = originalFetch; },
   };
@@ -132,6 +132,21 @@ test('recovery is bounded and a rejected tool call is never replayed', async () 
       assert.equal(res.status, 401);
       assert.equal(h.inits.length, 1);
       assert.equal(h.calls.length, 1);
+    } finally { h.restore(); }
+  }
+});
+
+
+test('video model help and quote recover the handshake once and reuse that MCP session', async () => {
+  for (const action of ['video-model-help', 'video-model-quote']) {
+    const h = await harness();
+    try {
+      const res = await h.request(action);
+      assert.equal(res.status, 200, await res.clone().text());
+      assert.deepEqual(h.inits, ['Bearer OLD-PRIVATE-TOKEN', 'Bearer NEW-PRIVATE-TOKEN']);
+      assert.deepEqual(h.calls.map((call) => call.name), action === 'video-model-help' ? ['get_model_help'] : ['get_model_help', 'quote_generation']);
+      assert.ok(h.calls.every((call) => call.token === 'Bearer NEW-PRIVATE-TOKEN'));
+      assert.equal(h.legacyReads(), 0);
     } finally { h.restore(); }
   }
 });
