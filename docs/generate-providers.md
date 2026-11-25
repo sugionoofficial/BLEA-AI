@@ -47,3 +47,27 @@ Status verifikasi: adapter per famili, validasi input, pemetaan region Beijing, 
 UnoRouter tidak lagi ditampilkan di katalog video dan `/api/video/models` tidak meminta katalog UnoRouter. `/api/video/generate` menolak provider tersebut atau provider kosong; ini tidak menghapus kredensial atau pengaturan UnoRouter dari fitur Chat/Admin, dan tidak menghapus riwayat video lama. Riwayat lama tetap dapat dipantau/diakses melalui mekanisme sebelumnya. Provider tanpa base URL valid tidak boleh jatuh diam-diam ke URL provider lain.
 
 **Batasan penting:** jalur video lama (`/api/video/generate`) belum menegakkan saldo/debit kredit BLEA, idempotensi tagihan, atau quote Freebeat. Pemanggilan melalui provider video dapat memakai saldo/kuota provider; angka harga historis pada katalog bukan konfirmasi biaya. Pembelian kredit BLEA tetap nonaktif. Freebeat image-to-video belum dihubungkan ke `/generate`.
+
+## Diagnostik kegagalan Singing / Lip-Sync Freebeat
+
+Pesan `Permintaan lip-sync video gagal dikirim ke Freebeat` pada versi lama
+menggabungkan penolakan tool, error HTTP, kegagalan transport, dan respons tidak
+valid. Pesan itu sendiri bukan bukti error ekstensi browser, saldo provider
+habis, atau parameter media tertentu salah. Respons mentah lama tidak disimpan,
+sehingga alasan spesifiknya tidak dapat dipulihkan dari pesan ini.
+
+Worker kini menambahkan tag tetap `FB-VOCAL-*` ke pesan kegagalan dan menyimpan
+`metadata.dispatch_failure` pada baris `video_generations`: kategori, status HTTP
+atau kode RPC numerik jika tersedia, serta alasan terstruktur dari daftar aman.
+Contoh: `FB-VOCAL-HTTP; HTTP 400` atau
+`FB-VOCAL-TOOL-REJECTED; RPC -32602; invalid_parameter`. Kode provider yang tidak
+dikenal dan pesan bebas tidak diteruskan; tidak ada token, URL, atau body respons
+mentah yang ditambahkan ke diagnostik. Ini memperbaiki observabilitas, bukan
+menjamin generasi Freebeat berhasil. Perubahan Worker perlu dideploy dahulu.
+
+Cocokkan refund BLEA dengan `credit_ledger.generation_id`, bukan hanya teks UI.
+Refund BLEA tidak membuktikan Freebeat tidak membuat tugas atau tidak memakai
+kredit provider: timeout/hasil tidak valid setelah dispatch masih mungkin
+terjadi setelah tugas diterima. Penanganan refund lama untuk kasus ini belum
+diubah oleh patch diagnostik. Periksa aktivitas Freebeat sebelum mengulang;
+jangan menjalankan generasi berbayar otomatis hanya untuk menguji diagnostik.

@@ -39,6 +39,8 @@ function createHarness({
   spendOk = true,
   quote = { status: 'quoted', credits: 700 },
   generateMode = 'success',
+  generateErrorResult = { isError: true, content: [{ type: 'text', text: 'upstream rejected' }] },
+  generateHttpStatus = null,
   uploadVideoError = false,
   uploadVideoDurationMs = null,
   firstTokenExhausted = false,
@@ -248,8 +250,12 @@ function createHarness({
           if (failover400AfterSpend && auth === 'Bearer FB-TOKEN-1') {
             return Response.json({ jsonrpc: '2.0', id: rpc.id, error: { code: 402, message: 'insufficient credits' } }, { status: 402 });
           }
+          if (generateHttpStatus) return new Response('private provider body', { status: generateHttpStatus });
           if (genMode === 'error') {
-            return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { isError: true, content: [{ type: 'text', text: 'upstream rejected' }] } });
+            return Response.json({ jsonrpc: '2.0', id: rpc.id, result: generateErrorResult });
+          }
+          if (genMode === 'missing-task') {
+            return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { structuredContent: { success: true } } });
           }
           if (genMode === 'preparing') {
             return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify({ success: true, status: 'preparing', music_id: 2485485, retry_after_seconds: 10 }) }] } });
@@ -516,6 +522,51 @@ test('/api/video/generate Lip-Sync Video: upload_video non-Freebeat, skip upload
     assert.equal(hFailover400.getRow().credits_refunded, 3000);
   } finally {
     hFailover400.restore();
+  }
+});
+
+test('Lip-Sync dispatch failures retain safe HTTP/RPC/reason diagnostics without provider prose', async () => {
+  const secret = 'private@example.com https://private.example/token sk_private_token';
+  const cases = [
+    { options: { generateMode: 'error' }, diagnostic: { kind: 'tool_rejected' }, tag: 'FB-VOCAL-TOOL-REJECTED' },
+    {
+      options: { generateMode: 'error', generateErrorResult: { isError: true, structuredContent: { failure: { reason: 'invalid_video' }, message: secret } } },
+      diagnostic: { kind: 'tool_rejected', reason: 'invalid_video' }, tag: 'invalid_video',
+    },
+    {
+      options: { generateMode: 'error', generateErrorResult: { isError: true, error: { code: -32602, message: secret, data: { reason: 'invalid_parameter' } } } },
+      diagnostic: { kind: 'tool_rejected', rpc_code: -32602, reason: 'invalid_parameter' }, tag: 'RPC -32602',
+    },
+    {
+      options: { generateMode: 'error', generateErrorResult: { isError: true, structuredContent: { error_code: secret, message: secret } } },
+      diagnostic: { kind: 'tool_rejected' }, tag: 'FB-VOCAL-TOOL-REJECTED',
+    },
+    { options: { generateHttpStatus: 400 }, diagnostic: { kind: 'http', http_status: 400 }, tag: 'HTTP 400' },
+    { options: { generateMode: 'missing-task' }, diagnostic: { kind: 'missing_task_id' }, tag: 'FB-VOCAL-MISSING-TASK-ID' },
+  ];
+  for (const { options, diagnostic, tag } of cases) {
+    const h = createHarness(options);
+    try {
+      await h.seedFreebeatAccount();
+      const res = await worker.fetch(apiRequest('/api/video/generate', {
+        body: {
+          provider: 'freebeat', model: 'generate_lip_sync_video',
+          video_url: 'https://storage.example/face.mp4', video_duration_ms: 30000,
+          audio_url: 'https://storage.example/voice.mp3', audio_duration_ms: 30000,
+        },
+      }), h.env);
+      assert.equal(res.status, 502);
+      const body = await res.text();
+      assert.ok(body.includes(tag), body);
+      assert.ok(!body.includes(secret));
+      assert.ok(body.includes('Kredit BLEA dikembalikan'));
+      assert.deepEqual(h.getRow().metadata.dispatch_failure, diagnostic);
+      assert.ok(!JSON.stringify(h.getRow().metadata).includes(secret));
+      assert.equal(h.getRow().metadata.dispatch_parameters.video_duration_ms, 30000);
+      assert.equal(h.refunds.length, 1);
+      assert.equal(h.spends.length, 1);
+      assert.equal(h.mcpCalls.filter((c) => c.name === 'generate_lip_sync_video').length, 1);
+    } finally { h.restore(); }
   }
 });
 
