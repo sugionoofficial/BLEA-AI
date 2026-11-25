@@ -33,7 +33,7 @@ test('Hailuo #106 probe is explicit, read-only, independent of catalog, and clea
   try {
     const reasons = () => document.getElementById('freebeat-hailuo-quote-help').textContent;
     const quoteButton = () => button('Periksa quote Hailuo #106');
-    const consentBox = () => document.querySelector('input[type=checkbox]');
+    const consentBox = () => document.querySelector('[aria-label="Setujui pemeriksaan quote Hailuo"]');
     await render(true, true);
     assert.match(reasons(), /Menunggu pemeriksaan sesi/);
     assert.equal(quoteButton().disabled, true);
@@ -44,7 +44,7 @@ test('Hailuo #106 probe is explicit, read-only, independent of catalog, and clea
     await render();
     assert.equal(calls.length, 0);
     assert.equal(quoteButton().getAttribute('aria-describedby'), 'freebeat-hailuo-quote-help');
-    assert.match(reasons(), /Isi URL HTTPS gambar/);
+    assert.match(reasons(), /Unggah foto melalui langkah 1/);
     assert.match(reasons(), /centang izin pengiriman/);
     assert.equal(consentBox().disabled, true);
     assert.match(document.body.textContent, /ID 106 belum terlihat/);
@@ -93,7 +93,7 @@ test('Hailuo #106 probe is explicit, read-only, independent of catalog, and clea
     assert.ok(document.querySelector('[aria-label="Quote Hailuo MCP yang disaring"]'));
     await fill('URL gambar Hailuo', 'https://images.example/new.png');
     assert.equal(document.querySelector('[aria-label="Quote Hailuo MCP yang disaring"]'), null);
-    assert.equal(document.querySelector('input[type=checkbox]').checked, false);
+    assert.equal(document.querySelector('[aria-label="Setujui pemeriksaan quote Hailuo"]').checked, false);
     failure = true;
     await React.act(async () => button('Periksa informasi Hailuo #106').click());
     assert.match(document.querySelector('[role=alert]').textContent, /tidak tersedia/);

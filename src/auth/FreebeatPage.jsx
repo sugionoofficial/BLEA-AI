@@ -373,7 +373,10 @@ function FreebeatWorkspace({ experiment }) {
           {uploadQuote && <div className="freebeat-status">Quote upload_image: {Number.isSafeInteger(uploadQuote.credits) ? `${uploadQuote.credits} kredit Freebeat` : `tidak tersedia (status ${uploadQuote.status || 'tidak diketahui'})`}</div>}
           {uploadQuote && <pre>{JSON.stringify(uploadQuote.quote, null, 2)}</pre>}
         </div>
-        {uploadResult && <div className="freebeat-result"><h3>Hasil upload_image (difasilitasi {uploadResult.quote_credits} kredit)</h3><pre>{JSON.stringify(uploadResult.upload, null, 2)}</pre></div>}
+        {uploadResult && <div className="freebeat-result"><h3>Hasil upload_image (quote {uploadResult.quote_credits} kredit; bukan tagihan akhir)</h3>
+          {uploadResult.image_url && <FreebeatCopyResult title="URL hasil hosting gambar Freebeat" value={{ image_url: uploadResult.image_url }} />}
+          {uploadResult.outcome === 'unknown' && <p role="alert">Hasil upload tidak pasti atau URL tidak tersedia. Salinan/biaya mungkin sudah tercatat; jangan ulangi sebelum memeriksa akun Freebeat.</p>}
+          <pre>{JSON.stringify(uploadResult.upload, null, 2)}</pre></div>}
         </>}
         {page === 'image-job' && <>
         <div className="freebeat-field">Periksa job gambar (get_task_status, gratis)
@@ -437,7 +440,7 @@ function FreebeatWorkspace({ experiment }) {
       </section>}
       {page === 'hailuo' && <section className="freebeat-card freebeat-site-test">
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}<div className="freebeat-actions"><button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Muat ulang model video</button></div></div>}
-        <FreebeatHailuoDiagnostic key={`hailuo-${user?.id || ''}`} connected={connected} loading={loading} request={request} videoModels={videoModels} /></section>}
+        <FreebeatHailuoDiagnostic key={`hailuo-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} videoModels={videoModels} userId={user?.id} storage={supabase.storage} /></section>}
       {page === 'dance' && <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />}
       {['singing', 'lip-sync'].includes(page) && <FreebeatSingingLipSyncDiagnostic key={`vocal-${user?.id || ''}`} onlyTool={page === 'singing' ? 'generate_singing_video' : 'generate_lip_sync_video'} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />}
       {page === 'vocal-schemas' && <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />}
