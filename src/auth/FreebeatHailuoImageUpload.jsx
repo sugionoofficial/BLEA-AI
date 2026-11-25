@@ -34,12 +34,13 @@ export function FreebeatHailuoImageUpload({ connected, imageAccess, loading, dis
     setCost(null); setCostConsent(false);
     try {
       const staged = source || await uploadFreebeatImage(storage, userId, file);
-      if (stamp !== version.current) return;
+      // Keep the deletion handle even if OAuth changed while Storage finished.
       setSource(staged);
+      if (stamp !== version.current) { setError('Sesi berubah setelah foto tersimpan di BLEA. Quote tidak dikirim; hapus foto sumber melalui tombol di halaman ini.'); return; }
       if (!staged.url) throw new Error('Foto tersimpan di BLEA tetapi URL publik tidak tersedia. Bersihkan foto sebelum mencoba kembali.');
       const result = await request('image-upload-quote', 'POST', { image_url: staged.url });
       if (stamp === version.current) setCost(result);
-    } catch (err) { if (stamp === version.current) setError(err.message || 'Pemeriksaan biaya upload gagal.'); }
+    } catch (err) { setError(stamp === version.current ? (err.message || 'Pemeriksaan biaya upload gagal.') : 'Sesi berubah saat penyimpanan foto. Hasil mungkin tidak pasti; periksa Supabase Storage sebelum mencoba lagi.'); }
     finally { finish(); }
   }
   async function host() {
@@ -49,7 +50,7 @@ export function FreebeatHailuoImageUpload({ connected, imageAccess, loading, dis
     setAttempted(true); setCostConsent(false); setOutcome('');
     try {
       const result = await request('image-upload-host', 'POST', { image_url: source.url, expected_credits: cost.credits, acknowledge: true });
-      if (stamp !== version.current) return;
+      if (stamp !== version.current) { setOutcome('unknown'); return; }
       let url = '';
       try {
         const parsed = new URL(result.image_url);
@@ -58,7 +59,7 @@ export function FreebeatHailuoImageUpload({ connected, imageAccess, loading, dis
       if (!url) { setOutcome('unknown'); return; }
       setOutcome('uploaded'); onImageUrl(url);
     } catch {
-      if (stamp === version.current) setOutcome('unknown');
+      setOutcome('unknown');
     } finally { finish(); }
   }
   async function clearSource() {

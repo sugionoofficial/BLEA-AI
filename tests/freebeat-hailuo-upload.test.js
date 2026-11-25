@@ -14,7 +14,7 @@ async function harness(run) {
   const { FreebeatHailuoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatHailuoDiagnostic.jsx');
   const root = createRoot(document.getElementById('root'));
   const calls = [], storageCalls = [];
-  let credits = 7, hostMode = 'success', pending, failDelete = false;
+  let credits = 7, hostMode = 'success', pending, failDelete = false, storageSlow = false, pendingStorage;
   const hostedUrl = 'https://static.freebeat.ai/hailuo-photo.png';
   const request = async (action, method, body) => {
     calls.push([action, method, body]);
@@ -29,7 +29,7 @@ async function harness(run) {
     return { quote: { status: 'quoted', credits: 220 } };
   };
   const storage = { from: () => ({
-    upload: async (path) => { storageCalls.push(['upload', path]); return { error: null }; },
+    upload: async (path) => { storageCalls.push(['upload', path]); if (storageSlow) return new Promise((resolve) => { pendingStorage = resolve; }); return { error: null }; },
     getPublicUrl: () => ({ data: { publicUrl: 'https://storage.example/source.png' } }),
     remove: async ([path]) => { storageCalls.push(['remove', path]); return { data: failDelete ? [] : [{ name: path }], error: null }; },
   }) };
@@ -45,7 +45,7 @@ async function harness(run) {
   const stage = async () => { await selectFile(); await check('Setujui penyimpanan foto Hailuo'); await click('Unggah foto & periksa biaya upload Freebeat'); };
   try {
     await render();
-    await run({ React, field, button, click, check, selectFile, stage, render, calls, storageCalls, hostedUrl, setCredits: (value) => { credits = value; }, setHostMode: (value) => { hostMode = value; }, resolveHost: (value) => pending(value), setDeleteFailure: (value) => { failDelete = value; } });
+    await run({ React, field, button, click, check, selectFile, stage, render, calls, storageCalls, hostedUrl, setCredits: (value) => { credits = value; }, setHostMode: (value) => { hostMode = value; }, resolveHost: (value) => pending(value), setDeleteFailure: (value) => { failDelete = value; }, setStorageSlow: () => { storageSlow = true; }, resolveStorage: () => pendingStorage({ error: null }) });
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     for (const key of keys) { if (old[key] === undefined) delete globalThis[key]; else globalThis[key] = old[key]; }
@@ -116,5 +116,20 @@ test('Hailuo blocks invalid file, unknown/excessive cost and stale hosting hando
   await h.render(false);
   await h.React.act(async () => h.resolveHost({ outcome: 'uploaded', image_url: h.hostedUrl }));
   assert.equal(h.field('URL gambar Hailuo').value, '');
+  assert.match(document.body.textContent, /Hasil upload tidak pasti/);
   assert.equal(h.calls.filter(([action]) => action === 'image-upload-host').length, 1);
+}));
+
+
+test('Hailuo retains public Storage cleanup handle after OAuth disconnect during staging', () => harness(async (h) => {
+  h.setStorageSlow();
+  await h.stage();
+  await h.render(false);
+  await h.React.act(async () => h.resolveStorage());
+  assert.equal(h.calls.length, 0, 'stale staging must not request a quote');
+  assert.match(document.body.textContent, /Sesi berubah setelah foto tersimpan/);
+  assert.equal(h.button('Hapus foto dari BLEA').disabled, false);
+  await h.click('Hapus foto dari BLEA');
+  assert.equal(h.storageCalls.filter(([action]) => action === 'remove').length, 1);
+  assert.equal(h.button('Hapus foto dari BLEA').disabled, true);
 }));
