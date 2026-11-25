@@ -178,7 +178,7 @@ tidak ditambahkan oleh perubahan ini.
 ## Pemeriksaan Hailuo 2.3 Pro dari request web (ID 106)
 
 Panel **Hailuo 2.3 Pro · ID 106 · pemeriksaan MCP tanpa generate** di
-`/admin/freebeat` memakai ID 106 berdasarkan request web yang diberikan pengguna:
+`/admin/freebeat/hailuo` memakai ID 106 berdasarkan request web yang diberikan pengguna:
 `model=hailuo-2.3-pro`, durasi 10 detik, resolusi 768p, rasio parameter 16:9,
 dan satu gambar. Ini bukan bukti model MiniMax 3.0 atau dukungan MCP untuk akun
 tersebut. Teks prompt yang menyebut model/resolusi/rasio lain tidak mengganti
@@ -188,6 +188,15 @@ Tidak ada request otomatis saat panel dimuat. **Periksa informasi Hailuo #106**
 memanggil endpoint admin `video-model-help` → `get_model_help(type=video,
 model_id=106)`. Untuk **Periksa quote Hailuo #106**, isi URL HTTPS gambar dan
 prompt, pilih rasio parameter, lalu setujui pengiriman prompt/URL ke Freebeat.
+Tombol quote menampilkan daftar syarat yang belum terpenuhi: pemeriksaan sesi selesai,
+sesi tersedia, tidak ada permintaan berjalan, URL HTTPS berdomain publik valid,
+prompt terisi, serta izin pengiriman dicentang. Isi URL/prompt dan pilih rasio
+terlebih dahulu, baru centang izin sebagai langkah terakhir. Perubahan URL,
+prompt, atau rasio mereset izin; centang kembali setelah selesai mengedit.
+Kotak izin belum aktif jika URL/prompt belum valid. URL lokal, HTTP, IP literal,
+domain `.local`, kredensial, fragment, atau URL lebih dari 2048 karakter ditolak
+sebelum pengiriman. Tidak ada upload otomatis atau pelonggaran persetujuan.
+
 Endpoint `video-model-quote` memeriksa help dan meminta quote `generate_video`
 dengan `model_id=106`, `generation_type=image`, satu `images[]`, durasi 10,
 resolusi 768p, dan rasio yang dipilih. Angka `generationType=0` dari web tidak

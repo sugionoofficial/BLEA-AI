@@ -27,13 +27,21 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
   let safeUrl = '';
   try {
     const parsed = new URL(imageUrl.trim());
-    if (parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.hash) safeUrl = parsed.toString();
+    if (imageUrl.trim().length <= 2048 && parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.hash && parsed.hostname.includes('.') && !parsed.hostname.endsWith('.local') && !/^[\d.]+$/.test(parsed.hostname) && !parsed.hostname.startsWith('[')) safeUrl = parsed.toString();
   } catch { /* keep quote disabled for invalid URLs */ }
+  const quoteBlockers = [];
+  if (loading) quoteBlockers.push('Menunggu pemeriksaan sesi Freebeat selesai.');
+  else if (!connected) quoteBlockers.push('Sesi Freebeat belum tersedia. Hubungkan akun melalui halaman utama Freebeat MCP, lalu buka kembali halaman ini.');
+  if (busy) quoteBlockers.push('Tunggu pemeriksaan MCP yang sedang berjalan selesai.');
+  if (!imageUrl.trim()) quoteBlockers.push('Isi URL HTTPS gambar yang boleh dibagikan. File lokal tidak dapat dipakai langsung; panel ini tidak mengunggah gambar.');
+  else if (!safeUrl) quoteBlockers.push('Perbaiki URL gambar: gunakan HTTPS dengan domain publik, maksimal 2048 karakter, tanpa username/password atau fragment (#).');
+  if (!prompt.trim()) quoteBlockers.push('Isi prompt pemeriksaan Hailuo.');
+  if (!consent) quoteBlockers.push('Setelah URL, prompt, dan rasio selesai diisi, centang izin pengiriman untuk quote saja.');
   const listed = videoModels?.models?.some((item) => Number(item.model_id) === CANDIDATE.model_id);
   async function inspect(action) {
     if (!connected || loading || busy) return;
     const isQuote = action === 'video-model-quote';
-    if (isQuote && (!safeUrl || !prompt.trim() || !consent)) return;
+    if (isQuote && quoteBlockers.length) return;
     const stamp = version.current;
     setBusy(true); setError('');
     if (isQuote) setQuote(null); else setHelp(null);
@@ -56,21 +64,25 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
     <p>Preset berasal dari request web: hailuo-2.3-pro, 10 detik, 768p, rasio 16:9. Ini bukan MiniMax 3.0 dan belum membuktikan dukungan MCP. Angka generationType web tidak dikirim; satu gambar dipetakan ke mode image oleh Worker.</p>
     <p>{listed ? 'ID 106 terlihat pada katalog MCP yang dimuat; akses dan opsi tetap perlu diperiksa.' : 'ID 106 belum terlihat pada katalog yang dimuat (daftar dapat tidak lengkap). Pemeriksaan baca-saja tetap tersedia; model tidak otomatis diaktifkan di Generate.'}</p>
     <label className="freebeat-field">URL HTTPS gambar untuk quote Hailuo
-      <input type="url" aria-label="URL gambar Hailuo" value={imageUrl} maxLength={2048} disabled={busy || !connected} onChange={(e) => change(setImageUrl, e.target.value)} />
+      <input type="url" aria-label="URL gambar Hailuo" value={imageUrl} maxLength={2048} placeholder="https://domain-publik.example/foto.jpg" aria-invalid={Boolean(imageUrl.trim() && !safeUrl)} aria-describedby="freebeat-hailuo-quote-help" disabled={loading || busy || !connected} onChange={(e) => change(setImageUrl, e.target.value)} />
     </label>
     <label className="freebeat-field">Prompt pemeriksaan Hailuo
-      <textarea aria-label="Prompt Hailuo" value={prompt} maxLength={1000} disabled={busy || !connected} onChange={(e) => change(setPrompt, e.target.value)} />
+      <textarea aria-label="Prompt Hailuo" value={prompt} maxLength={1000} disabled={loading || busy || !connected} onChange={(e) => change(setPrompt, e.target.value)} />
     </label>
     <label className="freebeat-field">Rasio parameter Hailuo
-      <select aria-label="Rasio Hailuo" value={aspectRatio} disabled={busy || !connected} onChange={(e) => change(setAspectRatio, e.target.value)}>
+      <select aria-label="Rasio Hailuo" value={aspectRatio} disabled={loading || busy || !connected} onChange={(e) => change(setAspectRatio, e.target.value)}>
         <option value="16:9">16:9 (request web)</option><option value="9:16">9:16</option><option value="1:1">1:1</option>
       </select>
     </label>
     <p>Quote mengirim prompt dan URL gambar ke Freebeat, tetapi tidak membuat video. Gunakan gambar yang boleh dibagikan. Biaya quote bukan tagihan final; opsi dapat disesuaikan oleh informasi model live (lihat settings/adjusted pada hasil).</p>
-    <label className="freebeat-confirm"><input type="checkbox" aria-label="Setujui pemeriksaan quote Hailuo" checked={consent} disabled={busy || !connected} onChange={(e) => setConsent(e.target.checked)} /> Saya mengizinkan prompt dan URL gambar ini dikirim untuk pemeriksaan quote saja.</label>
+    <p className="freebeat-note">Isi URL gambar dan prompt, pilih rasio, lalu centang izin di bawah sebagai langkah terakhir. Mengubah URL, prompt, atau rasio akan menghapus izin sebelumnya; centang kembali setelah perubahan selesai.</p>
+    <label className="freebeat-confirm"><input type="checkbox" aria-label="Setujui pemeriksaan quote Hailuo" checked={consent} aria-describedby="freebeat-hailuo-quote-help" disabled={loading || busy || !connected || !safeUrl || !prompt.trim()} onChange={(e) => setConsent(e.target.checked)} /> Saya mengizinkan prompt dan URL gambar ini dikirim untuk pemeriksaan quote saja.</label>
     <div className="freebeat-actions">
       <button type="button" className="is-secondary" disabled={loading || !connected || busy} onClick={() => inspect('video-model-help')}>Periksa informasi Hailuo #106</button>
-      <button type="button" className="is-secondary" disabled={loading || !connected || busy || !safeUrl || !prompt.trim() || !consent} onClick={() => inspect('video-model-quote')}>Periksa quote Hailuo #106</button>
+      <button type="button" className="is-secondary" disabled={quoteBlockers.length > 0} aria-describedby="freebeat-hailuo-quote-help" onClick={() => inspect('video-model-quote')}>Periksa quote Hailuo #106</button>
+    </div>
+    <div id="freebeat-hailuo-quote-help" className="freebeat-prepare-help" aria-live="polite">
+      {quoteBlockers.length ? <><strong>Quote belum bisa diperiksa:</strong><ul>{quoteBlockers.map((reason) => <li key={reason}>{reason}</li>)}</ul></> : <span>Siap memeriksa quote Hailuo. Klik Periksa quote Hailuo #106; tidak ada video yang dibuat.</span>}
     </div>
     {busy && <p role="status">Memeriksa MCP tanpa membuat video…</p>}
     {error && <p role="alert">{error}</p>}
