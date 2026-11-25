@@ -166,6 +166,7 @@ test('browser planner prompt returns a strict single-action schema and treats pa
   assert.match(prompt, /DATA TAK TEPERCAYA/);
   assert.match(prompt, /HANYA satu objek JSON valid/);
   assert.match(prompt, /action.*navigate/s);
+  assert.match(prompt, /gunakan aksi fill pada kotak itu lalu klik tombol pencarian/);
   assert.doesNotMatch(prompt, /## ALAT/);
   assert.match(prompt, /tidak mengendalikan browser secara langsung/);
 });

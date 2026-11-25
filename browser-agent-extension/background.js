@@ -70,6 +70,38 @@ async function withDebugger(target, fn) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function moveVisiblePointer(target, point) {
+  await chrome.scripting.executeScript({
+    target: { tabId: target.tabId },
+    func: (destination) => new Promise((resolve) => {
+      const id = 'blea-agent-pointer-indicator';
+      let pointer = document.getElementById(id);
+      if (!pointer) {
+        pointer = document.createElement('div');
+        pointer.id = id;
+        pointer.setAttribute('aria-hidden', 'true');
+        Object.assign(pointer.style, { position: 'fixed', zIndex: '2147483647', left: '0', top: '0', padding: '3px 7px', borderRadius: '12px', color: '#fff', background: '#2563eb', border: '1px solid white', boxShadow: '0 2px 8px #0008', font: 'bold 12px/1.3 sans-serif', pointerEvents: 'none', transition: 'none', whiteSpace: 'nowrap' });
+        pointer.textContent = '➤ BLEA';
+        (document.documentElement || document.body).append(pointer);
+      }
+      const from = { x: Number(pointer.dataset.x) || 10, y: Number(pointer.dataset.y) || 10 };
+      const started = performance.now();
+      const duration = 450;
+      const frame = (now) => {
+        const t = Math.min(1, (now - started) / duration);
+        const eased = t * t * (3 - 2 * t);
+        const x = from.x + (destination.x - from.x) * eased;
+        const y = from.y + (destination.y - from.y) * eased;
+        pointer.style.transform = `translate(${x}px, ${y}px)`;
+        pointer.dataset.x = String(x);
+        pointer.dataset.y = String(y);
+        if (t < 1) requestAnimationFrame(frame); else resolve();
+      };
+      requestAnimationFrame(frame);
+    }), args: [point],
+  });
+}
+
 async function typeInto(target, label, value) {
   const geometry = await chrome.scripting.executeScript({
     target: { tabId: target.tabId },
@@ -86,6 +118,7 @@ async function typeInto(target, label, value) {
   });
   const point = geometry?.[0]?.result;
   if (!point) throw new Error(`Kolom “${label}” tidak ditemukan sebagai kontrol yang terlihat.`);
+  await moveVisiblePointer(target, point);
   await withDebugger(target, async () => {
     await cdp(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, pointerType: 'mouse' });
     await cdp(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
@@ -114,6 +147,7 @@ async function clickVisible(target, label) {
   });
   const point = geometry?.[0]?.result;
   if (!point) throw new Error(`Kontrol “${label}” tidak ditemukan.`);
+  await moveVisiblePointer(target, point);
   await withDebugger(target, async () => {
     await cdp(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, pointerType: 'mouse' });
     await delay(120);
