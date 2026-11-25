@@ -256,7 +256,7 @@ test('Freebeat MCP hub links to isolated experiment routes with back navigation'
   const expected = {
     'image-models': 'Lihat model gambar', 'image-edit': 'Probe quote mode edit',
     'image-generation': 'Uji generasi gambar admin', 'image-job': 'Periksa job gambar',
-    video: 'Uji generasi video khusus admin', hailuo: 'Hailuo', dance: 'generate_dance_video',
+    video: 'Uji generasi video khusus admin', hailuo: 'Hailuo', ltx: 'LTX 2.3', dance: 'generate_dance_video',
     singing: 'Uji Singing Video', 'lip-sync': 'Uji Lip-Sync Video',
     'vocal-schemas': 'Inspeksi skema Singing', 'remaining-schemas': 'Inspeksi skema 7 tool',
     catalog: 'Inspeksi katalog musik', 'remaining-quotes': 'Uji quote_generation', music: 'Uji Musik',

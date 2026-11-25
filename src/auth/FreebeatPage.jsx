@@ -9,6 +9,7 @@ import { FreebeatDanceDiagnostic } from './FreebeatDanceDiagnostic';
 import { FreebeatSingingLipSyncDiagnostic } from './FreebeatSingingLipSyncDiagnostic';
 import { FreebeatVideoDiagnostic } from './FreebeatVideoDiagnostic';
 import { FreebeatHailuoDiagnostic } from './FreebeatHailuoDiagnostic';
+import { FreebeatLtxDiagnostic } from './FreebeatLtxDiagnostic';
 import { FreebeatVocalSchemaDiagnostic } from './FreebeatVocalSchemaDiagnostic';
 import { FreebeatRemainingSchemaDiagnostic } from './FreebeatRemainingSchemaDiagnostic';
 import { FreebeatCatalogInspector } from './FreebeatCatalogInspector';
@@ -441,6 +442,8 @@ function FreebeatWorkspace({ experiment }) {
       {page === 'hailuo' && <section className="freebeat-card freebeat-site-test">
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}<div className="freebeat-actions"><button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Muat ulang model video</button></div></div>}
         <FreebeatHailuoDiagnostic key={`hailuo-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} videoModels={videoModels} userId={user?.id} storage={supabase.storage} /></section>}
+      {page === 'ltx' && <section className="freebeat-card freebeat-site-test">
+        <FreebeatLtxDiagnostic key={`ltx-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} /></section>}
       {page === 'dance' && <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />}
       {['singing', 'lip-sync'].includes(page) && <FreebeatSingingLipSyncDiagnostic key={`vocal-${user?.id || ''}`} onlyTool={page === 'singing' ? 'generate_singing_video' : 'generate_lip_sync_video'} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />}
       {page === 'vocal-schemas' && <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />}
