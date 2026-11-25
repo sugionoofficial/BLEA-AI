@@ -5516,15 +5516,18 @@ async function handleApi(request, url, env) {
     }
 
     if (path === 'agent' && method === 'POST') {
+      const browserMode = (await request.clone().json().catch(() => ({})))?.browserMode === true;
       // Alat yang boleh dijalankan loop agen diikuti ruang Studio yang membuka
       // giliran ini. Ruang riset tidak bisa menyuruh agen mengusulkan klip,
       // dan ruang klip tidak bisa menyuruhnya menulis dokumen.
       const studioTool = studioToolHeader(request);
       const scopedAgentTools = agentToolsForStudioTool(studioTool);
-      const scopedAgentToolNames = Array.isArray(scopedAgentTools)
-        ? AGENT_TOOL_NAMES.filter((name) => scopedAgentTools.includes(name))
-        : AGENT_TOOL_NAMES;
-      if (Array.isArray(scopedAgentTools) && !scopedAgentToolNames.length) {
+      const scopedAgentToolNames = browserMode
+        ? []
+        : Array.isArray(scopedAgentTools)
+          ? AGENT_TOOL_NAMES.filter((name) => scopedAgentTools.includes(name))
+          : AGENT_TOOL_NAMES;
+      if (!browserMode && Array.isArray(scopedAgentTools) && !scopedAgentToolNames.length) {
         return jsonResponse({ error: `Ruang "${studioTool}" tidak memakai alat agen.` }, 403);
       }
       return handleAgentTurn(request, url, env, {
@@ -5560,6 +5563,7 @@ async function handleApi(request, url, env) {
         // Ruang yang punya loop agen memakai kapabilitas `agent`; ruang teks
         // biasa memakai `chat`. Dipakai untuk memilih akun pool yang tepat.
         studioToolUsesAgentTools: (id) => {
+          if (browserMode) return true;
           const tools = agentToolsForStudioTool(id);
           return Array.isArray(tools) && tools.length > 0;
         },

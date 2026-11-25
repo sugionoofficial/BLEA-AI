@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BLEA Browser Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">BLEA · PREVIEW</span><h1>Browser Companion</h1><p>Hubungkan tab aplikasi, lalu biarkan BLEA Agent mengoperasikan tab tujuan.</p></header>
+    <section class="target-picker">
+      <label for="targets">Tab tujuan</label>
+      <div class="target-row"><select id="targets" aria-label="Pilih tab tujuan"><option value="">Muat tab…</option></select><button id="refreshTabs" class="secondary">↻</button></div>
+      <button id="authorizeTarget" class="secondary">Pilih & izinkan situs tab</button>
+      <div class="target-row extra-origin"><input id="extraOrigin" type="url" placeholder="https://www.google.com" aria-label="Domain tambahan yang diizinkan"><button id="grantOrigin" class="secondary">Izinkan</button></div>
+      <small id="targetStatus">Pilih tab tujuan dan izinkan domain tambahan sebelum agen menavigasi ke sana.</small>
+    </section>
+    <label for="command">Task / langkah lokal</label>
+    <textarea id="command" rows="6" placeholder="cari harga kamera di Google&#10;baca halaman&#10;Klik/isi juga bisa ditulis sebagai langkah"></textarea>
+    <p class="hint">Mode otomatis hanya aktif jika baris pertama persis: <b>lakukan tanpa konfirmasi</b>. Selain itu, setiap langkah menunggu persetujuan.</p>
+    <div class="controls">
+      <button id="run" class="primary">Mulai task</button>
+      <button id="stop" class="danger" disabled>STOP</button>
+      <button id="resume" class="secondary" hidden>Lanjutkan</button>
+    </div>
+    <section id="confirmation" class="confirmation" hidden>
+      <p id="confirmText"></p>
+      <button id="confirmRun" class="primary">Konfirmasi langkah berikutnya</button>
+    </section>
+    <div id="status" role="status" aria-live="polite">Siap. Contoh: “cari … di Google”, “buka https://…”, “baca halaman”, “salin teks …”, “tempel ke kolom …”, “klik tombol …”, “isi kolom … dengan …”.</div>
+    <p class="safety">STOP menghentikan langkah berikutnya; klik yang sudah berjalan tidak bisa ditarik kembali. Pembayaran dan penghapusan diblokir. Task AI dimulai dari BLEA Agent → Browser live.</p>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

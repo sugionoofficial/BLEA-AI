@@ -96,6 +96,7 @@ export async function handleAgentTurn(request, url, env, deps) {
   const pinnedSkill = String(body.skill || '').trim();
   const pinnedResource = String(body.resource || '').trim();
   const blueprint = typeof body.blueprint === 'string' ? body.blueprint.slice(0, 4_000) : '';
+  const browserMode = body.browserMode === true;
   // Digest analisis video dari browser (lihat src/lib/videoAnalysis.js). Ini
   // data yang dikirim klien, jadi diperlakukan sebagai input tak tepercaya:
   // hanya dipakai sebagai konteks teks, tidak pernah sebagai perintah.
@@ -208,7 +209,7 @@ export async function handleAgentTurn(request, url, env, deps) {
       role: 'system',
       content: deps.buildSystemPrompt({
         skillIds: deps.availableSkillIds,
-        workspace: { blueprint, videoAnalysis: videoAnalysis.text, videoTranscript: videoTranscript.text },
+        workspace: { blueprint, videoAnalysis: videoAnalysis.text, videoTranscript: videoTranscript.text, browserMode },
         pinnedSection,
       }),
     },
