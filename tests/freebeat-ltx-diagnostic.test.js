@@ -176,3 +176,51 @@ test('LTX upload preserves separate public-storage, hosting and video-quote cons
   await h.quote(); assert.deepEqual(h.calls[2][2].images, ['https://static.freebeat.ai/ltx.png']);
   assert.equal(h.calls.some(([action]) => ['ltx-prepare', 'video-submit'].includes(action)), false);
 }));
+
+test('LTX explains missing quote versus help-only and exact normalized differences beside the prepare button', () => harness(async (h) => {
+  const help = () => h.field('Syarat persiapan LTX');
+  const diagnosis = () => JSON.parse(h.field('Diagnosis persiapan LTX').value);
+  assert.equal(h.button(prepareButton).getAttribute('aria-describedby'), help().id);
+  assert.match(help().textContent, /Help\/informasi model saja belum cukup/);
+  await h.click('Periksa informasi LTX #97'); await h.inputs();
+  assert.equal(h.button(prepareButton).disabled, true);
+  assert.ok(diagnosis().blockers.includes('quote_missing'));
+  assert.match(help().textContent, /klik Periksa quote LTX #97/);
+  h.setQuotePatch({ duration: 8, resolution: '720p', aspect_ratio: '9:16' }); await h.quote();
+  assert.equal(h.button(prepareButton).disabled, true);
+  assert.match(help().textContent, /Durasi quote \(8 detik\) berbeda dari pilihan \(6 detik\)/);
+  assert.match(help().textContent, /Resolusi quote \(720p\) berbeda dari pilihan \(1080p\)/);
+  assert.match(help().textContent, /Rasio quote \(9:16\) berbeda dari pilihan \(16:9\)/);
+  assert.ok(diagnosis().blockers.includes('quote_duration_mismatch'));
+  assert.ok(diagnosis().blockers.includes('quote_resolution_mismatch'));
+  assert.ok(diagnosis().blockers.includes('quote_aspect_ratio_mismatch'));
+  assert.deepEqual(diagnosis().quote.settings, { model_id: 97, generation_type: 'image', duration: 8, resolution: '720p', aspect_ratio: '9:16' });
+  assert.doesNotMatch(h.field('Diagnosis persiapan LTX').value, /images\.example|A quiet scene|sealed-ltx/);
+  const beforeCopy = h.calls.length;
+  await h.React.act(async () => h.field('Salin Diagnosis persiapan LTX').click());
+  assert.equal(h.calls.length, beforeCopy);
+  await h.fill('Durasi LTX', '8'); await h.fill('Resolusi LTX', '720p'); await h.fill('Rasio LTX', '9:16');
+  assert.ok(diagnosis().blockers.includes('quote_missing')); assert.equal(h.field('Setujui pemeriksaan quote LTX').checked, false);
+  await h.quote();
+  assert.equal(h.button(prepareButton).disabled, false);
+  assert.match(help().textContent, /Siap meminta quote baru/);
+  assert.equal(h.field('Diagnosis persiapan LTX'), null);
+  assert.equal(h.calls.some(([action]) => ['ltx-prepare', 'video-submit'].includes(action)), false);
+}));
+
+test('LTX prepare diagnostic explains absent generation scope and persistent uncertain locks without unlocking them', () => harness(async (h) => {
+  await h.inputs(); await h.quote();
+  await h.render({ imageAccess: false });
+  let diagnostic = JSON.parse(h.field('Diagnosis persiapan LTX').value);
+  assert.ok(diagnostic.blockers.includes('generation_scope_missing')); assert.equal(h.button(prepareButton).disabled, true);
+  await h.render();
+  h.setRecords([{ id: 'PRIVATE-RECORD-ID', model_id: 97, status: 'unknown', created_at: new Date().toISOString() }]);
+  await h.click('Periksa catatan video LTX');
+  diagnostic = JSON.parse(h.field('Diagnosis persiapan LTX').value);
+  assert.ok(diagnostic.blockers.includes('dispatch_uncertain'));
+  assert.doesNotMatch(h.field('Diagnosis persiapan LTX').value, /PRIVATE-RECORD-ID/);
+  assert.equal(h.button(prepareButton).disabled, true);
+  assert.match(h.field('Syarat persiapan LTX').textContent, /jangan muat ulang/);
+  await h.click(prepareButton);
+  assert.equal(h.calls.some(([action]) => ['ltx-prepare', 'video-submit'].includes(action)), false);
+}));

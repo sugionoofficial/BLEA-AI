@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { videoHeadroom } from '../lib/freebeatVideoTestSettings';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
+import { videoPrepareState } from '../lib/freebeatVideoPrepareState';
 
 const expiresAt = (value) => typeof value === 'number' ? value : Date.parse(value);
 const pending = (test) => ['unknown', 'dispatching'].includes(test.status);
@@ -10,6 +11,7 @@ function resultUrl(value) {
 }
 
 export function FreebeatSingleImageVideoGeneration({ connected, imageAccess, loading, disabled, request, userId, imageUrl, prompt, aspectRatio, quote, onBusyChange, modelId = 106, modelLabel = 'Hailuo', duration = 10, resolution = '768p', prepareAction = 'hailuo-prepare' }) {
+  const prepareHelpId = useId();
   const [approval, setApproval] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -36,11 +38,12 @@ export function FreebeatSingleImageVideoGeneration({ connected, imageAccess, loa
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [approval]);
-  const q = quote?.settings;
-  const quoted = quote?.quote?.status === 'quoted' && Number.isFinite(quote.quote.credits) && quote.quote.credits >= 0
-    && q?.model_id === modelId && q.generation_type === 'image' && q.duration === duration && q.resolution === resolution && q.aspect_ratio === aspectRatio;
   const blocked = loading || !connected || !imageAccess || disabled || busy;
   const unresolved = tests.some(pending);
+  const { blockers: prepareBlockers, diagnostic: prepareDiagnostic } = videoPrepareState({
+    loading, connected, imageAccess, disabled, busy, imageUrl, prompt, modelId, modelLabel,
+    duration, resolution, aspectRatio, quote, attempted, uncertain, unresolved,
+  });
   const expires = approval ? expiresAt(approval.expiresAt) : 0;
   const liveApproval = approval && approval.signature === signature && approval.quote === quote && Number.isFinite(expires) && expires > now;
   function start() {
@@ -54,7 +57,7 @@ export function FreebeatSingleImageVideoGeneration({ connected, imageAccess, loa
     return result.tests;
   }
   async function prepare() {
-    if (blocked || !quoted || !imageUrl || !prompt.trim() || attempted || uncertain || unresolved || !start()) return;
+    if (prepareBlockers.length || !start()) return;
     const stamp = version.current;
     setApproval(null); setConfirmed(false); setNotice('');
     try {
@@ -141,14 +144,20 @@ export function FreebeatSingleImageVideoGeneration({ connected, imageAccess, loa
     <h4>3. Quote baru → setujui satu video {modelLabel}</h4>
     <p>Memakai kredit Freebeat admin, bukan kredit BLEA. Keberhasilan quote bukan jaminan render atau refund. Biaya upload foto sebelumnya terpisah dan mungkin belum diketahui.</p>
     <p>Persiapan memeriksa help dan quote baru, tanpa membuat video. Batas pengiriman mencakup headroom 15% (minimal 10 kredit); jumlah pastinya ditampilkan sebelum persetujuan. Batas yang dikirim bukan bukti tagihan akhir.</p>
-    {!quoted && <p className="freebeat-note">Periksa quote {modelLabel} pada langkah 2 terlebih dahulu dengan parameter yang sama. Quote lama atau biaya tidak diketahui tidak dapat dipakai untuk generate video.</p>}
     {!imageAccess && <p className="freebeat-note">Izin generasi Freebeat belum tersedia; hubungkan ulang melalui halaman utama.</p>}
     {(uncertain || unresolved) && <p role="alert">Pengiriman baru diblokir karena hasil belum pasti. Periksa aktivitas Freebeat dan minta operator meninjau catatan. Jangan memuat ulang untuk mengulang pengiriman.</p>}
     {attempted && !uncertain && <p role="status">Satu pengiriman sudah dicoba pada halaman ini. Pantau catatannya, bukan menekan kirim lagi.</p>}
     <div className="freebeat-actions">
-      <button type="button" disabled={blocked || !quoted || !imageUrl || !prompt.trim() || attempted || uncertain || unresolved} onClick={prepare}>Siapkan persetujuan video {modelLabel}</button>
+      <button type="button" disabled={prepareBlockers.length > 0} aria-describedby={prepareHelpId} onClick={prepare}>Siapkan persetujuan video {modelLabel}</button>
       <button type="button" className="is-secondary" disabled={blocked} onClick={inspectTests}>Periksa catatan video {modelLabel}</button>
     </div>
+    <div id={prepareHelpId} className="freebeat-prepare-help" aria-label={`Syarat persiapan ${modelLabel}`} aria-live="polite">
+      {prepareBlockers.length ? <><strong>Persetujuan belum bisa disiapkan:</strong><ul>{prepareBlockers.map(({ code, message }) => <li key={code}>{message}</li>)}</ul></> : <span>Siap meminta quote baru untuk persetujuan. Persiapan belum membuat video; server tetap memeriksa help, harga, sesi dan catatan pengiriman.</span>}
+    </div>
+    {prepareBlockers.length > 0 && <details className="freebeat-result">
+      <summary>Diagnosis persiapan {modelLabel} (aman disalin)</summary>
+      <FreebeatCopyResult title={`Diagnosis persiapan ${modelLabel}`} value={prepareDiagnostic} description="Hanya kode syarat, status sesi, angka biaya dan parameter yang dikenal. Tidak memuat prompt, URL gambar, token persetujuan, atau pesan mentah Freebeat. Membuka/menyalin diagnosis tidak mengirim request." />
+    </details>}
     {approval && <div className="freebeat-result" aria-label={`Persetujuan satu video ${modelLabel}`}>
       <p>Model {modelId} · image-to-video · {approval.settings.duration} detik · {approval.settings.resolution} · {approval.settings.aspect_ratio} · quote <strong>{approval.credits} kredit</strong> · batas maksimum yang diminta <strong>{approval.max_credits} kredit Freebeat</strong>. Berlaku hingga {new Date(approval.expiresAt).toLocaleTimeString('id-ID')}. Quote berubah saat kirim → pengiriman ditolak.</p>
       <p>Prompt dan URL foto yang disetujui:</p><pre>{approval.prompt}</pre><pre>{approval.images[0]}</pre>
