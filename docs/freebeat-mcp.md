@@ -135,3 +135,27 @@ Memerlukan migrasi `20261205000000_freebeat_consumer_music.sql` (`credit_model_p
 - **Live Queue & Admin Cancel**: `/api/generations/live` dan `/api/admin/generations/cancel` (`kind: 'music'`) mendukung pemantauan dan pembatalan + refund atomik generasi musik.
 
 
+
+## Sesi tersimpan bukan pemeriksaan akses MCP
+
+`GET /api/freebeat/status` membaca sesi lokal/server tanpa menghubungi Freebeat.
+Label admin kini berbunyi **Sesi OAuth tersimpan**, bukan bukti koneksi sehat.
+**Periksa saldo** menampilkan hasil pemeriksaan baca terakhir secara terpisah;
+kegagalan menghapus hasil saldo lama. Pemeriksaan saldo berhasil bukan bukti
+izin generasi, dan sesi tersimpan tidak otomatis dihapus saat gangguan jaringan.
+
+Token hasil rotasi di database dapat memiliki waktu kedaluwarsa yang sama dengan
+cookie lama. Jalur admin kini mengadopsi token database yang berbeda meskipun
+`expiresAt` sama. Untuk pemeriksaan saldo dan quote vokal, penolakan HTTP 401/403
+pada handshake `initialize` memicu satu pembacaan ulang sesi milik user/akun
+yang sama. Jika ada token berbeda yang masih berlaku, handshake dicoba sekali
+lagi menggunakan token itu. Jika akun cookie sudah hilang, jangan berpindah ke
+akun legacy atau akun lain dalam pool.
+
+Pemulihan ini tidak memaksa rotasi OAuth, tidak mengulang `tools/call`, dan tidak
+mencoba ulang generasi berbayar. HTTP 402, 5xx, dan error jaringan tidak memicu
+pemulihan handshake tersebut. Ini menangani kasus sesi usang yang dapat
+reproduksi di tes, bukan membuktikan penyebab setiap penolakan Freebeat. Token
+atau grant yang benar-benar dicabut tetap memerlukan otorisasi ulang; pemeriksaan
+hak akses/plan tetap mengikuti Freebeat. Koordinasi refresh lintas Worker/isolate
+tidak ditambahkan oleh perubahan ini.

@@ -558,11 +558,14 @@ async function openMcpSession(env, session) {
   try {
     return { headers: await openMcp(session.accessToken), session };
   } catch (error) {
-    if (!error?.isMcpFailure) throw error;
-    const fresh = session?.accountId
-      ? await readDbSession(env, session.uid, session.accountId)
-      : await loadProviderSession(env);
-    if (!fresh?.accessToken || fresh.accessToken === session.accessToken) throw error;
+    // Retry only a rejected handshake, never a paid tools/call, timeout, or
+    // arbitrary account from the provider pool. Do not force OAuth rotation.
+    if (!error?.isMcpFailure || ![401, 403].includes(error.httpStatus)) throw error;
+    const fresh = await readDbSession(env, session.uid, session.accountId || null);
+    if (!fresh?.accessToken || fresh.accessToken === session.accessToken
+      || fresh.uid !== session.uid || (session.accountId && fresh.accountId !== session.accountId)
+      || fresh.expiresAt <= Date.now()
+      || Date.now() - (fresh.issuedAt ?? fresh.expiresAt) > sessionMaxAgeMs(env)) throw error;
     console.warn('Freebeat MCP init ditolak; memakai salinan sesi terbaru');
     return { headers: await openMcp(fresh.accessToken), session: fresh };
   }
@@ -578,10 +581,13 @@ async function readDbSession(env, userId, accountId = null) {
       const poolRow = Array.isArray(poolRows) ? poolRows[0] : null;
       if (poolRow?.sealed_session) {
         const s = await unseal(poolRow.sealed_session, env, 'session', 3800);
-        if (s && typeof s.accessToken === 'string' && Number.isFinite(s.expiresAt)) {
+        if (s && s.uid === userId && (!s.accountId || s.accountId === poolRow.id) && typeof s.accessToken === 'string' && Number.isFinite(s.expiresAt)) {
           return { ...s, accountId: poolRow.id, accountEmail: poolRow.account_email || s.accountEmail || '' };
         }
       }
+      // A cookie bound to one pool account must not adopt another account's
+      // legacy session when that account is missing or no longer usable.
+      return null;
     }
     const rows = await dbJson(env, `/freebeat_provider_sessions?user_id=eq.${encodeURIComponent(userId)}&select=sealed_session&limit=1`);
     const row = Array.isArray(rows) ? rows[0] : null;
@@ -596,7 +602,8 @@ async function readSession(request, env, userId) {
   const cookieSession = await unseal(cookieValue(request, SESSION), env, 'session');
   let session = usable(cookieSession) ? cookieSession : null;
   const dbSession = await readDbSession(env, userId, session?.accountId || null);
-  if (usable(dbSession) && (!session || dbSession.expiresAt > session.expiresAt)) {
+  if (usable(dbSession) && (!session || dbSession.expiresAt > session.expiresAt
+    || (dbSession.expiresAt === session.expiresAt && dbSession.accessToken !== session.accessToken))) {
     session = dbSession;
     try {
       const sealed = await seal({
@@ -750,8 +757,8 @@ async function openMcp(accessToken) {
   await rpc(accessToken, { jsonrpc: '2.0', method: 'notifications/initialized' }, 'notify', headers);
   return headers;
 }
-async function getBalance(accessToken) {
-  const headers = await openMcp(accessToken);
+async function getBalance(accessToken, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
   const call = await rpc(accessToken, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_credit_balance', arguments: {} } }, 'balance', headers);
   const data = call.result.structuredContent ?? call.result.content;
   if (!data) throw mcpFailure('balance', 'response');
@@ -3786,7 +3793,10 @@ async function dispatchFreebeat(request, url, env, user) {
     if (['balance', 'image-schemas', 'image-models', 'image-edit-models', 'image-quote', 'video-schemas', 'video-models'].includes(action) && request.method === 'POST') {
       const session = await readSession(request, env, user.id);
       if (!session) return response({ error: 'Koneksi Freebeat tidak tersedia atau kedaluwarsa. Hubungkan kembali.' }, 401);
-      if (action === 'balance') return response({ ok: true, balance: await getBalance(session.accessToken) });
+      if (action === 'balance') {
+        const opened = await openMcpSession(env, session);
+        return response({ ok: true, balance: await getBalance(opened.session.accessToken, opened.headers) });
+      }
       if (action === 'image-schemas') return response({ ok: true, ...(await getToolSchemas(session.accessToken, IMAGE_TOOLS)) });
       if (action === 'video-schemas') return response({ ok: true, ...(await getToolSchemas(session.accessToken, VIDEO_TOOLS)) });
       // Tipe katalog disertakan di respons: daftar image dan image_edit ternyata
@@ -3927,10 +3937,12 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'vocal-upload-audio' && request.method === 'POST') return response({ ok: true, ...(await danceUploadAudio(session.accessToken, await imageJson(request))) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'vocal-upload-video' && request.method === 'POST') return response({ ok: true, ...(await vocalUploadVideo(session.accessToken, await imageJson(request))) }, 200, { 'referrer-policy': 'no-referrer' });
       if (action === 'vocal-quote' && request.method === 'POST') {
-        const headers = await openMcp(session.accessToken);
-        const schemaMeta = await discoverVocalToolSchemaMeta(session.accessToken, headers);
+        const opened = await openMcpSession(env, session);
+        const quoteSession = opened.session;
+        const headers = opened.headers;
+        const schemaMeta = await discoverVocalToolSchemaMeta(quoteSession.accessToken, headers);
         const { tool, parameters } = validateVocalRequest(await imageJson(request), schemaMeta);
-        const rawQuote = await vocalQuote(session.accessToken, tool, parameters, true, headers);
+        const rawQuote = await vocalQuote(quoteSession.accessToken, tool, parameters, true, headers);
         const credits = quotedCredits(rawQuote);
         return response({
           ok: true,
