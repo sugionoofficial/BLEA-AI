@@ -1168,3 +1168,33 @@ test('LTX storage failures and uncertain dispatch never create a second paid req
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
   } finally { globalThis.fetch = original; console.warn = warn; }
 });
+
+test('LTX incomplete options never authorize paid dispatch, including metadata disappearing between prepare and submit', async () => {
+  const original = globalThis.fetch, f = ltxFixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect(); const ready = () => api('ltx-prepare', { cookie, method: 'POST', data: ltxInput });
+    const receipt = await (await ready()).json();
+    for (const help of [
+      { model: ltxHelp.model },
+      { ...ltxHelp, generation_types: [] }, { ...ltxHelp, generation_types: undefined },
+      { ...ltxHelp, durations: [] }, { ...ltxHelp, durations: undefined },
+      { ...ltxHelp, resolutions: [] }, { ...ltxHelp, resolutions: undefined },
+      { ...ltxHelp, aspect_ratios: [] }, { ...ltxHelp, aspect_ratios: undefined },
+      { ...ltxHelp, durations: [], min_duration: 4 },
+      { ...ltxHelp, durations: [], min_duration: 8, max_duration: 12 },
+    ]) {
+      f.setHelp(help);
+      const quoteCount = f.calls.filter((c) => c.params?.name === 'quote_generation').length;
+      const response = await ready(); assert.equal(response.status, 409, JSON.stringify(help));
+      assert.match((await response.json()).error, /belum mengonfirmasi opsi terpilih/);
+      const submitted = await submit(cookie, receipt.approval); assert.equal(submitted.status, 409);
+      assert.equal((await submitted.json()).video_dispatch, 'not_sent');
+      assert.equal(f.calls.filter((c) => c.params?.name === 'quote_generation').length, quoteCount, 'incomplete metadata must block before pricing/dispatch');
+      assert.equal(f.rows.size, 0);
+    }
+    f.setHelp({ ...ltxHelp, durations: [], min_duration: 4, max_duration: 12 });
+    const range = await ready(); assert.equal(range.status, 200, 'explicit duration range may authorize the selected duration');
+    const accepted = await submit(cookie, (await range.json()).approval); assert.equal(accepted.status, 200);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+  } finally { globalThis.fetch = original; }
+});

@@ -1859,6 +1859,22 @@ function assertSingleImageDiagnostic(input, kind) {
   if (!modelId || input.model_id !== modelId || input.generation_type !== 'image' || input.input_mode !== 'keyframe' || !Array.isArray(input.images) || input.images.length !== 1 || !Number.isSafeInteger(input.duration) || input.duration < 1 || input.duration > 600 || !input.resolution || !input.aspect_ratio
     || (kind === 'hailuo' && (input.duration !== 10 || input.resolution !== '768p' || !['16:9', '9:16', '1:1'].includes(input.aspect_ratio)))) throw fail(`Uji model ${modelId || '-'} hanya untuk satu gambar keyframe/image dengan durasi, resolusi dan rasio eksplisit yang valid.`, 400);
 }
+// Unknown options are not evidence of support for an unverified paid model.
+// Hailuo retains its existing fixed-preset policy; this stricter gate is LTX-only.
+function assertExplicitLtxOptions(help, settings) {
+  const options = collectHelpOptions(help, 'image');
+  const durationCovered = options.durations.length
+    ? options.durations.includes(settings.duration)
+    : Number.isInteger(options.minDuration) && Number.isInteger(options.maxDuration)
+      && options.minDuration <= options.maxDuration && settings.duration >= options.minDuration && settings.duration <= options.maxDuration;
+  const missing = [
+    ...(!options.generations.includes('image') ? ['generation_type=image'] : []),
+    ...(!durationCovered ? ['duration'] : []),
+    ...(!options.resolutions.includes(settings.resolution) ? ['resolution'] : []),
+    ...(!options.aspectRatios.includes(settings.aspect_ratio) ? ['aspect_ratio'] : []),
+  ];
+  if (missing.length) throw fail(`Help live LTX belum mengonfirmasi opsi terpilih: ${missing.join(', ')}. Generasi diblokir; jangan menebak dukungan dari quote.`, 409);
+}
 async function prepareVideo(env, user, session, input, diagnostic = null) {
   await requireImageSession(session);
   if (!diagnostic) {
@@ -1883,6 +1899,7 @@ async function prepareVideo(env, user, session, input, diagnostic = null) {
   const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, base, opened?.headers);
   if (diagnostic && (help.model?.model_id !== diagnosticModelId(diagnostic) || help.model?.available !== true)) throw fail(`Help live belum mengonfirmasi model ${diagnosticModelId(diagnostic)} tersedia. Generasi diblokir.`, 409);
   assertModelUsable(help, input.model_id, env);
+  if (diagnostic === 'ltx') assertExplicitLtxOptions(help, base);
   const normalized = normalizeVideoSettings(help, base, input.generation_type);
   const settings = normalized.settings;
   if (diagnostic && normalized.adjusted.length) throw fail('Parameter berubah menurut help live. Sesuaikan input dengan informasi/quote baru; tidak ada video dikirim.', 409);
@@ -1929,6 +1946,7 @@ async function submitVideo(env, user, session, request) {
     if (help.model?.model_id !== modelId || help.model?.available !== true) throw videoNotSent(`Model ${modelId} tidak lagi terkonfirmasi tersedia. Tidak ada video dikirim.`);
     try {
       assertModelUsable(help, modelId, env);
+      if (diagnostic === 'ltx') assertExplicitLtxOptions(help, ticket.settings);
       if (normalizeVideoSettings(help, ticket.settings, 'image').adjusted.length) throw fail('Kemampuan model berubah. Tidak ada video dikirim; periksa quote baru.', 409);
     } catch (error) { if (error?.status === 409) throw videoNotSent(error.message); throw error; }
   }
