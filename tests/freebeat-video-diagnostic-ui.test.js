@@ -214,7 +214,7 @@ test('admin page automatically loads the model dropdown and can retry after a ca
   const React = await import('react');
   const { createRoot } = await import('react-dom/client');
   const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', resolve: { alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }] } });
-  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { MemoryRouter, Routes, Route } = await vite.ssrLoadModule('react-router-dom');
   const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
   const { FreebeatPage } = await vite.ssrLoadModule('/src/auth/FreebeatPage.jsx');
   const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
@@ -227,6 +227,8 @@ test('admin page automatically loads the model dropdown and can retry after a ca
     calls.push([url, init.method]);
     if (url === '/api/freebeat/balance') return balanceFailure ? Response.json({ error: 'Freebeat menolak akses. [FB-MCP-INIT-HTTP]' }, { status: 401 }) : Response.json({ ok: true, balance: { credits: 500 } });
     if (url === '/api/freebeat/status') return Response.json({ connected: true, imageAccess: true });
+    if (url === '/api/freebeat/image-prepare') return Response.json({ approval: 'mock-receipt', model_id: 80, credits: 12, prompt: 'Private test prompt', expiresAt: new Date(Date.now() + 60000).toISOString() });
+    if (url === '/api/freebeat/image-tests') return Response.json({ tests: [] });
     if (url === '/api/freebeat/video-models') return failure ? Response.json({ error: 'Katalog gagal dimuat.' }, { status: 502 }) : Response.json(catalog);
     if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'admin' });
     if (url.includes('/rest/v1/credit_wallets')) return new Response(JSON.stringify({ code: 'PGRST116', message: '0 rows' }), { status: 406, headers: { 'content-type': 'application/json' } });
@@ -234,7 +236,7 @@ test('admin page automatically loads the model dropdown and can retry after a ca
   };
   const root = createRoot(document.getElementById('root'));
   try {
-    await React.act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(FreebeatPage)))));
+    await React.act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(Routes, null, React.createElement(Route, { path: '/admin/freebeat/:experimentId?', element: React.createElement(FreebeatPage) }))))));
     assert.ok(calls.some(([path]) => path === '/api/freebeat/status'));
     assert.match(document.body.textContent, /Sesi OAuth tersimpan/);
     assert.match(document.body.textContent, /Akses MCP belum diverifikasi pada halaman ini/);
@@ -252,6 +254,9 @@ test('admin page automatically loads the model dropdown and can retry after a ca
     await React.act(async () => balanceButton().click());
     assert.match(document.body.textContent, /Pemeriksaan saldo terakhir berhasil/);
 
+    assert.equal(calls.some(([path]) => path === '/api/freebeat/video-models'), false, 'hub must not fetch experiment catalogs');
+    const videoLink = document.querySelector('a[href="/admin/freebeat/video"]');
+    await React.act(async () => videoLink.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, button: 0 })));
     assert.ok(calls.some(([path]) => path === '/api/freebeat/video-models'));
     assert.match(document.body.textContent, /Katalog gagal dimuat/);
     assert.equal(document.querySelector('#freebeat-video-model').disabled, true);
@@ -263,6 +268,36 @@ test('admin page automatically loads the model dropdown and can retry after a ca
     assert.match(select.textContent, /Wan 3.0 Prime/);
     assert.equal(calls.filter(([path]) => path === '/api/freebeat/video-models').length, 2);
     assert.equal(calls.some(([path]) => path.includes('submit')), false);
+    await React.act(async () => document.querySelector('a[href="/admin/freebeat"]').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, button: 0 })));
+    assert.equal(document.querySelector('#freebeat-video-model'), null);
+    assert.doesNotMatch(document.body.textContent, /Pemeriksaan saldo terakhir berhasil/);
+    assert.equal(calls.filter(([path]) => path === '/api/freebeat/video-models').length, 2);
+    await React.act(async () => document.querySelector('a[href="/admin/freebeat/lip-sync"]').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, button: 0 })));
+    assert.match(document.body.textContent, /Uji Lip-Sync Video/);
+    assert.doesNotMatch(document.body.textContent, /Singing Video \(generate_singing_video\)/);
+    assert.equal(calls.filter(([path]) => path === '/api/freebeat/video-models').length, 2);
+    const follow = async (href) => React.act(async () => document.querySelector(`a[href="${href}"]`).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, button: 0 })));
+    await follow('/admin/freebeat');
+    await follow('/admin/freebeat/image-generation');
+    for (const [selector, value] of [['input[type=number]', '80'], ['input[type=text]', 'Private test prompt']]) {
+      await React.act(async () => {
+        const input = document.querySelector(selector);
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value);
+        input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      });
+    }
+    await React.act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent === 'Siapkan quote untuk persetujuan').click());
+    assert.match(document.body.textContent, /Periksa dan setujui satu kali/);
+    await React.act(async () => document.querySelector('input[type=checkbox]').click());
+    assert.equal([...document.querySelectorAll('button')].find((b) => b.textContent === 'Setujui dan kirim satu gambar').disabled, false);
+    await follow('/admin/freebeat');
+    await follow('/admin/freebeat/image-generation');
+    assert.equal(document.querySelector('input[type=text]').value, '');
+    assert.equal(document.querySelector('input[type=number]').value, '');
+    assert.doesNotMatch(document.body.textContent, /Periksa dan setujui satu kali|Private test prompt/);
+    assert.equal(calls.some(([path]) => path.includes('submit')), false, 'navigation must not dispatch paid work');
+
+
   } finally {
     await React.act(async () => root.unmount());
     supabase.auth.getSession = oldGet; supabase.auth.onAuthStateChange = oldOn; globalThis.fetch = oldFetch;

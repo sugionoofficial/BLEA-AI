@@ -15,8 +15,9 @@ const SINGING_RATIOS = [
   { value: '1:1', label: '1:1 (Persegi)' },
 ];
 
-export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loading, request, userId, storage }) {
-  const [tool, setTool] = useState('generate_singing_video');
+export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loading, request, userId, storage, onlyTool = null }) {
+  const lockedTool = ['generate_singing_video', 'generate_lip_sync_video'].includes(onlyTool) ? onlyTool : null;
+  const [tool, setTool] = useState(lockedTool || 'generate_singing_video');
 
   // Discovered live schema hints from tools/list
   const [schemaHints, setSchemaHints] = useState(null);
@@ -571,10 +572,11 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
   return (
     <section className="freebeat-card freebeat-site-test">
       <span className="freebeat-kicker">SINGING &amp; LIP-SYNC · KHUSUS ADMIN · MCP RESMI</span>
-      <h2>Uji Singing &amp; Lip-Sync Video</h2>
-      <p>Menjalankan <code>generate_singing_video</code> atau <code>generate_lip_sync_video</code> (+ <code>upload_video</code> &amp; <code>upload_audio</code>) melalui akun Freebeat admin dengan pemeriksaan quote dan persetujuan eksplisit.</p>
+      <h2>{lockedTool ? (tool === 'generate_lip_sync_video' ? 'Uji Lip-Sync Video' : 'Uji Singing Video') : 'Uji Singing & Lip-Sync Video'}</h2>
+      <p>Menjalankan {lockedTool ? <code>{lockedTool}</code> : <><code>generate_singing_video</code> atau <code>generate_lip_sync_video</code></>} melalui akun Freebeat admin dengan pemeriksaan quote dan persetujuan eksplisit. Upload media juga memerlukan tindakan dan persetujuan terpisah.</p>
 
       <div className="freebeat-actions">
+        {!lockedTool && <>
         <button
           type="button"
           className={tool === 'generate_singing_video' ? '' : 'is-secondary'}
@@ -591,6 +593,7 @@ export function FreebeatSingingLipSyncDiagnostic({ connected, imageAccess, loadi
         >
           Lip-Sync Video (generate_lip_sync_video)
         </button>
+        </>}
         <button
           type="button"
           className="is-secondary"

@@ -83,6 +83,7 @@ function App() {
               <Route path="/admin" element={<AdminPage />} />
               <Route path="/admin/freebeat-oauth" element={<AdminPage initialTab="freebeat-oauth" />} />
               <Route path="/admin/freebeat" element={<FreebeatPage />} />
+              <Route path="/admin/freebeat/:experimentId" element={<FreebeatPage />} />
               <Route path="/tempmail" element={<TempMailPage />} />
               {/* Pool akun OpenAI manual: halaman admin sendiri, sejajar
                   dengan Freebeat MCP dan TempMail. */}
