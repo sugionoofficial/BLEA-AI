@@ -77,6 +77,7 @@ test('Worker /api/video/models dan /api/image/config mengembalikan nama bersih t
         { provider: 'alibaba', model: 'wan3.0-video', active: true },
         { provider: 'alibaba', model: 'wan2.7-image', active: true },
         { provider: 'freebeat', model: 'generate_dance_video', active: true },
+        { provider: 'freebeat', model: '122', active: true },
       ]);
     }
     if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) {

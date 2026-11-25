@@ -4822,12 +4822,22 @@ async function consumerImagePrice(env, modelId, modality = 'image') {
   const credits = Number(Array.isArray(rows) ? rows[0]?.credits : null);
   return Number.isSafeInteger(credits) && credits > 0 && credits <= 1000000 ? credits : null;
 }
+// Katalog dan harga adalah pengaturan terpisah: harga aktif tidak mengaktifkan model.
+async function freebeatModelActive(env, modelId) {
+  const rows = await dbJson(env, `/provider_models?provider=eq.freebeat&model=eq.${encodeURIComponent(String(modelId))}&active=eq.true&select=model&limit=1`);
+  return Array.isArray(rows) && rows.some((row) => String(row.model) === String(modelId));
+}
+async function requireFreebeatModelActive(env, modelId) {
+  if (!(await freebeatModelActive(env, modelId))) {
+    throw fail(`Model Freebeat ${modelId} belum diaktifkan admin di Katalog Model.`, 409);
+  }
+}
 export async function consumerImageConfig(env) {
   const modelId = consumerImageModel(env);
-  const credits = await consumerImagePrice(env, modelId);
+  const [credits, active] = await Promise.all([consumerImagePrice(env, modelId), freebeatModelActive(env, modelId)]);
   let ready = false;
   try { const session = await loadProviderSession(env); ready = Boolean(session?.imageAccess); } catch { ready = false; }
-  return { model_id: modelId, credits, provider_ready: ready, ceiling: consumerProviderCeiling(env), min_margin: consumerMinMargin(env) };
+  return { model_id: modelId, credits, active, provider_ready: ready, ceiling: consumerProviderCeiling(env), min_margin: consumerMinMargin(env) };
 }
 export async function fetchFreebeatCatalogModels(env) {
   const byKey = new Map();
@@ -4999,6 +5009,7 @@ export async function consumerImageGenerate(env, request, user) {
   if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.trim().length > 2000) throw fail('Masukkan prompt sepanjang 1-2000 karakter.', 400);
   const prompt = input.prompt.trim();
   const modelId = consumerImageModel(env);
+  await requireFreebeatModelActive(env, modelId);
   const price = await consumerImagePrice(env, modelId, 'image');
   if (price === null) throw fail('Harga kredit untuk model gambar ini belum diatur admin; generasi tidak dikirim.', 409);
 
@@ -5498,6 +5509,7 @@ export async function consumerDanceGenerate(env, user, payload) {
   const input = validateConsumerDancePayload(payload);
   await assertAccountActive(env, user.id);
 
+  await requireFreebeatModelActive(env, 'generate_dance_video');
   const price = await consumerImagePrice(env, 'generate_dance_video', 'video');
   if (price === null) {
     const err = fail('Harga kredit untuk model video "generate_dance_video" (freebeat) belum diatur admin. Atur dulu di Admin → API Key → Katalog Model.', 409);
@@ -5867,25 +5879,29 @@ export async function consumerFreebeatVideoConfigs(env) {
   const readPrice = async (model) => {
     try { return await consumerImagePrice(env, model, 'video'); } catch { return null; }
   };
-  const [danceCredits, singingCredits, lipSyncCredits] = await Promise.all([
+  const [danceCredits, singingCredits, lipSyncCredits, danceActive, singingActive, lipSyncActive] = await Promise.all([
     readPrice('generate_dance_video'),
     readPrice('generate_singing_video'),
     readPrice('generate_lip_sync_video'),
+    freebeatModelActive(env, 'generate_dance_video'),
+    freebeatModelActive(env, 'generate_singing_video'),
+    freebeatModelActive(env, 'generate_lip_sync_video'),
   ]);
   const liveModes = Array.isArray(cachedVocalSchemaMeta?.singingModes) && cachedVocalSchemaMeta.singingModes.length > 0
     ? cachedVocalSchemaMeta.singingModes
     : ['auto', 'duet'];
   return {
     provider_ready: ready,
-    generate_dance_video: { model: 'generate_dance_video', credits: danceCredits, provider_ready: ready },
+    generate_dance_video: { model: 'generate_dance_video', credits: danceCredits, active: danceActive, provider_ready: ready },
     generate_singing_video: {
       model: 'generate_singing_video',
       credits: singingCredits,
+      active: singingActive,
       provider_ready: ready,
       singingModes: liveModes,
       maxImages: cachedVocalSchemaMeta?.singingMaxImages || 5,
     },
-    generate_lip_sync_video: { model: 'generate_lip_sync_video', credits: lipSyncCredits, provider_ready: ready },
+    generate_lip_sync_video: { model: 'generate_lip_sync_video', credits: lipSyncCredits, active: lipSyncActive, provider_ready: ready },
   };
 }
 
@@ -6028,6 +6044,7 @@ export async function consumerVocalGenerate(env, user, payload) {
   await assertAccountActive(env, user.id);
 
   const label = input.tool === 'generate_singing_video' ? 'singing video' : 'lip-sync video';
+  await requireFreebeatModelActive(env, input.tool);
   const price = await consumerImagePrice(env, input.tool, 'video');
   if (price === null) {
     const err = fail(`Harga kredit untuk model video "${input.tool}" (freebeat) belum diatur admin. Atur dulu di Admin → API Key → Katalog Model.`, 409);
