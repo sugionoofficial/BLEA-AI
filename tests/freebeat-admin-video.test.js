@@ -74,6 +74,10 @@ function fixture() {
       let data;
       if (body.params.name === 'quote_generation' && body.params.arguments.tool === 'upload_image') {
         assert.deepEqual(body.params.arguments, { tool: 'upload_image', parameters: { urls: ['https://images.example/input.png'] } });
+        if (uploadConfig.quoteHttp) return new Response(null, { status: uploadConfig.quoteHttp });
+        if (uploadConfig.quoteError) return Response.json({ id: body.id, error: uploadConfig.quoteError });
+        if (uploadConfig.quoteToolError) return Response.json({ id: body.id, result: { isError: true, structuredContent: uploadConfig.quoteToolError } });
+        if (uploadConfig.quoteToolText) return Response.json({ id: body.id, result: { isError: true, content: [{ type: 'text', text: uploadConfig.quoteToolText }] } });
         data = uploadConfig.quote;
       } else if (body.params.name === 'upload_image') {
         assert.deepEqual(body.params.arguments, { urls: ['https://images.example/input.png'], ...(uploadConfig.host ? {} : { max_credits: 0 }) });
@@ -882,5 +886,62 @@ test('admin image hosting returns only a validated Freebeat quote URL, rechecks 
     f.setScope('freebeat:read'); const readOnly = await connect();
     assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 7 }, { cookie: readOnly })).status, 403);
     assert.equal(f.calls.some((c) => c.params?.name === 'generate_video'), false);
+  } finally { globalThis.fetch = original; console.warn = warn; }
+});
+
+
+test('upload quote rejection is diagnosed without leaking prose; unknown-price hosting requires separate consent and a supported failure category', async () => {
+  const original = globalThis.fetch, warn = console.warn, f = fixture(); globalThis.fetch = f.fetch; console.warn = () => {};
+  const photo = { image_url: 'https://images.example/input.png' };
+  try {
+    const cookie = await connect();
+    const call = (action, data = photo) => api(action, { cookie, method: 'POST', data });
+    const count = (name) => f.calls.filter((c) => c.params?.name === name || c.method === name).length;
+    const consent = { ...photo, acknowledge: true, accept_unknown_cost: true };
+    for (const code of [-32601, -32602]) {
+      f.setUploadConfig({ host: true, quoteError: { code, message: 'PRIVATE-TOKEN https://private.example/photo' }, result: { success: true, image_urls: ['https://static.freebeat.ai/photo.png'] } });
+      const body = await (await call('image-upload-quote')).json();
+      assert.equal(body.credits, null);
+      assert.equal(body.status, 'quote_rejected');
+      assert.equal(body.unknown_cost_allowed, true);
+      assert.deepEqual(body.diagnostic, { stage: 'upload_quote', kind: 'rpc_rejected', rpc_code: code });
+      assert.doesNotMatch(JSON.stringify(body), /PRIVATE|private.example/);
+      const before = count('upload_image');
+      assert.equal((await call('image-upload-host', { ...photo, acknowledge: true, expected_credits: 0 })).status, 409);
+      assert.equal((await call('image-upload-host', { ...consent, expected_credits: 0 })).status, 400);
+      assert.equal((await call('image-upload-host', { ...consent, accept_unknown_cost: 'true' })).status, 400);
+      assert.equal(count('upload_image'), before);
+      const inits = count('initialize');
+      const result = await (await call('image-upload-host', consent)).json();
+      assert.equal(result.quote_credits, null);
+      assert.equal(result.accept_unknown_cost, true);
+      assert.equal(result.outcome, 'uploaded');
+      assert.equal(count('upload_image'), before + 1);
+      assert.equal(count('initialize'), inits + 1, 'quote and upload must reuse the recovered session');
+    }
+    f.setUploadConfig({ host: true, quoteToolText: "Input should be 'generate_video'; input_value='upload_image'; PRIVATE-TOKEN https://private.example/photo", result: { success: true, image_urls: ['https://static.freebeat.ai/photo.png'] } });
+    const rejected = await (await call('image-upload-quote')).json();
+    assert.equal(rejected.unknown_cost_allowed, true);
+    assert.doesNotMatch(JSON.stringify(rejected), /PRIVATE|private.example/);
+    assert.equal((await call('image-upload-host', consent)).status, 200);
+    for (const config of [
+      { quoteToolText: 'upload_image not supported: unauthorized PRIVATE' },
+      { quoteToolText: 'Internal server error PRIVATE' },
+      { quoteError: { code: -32000, message: 'Forbidden PRIVATE' } },
+      { quoteError: { code: -32602, message: 'Unauthorized PRIVATE' } },
+      { quoteError: { code: -32602, message: 'insufficient credits PRIVATE' } },
+      { quoteToolError: { status: 'insufficient_credits', message: 'PRIVATE' } },
+      { quote: { status: 'quoted', credits: 5 } },
+      { quote: { status: 'quoted', credits: 101 } },
+      { quoteHttp: 401 }, { quoteHttp: 403 }, { quoteHttp: 500 },
+    ]) {
+      f.setUploadConfig({ host: true, ...config });
+      const before = count('upload_image');
+      const res = await call('image-upload-host', consent);
+      assert.notEqual(res.status, 200);
+      assert.equal(count('upload_image'), before, 'unknown consent must not bypass auth, balance, generic failure, or a known quote');
+      assert.doesNotMatch(await res.text(), /PRIVATE/);
+    }
+    assert.equal(count('generate_video'), 0);
   } finally { globalThis.fetch = original; console.warn = warn; }
 });

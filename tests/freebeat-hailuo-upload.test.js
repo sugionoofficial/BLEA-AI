@@ -14,11 +14,11 @@ async function harness(run) {
   const { FreebeatHailuoDiagnostic } = await vite.ssrLoadModule('/src/auth/FreebeatHailuoDiagnostic.jsx');
   const root = createRoot(document.getElementById('root'));
   const calls = [], storageCalls = [];
-  let credits = 7, hostMode = 'success', pending, failDelete = false, storageSlow = false, pendingStorage;
+  let credits = 7, hostMode = 'success', pending, failDelete = false, storageSlow = false, pendingStorage, costResult = null, quoteFailure = false;
   const hostedUrl = 'https://static.freebeat.ai/hailuo-photo.png';
   const request = async (action, method, body) => {
     calls.push([action, method, body]);
-    if (action === 'image-upload-quote') return { credits };
+    if (action === 'image-upload-quote') { if (quoteFailure) throw new Error('Freebeat menolak akses. [FB-MCP-QUOTE-HTTP]'); return costResult || { credits }; }
     if (action === 'image-upload-host') {
       if (hostMode === 'lost') throw new Error('network lost');
       if (hostMode === 'slow') return new Promise((resolve) => { pending = resolve; });
@@ -45,7 +45,7 @@ async function harness(run) {
   const stage = async () => { await selectFile(); await check('Setujui penyimpanan foto Hailuo'); await click('Unggah foto & periksa biaya upload Freebeat'); };
   try {
     await render();
-    await run({ React, field, button, click, check, selectFile, stage, render, calls, storageCalls, hostedUrl, setCredits: (value) => { credits = value; }, setHostMode: (value) => { hostMode = value; }, resolveHost: (value) => pending(value), setDeleteFailure: (value) => { failDelete = value; }, setStorageSlow: () => { storageSlow = true; }, resolveStorage: () => pendingStorage({ error: null }) });
+    await run({ React, field, button, click, check, selectFile, stage, render, calls, storageCalls, hostedUrl, setCredits: (value) => { credits = value; }, setCostResult: (value) => { costResult = value; }, setQuoteFailure: (value) => { quoteFailure = value; }, setHostMode: (value) => { hostMode = value; }, resolveHost: (value) => pending(value), setDeleteFailure: (value) => { failDelete = value; }, setStorageSlow: () => { storageSlow = true; }, resolveStorage: () => pendingStorage({ error: null }) });
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     for (const key of keys) { if (old[key] === undefined) delete globalThis[key]; else globalThis[key] = old[key]; }
@@ -132,4 +132,35 @@ test('Hailuo retains public Storage cleanup handle after OAuth disconnect during
   await h.click('Hapus foto dari BLEA');
   assert.equal(h.storageCalls.filter(([action]) => action === 'remove').length, 1);
   assert.equal(h.button('Hapus foto dari BLEA').disabled, true);
+}));
+
+
+test('Hailuo quote rejection never implies free upload and needs fresh explicit unknown-cost consent', () => harness(async (h) => {
+  h.setCostResult({ credits: null, status: 'quote_rejected', unknown_cost_allowed: true, diagnostic: { rpc_code: -32602 } });
+  await h.stage();
+  assert.match(document.body.textContent, /menolak quote_generation untuk upload_image/);
+  assert.match(document.body.textContent, /Kode RPC: -32602/);
+  assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
+  assert.equal(h.field('Setujui biaya upload foto Hailuo').disabled, true);
+  await h.check('Setujui biaya upload Hailuo tidak diketahui');
+  assert.equal(h.button('Kirim foto ke Freebeat').disabled, false);
+  await h.click('Periksa ulang biaya upload Freebeat');
+  assert.equal(h.field('Setujui biaya upload Hailuo tidak diketahui').checked, false);
+  assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
+  assert.equal(h.storageCalls.filter(([action]) => action === 'upload').length, 1);
+  await h.check('Setujui biaya upload Hailuo tidak diketahui');
+  await h.click('Kirim foto ke Freebeat');
+  assert.deepEqual(h.calls.at(-1), ['image-upload-host', 'POST', { image_url: 'https://storage.example/source.png', acknowledge: true, accept_unknown_cost: true }]);
+  assert.equal(h.field('URL gambar Hailuo').value, h.hostedUrl);
+  assert.equal(h.button('Periksa quote Hailuo #106').disabled, true);
+}));
+
+test('Hailuo quote access errors retain the staged photo for cost retry but never expose unknown-cost consent', () => harness(async (h) => {
+  h.setQuoteFailure(true); await h.stage();
+  assert.match(document.body.textContent, /FB-MCP-QUOTE-HTTP/);
+  assert.equal(h.field('Setujui biaya upload Hailuo tidak diketahui'), null);
+  assert.equal(h.calls.filter(([action]) => action === 'image-upload-host').length, 0);
+  h.setQuoteFailure(false); await h.click('Periksa ulang biaya upload Freebeat');
+  assert.equal(h.storageCalls.filter(([action]) => action === 'upload').length, 1);
+  assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
 }));

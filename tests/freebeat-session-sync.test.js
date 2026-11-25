@@ -64,7 +64,7 @@ async function harness({ eager = false, rotate = true, rejectedStatus = 401, wro
     inits, calls, legacyReads: () => legacyReads,
     request: (action) => worker.fetch(new Request(`${base}/api/freebeat/${action}`, {
       method: 'POST', headers: { authorization: 'Bearer admin-jwt', cookie: `__Host-blea_freebeat_session=${sealedOld}`, origin: base, 'content-type': 'application/json' },
-      body: JSON.stringify(action === 'vocal-quote' ? { tool: 'generate_lip_sync_video', video_url: 'https://cdn.example/source.mp4', video_duration_ms: 15000, music_id: 123 } : action === 'video-model-help' ? { model_id: 106 } : action === 'video-model-quote' ? { model_id: 106, input_mode: 'keyframe', images: ['https://cdn.example/source.png'], prompt: 'A quiet scene', duration: 10, resolution: '768p', aspect_ratio: '16:9' } : {}),
+      body: JSON.stringify(action === 'vocal-quote' ? { tool: 'generate_lip_sync_video', video_url: 'https://cdn.example/source.mp4', video_duration_ms: 15000, music_id: 123 } : action === 'image-upload-quote' ? { image_url: 'https://cdn.example/source.png' } : action === 'video-model-help' ? { model_id: 106 } : action === 'video-model-quote' ? { model_id: 106, input_mode: 'keyframe', images: ['https://cdn.example/source.png'], prompt: 'A quiet scene', duration: 10, resolution: '768p', aspect_ratio: '16:9' } : {}),
     }), env),
     restore: () => { globalThis.fetch = originalFetch; },
   };
@@ -149,4 +149,21 @@ test('video model help and quote recover the handshake once and reuse that MCP s
       assert.equal(h.legacyReads(), 0);
     } finally { h.restore(); }
   }
+});
+
+
+test('image upload quote recovers only its handshake and never replays the quote tool', async () => {
+  const h = await harness();
+  try {
+    const res = await h.request('image-upload-quote');
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.deepEqual(h.inits, ['Bearer OLD-PRIVATE-TOKEN', 'Bearer NEW-PRIVATE-TOKEN']);
+    assert.deepEqual(h.calls, [{ name: 'quote_generation', token: 'Bearer NEW-PRIVATE-TOKEN' }]);
+  } finally { h.restore(); }
+  const rejected = await harness({ eager: true, rejectTool: true });
+  try {
+    assert.equal((await rejected.request('image-upload-quote')).status, 401);
+    assert.equal(rejected.calls.length, 1);
+    assert.equal(rejected.inits.length, 1);
+  } finally { rejected.restore(); }
 });
