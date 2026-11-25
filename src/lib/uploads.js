@@ -13,10 +13,9 @@ export const UPLOAD_BUCKET = 'ai-studio-uploads';
 export const UPLOAD_ACCEPT = 'image/*,video/*,audio/*,.pdf,.zip,.txt,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json';
 
 // Bucket `ai-studio-uploads` bersifat public-read (migrasi
-// 20261111000006) karena URL-nya harus bisa diambil model/provider. Tidak ada
-// batas ukuran di level bucket, jadi klien adalah satu-satunya penjaga ukuran.
-// Itu memang bisa dilewati; konsekuensinya hanya penyalahgunaan kuota storage
-// oleh pemilik akun sendiri, bukan kebocoran data.
+// 20261111000006) karena URL-nya harus bisa diambil model/provider. Batas
+// efektif Storage adalah nilai terendah antara batas global proyek dan batas
+// bucket (100 MiB, migrasi 20261207000000). Validasi klien bukan penggantinya.
 
 export function formatBytes(size) {
   const bytes = Number(size) || 0;

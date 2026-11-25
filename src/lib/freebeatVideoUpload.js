@@ -1,3 +1,5 @@
+import { isStorageSizeError, storageUploadErrorMessage } from './storageUploadError.js';
+
 const BUCKET = 'ai-studio-uploads';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
@@ -31,7 +33,11 @@ export async function uploadFreebeatImage(storage, userId, file) {
   const bucket = storage.from(BUCKET);
   let error;
   try { ({ error } = await bucket.upload(path, file, { contentType: file.type, upsert: false })); }
-  catch { throw new Error('Hasil upload tidak pasti; gambar mungkin sudah tersimpan. Periksa Supabase Storage sebelum mengunggah ulang.'); }
+  catch (error) {
+    if (isStorageSizeError(error)) throw new Error(storageUploadErrorMessage(error, { kind: 'image', size: file.size }));
+    throw new Error('Hasil upload tidak pasti; gambar mungkin sudah tersimpan. Periksa Supabase Storage sebelum mengunggah ulang.');
+  }
+  if (isStorageSizeError(error)) throw new Error(storageUploadErrorMessage(error, { kind: 'image', size: file.size }));
   if (error) throw new Error('Upload gagal atau hasilnya tidak pasti. Periksa Supabase Storage sebelum mengunggah ulang.');
   // Use our original path, not a provider-supplied path. Keep it for deletion
   // even if constructing the public URL fails after a successful upload.
@@ -55,7 +61,11 @@ export async function uploadFreebeatAudio(storage, userId, file) {
   const bucket = storage.from(BUCKET);
   let error;
   try { ({ error } = await bucket.upload(path, file, { contentType: mime || `audio/${extension}`, upsert: false })); }
-  catch { throw new Error('Hasil upload audio tidak pasti; file mungkin sudah tersimpan. Periksa Supabase Storage sebelum mengunggah ulang.'); }
+  catch (error) {
+    if (isStorageSizeError(error)) throw new Error(storageUploadErrorMessage(error, { kind: 'audio', size: file.size }));
+    throw new Error('Hasil upload audio tidak pasti; file mungkin sudah tersimpan. Periksa Supabase Storage sebelum mengunggah ulang.');
+  }
+  if (isStorageSizeError(error)) throw new Error(storageUploadErrorMessage(error, { kind: 'audio', size: file.size }));
   if (error) throw new Error('Upload audio gagal atau hasilnya tidak pasti. Periksa Supabase Storage sebelum mengunggah ulang.');
   let url = '';
   try {
@@ -81,7 +91,11 @@ export async function uploadFreebeatVideo(storage, userId, file) {
   const bucket = storage.from(BUCKET);
   let error;
   try { ({ error } = await bucket.upload(path, file, { contentType: mime || `video/${extension === 'mov' ? 'quicktime' : extension}`, upsert: false })); }
-  catch { throw new Error('Hasil upload video tidak pasti; file mungkin sudah tersimpan. Periksa Supabase Storage sebelum mengunggah ulang.'); }
+  catch (error) {
+    if (isStorageSizeError(error)) throw new Error(storageUploadErrorMessage(error, { kind: 'video', size: file.size }));
+    throw new Error('Hasil upload video tidak pasti; file mungkin sudah tersimpan. Periksa Supabase Storage sebelum mengunggah ulang.');
+  }
+  if (isStorageSizeError(error)) throw new Error(storageUploadErrorMessage(error, { kind: 'video', size: file.size }));
   if (error) throw new Error('Upload video gagal atau hasilnya tidak pasti. Periksa Supabase Storage sebelum mengunggah ulang.');
   let url = '';
   try {

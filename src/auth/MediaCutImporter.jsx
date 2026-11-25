@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { resolveSocialMediaUrl } from '../api/generation';
 import { probeMediaDurationMs } from '../lib/freebeatVideoUpload';
 import { trimAudioToWav, trimVideoToWebm } from '../lib/mediaTrim';
+import { storageUploadErrorMessage } from '../lib/storageUploadError';
 
 const SOCIAL_URL_RE = /(facebook\.com|fb\.watch|fb\.me|tiktok\.com)/i;
 
@@ -35,7 +36,7 @@ async function uploadResultBlob({ userId, kind, blob, baseName }) {
   const { data, error } = await supabase.storage
     .from('ai-studio-uploads')
     .upload(path, blob, { contentType: blob.type || undefined, upsert: false });
-  if (error) throw new Error(`Upload ke Supabase gagal: ${error.message}`);
+  if (error) throw new Error(storageUploadErrorMessage(error, { kind, size: blob.size }));
   const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
   return { url: pub.publicUrl, name: safeName, size: blob.size, localPreview: URL.createObjectURL(blob) };
 }

@@ -71,3 +71,31 @@ kredit provider: timeout/hasil tidak valid setelah dispatch masih mungkin
 terjadi setelah tugas diterima. Penanganan refund lama untuk kasus ini belum
 diubah oleh patch diagnostik. Periksa aktivitas Freebeat sebelum mengulang;
 jangan menjalankan generasi berbayar otomatis hanya untuk menguji diagnostik.
+
+## Upload video ditolak karena ukuran Storage
+
+`The object exceeded the maximum allowed size` adalah penolakan ukuran objek
+oleh Supabase Storage pada tahap upload, sebelum URL input berhasil dipasang ke
+form generasi. Batas aplikasi/video 100 MiB (`104857600` byte) bukan jaminan bahwa
+Storage menerima ukuran itu. Batas efektif mengikuti nilai terendah antara
+pengaturan global proyek Storage dan `storage.buckets.file_size_limit`.
+
+Untuk proyek BLEA, bucket `ai-studio-uploads` telah terverifikasi bernilai
+`104857600` byte pada 25 November 2026. Nilai global belum diverifikasi; jangan
+mengklaim batas global pasti 50 MB, mengganti paket, atau menaikkan bucket lagi
+tanpa memeriksanya. Migrasi SQL bucket tidak mengubah pengaturan global proyek.
+
+Admin perlu membuka Supabase Dashboard → Storage → Settings untuk memeriksa
+batas ukuran file global, lalu memeriksa konfigurasi bucket. Jika proyek/plan
+mengizinkan, sesuaikan batas global agar mendukung batas aplikasi. Jangan
+menaikkan batas melebihi kebutuhan atau mengubah billing tanpa persetujuan.
+Konektor yang dipakai pada pemeriksaan ini tidak menyediakan pembacaan/perubahan
+konfigurasi global Storage, sehingga patch aplikasi tidak mengubah batas server.
+
+Untuk segera melanjutkan, kompres/potong file hingga di bawah batas aktual, atau
+gunakan kolom URL HTTPS publik di form Lip-Sync. URL harus bisa diakses Freebeat
+dan tetap memenuhi batas provider. Memecah request menjadi chunk/TUS tidak
+mengatasi batas maksimum per objek. Pesan upload kini menjelaskan penolakan ini,
+termasuk ukuran file jika diketahui, tanpa menampilkan respons mentah. Error SDK
+yang dikembalikan maupun dilempar ditangani, tanpa retry atau pengiriman generasi
+otomatis. Ini bukan perbaikan batas global maupun error generate Freebeat.

@@ -22,6 +22,7 @@ import { useCredits } from '../lib/useCredits';
 import { formatCredits, formatModelDisplayName, formatProviderBadge } from '../lib/formatCredits';
 import { formatElapsedRuntime, useNowTick } from '../lib/formatRuntime';
 import { probeMediaDurationMs } from '../lib/freebeatVideoUpload';
+import { storageUploadErrorMessage } from '../lib/storageUploadError';
 import MediaCutImporter, { ExistingMediaCutTool } from './MediaCutImporter';
 import { GenerateImagePanel } from './GenerateImagePanel';
 import { GenerateMusicPanel } from './GenerateMusicPanel';
@@ -308,7 +309,7 @@ export function GeneratePage() {
           upsert: false,
         });
       if (error) {
-        setBanner({ type: 'error', text: `Gagal mengunggah ${slot}: ${error.message}` });
+        setBanner({ type: 'error', text: storageUploadErrorMessage(error, { kind: slot, size: file.size, fallback: `Gagal mengunggah ${slot}. Periksa koneksi dan izin penyimpanan.` }) });
         return;
       }
       const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
@@ -333,6 +334,8 @@ export function GeneratePage() {
         setAudioMedia(mediaObj);
         if (probedDurationMs) setAudioDurationMs(probedDurationMs);
       }
+    } catch (error) {
+      setBanner({ type: 'error', text: storageUploadErrorMessage(error, { kind: slot, size: file.size, fallback: 'Hasil upload belum dapat dipastikan. Periksa penyimpanan sebelum mengunggah ulang.' }) });
     } finally {
       setUploadingSlot('');
     }
@@ -391,12 +394,14 @@ export function GeneratePage() {
           .from('ai-studio-uploads')
           .upload(path, file, { contentType: file.type || undefined, upsert: false });
         if (error) {
-          setBanner({ type: 'error', text: `Gagal mengunggah ${kind}: ${error.message}` });
+          setBanner({ type: 'error', text: storageUploadErrorMessage(error, { kind, size: file.size, fallback: `Gagal mengunggah ${kind}. Periksa koneksi dan izin penyimpanan.` }) });
           break;
         }
         const { data: pub } = supabase.storage.from('ai-studio-uploads').getPublicUrl(data.path);
         setList((prev) => [...prev, { url: pub.publicUrl, name: file.name, size: file.size, localPreview: URL.createObjectURL(file) }]);
       }
+    } catch (error) {
+      setBanner({ type: 'error', text: storageUploadErrorMessage(error, { kind, fallback: 'Hasil upload referensi belum dapat dipastikan. Periksa penyimpanan sebelum mengunggah ulang.' }) });
     } finally {
       setUploadingSlot('');
     }
@@ -1036,7 +1041,7 @@ export function GeneratePage() {
                       onClick={() => videoInputRef.current?.click()}
                     >
                       <strong>{uploadingSlot === 'video' ? 'Mengunggah...' : '+ Pilih Video'}</strong>
-                      <span>MP4, WEBM, MOV · maks 100MB</span>
+                      <span>MP4, WEBM, MOV · maks 100MB, mengikuti batas penyimpanan proyek</span>
                     </button>
                   )}
                   <div className="generate-upload-footer">
