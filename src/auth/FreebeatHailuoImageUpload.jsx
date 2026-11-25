@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
 
 export function FreebeatHailuoImageUpload({ connected, imageAccess, loading, disabled, request, storage, userId, onImageUrl, onBusyChange }) {
@@ -92,10 +93,14 @@ export function FreebeatHailuoImageUpload({ connected, imageAccess, loading, dis
     </div>
     {source && <p className="freebeat-note">Foto sumber tersimpan di BLEA. Hapus dengan tombol di atas sebelum meninggalkan halaman; setelah pindah halaman, kelola objek tertinggal melalui Supabase Storage. Menghapus sumber tidak menghapus salinan Freebeat.</p>}
     {cost && <>
+      {cost.diagnostic && <FreebeatCopyResult title="Diagnosis quote upload" value={{ status: cost.status, credits: cost.credits, unknown_cost_allowed: cost.unknown_cost_allowed === true, stage: 'upload_quote', kind: cost.diagnostic.kind, ...(Number.isSafeInteger(cost.diagnostic.rpc_code) ? { rpc_code: cost.diagnostic.rpc_code } : {}) }} description="Kode terstruktur untuk pemeriksaan; tidak berisi foto, URL sumber, atau pesan mentah Freebeat." />}
       {cost.status === 'quote_rejected' && <p role="alert">Freebeat menerima sesi MCP tetapi menolak quote_generation untuk upload_image. Ini bukan bukti sesi terputus atau upload gratis. Penyebab pasti belum diketahui.{Number.isSafeInteger(cost.diagnostic?.rpc_code) ? ` Kode RPC: ${cost.diagnostic.rpc_code}.` : ''} Upload belum dikirim.</p>}
+      {unquoted && <p className="freebeat-note">Quote tidak memberi harga. Jika Anda menerima risikonya, centang persetujuan biaya TIDAK DIKETAHUI di bawah lalu klik Kirim foto ke Freebeat. Tanpa centang, upload tetap diblokir.</p>}
+      {!unquoted && cost.diagnostic?.kind === 'access_denied' && <p role="alert">Freebeat menolak akses pada pemeriksaan quote. Periksa izin akun atau hubungkan ulang; persetujuan biaya tidak boleh melewati penolakan akses.</p>}
+      {!unquoted && cost.diagnostic?.kind === 'temporary_failure' && <p role="alert">Pemeriksaan quote mengalami kegagalan sementara. Periksa ulang nanti; upload belum dikirim.</p>}
       <p role="status">Quote upload_image: {quoted ? `${cost.credits} kredit Freebeat` : (unquoted ? 'tidak diketahui; perlu persetujuan risiko terpisah' : 'tidak tersedia atau di luar batas uji 0–100 kredit; upload diblokir')}.</p>
       <p>Ini biaya upload foto, bukan quote video. Server memeriksa ulang quote sebelum mengirim. Tool upload_image tidak menyediakan batas kredit keras; quote bukan jaminan tagihan akhir atau refund. Salinan dapat disimpan oleh Freebeat.</p>
-      <label className="freebeat-confirm"><input type="checkbox" aria-label="Setujui biaya upload foto Hailuo" checked={costConsent} disabled={blocked || !quoted || attempted} onChange={(event) => setCostConsent(event.target.checked)} /> Saya menyetujui satu upload_image dengan quote {quoted ? cost.credits : 'belum diketahui'} kredit Freebeat dan memahami ketidakpastian biaya aktual.</label>
+      {quoted && <label className="freebeat-confirm"><input type="checkbox" aria-label="Setujui biaya upload foto Hailuo" checked={costConsent} disabled={blocked || !quoted || attempted} onChange={(event) => setCostConsent(event.target.checked)} /> Saya menyetujui satu upload_image dengan quote {quoted ? cost.credits : 'belum diketahui'} kredit Freebeat dan memahami ketidakpastian biaya aktual.</label>}
       {unquoted && <label className="freebeat-confirm"><input type="checkbox" aria-label="Setujui biaya upload Hailuo tidak diketahui" checked={unknownConsent} disabled={blocked || attempted} onChange={(event) => setUnknownConsent(event.target.checked)} /> Saya secara khusus menyetujui satu upload_image dengan biaya TIDAK DIKETAHUI, tanpa batas kredit keras dan tanpa jaminan refund. Kredit Freebeat dapat terpotong. Ini bukan persetujuan generasi video.</label>}
       <div className="freebeat-actions"><button type="button" disabled={blocked || !((quoted && costConsent) || (unquoted && unknownConsent)) || attempted} onClick={host}>Kirim foto ke Freebeat</button></div>
     </>}

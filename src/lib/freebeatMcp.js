@@ -5150,16 +5150,27 @@ async function imageUploadQuote(accessToken, photoUrl, existingHeaders = null) {
     const exhausted = isFreebeatBalanceExhausted(result);
     const rpcCode = Number.isSafeInteger(result?.error?.code) ? result.error.code : null;
     const content = modelContent(result);
-    // Some MCP SDKs encode argument-enum validation as isError text rather
-    // than JSON-RPC -32602. Classify only explicit upload_image quote/schema
-    // rejection vocabulary; never expose the text or open this for auth errors.
-    const text = Array.isArray(result.content) ? result.content.slice(0, 10).filter((item) => item?.type === 'text' && typeof item.text === 'string').map((item) => item.text.slice(0, 2000)).join(' ') : '';
-    const accessText = [text, result.error?.message, content?.message, content?.status, content?.error_code].filter((item) => typeof item === 'string').map((item) => item.slice(0, 2000)).join(' ');
-    const accessDenied = /unauthori[sz]ed|forbidden|access[ _-]denied|permission[ _-]denied|invalid[ _-]token|expired[ _-]token/i.test(accessText);
-    const explicitToolRejection = result.isError === true && /\bupload_image\b/i.test(text) && /not supported|unsupported|input should be|not (?:an? )?allowed|invalid (?:tool|enum)/i.test(text);
-    const unsupported = !accessDenied && ([-32601, -32602].includes(rpcCode) || explicitToolRejection || ['unavailable', 'unsupported', 'not_supported', 'unquotable', 'no_quote'].includes(content?.status));
-    return { credits: null, status: exhausted ? 'insufficient_credits' : 'quote_rejected', unknown_cost_allowed: !exhausted && unsupported,
-      diagnostic: { stage: 'upload_quote', kind: exhausted ? 'insufficient_credits' : 'rpc_rejected', ...(rpcCode !== null ? { rpc_code: rpcCode } : {}) }, quote: null };
+    // SDK tool errors often have no JSON-RPC code or stable wording. An
+    // unpriced tool rejection may be opted into explicitly; it is not proof
+    // that upload is free/supported. Access/balance/transient failures stay shut.
+    let remaining = 16000;
+    const failureText = (value, depth = 0) => {
+      if (remaining <= 0 || depth > 5 || value == null) return '';
+      if (typeof value === 'string') { const part = value.slice(0, Math.min(2000, remaining)); remaining -= part.length; return part; }
+      if (typeof value === 'number') return String(value);
+      if (Array.isArray(value)) return value.slice(0, 10).map((item) => failureText(item, depth + 1)).join(' ');
+      if (typeof value !== 'object') return '';
+      return ['message', 'reason', 'code', 'status', 'error_code', 'error', 'structuredContent', 'content', 'text', 'detail', 'details', 'data'].filter((key) => key in value).map((key) => failureText(value[key], depth + 1)).join(' ');
+    };
+    // Classification only: never log or return provider text.
+    const text = failureText(result);
+    const accessDenied = /unauthori[sz]ed|forbidden|access[ _-]denied|permission[ _-]denied|invalid[ _-](?:access[ _-])?token|(?:expired|revoked)[ _-](?:access[ _-])?token|token[ _-](?:expired|invalid|revoked)|auth(?:entication)?[ _-](?:required|failed)|not[ _-](?:authenticated|logged[ _-]in)|insufficient[ _-]scope/i.test(text);
+    const temporaryFailure = rpcCode === -32603 || /internal[ _-](?:server[ _-])?error|timed?[ _-]out|timeout|temporar(?:ily|y)[ _-](?:unavailable|failure)|rate[ _-]limit|too many requests|connection[ _-](?:reset|refused)|service[ _-]unavailable|bad[ _-]gateway/i.test(text);
+    const toolRejected = result.isError === true && !result.error;
+    const unpriced = toolRejected || [-32601, -32602].includes(rpcCode) || ['unavailable', 'unsupported', 'not_supported', 'unquotable', 'no_quote'].includes(content?.status);
+    const kind = exhausted ? 'insufficient_credits' : accessDenied ? 'access_denied' : temporaryFailure ? 'temporary_failure' : toolRejected ? 'tool_rejected' : 'rpc_rejected';
+    return { credits: null, status: exhausted ? 'insufficient_credits' : 'quote_rejected', unknown_cost_allowed: !exhausted && !accessDenied && !temporaryFailure && unpriced,
+      diagnostic: { stage: 'upload_quote', kind, ...(rpcCode !== null ? { rpc_code: rpcCode } : {}) }, quote: null };
   }
   const content = modelContent(result);
   if (!content || typeof content !== 'object' || Array.isArray(content)) throw mcpFailure('quote', 'response');

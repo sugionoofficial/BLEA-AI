@@ -105,7 +105,7 @@ test('Hailuo blocks invalid file, unknown/excessive cost and stale hosting hando
   assert.equal(h.storageCalls.length, 0);
   h.setCredits(null); await h.stage();
   assert.match(document.body.textContent, /upload diblokir/);
-  assert.equal(h.field('Setujui biaya upload foto Hailuo').disabled, true);
+  assert.equal(h.field('Setujui biaya upload foto Hailuo'), null);
   h.setCredits(101); await h.click('Periksa ulang biaya upload Freebeat');
   assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
   h.setCredits(4); await h.click('Periksa ulang biaya upload Freebeat');
@@ -136,12 +136,14 @@ test('Hailuo retains public Storage cleanup handle after OAuth disconnect during
 
 
 test('Hailuo quote rejection never implies free upload and needs fresh explicit unknown-cost consent', () => harness(async (h) => {
-  h.setCostResult({ credits: null, status: 'quote_rejected', unknown_cost_allowed: true, diagnostic: { rpc_code: -32602 } });
+  h.setCostResult({ credits: null, status: 'quote_rejected', unknown_cost_allowed: true, diagnostic: { kind: 'tool_rejected' } });
   await h.stage();
   assert.match(document.body.textContent, /menolak quote_generation untuk upload_image/);
-  assert.match(document.body.textContent, /Kode RPC: -32602/);
+  assert.match(document.body.textContent, /centang persetujuan biaya TIDAK DIKETAHUI/);
+  assert.ok(document.querySelector('[aria-label="Diagnosis quote upload"]'));
+  assert.equal(h.field('Setujui biaya upload Hailuo tidak diketahui').checked, false);
   assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
-  assert.equal(h.field('Setujui biaya upload foto Hailuo').disabled, true);
+  assert.equal(h.field('Setujui biaya upload foto Hailuo'), null);
   await h.check('Setujui biaya upload Hailuo tidak diketahui');
   assert.equal(h.button('Kirim foto ke Freebeat').disabled, false);
   await h.click('Periksa ulang biaya upload Freebeat');
@@ -163,4 +165,14 @@ test('Hailuo quote access errors retain the staged photo for cost retry but neve
   h.setQuoteFailure(false); await h.click('Periksa ulang biaya upload Freebeat');
   assert.equal(h.storageCalls.filter(([action]) => action === 'upload').length, 1);
   assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
+}));
+
+
+for (const kind of ['access_denied', 'temporary_failure', 'insufficient_credits']) test(`Hailuo ${kind} quote cannot offer unknown-price hosting`, () => harness(async (h) => {
+  h.setCostResult({ credits: null, status: 'quote_rejected', unknown_cost_allowed: false, diagnostic: { kind } });
+  await h.stage();
+  assert.equal(h.field('Setujui biaya upload Hailuo tidak diketahui'), null);
+  assert.equal(h.button('Kirim foto ke Freebeat').disabled, true);
+  assert.ok(document.querySelector('[aria-label="Diagnosis quote upload"]'));
+  assert.equal(h.calls.filter(([action]) => action === 'image-upload-host').length, 0);
 }));
