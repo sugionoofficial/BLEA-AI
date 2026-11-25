@@ -224,11 +224,26 @@ diteruskan ke MCP. Opsi dinormalisasi terhadap help live; periksa `settings`,
 `adjusted`, dan `supported` pada hasil sebelum menarik kesimpulan.
 
 Pemeriksaan tetap bisa dilakukan saat ID belum terlihat di katalog yang dimuat,
-karena daftar dapat dibatasi. Ini tidak menambahkan ID palsu ke daftar model,
-tidak mengaktifkan model konsumen, dan tidak memberi izin pengiriman berbayar.
-Panel kini juga mempunyai hosting foto dengan persetujuan terpisah, tetapi tetap tidak memanggil prepare, submit, generate video, atau RPC kredit BLEA. Hasil informasi/quote adalah respons yang disaring dan bisa disalin;
+karena daftar dapat dibatasi. Ini tidak menambahkan ID palsu ke daftar model
+dan tidak mengaktifkan model konsumen. Hasil informasi/quote disaring dan bisa disalin;
 hasil/consent dihapus saat input berubah atau koneksi diputus, dan respons lama
 yang tiba setelah pergantian input/koneksi diabaikan.
+
+### Persetujuan satu video Hailuo dan pemantauan hasil
+
+Admin telah melaporkan hosting foto berhasil dan quote MCP model 106/image/10 detik/768p/9:16 sebesar 130 kredit. Ini **bukan** bukti render berhasil atau tagihan akhir, bukan harga tetap, dan bukan izin untuk menjalankan generasi otomatis.
+
+Setelah quote numerik pada langkah 2 cocok dengan preset, klik **Siapkan persetujuan video Hailuo**. Halaman memuat catatan video admin terlebih dahulu: catatan `unknown`/`dispatching` memblokir percobaan baru. Lalu endpoint admin **POST `hailuo-prepare`** memeriksa help dan quote baru untuk tepat satu gambar publik HTTPS, `input_mode=keyframe`, `generation_type=image`, model **106**, **10 detik**, **768p**, rasio **16:9/9:16/1:1**. Endpoint ini tidak membuat video. Persiapan diblokir bila help tidak secara eksplisit menyatakan `model.model_id=106` dan `model.available=true`, opsi perlu dinormalisasi, kebijakan member menolak, atau biaya tidak numerik. `supported.durations=[]` hanya berarti help belum merinci durasi; bukan izin durasi sebarang. Preset tetap terkunci 10 detik dan harus mendapat quote numerik live.
+
+Jalur khusus ini tidak membutuhkan kemunculan 106 di katalog yang mungkin dibatasi. Pengecualian hanya untuk preset diagnostik admin ini; pemeriksaan katalog pada `video-prepare` umum tetap berlaku, dan katalog/aktivasi konsumen tidak diubah.
+
+Periksa ringkasan parameter, prompt, URL foto, quote baru, batas kredit, dan waktu kedaluwarsa. Batas yang diminta memakai rumus video yang sudah ada: **quote + max(10, ceil(quote × 15%))**. Contoh bila quote baru tetap 130, batasnya **150 kredit Freebeat**, bukan 130; biaya upload terpisah. Batas yang dikirim ke provider bukan bukti jumlah tagihan atau refund. Centang **Setujui satu generasi Hailuo**, lalu klik **Setujui dan kirim satu video Hailuo**. Izin hosting, quote, dan generasi terpisah; persetujuan tidak pernah otomatis dicentang.
+
+Tiket terenkripsi mengikat admin, sesi, input, parameter, harga dan kedaluwarsa. `video-submit` memeriksa kembali help/opsi Hailuo dan quote yang **harus sama**, lalu menggunakan penyimpanan `freebeat_admin_video_tests` dan mekanisme satu dispatch yang sudah ada. Hanya handshake yang boleh dipulihkan sekali dengan token akun/admin yang sama; tools/call generasi tidak pernah diulang. Satu tiket tidak bisa dikirim dua kali. `unknown`/`dispatching` mempertahankan kunci unik DB sampai ditinjau operator; jangan otomatis kedaluwarsakan kunci itu. Tidak ada potongan kredit BLEA.
+
+Halaman mengonsumsi tiket sebelum request submit dan menahan percobaan baru setelah satu pengiriman, termasuk saat respons hilang. Mengubah input/quote/sesi membatalkan persetujuan dan mengabaikan respons lama, tetapi tidak menghapus kunci percobaan lokal. Reload bukan cara aman mencoba ulang: kunci DB menjaga keadaan pengiriman tidak pasti, bukan deduplikasi semantik semua video dengan tiket baru.
+
+Setelah pengiriman, catatan dimuat sekali; selanjutnya gunakan **Periksa catatan video Hailuo** dan **Periksa status video Hailuo** secara manual. Tidak ada polling berkala, pengiriman ulang, atau pemutaran media otomatis. `submitted`/batch ID bukan bukti render berhasil; periksa status, kode gagal tersaring, billing/refund (nilai hilang tetap tidak diketahui), dan tautan hasil HTTPS. Catatan mencakup uji video admin lain juga. Tombol status sesi lama secara eksplisit mengizinkan pemeriksaan tugas lama lewat akun sesi saat ini. Diagnosis privat tambahan tersedia di `/admin/freebeat/video`, bukan dimunculkan mentah di panel Hailuo.
 
 Jalur informasi dan quote video juga memakai pemulihan handshake satu kali
 untuk token tersimpan yang usang (sama seperti saldo/quote vokal). Sesi MCP yang

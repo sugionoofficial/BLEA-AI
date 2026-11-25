@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { FreebeatCopyResult } from './FreebeatCopyResult';
 import { FreebeatHailuoImageUpload } from './FreebeatHailuoImageUpload';
+import { FreebeatHailuoGeneration } from './FreebeatHailuoGeneration';
 
-// Observed in a user-provided Freebeat WEB request, not verified MCP metadata.
-// Never use this preset to authorize a paid call or populate consumer models.
+// Admin reported a live 10s/768p image quote for model 106. Availability and
+// pricing must still be rechecked server-side; this is never consumer metadata.
 const CANDIDATE = Object.freeze({ model_id: 106, duration: 10, resolution: '768p', aspect_ratio: '16:9' });
 
 export function FreebeatHailuoDiagnostic({ connected, loading, request, videoModels, imageAccess = false, storage, userId }) {
@@ -13,7 +14,8 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
   const [consent, setConsent] = useState(false);
   const [requestBusy, setBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
-  const busy = requestBusy || uploadBusy;
+  const [generationBusy, setGenerationBusy] = useState(false);
+  const busy = requestBusy || uploadBusy || generationBusy;
   const [help, setHelp] = useState(null);
   const [quote, setQuote] = useState(null);
   const [error, setError] = useState('');
@@ -63,10 +65,10 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
     } finally { setBusy(false); }
   }
   return <section className="freebeat-result" aria-label="Pemeriksaan Hailuo 2.3 Pro">
-    <h3>Hailuo 2.3 Pro · ID 106 · pemeriksaan MCP tanpa generate</h3>
-    <p>Preset berasal dari request web: hailuo-2.3-pro, 10 detik, 768p, rasio 16:9. Ini bukan MiniMax 3.0 dan belum membuktikan dukungan MCP. Angka generationType web tidak dikirim; satu gambar dipetakan ke mode image oleh Worker.</p>
+    <h3>Hailuo 2.3 Pro · ID 106 · uji video admin</h3>
+    <p>Preset berasal dari request web: hailuo-2.3-pro, 10 detik, 768p, rasio 16:9. Ini bukan MiniMax 3.0. Admin telah memverifikasi upload dan quote MCP, tetapi render serta tagihan akhir belum terbukti; akses dan harga sesi ini tetap diperiksa ulang. Angka generationType web tidak dikirim; satu gambar dipetakan ke mode image oleh Worker.</p>
     <p>{listed ? 'ID 106 terlihat pada katalog MCP yang dimuat; akses dan opsi tetap perlu diperiksa.' : 'ID 106 belum terlihat pada katalog yang dimuat (daftar dapat tidak lengkap). Pemeriksaan baca-saja tetap tersedia; model tidak otomatis diaktifkan di Generate.'}</p>
-    <FreebeatHailuoImageUpload connected={connected} imageAccess={imageAccess} loading={loading} disabled={requestBusy} request={request} storage={storage} userId={userId} onBusyChange={setUploadBusy} onImageUrl={(url) => change(setImageUrl, url)} />
+    <FreebeatHailuoImageUpload connected={connected} imageAccess={imageAccess} loading={loading} disabled={requestBusy || generationBusy} request={request} storage={storage} userId={userId} onBusyChange={setUploadBusy} onImageUrl={(url) => change(setImageUrl, url)} />
     <h4>2. URL hasil → periksa quote video Hailuo</h4>
     <label className="freebeat-field">URL HTTPS gambar untuk quote Hailuo
       <input type="url" aria-label="URL gambar Hailuo" value={imageUrl} maxLength={2048} placeholder="https://domain-publik.example/foto.jpg" aria-invalid={Boolean(imageUrl.trim() && !safeUrl)} aria-describedby="freebeat-hailuo-quote-help" disabled={loading || busy || !connected} onChange={(e) => change(setImageUrl, e.target.value)} />
@@ -89,9 +91,10 @@ export function FreebeatHailuoDiagnostic({ connected, loading, request, videoMod
     <div id="freebeat-hailuo-quote-help" className="freebeat-prepare-help" aria-live="polite">
       {quoteBlockers.length ? <><strong>Quote belum bisa diperiksa:</strong><ul>{quoteBlockers.map((reason) => <li key={reason}>{reason}</li>)}</ul></> : <span>Siap memeriksa quote Hailuo. Klik Periksa quote Hailuo #106; tidak ada video yang dibuat.</span>}
     </div>
-    {busy && <p role="status">Memeriksa MCP tanpa membuat video…</p>}
+    {(requestBusy || uploadBusy) && <p role="status">Memeriksa MCP tanpa membuat video…</p>}
     {error && <p role="alert">{error}</p>}
     {help && <FreebeatCopyResult title="Informasi Hailuo MCP yang disaring" value={help} />}
     {quote && <FreebeatCopyResult title="Quote Hailuo MCP yang disaring" value={quote} />}
+    <FreebeatHailuoGeneration connected={connected} imageAccess={imageAccess} loading={loading} disabled={requestBusy || uploadBusy} request={request} userId={userId} imageUrl={safeUrl} prompt={prompt} aspectRatio={aspectRatio} quote={quote} onBusyChange={setGenerationBusy} />
   </section>;
 }
