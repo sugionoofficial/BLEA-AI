@@ -4285,7 +4285,9 @@ async function handleApi(request, url, env) {
         }
       }
       const listRes = await servicePostgrest(env, `/provider_models?select=model&provider=eq.${encodeURIComponent(provider)}&active=eq.true`);
-      const existing = await listRes.json().catch(() => []);
+      if (!listRes.ok) return jsonResponse({ error: 'DB read failed', status: listRes.status }, 500);
+      const existing = await listRes.json().catch(() => null);
+      if (!Array.isArray(existing)) return jsonResponse({ error: 'DB read failed' }, 500);
       const activeSet = new Set(activeIds);
       const stale = (existing ?? []).map((m) => m.model).filter((m) => !activeSet.has(m));
       if (stale.length > 0) {
@@ -4307,17 +4309,19 @@ async function handleApi(request, url, env) {
           }
         }
         if (!bulkDone) {
-          await servicePostgrest(
+          const resetRes = await servicePostgrest(
             env,
             `/provider_models?provider=eq.${encodeURIComponent(provider)}&active=eq.true`,
             { method: 'PATCH', body: { active: false } },
           );
+          if (!resetRes.ok) return jsonResponse({ error: 'DB write failed', status: resetRes.status }, 500);
           for (let i = 0; i < rows.length; i += 250) {
-            await servicePostgrest(env, '/provider_models', {
+            const restoreRes = await servicePostgrest(env, '/provider_models', {
               method: 'POST',
               headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
               body: rows.slice(i, i + 250),
             });
+            if (!restoreRes.ok) return jsonResponse({ error: 'DB write failed', status: restoreRes.status }, 500);
           }
         }
       }
@@ -4378,14 +4382,14 @@ async function handleApi(request, url, env) {
         const config = await consumerImageConfig(env);
         const aliState = await loadAlibabaImageCatalogState(env).catch(() => ({ models: [], unpriced: [] }));
         const models = [
-          {
+          ...(config?.active ? [{
             provider: 'freebeat',
             model: String(config?.model_id ?? ''),
             name: `Model ${config?.model_id ?? '—'}`,
             credits: Number.isSafeInteger(config?.credits) ? config.credits : null,
             ready: config?.provider_ready === true && Number.isSafeInteger(config?.credits),
             params: null,
-          },
+          }] : []),
           ...aliState.models,
         ];
         const isCallerAdmin = user?.app_metadata?.role === 'admin';
@@ -4630,7 +4634,7 @@ async function handleApi(request, url, env) {
       const anyFreebeatVideoReady = Boolean(freebeatCfgs?.provider_ready);
       let hasAnyFreebeatVideo = false;
 
-      if (danceCfg && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
+      if (danceCfg?.active && (Number.isSafeInteger(danceCfg.credits) || danceCfg.provider_ready)) {
         hasAnyFreebeatVideo = true;
         const danceCredits = Number.isSafeInteger(danceCfg.credits) ? danceCfg.credits : null;
         const dancePriced = Number.isSafeInteger(danceCredits) && danceCredits > 0;
@@ -4640,7 +4644,7 @@ async function handleApi(request, url, env) {
           provider: 'freebeat',
           providerLabel: 'Freebeat',
           providerConfigured: danceCfg.provider_ready === true,
-          activeInAdmin: dancePriced,
+          activeInAdmin: true,
           online: danceCfg.provider_ready === true,
           credits: dancePriced ? danceCredits : null,
           priced: dancePriced,
@@ -4660,7 +4664,7 @@ async function handleApi(request, url, env) {
         });
       }
 
-      if (singingCfg && (Number.isSafeInteger(singingCfg.credits) || singingCfg.provider_ready)) {
+      if (singingCfg?.active && (Number.isSafeInteger(singingCfg.credits) || singingCfg.provider_ready)) {
         hasAnyFreebeatVideo = true;
         const singingCredits = Number.isSafeInteger(singingCfg.credits) ? singingCfg.credits : null;
         const singingPriced = Number.isSafeInteger(singingCredits) && singingCredits > 0;
@@ -4670,7 +4674,7 @@ async function handleApi(request, url, env) {
           provider: 'freebeat',
           providerLabel: 'Freebeat',
           providerConfigured: singingCfg.provider_ready === true,
-          activeInAdmin: singingPriced,
+          activeInAdmin: true,
           online: singingCfg.provider_ready === true,
           credits: singingPriced ? singingCredits : null,
           priced: singingPriced,
@@ -4693,7 +4697,7 @@ async function handleApi(request, url, env) {
         });
       }
 
-      if (lipSyncCfg && (Number.isSafeInteger(lipSyncCfg.credits) || lipSyncCfg.provider_ready)) {
+      if (lipSyncCfg?.active && (Number.isSafeInteger(lipSyncCfg.credits) || lipSyncCfg.provider_ready)) {
         hasAnyFreebeatVideo = true;
         const lipSyncCredits = Number.isSafeInteger(lipSyncCfg.credits) ? lipSyncCfg.credits : null;
         const lipSyncPriced = Number.isSafeInteger(lipSyncCredits) && lipSyncCredits > 0;
@@ -4703,7 +4707,7 @@ async function handleApi(request, url, env) {
           provider: 'freebeat',
           providerLabel: 'Freebeat',
           providerConfigured: lipSyncCfg.provider_ready === true,
-          activeInAdmin: lipSyncPriced,
+          activeInAdmin: true,
           online: lipSyncCfg.provider_ready === true,
           credits: lipSyncPriced ? lipSyncCredits : null,
           priced: lipSyncPriced,

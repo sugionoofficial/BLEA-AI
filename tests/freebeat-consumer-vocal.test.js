@@ -79,8 +79,10 @@ function createHarness({
     if (url.pathname === '/rest/v1/profiles') {
       return Response.json([{ id: 'user-1', status: 'active' }]);
     }
-    if (url.pathname === '/rest/v1/provider_api_keys' || url.pathname === '/rest/v1/provider_models') {
-      return Response.json([]);
+    if (url.pathname === '/rest/v1/provider_api_keys') return Response.json([]);
+    if (url.pathname === '/rest/v1/provider_models') {
+      const model = url.searchParams.get('model')?.replace(/^eq\./, '');
+      return Response.json(model ? [{ model }] : []);
     }
     if (url.pathname === '/rest/v1/credit_model_prices') {
       const provMatch = url.searchParams.get('provider')?.replace(/^eq\./, '');

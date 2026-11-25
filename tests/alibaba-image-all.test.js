@@ -57,6 +57,7 @@ function installMock({ baseUrl = BASE_INTL, pollResponse = null, role = 'user', 
       return Response.json([{ id: 'pool-1', provider: 'alibaba', label: 'Akun', api_key: 'sk-test', base_url: baseUrl, priority: 10, consecutive_failures: 0, cooldown_until: null }]);
     }
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) return Response.json([]);
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models?provider=eq.freebeat')) return Response.json([{ model: '122' }]);
     if (url.startsWith('https://supabase.example/rest/v1/provider_models')) return Response.json(activeModels);
     if (url.startsWith('https://supabase.example/rest/v1/credit_model_prices')) return Response.json(prices);
     if (url.startsWith('https://supabase.example/rest/v1/rpc/spend_credits')) { capture.spends.push(jsonBody()); return Response.json(true); }

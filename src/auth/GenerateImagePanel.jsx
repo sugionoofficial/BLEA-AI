@@ -96,7 +96,7 @@ export function GenerateImagePanel({ initialPrompt = '' }) {
         params: { sizeMode: 'preset', sizes: ['1024x1024', '1024x1536', '1536x1024'], defaultSize: '1024x1024', maxN: 1, maxPromptChars: 4000, maxInputImages: 0 },
       }));
     }
-    if (Array.isArray(config?.models) && config.models.length) return config.models;
+    if (Array.isArray(config?.models)) return config.models;
     if (!config) return [];
     const fbCredits = Number.isSafeInteger(config.credits) ? config.credits : null;
     return [{

@@ -76,6 +76,7 @@ function installMock(overrides = {}) {
     if (url.startsWith('https://supabase.example/rest/v1/provider_api_keys')) {
       return Response.json(overrides.singleKeys ?? []);
     }
+    if (url.startsWith('https://supabase.example/rest/v1/provider_models?provider=eq.freebeat')) return Response.json([{ model: '122' }]);
     if (url.startsWith('https://supabase.example/rest/v1/provider_models')) {
       return Response.json(modelRows);
     }

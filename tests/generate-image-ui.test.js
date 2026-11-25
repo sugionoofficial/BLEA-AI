@@ -110,3 +110,33 @@ test('panel nonaktif saat provider belum dihubungkan', async () => {
     delete globalThis.window; delete globalThis.document; delete globalThis.localStorage; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('panel tidak menghidupkan fallback Freebeat jika daftar model dari server kosong', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://blea.example/generate' });
+  globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.localStorage = dom.window.localStorage;
+  globalThis.HTMLElement = dom.window.HTMLElement; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', resolve: { alias: [{ find: /^react-router-dom$/, replacement: new URL('../node_modules/react-router-dom/dist/index.mjs', import.meta.url).pathname }] } });
+  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+  const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
+  const { GenerateImagePanel } = await vite.ssrLoadModule('/src/auth/GenerateImagePanel.jsx');
+  const { supabase } = await vite.ssrLoadModule('/src/lib/supabase.js');
+  const root = createRoot(document.getElementById('root'));
+  const handle = await mount(GenerateImagePanel, React, MemoryRouter, AuthProvider, root, supabase, (url) => {
+    if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'user' });
+    if (url === '/api/image/config') return Response.json({ ...configOk, active: false, models: [] });
+    if (url === '/api/image/history') return Response.json({ ok: true, generations: [] });
+    if (String(url).includes('/rest/v1/credit_wallets')) return Response.json({ balance: 100 });
+    throw new Error(`Unexpected call ${url}`);
+  });
+  try {
+    assert.match(document.body.textContent, /Belum ada model gambar yang diaktifkan admin/);
+    assert.doesNotMatch(document.body.textContent, /Model 122/);
+    assert.ok([...document.querySelectorAll('button')].find((b) => b.textContent.includes('Buat gambar')).disabled);
+  } finally {
+    await handle.unmount();
+    await vite.close(); dom.window.close();
+    delete globalThis.window; delete globalThis.document; delete globalThis.localStorage; delete globalThis.HTMLElement; delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});

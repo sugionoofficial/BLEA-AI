@@ -76,7 +76,8 @@ function createPoolHarness({
       return Response.json([]);
     }
     if (url.pathname === '/rest/v1/provider_models') {
-      return Response.json([]);
+      const model = url.searchParams.get('model')?.replace(/^eq\./, '');
+      return Response.json(model ? [{ model }] : []);
     }
     if (url.pathname === '/rest/v1/credit_model_prices') {
       const prov = url.searchParams.get('provider')?.replace(/^eq\./, '');
