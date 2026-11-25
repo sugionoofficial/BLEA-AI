@@ -22,10 +22,12 @@ async function connect(token = 'admin') {
 }
 function fixture() {
   const rows = new Map(), calls = [];
-  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null, createResult = null, uploadConfig = null;
+  let expectedModel = 182, expectedMax = 23, scope = 'freebeat:read freebeat:generate', quote = { status: 'quoted', credits: 23 }, generateMode = 'success', tokenValue = 'PROVIDER-SECRET', dbMode = 'ok', taskResult = null, createResult = null, uploadConfig = null, videoPreset = { duration: 5, resolution: '480p', aspect_ratio: '16:9' }, helpResult = null;
   return {
     rows, calls,
     setScope(value) { scope = value; },
+    setVideoPreset(value) { videoPreset = value; },
+    setHelp(value) { helpResult = value; },
     setModel(value, max = 23) { expectedModel = value; expectedMax = max; },
     setQuote(value) { quote = value; },
     setGenerateMode(value) { generateMode = value; },
@@ -84,13 +86,13 @@ function fixture() {
         if (uploadConfig.lost) throw new Error('PRIVATE-NETWORK-ERROR');
         data = uploadConfig.result || { success: true, image_urls: ['https://cdn.example/private?token=SECRET'], message: 'PRIVATE MESSAGE' };
       } else if (body.params.name === 'list_models') { assert.deepEqual(body.params.arguments, { type: 'video' }); data = { models: [{ model_id: 182, name: 'Wan 3.0' }, { model_id: '186', name: 'Model 186' }] }; }
-      else if (body.params.name === 'get_model_help') { assert.deepEqual(body.params.arguments, { type: 'video', model_id: expectedModel }); data = { model_id: expectedModel }; }
-      else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9', prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
+      else if (body.params.name === 'get_model_help') { assert.deepEqual(body.params.arguments, { type: 'video', model_id: expectedModel }); data = helpResult || { model_id: expectedModel }; }
+      else if (body.params.name === 'quote_generation') { assert.deepEqual(body.params.arguments, { tool: 'generate_video', parameters: { model_id: expectedModel, generation_type: 'image', ...videoPreset, prompt: 'test prompt', images: ['https://images.example/input.png'] } }); data = quote; }
       else if (body.params.name === 'generate_video') {
         // Payload dispatch mengikuti kontrak web Freebeat: aspect_ratio selalu
         // dikirim, dan max_credits = quote + headroom (VIDEO_CREDIT_HEADROOM)
         // agar pembulatan harga provider tidak menolak job dengan 0 kredit.
-        assert.deepEqual(body.params.arguments, { model_id: expectedModel, generation_type: 'image', duration: 5, resolution: '480p', aspect_ratio: '16:9', prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: expectedMax + videoHeadroom(expectedMax) });
+        assert.deepEqual(body.params.arguments, { model_id: expectedModel, generation_type: 'image', ...videoPreset, prompt: 'test prompt', images: ['https://images.example/input.png'], max_credits: expectedMax + videoHeadroom(expectedMax) });
         if (generateMode === 'lost') throw new Error('PRIVATE-NETWORK-ERROR');
         if (generateMode === 'rpc-error') return Response.json({ id: body.id, error: { code: -32000, message: 'Rejected https://secret.example/a?token=VALUE Bearer BADTOKEN' } });
         if (generateMode === 'sse-error') return new Response(`event: message\ndata: ${JSON.stringify({ id: body.id, error: { code: -32000, message: 'Rejected https://secret.example/a?token=VALUE Bearer BADTOKEN' } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
@@ -962,5 +964,106 @@ test('upload quote rejection is diagnosed without leaking prose; unknown-price h
       assert.doesNotMatch(await res.text(), /PRIVATE/);
     }
     assert.equal(count('generate_video'), 0);
+  } finally { globalThis.fetch = original; console.warn = warn; }
+});
+
+const hailuoInput = { model_id: 106, generation_type: 'image', input_mode: 'keyframe', images: ['https://images.example/input.png'], prompt: ' test prompt ', duration: 10, resolution: '768p', aspect_ratio: '9:16' };
+const hailuoHelp = { model: { model_id: 106, available: true, member_only: false }, generation_types: ['image', 'text'], durations: [], resolutions: ['1080p', '768p'], aspect_ratios: ['16:9', '9:16', '1:1'] };
+function hailuoFixture() {
+  const f = fixture();
+  f.setModel(106, 130); f.setQuote({ status: 'quoted', credits: 130 });
+  f.setVideoPreset({ duration: 10, resolution: '768p', aspect_ratio: '9:16' }); f.setHelp(hailuoHelp);
+  return f;
+}
+
+test('narrow Hailuo prepare binds live 106 settings and cap without catalog activation; requotes and submits once', async () => {
+  const original = globalThis.fetch, f = hailuoFixture(); globalThis.fetch = f.fetch;
+  const ready = (cookie, data = hailuoInput, extra = {}) => api('hailuo-prepare', { cookie, method: 'POST', data, ...extra });
+  try {
+    const cookie = await connect();
+    assert.equal((await ready(cookie, hailuoInput, { token: 'user' })).status, 403);
+    assert.equal((await ready(cookie, hailuoInput, { token: 'other-admin' })).status, 401);
+    assert.equal((await ready(cookie, hailuoInput, { origin: 'https://evil.example' })).status, 403);
+    assert.equal((await ready(undefined)).status, 401);
+    f.setScope('freebeat:read'); const readCookie = await connect();
+    assert.equal((await ready(readCookie)).status, 403);
+    f.setScope('freebeat:read freebeat:generate');
+    const count = f.calls.length;
+    for (const bad of [{ model_id: 182 }, { generation_type: 'text', images: [] }, { input_mode: 'multiframe', images: [...hailuoInput.images, ...hailuoInput.images] }, { duration: 5 }, { resolution: '480p' }, { aspect_ratio: '4:3' }, { max_credits: 999 }, { image_url: 'http://localhost/private' }]) {
+      assert.equal((await ready(cookie, { ...hailuoInput, ...bad })).status, 400, JSON.stringify(bad));
+    }
+    assert.equal(f.calls.length, count);
+    const response = await ready(cookie); assert.equal(response.status, 200);
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    const receipt = await response.json();
+    assert.equal(receipt.credits, 130); assert.equal(receipt.max_credits, 150);
+    assert.equal(typeof receipt.expiresAt, 'number');
+    assert.deepEqual(receipt.settings, { model_id: 106, generation_type: 'image', duration: 10, resolution: '768p', aspect_ratio: '9:16' });
+    assert.deepEqual(receipt.images, hailuoInput.images); assert.equal(receipt.prompt, 'test prompt');
+    assert.deepEqual(receipt.supported.durations, []); // missing enumeration is not arbitrary-duration permission
+    assert.equal(f.calls.filter((c) => c.params?.name === 'list_models').length, 0);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+    assert.equal(f.rows.size, 0);
+    assert.equal((await api('video-prepare', { cookie, method: 'POST', data: hailuoInput })).status, 400); // generic guard unchanged
+    assert.equal((await submit(cookie, receipt.approval, { confirm: false })).status, 400);
+    f.setQuote({ status: 'quoted', credits: 131 });
+    const changedQuote = await submit(cookie, receipt.approval);
+    assert.equal(changedQuote.status, 409); assert.equal((await changedQuote.json()).video_dispatch, 'not_sent');
+    f.setQuote({ status: 'quoted', credits: 130 });
+    f.setHelp({ ...hailuoHelp, model: { model_id: 106, available: false } });
+    const unavailable = await submit(cookie, receipt.approval);
+    assert.equal(unavailable.status, 409); assert.equal((await unavailable.json()).video_dispatch, 'not_sent');
+    f.setHelp(hailuoHelp);
+    const responses = await Promise.all([submit(cookie, receipt.approval), submit(cookie, receipt.approval)]);
+    assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+    const accepted = await responses.find((r) => r.status === 200).json(); assert.equal(accepted.status, 'submitted');
+    const duplicate = await submit(cookie, receipt.approval);
+    assert.equal(duplicate.status, 409); assert.equal((await duplicate.json()).video_dispatch, undefined);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+    const tests = await (await api('video-tests', { cookie })).json();
+    assert.equal(tests.tests[0].model_id, 106); assert.equal(tests.tests[0].max_credits, 150);
+    assert.equal(tests.tests[0].canPoll, true);
+    const task = await (await api('video-task', { cookie, method: 'POST', data: { id: accepted.id } })).json();
+    assert.deepEqual(task.task.videos, ['https://cdn.example/video.mp4']);
+    assert.doesNotMatch(JSON.stringify({ tests, task }), /SECRET|batch-123|javascript/);
+  } finally { globalThis.fetch = original; }
+});
+
+test('Hailuo blocks absent/changed live identity, options, membership policy and nonnumeric quotes before generation', async () => {
+  const original = globalThis.fetch, f = hailuoFixture(); globalThis.fetch = f.fetch;
+  try {
+    const cookie = await connect();
+    const ready = () => api('hailuo-prepare', { cookie, method: 'POST', data: hailuoInput });
+    for (const help of [{ model_id: 106 }, { ...hailuoHelp, model: { model_id: 182, available: true } }, { ...hailuoHelp, model: { model_id: 106 } }, { ...hailuoHelp, durations: [6] }, { ...hailuoHelp, resolutions: ['1080p'] }, { ...hailuoHelp, generation_types: ['text'] }, { ...hailuoHelp, aspect_ratios: ['1:1'] }]) {
+      f.setHelp(help); assert.equal((await ready()).status, 409);
+    }
+    f.setHelp({ ...hailuoHelp, model: { ...hailuoHelp.model, member_only: true } });
+    env.FREEBEAT_ALLOW_MEMBER_ONLY = '0'; assert.equal((await ready()).status, 409); delete env.FREEBEAT_ALLOW_MEMBER_ONLY;
+    f.setHelp(hailuoHelp);
+    for (const quote of [{ status: 'unavailable' }, { status: 'quoted', credits: '130' }, { status: 'quoted', credits: -1 }]) {
+      f.setQuote(quote); assert.equal((await ready()).status, 409);
+    }
+    assert.equal(f.rows.size, 0);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 0);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'list_models').length, 0);
+  } finally { globalThis.fetch = original; delete env.FREEBEAT_ALLOW_MEMBER_ONLY; }
+});
+
+test('uncertain Hailuo dispatch retains persistent lock and cannot be retried with another receipt', async () => {
+  const original = globalThis.fetch, warn = console.warn, f = hailuoFixture(); globalThis.fetch = f.fetch; console.warn = () => {};
+  try {
+    const cookie = await connect();
+    const ready = async () => (await api('hailuo-prepare', { cookie, method: 'POST', data: hailuoInput })).json();
+    const receipt = await ready();
+    f.setGenerateMode('lost');
+    const result = await (await submit(cookie, receipt.approval)).json(); assert.equal(result.status, 'unknown');
+    assert.equal([...f.rows.values()][0].status, 'unknown');
+    assert.equal((await submit(cookie, receipt.approval)).status, 409);
+    const otherReceipt = await ready();
+    const locked = await submit(cookie, otherReceipt.approval);
+    assert.equal(locked.status, 409); assert.equal((await locked.json()).video_dispatch, undefined);
+    assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
+    const tests = await (await api('video-tests', { cookie })).json();
+    assert.equal(tests.tests[0].status, 'unknown'); assert.equal(tests.tests[0].canPoll, false);
   } finally { globalThis.fetch = original; console.warn = warn; }
 });
