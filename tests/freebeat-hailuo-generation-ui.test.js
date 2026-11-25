@@ -26,6 +26,8 @@ async function harness(run) {
     }
     if (action === 'video-submit') {
       if (mode === 'lost') throw new Error('network lost');
+      if (mode === 'rejected') throw Object.assign(new Error('Quote changed'), { status: 409, videoDispatch: 'not_sent' });
+      if (mode === 'conflict') throw Object.assign(new Error('Duplicate or uncertain'), { status: 409 });
       records = [{ id: 'test-hailuo', model_id: 106, max_credits: 150, created_at: new Date().toISOString(), status: mode === 'unknown' ? 'unknown' : 'submitted', canPoll: true }];
       return { id: 'test-hailuo', status: records[0].status };
     }
@@ -70,7 +72,7 @@ test('Hailuo generates only after a fresh prepared quote and separate consent, o
   assert.match(document.querySelector('[aria-label="Status video test-hailuo"]').value, /"refunded": null/);
 }));
 
-for (const mode of ['lost', 'unknown']) test(`Hailuo ${mode} dispatch consumes approval and blocks another attempt across input changes`, () => harness(async (h) => {
+for (const mode of ['lost', 'unknown', 'conflict']) test(`Hailuo ${mode} dispatch consumes approval and blocks another attempt across input changes`, () => harness(async (h) => {
   await h.click(prepare); await h.check(); h.setMode(mode); await h.click(submit);
   assert.equal(h.consent(), null);
   assert.equal(h.button(prepare).disabled, true);
@@ -123,4 +125,19 @@ test('Hailuo cannot prepare from missing quote/permission; expiration blocks a c
     await h.click(submit);
     assert.equal(h.calls.some(([action]) => action === 'video-submit'), false);
   } finally { Date.now = realNow; }
+}));
+
+// Only an explicit local preflight marker, not generic 409, permits a fresh approval.
+test('definitive Hailuo preflight rejection discards the old ticket and requires fresh preparation and consent', () => harness(async (h) => {
+  await h.click(prepare); await h.check(); h.setMode('rejected'); await h.click(submit);
+  assert.equal(h.consent(), null);
+  assert.equal(h.button(prepare).disabled, false);
+  assert.match(document.body.textContent, /Permintaan ini tidak dikirim/);
+  assert.doesNotMatch(document.body.textContent, /hasil belum pasti/);
+  assert.equal(h.calls.filter(([action]) => action === 'video-submit').length, 1);
+  h.setMode('success'); await h.click(prepare);
+  assert.equal(h.consent().checked, false); assert.equal(h.button(submit).disabled, true);
+  assert.equal(h.calls.filter(([action]) => action === 'hailuo-prepare').length, 2);
+  await h.check(); await h.click(submit);
+  assert.equal(h.calls.filter(([action]) => action === 'video-submit').length, 2);
 }));

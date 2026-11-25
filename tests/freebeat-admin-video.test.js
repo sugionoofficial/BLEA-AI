@@ -1007,15 +1007,18 @@ test('narrow Hailuo prepare binds live 106 settings and cap without catalog acti
     assert.equal((await api('video-prepare', { cookie, method: 'POST', data: hailuoInput })).status, 400); // generic guard unchanged
     assert.equal((await submit(cookie, receipt.approval, { confirm: false })).status, 400);
     f.setQuote({ status: 'quoted', credits: 131 });
-    assert.equal((await submit(cookie, receipt.approval)).status, 409);
+    const changedQuote = await submit(cookie, receipt.approval);
+    assert.equal(changedQuote.status, 409); assert.equal((await changedQuote.json()).video_dispatch, 'not_sent');
     f.setQuote({ status: 'quoted', credits: 130 });
     f.setHelp({ ...hailuoHelp, model: { model_id: 106, available: false } });
-    assert.equal((await submit(cookie, receipt.approval)).status, 409);
+    const unavailable = await submit(cookie, receipt.approval);
+    assert.equal(unavailable.status, 409); assert.equal((await unavailable.json()).video_dispatch, 'not_sent');
     f.setHelp(hailuoHelp);
     const responses = await Promise.all([submit(cookie, receipt.approval), submit(cookie, receipt.approval)]);
     assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
     const accepted = await responses.find((r) => r.status === 200).json(); assert.equal(accepted.status, 'submitted');
-    assert.equal((await submit(cookie, receipt.approval)).status, 409);
+    const duplicate = await submit(cookie, receipt.approval);
+    assert.equal(duplicate.status, 409); assert.equal((await duplicate.json()).video_dispatch, undefined);
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
     const tests = await (await api('video-tests', { cookie })).json();
     assert.equal(tests.tests[0].model_id, 106); assert.equal(tests.tests[0].max_credits, 150);
@@ -1057,7 +1060,8 @@ test('uncertain Hailuo dispatch retains persistent lock and cannot be retried wi
     assert.equal([...f.rows.values()][0].status, 'unknown');
     assert.equal((await submit(cookie, receipt.approval)).status, 409);
     const otherReceipt = await ready();
-    assert.equal((await submit(cookie, otherReceipt.approval)).status, 409);
+    const locked = await submit(cookie, otherReceipt.approval);
+    assert.equal(locked.status, 409); assert.equal((await locked.json()).video_dispatch, undefined);
     assert.equal(f.calls.filter((c) => c.params?.name === 'generate_video').length, 1);
     const tests = await (await api('video-tests', { cookie })).json();
     assert.equal(tests.tests[0].status, 'unknown'); assert.equal(tests.tests[0].canPoll, false);

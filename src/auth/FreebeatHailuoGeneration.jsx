@@ -87,7 +87,12 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
         if (result.batch_summary) setNotice(`Batch tercatat: accepted_count=${result.batch_summary.accepted_count ?? 'tidak diketahui'}, failed_count=${result.batch_summary.failed_count ?? 'tidak diketahui'}, accepted_credits=${result.batch_summary.accepted_credits ?? 'tidak diketahui'}. Batch ID bukan bukti render berhasil; periksa status video.`);
       } else setError('Hasil pengiriman tidak pasti dan mungkin sudah memakai kredit. Jangan kirim ulang; periksa Freebeat dan catatan uji.');
     } catch (err) {
-      if (stamp === version.current) setError(`${err.message || 'Pengiriman gagal.'} Jika sempat dikirim, biaya/hasil mungkin tidak pasti. Jangan kirim ulang sebelum meninjau catatan.`);
+      if (stamp === version.current) {
+        if (err.videoDispatch === 'not_sent' && [400, 409].includes(err.status)) {
+          setUncertain(false); setAttempted(false);
+          setError(`${err.message || 'Pengiriman ditolak.'} Permintaan ini tidak dikirim. Siapkan persetujuan baru; tiket lama sudah dibuang.`);
+        } else setError(`${err.message || 'Pengiriman gagal.'} Jika sempat dikirim, biaya/hasil mungkin tidak pasti. Jangan kirim ulang sebelum meninjau catatan.`);
+      }
     } finally {
       if (stamp === version.current) {
         try { const records = await history(); if (stamp === version.current) setTests(records); } catch { if (stamp === version.current) setError((old) => `${old} Catatan uji belum dapat dimuat; periksa kembali tanpa mengirim ulang.`.trim()); }

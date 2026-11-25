@@ -9,7 +9,12 @@ export async function freebeatRequest(action, method = 'GET', body) {
   if (!session?.access_token) throw new Error('Sesi login berakhir. Silakan login kembali.');
   const res = await fetch(`/api/freebeat/${action}`, { method, headers: { authorization: `Bearer ${session.access_token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), credentials: 'same-origin', cache: 'no-store' });
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(payload.error || 'Freebeat tidak dapat dihubungi.');
+  if (!res.ok) {
+    const error = Object.assign(new Error(payload.error || 'Freebeat tidak dapat dihubungi.'), { status: res.status });
+    // Never infer non-dispatch from an HTTP status or provider error prose.
+    if (action === 'video-submit' && [400, 409].includes(res.status) && payload.video_dispatch === 'not_sent') error.videoDispatch = 'not_sent';
+    throw error;
+  }
   return payload;
 }
 
