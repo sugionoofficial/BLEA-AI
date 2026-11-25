@@ -40,6 +40,7 @@ export function FreebeatPage() {
   const [sessionExpiresAt, setSessionExpiresAt] = useState(null);
   const [autoRenew, setAutoRenew] = useState(false);
   const [balance, setBalance] = useState(null);
+  const [balanceCheck, setBalanceCheck] = useState('unchecked');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -83,7 +84,7 @@ export function FreebeatPage() {
   const [tests, setTests] = useState([]);
   const [taskResults, setTaskResults] = useState({});
   const load = useCallback(async () => {
-    try { const result = await request('status'); setConnected(result.connected); setImageAccess(result.imageAccess === true); setExpiresAt(result.expiresAt); setSessionExpiresAt(result.sessionExpiresAt || null); setAutoRenew(result.autoRenew === true); }
+    try { const result = await request('status'); setBalanceCheck('unchecked'); setConnected(result.connected); setImageAccess(result.imageAccess === true); setExpiresAt(result.expiresAt); setSessionExpiresAt(result.sessionExpiresAt || null); setAutoRenew(result.autoRenew === true); }
     catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }, []);
@@ -111,13 +112,17 @@ export function FreebeatPage() {
       if (action === 'balance') {
         const result = await request('balance', 'POST');
         setBalance(result.balance);
+        setBalanceCheck('verified');
         setNotice('Permintaan baca saldo selesai tanpa menjalankan generasi.');
       } else {
         const result = await request('disconnect', 'POST');
-        setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setVideoModels(null); setVideoSchemas(null); setVideoError(''); setImageQuote(null); setApproval(null); setSpendConfirmed(false); setTests([]); setTaskResults({});
+        setBalanceCheck('unchecked'); setConnected(false); setImageAccess(false); setExpiresAt(null); setBalance(null); setImageModels(null); setImageSchemas(null); setVideoModels(null); setVideoSchemas(null); setVideoError(''); setImageQuote(null); setApproval(null); setSpendConfirmed(false); setTests([]); setTaskResults({});
         setNotice(result.revoked ? 'Koneksi lokal dihapus dan token dicabut di Freebeat.' : 'Koneksi lokal dihapus. Pencabutan token di Freebeat belum dapat dikonfirmasi; periksa pengaturan akses di akun Freebeat.');
       }
-    } catch (err) { setError(err.message || 'Koneksi gagal.'); }
+    } catch (err) {
+      if (action === 'balance') { setBalanceCheck('failed'); setBalance(null); }
+      setError(err.message || 'Koneksi gagal.');
+    }
     finally { setBusy(false); }
   }
   async function inspectImages(action) {
@@ -266,11 +271,16 @@ export function FreebeatPage() {
       <section className="freebeat-card">
         <span className="freebeat-kicker">MCP · OAUTH · KHUSUS ADMIN</span><h2>Hubungkan Freebeat</h2>
         <p>Tombol ini meminta izin membaca dan generasi Freebeat. Setujui izin tersebut di Freebeat. Pemeriksaan saldo tidak memakai kredit; setiap uji generasi tetap memerlukan persetujuan eksplisit.</p>
-        <p>Koneksi uji tersimpan terenkripsi dalam cookie HttpOnly pada browser dan domain ini, bukan dibagikan ke pengguna lain. Reload tidak seharusnya memutus koneksi sebelum masa berakhir, selama cookie dan login admin masih ada. Input form tidak disimpan. Token tidak diperpanjang otomatis; hubungkan ulang setelah kedaluwarsa.</p>
+        <p>Sesi OAuth disimpan terenkripsi dalam cookie HttpOnly dan salinan server; akun pool dapat dipakai layanan Generate. Token diperbarui otomatis jika refresh token tersedia. Sesi tersimpan belum membuktikan akses MCP masih diterima Freebeat. Gunakan Periksa saldo untuk menguji akses baca tanpa generasi; keberhasilannya tidak menjamin izin generasi. Input form tidak disimpan.</p>
         <p>Menurut ketentuan Freebeat, kredit gratis hanya untuk penggunaan nonkomersial. Pastikan penggunaan Anda sesuai ketentuan penyedia.</p>
         {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
         {notice && <div className="freebeat-alert" role="status">{notice}</div>}
-        <div className="freebeat-status"><strong>Status:</strong> {loading ? 'Memeriksa…' : connected ? 'Terhubung di browser ini' : 'Belum terhubung'}{connected && expiresAt && <> · Token akses berakhir {new Date(expiresAt).toLocaleTimeString('id-ID')}{autoRenew ? ' (diperbarui otomatis)' : ' (tanpa refresh token — akan terputus)'}</>}{connected && sessionExpiresAt && <> · Koneksi berlaku sampai {new Date(sessionExpiresAt).toLocaleString('id-ID')}</>}</div>
+        <div className="freebeat-status"><strong>Status:</strong> {loading ? 'Memeriksa…' : connected ? 'Sesi OAuth tersimpan' : 'Belum terhubung'}{connected && expiresAt && <> · Token akses berakhir {new Date(expiresAt).toLocaleTimeString('id-ID')}{autoRenew ? ' (diperbarui otomatis)' : ' (tanpa refresh token — akan terputus)'}</>}{connected && sessionExpiresAt && <> · Koneksi berlaku sampai {new Date(sessionExpiresAt).toLocaleString('id-ID')}</>}</div>
+        {connected && <p role="status">{balanceCheck === 'verified'
+          ? 'Pemeriksaan saldo terakhir berhasil. Akses generasi belum diverifikasi.'
+          : balanceCheck === 'failed'
+            ? 'Pemeriksaan saldo terakhir gagal. Sesi masih tersimpan; akses MCP belum terkonfirmasi.'
+            : 'Akses MCP belum diverifikasi pada halaman ini. Tekan Periksa saldo.'}</p>}
         <div className="freebeat-actions">
           <button type="button" disabled={busy || loading} onClick={() => run('start')}><Link2 size={15} /> {connected ? 'Hubungkan ulang' : 'Hubungkan Freebeat'}</button>
           <button type="button" className="is-secondary" disabled={busy || loading || !connected} onClick={() => run('balance')}><RefreshCw size={15} /> Periksa saldo</button>

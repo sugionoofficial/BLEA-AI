@@ -222,9 +222,10 @@ test('admin page automatically loads the model dropdown and can retry after a ca
   const oldGet = supabase.auth.getSession, oldOn = supabase.auth.onAuthStateChange, oldFetch = globalThis.fetch;
   supabase.auth.getSession = async () => ({ data: { session } });
   supabase.auth.onAuthStateChange = () => ({ data: { subscription: { unsubscribe() {} } } });
-  const calls = []; let failure = true;
+  const calls = []; let failure = true; let balanceFailure = false;
   globalThis.fetch = async (url, init) => {
     calls.push([url, init.method]);
+    if (url === '/api/freebeat/balance') return balanceFailure ? Response.json({ error: 'Freebeat menolak akses. [FB-MCP-INIT-HTTP]' }, { status: 401 }) : Response.json({ ok: true, balance: { credits: 500 } });
     if (url === '/api/freebeat/status') return Response.json({ connected: true, imageAccess: true });
     if (url === '/api/freebeat/video-models') return failure ? Response.json({ error: 'Katalog gagal dimuat.' }, { status: 502 }) : Response.json(catalog);
     if (url === '/api/account') return Response.json({ ok: true, status: 'active', blocked: false, role: 'admin' });
@@ -235,6 +236,22 @@ test('admin page automatically loads the model dropdown and can retry after a ca
   try {
     await React.act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(FreebeatPage)))));
     assert.ok(calls.some(([path]) => path === '/api/freebeat/status'));
+    assert.match(document.body.textContent, /Sesi OAuth tersimpan/);
+    assert.match(document.body.textContent, /Akses MCP belum diverifikasi pada halaman ini/);
+    assert.doesNotMatch(document.body.textContent, /Terhubung di browser ini|Token tidak diperpanjang otomatis/);
+    const balanceButton = () => [...document.querySelectorAll('button')].find((b) => b.textContent.includes('Periksa saldo'));
+    await React.act(async () => balanceButton().click());
+    assert.match(document.body.textContent, /Pemeriksaan saldo terakhir berhasil/);
+    assert.match(document.body.textContent, /Akses generasi belum diverifikasi/);
+    balanceFailure = true;
+    await React.act(async () => balanceButton().click());
+    assert.match(document.body.textContent, /Pemeriksaan saldo terakhir gagal/);
+    assert.doesNotMatch(document.body.textContent, /Pemeriksaan saldo terakhir berhasil/);
+    assert.match(document.body.textContent, /Sesi OAuth tersimpan/);
+    balanceFailure = false;
+    await React.act(async () => balanceButton().click());
+    assert.match(document.body.textContent, /Pemeriksaan saldo terakhir berhasil/);
+
     assert.ok(calls.some(([path]) => path === '/api/freebeat/video-models'));
     assert.match(document.body.textContent, /Katalog gagal dimuat/);
     assert.equal(document.querySelector('#freebeat-video-model').disabled, true);
