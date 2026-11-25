@@ -4,6 +4,7 @@ import { FreebeatCopyResult } from './FreebeatCopyResult';
 
 const expiresAt = (value) => typeof value === 'number' ? value : Date.parse(value);
 const pending = (test) => ['unknown', 'dispatching'].includes(test.status);
+const failed = (task) => ['failed', 'partial_failed', 'action_required', 'rejected'].includes(task?.status);
 function resultUrl(value) {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.toString() : null; } catch { return null; }
 }
@@ -16,6 +17,8 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
   const [uncertain, setUncertain] = useState(false);
   const [tests, setTests] = useState([]);
   const [results, setResults] = useState({});
+  const [privateConsent, setPrivateConsent] = useState({});
+  const [privateFailure, setPrivateFailure] = useState({});
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [now, setNow] = useState(Date.now());
@@ -24,7 +27,7 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
   useEffect(() => {
     version.current += 1; setApproval(null); setConfirmed(false); setError('');
     // Keep local submission/uncertainty locks across input/quote changes.
-    setResults({}); setNotice('');
+    setResults({}); setPrivateConsent({}); setPrivateFailure({}); setNotice('');
     return () => { version.current += 1; };
   }, [signature, connected, imageAccess, userId, quote]);
   useEffect(() => { setTests([]); }, [connected, userId]);
@@ -103,6 +106,7 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
   async function inspectTests() {
     if (blocked || !start()) return;
     const stamp = version.current;
+    setPrivateConsent({}); setPrivateFailure({});
     try { const records = await history(); if (stamp === version.current) setTests(records); }
     catch (err) { if (stamp === version.current) setError(err.message || 'Catatan belum tersedia.'); }
     finally { finish(); }
@@ -110,10 +114,27 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
   async function poll(test) {
     if (blocked || test.status !== 'submitted' || !start()) return;
     const stamp = version.current;
+    hidePrivateFailure(test.id);
     try {
       const result = await request('video-task', 'POST', { id: test.id, ...(!test.canPoll ? { acknowledge: true } : {}) });
       if (stamp === version.current) setResults((old) => ({ ...old, [test.id]: result.task }));
     } catch (err) { if (stamp === version.current) setError(err.message || 'Status belum tersedia.'); }
+    finally { finish(); }
+  }
+  function hidePrivateFailure(id) {
+    setPrivateConsent((old) => ({ ...old, [id]: false }));
+    setPrivateFailure((old) => { const next = { ...old }; delete next[id]; return next; });
+  }
+  async function viewPrivateFailure(test) {
+    if (blocked || test.status !== 'submitted' || !failed(results[test.id]) || !privateConsent[test.id] || !start()) return;
+    const stamp = version.current;
+    try {
+      // Read-only status inspection, never a prepare/submit/generate call.
+      const result = await request('video-private-failure', 'POST', { id: test.id, acknowledge: true });
+      if (stamp !== version.current) return;
+      if (!Array.isArray(result.reasons) || result.reasons.some((reason) => typeof reason !== 'string')) throw new Error('Pesan kegagalan pribadi tidak valid.');
+      setPrivateFailure((old) => ({ ...old, [test.id]: result.reasons }));
+    } catch (err) { if (stamp === version.current) setError(err.message || 'Pesan kegagalan pribadi belum tersedia.'); }
     finally { finish(); }
   }
   return <section className="freebeat-result" aria-label="Generasi Hailuo admin">
@@ -139,7 +160,7 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
     {error && <p role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     {tests.length > 0 && <div className="freebeat-result"><h4>Catatan uji video admin</h4>{tests.map((test) => <div className="freebeat-test-row" key={test.id}>
-      <p>Model {test.model_id} · {test.status} · batas {test.max_credits ?? 'tidak diketahui'} kredit · {new Date(test.created_at).toLocaleString('id-ID')}</p>
+      <p>ID uji: <code>{test.id}</code> · Model {test.model_id} · {test.status} · batas {test.max_credits ?? 'tidak diketahui'} kredit · {new Date(test.created_at).toLocaleString('id-ID')}</p>
       {pending(test) && <p>Hasil tidak pasti. Jangan membuat ulang; perlu tinjauan operator.</p>}
       {test.status === 'submitted' && <>
         {!test.canPoll && <p>Sesi berbeda: tombol berikut mengizinkan pemeriksaan ID tugas lama melalui akun Freebeat sesi saat ini.</p>}
@@ -147,10 +168,22 @@ export function FreebeatHailuoGeneration({ connected, imageAccess, loading, disa
       </>}
       {results[test.id] && <>
         <FreebeatCopyResult title={`Status video ${test.id}`} value={{ status: results[test.id].status, billing: results[test.id].billing, failure: results[test.id].failure, item_failures: results[test.id].item_failures }} description="Biaya/refund yang tidak dilaporkan tetap tidak diketahui. Kode gagal bukan izin mengirim ulang." />
+        {failed(results[test.id]) && <div className="freebeat-result" aria-label={`Pesan kegagalan pribadi ${test.id}`}>
+          <h4>Pesan kegagalan pribadi</h4>
+          <p>Penyebab rinci mungkin disembunyikan dari ringkasan di atas demi privasi. Pemeriksaan ini hanya membaca status Freebeat, tidak membuat video baru. Pesan mungkin memuat prompt, URL, data pribadi atau kredensial; penyamaran tidak dijamin lengkap. Jangan salin atau bagikan pesan mentah. Jika perlu bantuan, sampaikan kode atau inti penyebab tanpa data sensitif.</p>
+          {!test.canPoll && <p>Catatan ini berasal dari sesi lama. Konfirmasi di bawah juga mengizinkan pembacaan pesan tugas lama melalui akun Freebeat sesi saat ini.</p>}
+          {!Object.hasOwn(privateFailure, test.id) ? <>
+            <label className="freebeat-confirm"><input type="checkbox" aria-label={`Setujui pesan kegagalan pribadi ${test.id}`} checked={Boolean(privateConsent[test.id])} disabled={blocked} onChange={(event) => setPrivateConsent((old) => ({ ...old, [test.id]: event.target.checked }))} /> Saya memahami pesan mungkin mengandung informasi sensitif dan hanya akan melihatnya secara pribadi.</label>
+            <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={blocked || !privateConsent[test.id]} onClick={() => viewPrivateFailure(test)}>Tampilkan pesan kegagalan pribadi</button></div>
+          </> : <>
+            <div className="freebeat-actions"><button type="button" className="is-secondary" onClick={() => hidePrivateFailure(test.id)}>Sembunyikan pesan pribadi</button></div>
+            {privateFailure[test.id].length ? privateFailure[test.id].map((reason, index) => <pre key={index}>{reason}</pre>) : <p>Freebeat tidak memberikan pesan kegagalan berbentuk teks yang dapat ditampilkan.</p>}
+          </>}
+        </div>}
         <div className="freebeat-result-links">{(results[test.id].videos || []).map(resultUrl).filter(Boolean).map((url) => <a className="freebeat-result-link" key={url} href={url} target="_blank" rel="noopener noreferrer">Buka hasil video Hailuo</a>)}</div>
         {results[test.id].status === 'completed' && !results[test.id].videos?.length && <p>Video dilaporkan selesai tetapi URL belum tersedia. Periksa lagi; jangan membuat ulang.</p>}
       </>}
     </div>)}</div>}
-    <p className="freebeat-note">Untuk diagnosis kegagalan privat lanjutan, buka <a href="/admin/freebeat/video">halaman uji video admin</a> dan muat catatan yang sama. Tidak ada pemantauan atau pemutaran media otomatis.</p>
+    <p className="freebeat-note">Jika status tugas gagal, panel Pesan kegagalan pribadi tersedia langsung di bawah status setelah pemeriksaan manual. Tidak ada pembacaan pesan privat, pemantauan atau pemutaran media otomatis.</p>
   </section>;
 }

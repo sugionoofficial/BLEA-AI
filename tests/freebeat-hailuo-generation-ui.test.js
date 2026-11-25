@@ -14,7 +14,7 @@ async function harness(run) {
   const { FreebeatHailuoGeneration } = await vite.ssrLoadModule('/src/auth/FreebeatHailuoGeneration.jsx');
   const root = createRoot(document.getElementById('root'));
   const calls = [];
-  let mode = 'success', records = [], preparedOverride = {}, resolvePrepare;
+  let mode = 'success', records = [], preparedOverride = {}, resolvePrepare, taskResult, privateReasons = ['Provider detail <img src=x onerror=alert(1)>'], resolvePrivate;
   const settings = { model_id: 106, generation_type: 'image', duration: 10, resolution: '768p', aspect_ratio: '9:16' };
   const props = { connected: true, imageAccess: true, loading: false, disabled: false, imageUrl: 'https://static.freebeat.ai/photo.png', prompt: 'A quiet scene', aspectRatio: '9:16', quote: { settings, quote: { status: 'quoted', credits: 130 } }, onBusyChange() {}, request: async (action, method, body) => {
     calls.push([action, method, body]);
@@ -31,7 +31,13 @@ async function harness(run) {
       records = [{ id: 'test-hailuo', model_id: 106, max_credits: 150, created_at: new Date().toISOString(), status: mode === 'unknown' ? 'unknown' : 'submitted', canPoll: true }];
       return { id: 'test-hailuo', status: records[0].status };
     }
+    if (action === 'video-private-failure') {
+      if (mode === 'private-lost') throw new Error('Status detail unavailable');
+      if (mode === 'private-slow') return new Promise((resolve) => { resolvePrivate = () => resolve({ reasons: privateReasons }); });
+      return { reasons: privateReasons };
+    }
     assert.equal(action, 'video-task');
+    if (taskResult) return { task: taskResult };
     return { task: { status: 'completed', billing: { charged: 130, refunded: null, net: null }, videos: ['https://static.freebeat.ai/result.mp4', 'javascript:alert(1)'] } };
   } };
   const render = (overrides = {}) => React.act(async () => root.render(React.createElement(FreebeatHailuoGeneration, { ...props, ...overrides })));
@@ -41,7 +47,7 @@ async function harness(run) {
   const check = async () => React.act(async () => consent().click());
   try {
     await render();
-    await run({ React, calls, props, render, button, click, check, consent, setMode: (value) => { mode = value; }, setRecords: (value) => { records = value; }, setPrepared: (value) => { preparedOverride = value; }, resolvePrepare: () => resolvePrepare() });
+    await run({ React, calls, props, render, button, click, check, consent, setMode: (value) => { mode = value; }, setRecords: (value) => { records = value; }, setPrepared: (value) => { preparedOverride = value; }, resolvePrepare: () => resolvePrepare(), setTask: (value) => { taskResult = value; }, setPrivateReasons: (value) => { privateReasons = value; }, resolvePrivate: () => resolvePrivate() });
   } finally {
     await React.act(async () => root.unmount()); await vite.close(); dom.window.close();
     for (const key of keys) { if (old[key] === undefined) delete globalThis[key]; else globalThis[key] = old[key]; }
@@ -140,4 +146,91 @@ test('definitive Hailuo preflight rejection discards the old ticket and requires
   assert.equal(h.calls.filter(([action]) => action === 'hailuo-prepare').length, 2);
   await h.check(); await h.click(submit);
   assert.equal(h.calls.filter(([action]) => action === 'video-submit').length, 2);
+}));
+
+
+const privateButton = 'Tampilkan pesan kegagalan pribadi';
+const privateConsent = (id = 'existing-hailuo') => document.querySelector(`[aria-label="Setujui pesan kegagalan pribadi ${id}"]`);
+const failedTask = { status: 'failed', billing: { charged: 0, refunded: null, net: null, refund_state: null }, failure: { stage: null, reason: null, reason_hidden: true, retryable: null }, item_failures: [{ reason_hidden: true }], videos: [] };
+async function existingFailure(h, { canPoll = true, id = 'existing-hailuo' } = {}) {
+  h.setRecords([{ id, model_id: 106, max_credits: 150, created_at: new Date().toISOString(), status: 'submitted', canPoll }]);
+  h.setTask(failedTask);
+  await h.click('Periksa catatan video Hailuo');
+  await h.click(canPoll ? 'Periksa status video Hailuo' : 'Periksa status video (sesi lama)');
+}
+
+test('Hailuo existing failure exposes a private-consent panel directly; reading details never prepares or submits', () => harness(async (h) => {
+  await h.render({ quote: null, imageUrl: '', prompt: '' });
+  await existingFailure(h);
+  assert.match(document.body.textContent, /ID uji: existing-hailuo/);
+  assert.match(document.body.textContent, /Pesan kegagalan pribadi/);
+  assert.equal(privateConsent().checked, false); assert.equal(h.button(privateButton).disabled, true);
+  await h.click(privateButton);
+  assert.equal(h.calls.some(([action]) => action === 'video-private-failure'), false);
+  await h.React.act(async () => privateConsent().click());
+  await h.React.act(async () => { h.button(privateButton).click(); h.button(privateButton).click(); });
+  assert.deepEqual(h.calls.filter(([action]) => action === 'video-private-failure'), [['video-private-failure', 'POST', { id: 'existing-hailuo', acknowledge: true }]]);
+  assert.match(document.body.textContent, /Provider detail <img/);
+  assert.equal(document.querySelector('img,script,iframe,video'), null);
+  assert.ok([...document.querySelectorAll('textarea')].every((el) => !el.value.includes('Provider detail')));
+  await h.click('Sembunyikan pesan pribadi');
+  assert.doesNotMatch(document.body.textContent, /Provider detail/);
+  assert.equal(privateConsent().checked, false);
+  await h.React.act(async () => privateConsent().click()); await h.click(privateButton);
+  await h.click('Periksa status video Hailuo');
+  assert.doesNotMatch(document.body.textContent, /Provider detail/);
+  assert.equal(privateConsent().checked, false);
+  await h.React.act(async () => privateConsent().click()); await h.click(privateButton);
+  await h.click('Periksa catatan video Hailuo');
+  assert.doesNotMatch(document.body.textContent, /Provider detail/);
+  assert.equal(privateConsent().checked, false);
+  assert.ok(h.calls.every(([action]) => ['video-tests', 'video-task', 'video-private-failure'].includes(action)));
+}));
+
+test('Hailuo private messages handle old sessions, empty/provider-error replies, and preserve the one-send lock', () => harness(async (h) => {
+  await h.click(prepare); await h.check(); await h.click(submit);
+  h.setTask(failedTask); await h.click('Periksa status video Hailuo');
+  await h.React.act(async () => privateConsent('test-hailuo').click());
+  h.setMode('private-lost'); await h.click(privateButton);
+  assert.match(document.body.textContent, /Status detail unavailable/);
+  assert.equal(h.button(prepare).disabled, true);
+  h.setMode('success'); h.setPrivateReasons([]); await h.click(privateButton);
+  assert.match(document.body.textContent, /tidak memberikan pesan kegagalan/);
+  await h.click('Sembunyikan pesan pribadi');
+  assert.equal(privateConsent('test-hailuo').checked, false);
+  h.setPrivateReasons(null); await h.React.act(async () => privateConsent('test-hailuo').click()); await h.click(privateButton);
+  assert.match(document.body.textContent, /Pesan kegagalan pribadi tidak valid/);
+  assert.equal(h.calls.filter(([action]) => action === 'video-submit').length, 1);
+  await existingFailure(h, { canPoll: false });
+  assert.match(document.body.textContent, /Konfirmasi di bawah juga mengizinkan/);
+  assert.equal(privateConsent().checked, false);
+  assert.equal(h.button(privateButton).disabled, true);
+}));
+
+for (const key of ['prompt', 'imageUrl', 'aspectRatio', 'quote', 'userId', 'connected', 'imageAccess']) test(`Hailuo ignores delayed private messages after ${key} changes`, () => harness(async (h) => {
+  await existingFailure(h);
+  h.setMode('private-slow'); await h.React.act(async () => privateConsent().click()); await h.click(privateButton);
+  const changed = { prompt: 'new prompt', imageUrl: 'https://static.freebeat.ai/new.png', aspectRatio: '1:1', quote: null, userId: 'different-admin', connected: false, imageAccess: false };
+  await h.render({ [key]: changed[key] });
+  await h.React.act(async () => h.resolvePrivate());
+  assert.doesNotMatch(document.body.textContent, /Provider detail/);
+  assert.equal(privateConsent(), null);
+  assert.equal(h.calls.filter(([action]) => action === 'video-private-failure').length, 1);
+}));
+
+test('Hailuo private consent belongs to one record and only failure statuses expose private controls', () => harness(async (h) => {
+  h.setRecords(['first', 'second'].map((id) => ({ id, model_id: 106, status: 'submitted', canPoll: true, created_at: new Date().toISOString() })));
+  await h.click('Periksa catatan video Hailuo');
+  const statusButtons = () => [...document.querySelectorAll('button')].filter((el) => el.textContent === 'Periksa status video Hailuo');
+  h.setTask(failedTask);
+  await h.React.act(async () => statusButtons()[0].click()); await h.React.act(async () => statusButtons()[1].click());
+  await h.React.act(async () => privateConsent('first').click());
+  const detailButtons = [...document.querySelectorAll('button')].filter((el) => el.textContent === privateButton);
+  assert.equal(detailButtons[0].disabled, false); assert.equal(detailButtons[1].disabled, true);
+  await h.React.act(async () => detailButtons[0].click());
+  assert.deepEqual(h.calls.find(([action]) => action === 'video-private-failure')[2], { id: 'first', acknowledge: true });
+  for (const status of ['partial_failed', 'action_required', 'rejected', 'completed', 'processing']) {
+    h.setTask({ ...failedTask, status }); await h.React.act(async () => statusButtons()[1].click());
+    assert.equal(Boolean(privateConsent('second')), ['partial_failed', 'action_required', 'rejected'].includes(status));
+  }
 }));
