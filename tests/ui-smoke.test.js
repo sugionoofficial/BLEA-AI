@@ -234,8 +234,8 @@ test('Credits page shows the pending rollout notice to signed-in users', async (
   assert.equal(html.includes('Admin · Kelola paket'), false);
 });
 
-test('Freebeat MCP page describes read-only diagnostics and explicit admin image consent', async () => {
-  const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
+test('Freebeat MCP hub links to isolated experiment routes with back navigation', async () => {
+  const { MemoryRouter, Routes, Route } = await vite.ssrLoadModule('react-router-dom');
   const { AuthProvider } = await vite.ssrLoadModule('/src/auth/AuthProvider.jsx');
   const { FreebeatPage } = await vite.ssrLoadModule('/src/auth/FreebeatPage.jsx');
   const session = { access_token: 'admin-token', user: { id: 'admin', email: 'admin@example.com', user_metadata: {}, app_metadata: { role: 'admin' } } };
@@ -244,37 +244,36 @@ test('Freebeat MCP page describes read-only diagnostics and explicit admin image
   assert.ok(html.includes('Periksa saldo'));
   assert.ok(html.includes('Pemeriksaan saldo tidak memakai kredit'));
   assert.equal(html.includes('Uji saldo situs dengan cookie'), false);
-  assert.ok(html.includes('Lihat model gambar'));
-  assert.ok(html.includes('Periksa skema tool gambar'));
-  assert.equal(html.includes('Hubungkan izin gambar'), false);
-  assert.ok(html.includes('freebeat:generate'));
-  assert.ok(html.includes('Periksa respons quote'));
-  assert.ok(html.includes('Siapkan quote untuk persetujuan'));
-  assert.ok(html.includes('Uji generasi gambar admin'));
-  assert.ok(html.includes('Persiapan uji video'));
-  assert.ok(html.includes('Muat ulang model video'));
-  assert.ok(html.includes('Periksa skema tool video'));
-  assert.ok(html.includes('Uji generasi video khusus admin'));
-  assert.ok(html.includes('Siapkan quote untuk persetujuan video'));
-  assert.ok(html.includes('tidak pasti'));
-  assert.equal(html.includes('Nilai header Cookie dari permintaan saldo'), false);
-  assert.ok(html.includes('Model video'));
-  assert.equal(html.includes('Prompt video Gemini'), false);
-  assert.ok(html.includes('video-quote-help'));
-  assert.ok(html.includes('Inspeksi skema Singing &amp; Lip-Sync Video'));
-  assert.ok(html.includes('Periksa skema Singing &amp; Lip-Sync'));
-  assert.ok(html.includes('Inspeksi skema 7 tool Freebeat lainnya'));
-  assert.ok(html.includes('Periksa skema 7 tool baru'));
-  assert.ok(html.includes('Inspeksi katalog musik, efek &amp; teks'));
-  assert.ok(html.includes('Periksa model musik'));
-  assert.ok(html.includes('Periksa daftar efek'));
-  assert.ok(html.includes('Periksa model teks'));
-  assert.ok(html.includes('Uji quote_generation untuk 5 tool baru (gratis)'));
-  assert.ok(html.includes('Jalankan probe quote (0 kredit)'));
-  assert.ok(html.includes('Uji Musik (generate_music)'));
-  assert.ok(html.includes('Siapkan persetujuan musik'));
-  assert.ok(html.includes('Uji Singing &amp; Lip-Sync Video'));
-  assert.ok(html.includes('Periksa quote vokal'));
+  const { FREEBEAT_EXPERIMENTS } = await vite.ssrLoadModule('/src/auth/freebeatExperiments.js');
+  for (const item of FREEBEAT_EXPERIMENTS) {
+    assert.ok(html.includes(`href="/admin/freebeat/${item.id}"`), item.id);
+  }
+  for (const title of ['Gambar', 'Video', 'Musik', 'Inspeksi MCP']) assert.ok(html.includes(title));
+  assert.equal(html.includes('<form'), false, 'hub must not contain experiment forms');
+  assert.equal(html.includes('Siapkan quote untuk persetujuan'), false);
+  assert.equal(html.includes('Muat ulang model video'), false);
+
+  const expected = {
+    'image-models': 'Lihat model gambar', 'image-edit': 'Probe quote mode edit',
+    'image-generation': 'Uji generasi gambar admin', 'image-job': 'Periksa job gambar',
+    video: 'Uji generasi video khusus admin', hailuo: 'Hailuo', dance: 'generate_dance_video',
+    singing: 'Uji Singing Video', 'lip-sync': 'Uji Lip-Sync Video',
+    'vocal-schemas': 'Inspeksi skema Singing', 'remaining-schemas': 'Inspeksi skema 7 tool',
+    catalog: 'Inspeksi katalog musik', 'remaining-quotes': 'Uji quote_generation', music: 'Uji Musik',
+  };
+  for (const item of FREEBEAT_EXPERIMENTS) {
+    const page = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: [`/admin/freebeat/${item.id}`] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(Routes, null, React.createElement(Route, { path: '/admin/freebeat/:experimentId', element: React.createElement(FreebeatPage) })))));
+    assert.ok(page.includes(expected[item.id]), item.id);
+    assert.ok(page.includes('href="/admin/freebeat"'), 'return navigation: ' + item.id);
+    assert.equal(page.includes('Periksa saldo'), false, 'connection management stays on hub');
+    if (item.id !== 'image-generation') assert.equal(page.includes('Siapkan quote untuk persetujuan</button>'), false);
+    if (item.id !== 'video') assert.equal(page.includes('Uji generasi video khusus admin'), false);
+    if (item.id === 'singing') assert.equal(page.includes('Unggah video sumber'), false);
+    if (item.id === 'lip-sync') assert.equal(page.includes('Tambah foto'), false);
+  }
+  const unknown = renderToStaticMarkup(React.createElement(MemoryRouter, { initialEntries: ['/admin/freebeat/missing'] }, React.createElement(AuthProvider, { initialSession: session }, React.createElement(Routes, null, React.createElement(Route, { path: '/admin/freebeat/:experimentId', element: React.createElement(FreebeatPage) })))));
+  assert.ok(unknown.includes('Percobaan Freebeat tidak ditemukan'));
+
 });
 
 test('Freebeat image preparation explains every blocking condition and enables only with valid inputs and permission', async () => {

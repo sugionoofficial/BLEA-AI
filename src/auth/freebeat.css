@@ -7,3 +7,20 @@
 .freebeat-note{margin:4px 0 8px;font-size:13px;line-height:1.5;opacity:.8}
 .freebeat-actions button.is-active-preset{background:var(--primary-600);color:#fff;border-color:var(--primary-600)}
 .freebeat-actions a.freebeat-pool-link{display:inline-flex;align-items:center;gap:7px;padding:10px 14px;background:var(--background);color:var(--foreground);border:1px solid var(--border);border-radius:8px;font-weight:600;text-decoration:none;font-size:13px;margin-left:auto}.freebeat-actions a.freebeat-pool-link:hover{border-color:var(--primary-600);color:var(--primary-600)}
+
+.freebeat-workspace-header{padding:0 0 8px;overflow-wrap:anywhere}
+.freebeat-workspace-header nav{font-size:13px;margin-bottom:18px;line-height:1.7}
+.freebeat-workspace-header h2,.freebeat-experiment-hub>h2{margin:0 0 8px;font-size:22px}
+.freebeat-workspace-header>p,.freebeat-experiment-hub>p{font-size:13px;line-height:1.65;color:var(--muted-foreground)}
+.freebeat-experiment-hub{margin-top:28px}
+.freebeat-experiment-category{margin-top:24px}
+.freebeat-experiment-category>h3{font-size:15px;margin:0 0 12px}
+.freebeat-experiment-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.dropx-shell .freebeat-page a.freebeat-experiment-link{display:flex;flex-direction:column;align-items:flex-start;gap:9px;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--card);text-decoration:none;color:var(--foreground);font-size:13px;line-height:1.6;overflow-wrap:anywhere;transition:border-color .15s}
+.dropx-shell .freebeat-page a.freebeat-experiment-link:hover{border-color:var(--primary-600)}
+.freebeat-experiment-link strong{font-size:15px}
+.freebeat-experiment-link>span:not(.freebeat-experiment-open):not(.freebeat-experiment-badge){color:var(--muted-foreground)}
+.freebeat-experiment-badge{font-size:10px;letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--border);border-radius:5px;padding:2px 6px}
+.freebeat-experiment-open{color:var(--primary-600);font-weight:700;margin-top:auto;padding-top:4px}
+.freebeat-workspace-header a:focus-visible,.freebeat-experiment-link:focus-visible{outline:3px solid var(--ring);outline-offset:3px}
+@media(max-width:600px){.freebeat-experiment-grid{grid-template-columns:1fr}.freebeat-experiment-hub{margin-top:24px}}

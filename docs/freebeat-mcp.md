@@ -2,6 +2,21 @@
 
 `/admin/freebeat` hanya tersedia untuk admin dan menawarkan OAuth, saldo, daftar model, inspeksi struktur tool, diagnostik quote dan uji generasi gambar admin dengan persetujuan untuk setiap pengiriman. Pembelian BLEA dan generasi untuk pengguna lain tidak diaktifkan. Backend memeriksa role admin pada setiap permintaan, menggunakan pendaftaran OAuth dinamis, PKCE S256 dan state yang terikat ke browser. Tombol Hubungkan Freebeat meminta `freebeat:read freebeat:generate` sekaligus; izin yang benar-benar diberikan tetap ditentukan Freebeat dan persetujuan admin. Endpoint resmi: `https://freebeat.ai/api/mcp`.
 
+## Navigasi halaman percobaan
+
+`/admin/freebeat` sekarang menjadi hub koneksi OAuth, pemeriksaan saldo, dan tombol akses percobaan, bukan tumpukan seluruh form. Semua URL di bawah tetap dilindungi `ProtectedRoute` dan `AdminRoute`; pemeriksaan admin backend tidak berubah.
+
+| Kategori | Halaman percobaan (`/admin/freebeat/…`) |
+| --- | --- |
+| Gambar | `image-models` (katalog, help, skema), `image-edit` (probe edit + hosting foto), `image-generation`, `image-job` |
+| Video | `video` (katalog + uji generasi), `hailuo` (help/quote model 106), `dance`, `singing`, `lip-sync` |
+| Musik | `music` |
+| Inspeksi MCP | `vocal-schemas`, `remaining-schemas`, `catalog`, `remaining-quotes` |
+
+Setiap halaman memiliki judul, keterangan, status sesi dan tautan kembali. Singing dan Lip-Sync mempunyai form terpisah tanpa tombol berganti tool. Probe edit dan hosting foto tetap dalam satu halaman karena hosting memerlukan URL hasil probe.
+
+Pindah halaman mereset form, respons privat dan persetujuan lokal; koneksi OAuth server/cookie tetap digunakan. Quote/persetujuan baru tetap wajib sebelum pengiriman berbayar. Catatan uji server tidak dihapus dan bisa dimuat kembali melalui tombol pemeriksaan catatan; jangan mengulang job yang hasilnya tidak pasti. Upload publik tidak otomatis dihapus saat pindah halaman: bersihkan lewat tombol halaman sebelum keluar, atau kelola objek tertinggal melalui Supabase Storage. Membuka hub tidak memuat katalog video; pemuatan katalog otomatis hanya berlaku pada halaman video/Hailuo. Membuka halaman tidak mengirim upload atau generasi berbayar. URL percobaan yang tidak dikenal menampilkan petunjuk kembali, bukan seluruh form.
+
 Worker memerlukan `PROVIDER_CREDENTIAL_ENCRYPTION_KEY` yang sudah digunakan fitur Gmail. Jangan ganti kunci yang ada. Callback default: `https://blea-ai.blea-ai.workers.dev/api/freebeat/callback`. Opsional `FREEBEAT_OAUTH_REDIRECT_URI` dapat mengatur domain HTTPS lain dengan path yang sama; buka aplikasi dari origin tersebut agar cookie OAuth tersedia pada callback.
 
 Token akses untuk pengujian dienkripsi AES-GCM ke cookie HttpOnly, Secure, SameSite=Lax, terikat ID admin, dan digunakan hanya setelah verifikasi admin. Tidak ada token refresh yang disimpan. Sesi berlaku paling lama satu jam (atau masa token yang lebih pendek); hubungkan ulang setelah kedaluwarsa. Setiap admin/browser punya sesi sendiri, belum ada akun provider bersama untuk pengguna. Tombol Putuskan menghapus cookie dan mencoba mencabut token; jika gagal, cabut akses di Freebeat. Perubahan kunci enkripsi juga mengakhiri sesi ini dan akan memengaruhi fitur Gmail yang memakai kunci yang sama.

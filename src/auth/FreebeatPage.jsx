@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { Link2, RefreshCw, ShieldCheck, Unplug } from 'lucide-react';
 import { DropXLayout } from '../dropx/DropXLayout';
 import { FreebeatImageForm } from './FreebeatImageForm';
@@ -18,6 +18,7 @@ import { useAuth } from './AuthProvider';
 import { supabase } from '../lib/supabase';
 import { freebeatRequest as request } from '../api/freebeat';
 import { uploadFreebeatImage, deleteFreebeatImage } from '../lib/freebeatVideoUpload';
+import { FREEBEAT_EXPERIMENTS, FREEBEAT_EXPERIMENT_CATEGORIES, freebeatExperimentPath } from './freebeatExperiments';
 import './freebeat.css';
 
 const resultMessage = {
@@ -34,6 +35,16 @@ const resultMessage = {
 };
 
 export function FreebeatPage() {
+  const { experimentId = '' } = useParams();
+  const experiment = FREEBEAT_EXPERIMENTS.find((item) => item.id === experimentId);
+  if (experimentId && !experiment) return <DropXLayout title="Percobaan tidak ditemukan"><div className="freebeat-page freebeat-card"><h2>Percobaan Freebeat tidak ditemukan</h2><Link to="/admin/freebeat">Kembali ke Freebeat MCP</Link></div></DropXLayout>;
+  // Route changes deliberately unmount forms, private responses and approvals.
+  // OAuth remains in its encrypted cookie/server session, not in page state.
+  return <FreebeatWorkspace key={experimentId || 'home'} experiment={experiment || null} />;
+}
+
+function FreebeatWorkspace({ experiment }) {
+  const page = experiment?.id || 'home';
   const { user } = useAuth();
   const [connected, setConnected] = useState(false);
   const [imageAccess, setImageAccess] = useState(false);
@@ -213,10 +224,10 @@ export function FreebeatPage() {
   }
   useEffect(() => {
     const version = ++videoRequestVersion.current;
-    if (connected) inspectVideos('video-models', version);
+    if (connected && (page === 'video' || page === 'hailuo')) inspectVideos('video-models', version);
     else { setVideoModels(null); setVideoSchemas(null); setVideoBusy(false); setVideoError(''); }
     return () => { videoRequestVersion.current += 1; };
-  }, [connected]);
+  }, [connected, page]);
   async function inspectQuote(event) {
     event.preventDefault();
     if (imageBusy) return;
@@ -267,9 +278,16 @@ export function FreebeatPage() {
     catch (err) { setTestError(err.message || 'Status belum tersedia.'); }
     finally { setTestBusy(false); }
   }
-  return <DropXLayout title="Freebeat MCP" description="Uji koneksi Freebeat khusus admin.">
+  return <DropXLayout title={experiment ? `Freebeat · ${experiment.title}` : "Freebeat MCP"} description={experiment?.description || "Pusat koneksi dan percobaan Freebeat khusus admin."}>
     <div className="freebeat-page">
-      <section className="freebeat-card">
+      {experiment && <header className="freebeat-workspace-header">
+        <nav aria-label="Navigasi percobaan Freebeat"><Link to="/admin/freebeat">← Freebeat MCP</Link><span aria-hidden="true"> / </span><span aria-current="page">{experiment.title}</span></nav>
+        <h2>{experiment.title}</h2><p>{experiment.description}</p>
+        {error && <div className="freebeat-alert is-error" role="alert">{error}</div>}
+        <p className="freebeat-note">{loading ? 'Memeriksa sesi…' : connected ? 'Sesi OAuth tersimpan; akses MCP tetap perlu diperiksa.' : 'Sesi belum tersedia. Hubungkan akun di halaman utama Freebeat MCP.'}</p>
+        <p className="freebeat-note">Form, respons privat, dan persetujuan direset ketika berpindah halaman. Upload yang sudah tersimpan tidak dihapus otomatis; kelola melalui Supabase Storage jika meninggalkan halaman.</p>
+      </header>}
+      {page === 'home' && <><section className="freebeat-card">
         <span className="freebeat-kicker">MCP · OAUTH · KHUSUS ADMIN</span><h2>Hubungkan Freebeat</h2>
         <p>Tombol ini meminta izin membaca dan generasi Freebeat. Setujui izin tersebut di Freebeat. Pemeriksaan saldo tidak memakai kredit; setiap uji generasi tetap memerlukan persetujuan eksplisit.</p>
         <p>Sesi OAuth disimpan terenkripsi dalam cookie HttpOnly dan salinan server; akun pool dapat dipakai layanan Generate. Token diperbarui otomatis jika refresh token tersedia. Sesi tersimpan belum membuktikan akses MCP masih diterima Freebeat. Gunakan Periksa saldo untuk menguji akses baca tanpa generasi; keberhasilannya tidak menjamin izin generasi. Input form tidak disimpan.</p>
@@ -290,11 +308,21 @@ export function FreebeatPage() {
         </div>
         {balance !== null && <div className="freebeat-result"><h3>Respons saldo dari Freebeat</h3><pre>{typeof balance === 'string' ? balance : JSON.stringify(balance, null, 2)}</pre></div>}
       </section>
-      <section className="freebeat-card freebeat-site-test">
-        <span className="freebeat-kicker">GAMBAR · KHUSUS ADMIN · BACA SAJA</span>
-        <h2>Persiapan uji gambar</h2>
-        <p>Periksa daftar model, struktur tool MCP dan respons quote tanpa membuat gambar atau memakai kredit. Pembelian BLEA belum diaktifkan; uji generasi admin memerlukan persetujuan terpisah di bawah.</p>
-        <p>Koneksi di atas meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code>. Jika izin generasi tidak diberikan, hubungkan ulang dan setujui di Freebeat.</p>
+      <section className="freebeat-experiment-hub" aria-label="Daftar percobaan Freebeat">
+        <h2>Pilih percobaan</h2><p>Setiap percobaan memiliki halaman sendiri. Membuka halaman tidak menjalankan upload atau generasi berbayar.</p>
+        {FREEBEAT_EXPERIMENT_CATEGORIES.map((category) => <section key={category} className="freebeat-experiment-category" aria-label={category}>
+          <h3>{category}</h3><div className="freebeat-experiment-grid">
+            {FREEBEAT_EXPERIMENTS.filter((item) => item.category === category).map((item) => <Link key={item.id} className="freebeat-experiment-link" to={freebeatExperimentPath(item.id)}>
+              <span className="freebeat-experiment-badge">{item.access}</span><strong>{item.title}</strong><span>{item.description}</span><span className="freebeat-experiment-open">Buka percobaan →</span>
+            </Link>)}
+          </div>
+        </section>)}
+      </section></>}
+      {['image-models', 'image-edit', 'image-job'].includes(page) && <section className="freebeat-card freebeat-site-test">
+        <span className="freebeat-kicker">GAMBAR · KHUSUS ADMIN</span>
+        {page === 'image-models' && <>
+        <p>Periksa daftar model, struktur tool MCP dan respons quote tanpa membuat gambar atau memakai kredit. Pembelian BLEA belum diaktifkan; uji generasi admin memerlukan persetujuan terpisah di halaman Generasi gambar.</p>
+        <p>Koneksi Freebeat meminta izin <code>freebeat:read</code> dan <code>freebeat:generate</code>. Jika izin generasi tidak diberikan, hubungkan ulang dan setujui di Freebeat.</p>
         <div className="freebeat-status">Izin gambar: {imageAccess ? 'diminta dan terindikasi diberikan' : 'belum diberikan atau belum terverifikasi'}</div>
         <div className="freebeat-actions">
           <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy} onClick={() => inspectImages('image-models')}>Lihat model gambar</button>
@@ -316,6 +344,10 @@ export function FreebeatPage() {
           <label className="freebeat-confirm"><input type="checkbox" checked={imageHelpConsent} onChange={(event) => setImageHelpConsent(event.target.checked)} /> Saya memahami respons privat dapat memuat pesan mentah provider dan tidak boleh dibagikan publik.</label>
         </div>
         {imageHelp && <div className="freebeat-result"><h3>Informasi model {imageHelp.model_id} (katalog {imageHelp.type})</h3><pre>{JSON.stringify(imageHelp.help, null, 2)}</pre></div>}
+        {imageEditModels && <div className="freebeat-result"><h3>Model edit gambar dari Freebeat (katalog {imageEditModels.catalog}) · {imageEditModels.models?.length ?? 0} model</h3><pre>{JSON.stringify(imageEditModels.models, null, 2)}</pre>{imageEditModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
+        {imageSchemas && <div className="freebeat-result"><h3>Struktur tool gambar</h3><p>Hanya nama parameter dan tipe dasar; deskripsi dan data sesi tidak ditampilkan. Bagikan hasil ini untuk memeriksa format biaya.</p><pre>{JSON.stringify(imageSchemas.tools, null, 2)}</pre>{imageSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
+        </>}
+        {page === 'image-edit' && <>
         <div className="freebeat-field">Probe quote mode edit (quote_generation, gratis)
           <p className="freebeat-note">Model 202 menolak quote dasar dengan status <code>unavailable</code>. Probe ini mencoba delapan bentuk parameter sekaligus untuk menemukan yang diterima provider. Foto diunggah ke bucket publik BLEA lalu dihapus otomatis saat Anda membersihkannya.</p>
           <div className="freebeat-actions">
@@ -331,6 +363,19 @@ export function FreebeatPage() {
           <p>Varian yang dapat dipakai: {probeResult.usable?.length ? probeResult.usable.map((item) => `${item.label} = ${item.credits} kredit`).join(' · ') : 'tidak ada — semua ditolak provider.'}</p>
           <pre>{JSON.stringify(probeResult.results, null, 2)}</pre>
         </div>}
+        <div className="freebeat-field">Uji host foto di Freebeat (upload_image)
+          <p className="freebeat-note">Item edit yang gagal menunjukkan <code>edit_images: []</code> dan 0 kredit — dugaan: backend Freebeat tidak mengambil URL eksternal, jadi foto harus di-host di storage mereka (web mengirim URL <code>static.freebeat.ai</code>). Langkah 1 gratis; langkah 2 memotong kredit Freebeat admin sebesar hasil quote.</p>
+          <div className="freebeat-actions">
+            <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy || !probeUrl} onClick={quoteUpload}>1. Periksa biaya upload (gratis)</button>
+            <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy || !probeUrl || !uploadConsent || !Number.isSafeInteger(uploadQuote?.credits)} onClick={runUpload}>2. Jalankan upload_image</button>
+          </div>
+          <label className="freebeat-confirm"><input type="checkbox" checked={uploadConsent} onChange={(event) => setUploadConsent(event.target.checked)} /> Saya menyetujui pemotongan kredit Freebeat admin sebesar hasil quote untuk uji upload ini.</label>
+          {uploadQuote && <div className="freebeat-status">Quote upload_image: {Number.isSafeInteger(uploadQuote.credits) ? `${uploadQuote.credits} kredit Freebeat` : `tidak tersedia (status ${uploadQuote.status || 'tidak diketahui'})`}</div>}
+          {uploadQuote && <pre>{JSON.stringify(uploadQuote.quote, null, 2)}</pre>}
+        </div>
+        {uploadResult && <div className="freebeat-result"><h3>Hasil upload_image (difasilitasi {uploadResult.quote_credits} kredit)</h3><pre>{JSON.stringify(uploadResult.upload, null, 2)}</pre></div>}
+        </>}
+        {page === 'image-job' && <>
         <div className="freebeat-field">Periksa job gambar (get_task_status, gratis)
           <p className="freebeat-note">Tempel ID job dari riwayat generasi — termasuk job milik pengguna dari halaman Generate. Menampilkan status, tagihan riil provider (<code>billing.charged</code>) dan alasan kegagalan yang selama ini tersembunyi.</p>
           <div className="freebeat-actions">
@@ -346,24 +391,12 @@ export function FreebeatPage() {
           {jobResult.root_keys?.length > 0 && <p>Kunci respons provider: {jobResult.root_keys.join(', ')}</p>}
           <pre>{JSON.stringify(jobResult.raw ?? jobResult, null, 2)}</pre>
         </div>}
-        <div className="freebeat-field">Uji host foto di Freebeat (upload_image)
-          <p className="freebeat-note">Item edit yang gagal menunjukkan <code>edit_images: []</code> dan 0 kredit — dugaan: backend Freebeat tidak mengambil URL eksternal, jadi foto harus di-host di storage mereka (web mengirim URL <code>static.freebeat.ai</code>). Langkah 1 gratis; langkah 2 memotong kredit Freebeat admin sebesar hasil quote.</p>
-          <div className="freebeat-actions">
-            <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy || !probeUrl} onClick={quoteUpload}>1. Periksa biaya upload (gratis)</button>
-            <button type="button" className="is-secondary" disabled={loading || !connected || imageBusy || !probeUrl || !uploadConsent || !Number.isSafeInteger(uploadQuote?.credits)} onClick={runUpload}>2. Jalankan upload_image</button>
-          </div>
-          <label className="freebeat-confirm"><input type="checkbox" checked={uploadConsent} onChange={(event) => setUploadConsent(event.target.checked)} /> Saya menyetujui pemotongan kredit Freebeat admin sebesar hasil quote untuk uji upload ini.</label>
-          {uploadQuote && <div className="freebeat-status">Quote upload_image: {Number.isSafeInteger(uploadQuote.credits) ? `${uploadQuote.credits} kredit Freebeat` : `tidak tersedia (status ${uploadQuote.status || 'tidak diketahui'})`}</div>}
-          {uploadQuote && <pre>{JSON.stringify(uploadQuote.quote, null, 2)}</pre>}
-        </div>
-        {uploadResult && <div className="freebeat-result"><h3>Hasil upload_image (difasilitasi {uploadResult.quote_credits} kredit)</h3><pre>{JSON.stringify(uploadResult.upload, null, 2)}</pre></div>}
-        {imageEditModels && <div className="freebeat-result"><h3>Model edit gambar dari Freebeat (katalog {imageEditModels.catalog}) · {imageEditModels.models?.length ?? 0} model</h3><pre>{JSON.stringify(imageEditModels.models, null, 2)}</pre>{imageEditModels.truncated && <p>Daftar dibatasi hingga 100 model.</p>}</div>}
-        {imageSchemas && <div className="freebeat-result"><h3>Struktur tool gambar</h3><p>Hanya nama parameter dan tipe dasar; deskripsi dan data sesi tidak ditampilkan. Bagikan hasil ini untuk memeriksa format biaya.</p><pre>{JSON.stringify(imageSchemas.tools, null, 2)}</pre>{imageSchemas.truncated && <p>Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.</p>}</div>}
+        </>}
         {imageError && <div className="freebeat-alert is-error" role="alert">{imageError}</div>}
-      </section>
-      <section className="freebeat-card freebeat-site-test">
+      </section>}
+      {page === 'image-generation' && <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">UJI GAMBAR · KHUSUS ADMIN · KREDIT FREEBEAT</span>
-        <h2>Uji generasi gambar admin</h2>
+        <h2>Uji generasi gambar admin</h2><p><Link to="/admin/freebeat/image-models">Buka katalog model gambar</Link> untuk memeriksa ID model sebelum mengisi form ini.</p>
         <p>Hanya akun Freebeat di browser admin ini yang digunakan. Ini bukan pembelian atau pemakaian kredit BLEA. Isi ID model dan prompt di bawah, lalu siapkan quote baru. Pastikan penggunaan sesuai ketentuan dan plan Freebeat; manfaat plan yang hanya untuk aplikasi web tidak otomatis berlaku untuk MCP.</p>
         <p>Freebeat melaporkan quote, bukan biaya akhir; saldo dapat terpakai meskipun tugas gagal, dan refund tidak dijamin. Jika hasil pengiriman tidak pasti, jangan mengulang sebelum memeriksa Freebeat. Uji dengan hasil tidak pasti akan mengunci pengiriman berikutnya hingga ditinjau operator.</p>
         <FreebeatImageForm loading={loading} connected={connected} imageAccess={imageAccess} busy={busy} imageBusy={imageBusy} testBusy={testBusy} model={quoteModel} prompt={quotePrompt}
@@ -389,8 +422,8 @@ export function FreebeatPage() {
           {test.canPoll && <div className="freebeat-actions"><button type="button" className="is-secondary" disabled={testBusy} onClick={() => pollTest(test.id)}>Periksa status</button></div>}
           {taskResults[test.id] && <FreebeatTaskResult task={taskResults[test.id]} />}
         </div>)}</div>}
-      </section>
-      <section className="freebeat-card freebeat-site-test">
+      </section>}
+      {page === 'video' && <section className="freebeat-card freebeat-site-test">
         <span className="freebeat-kicker">VIDEO · KHUSUS ADMIN · BACA SAJA</span>
         <h2>Persiapan uji video</h2>
         <p>Periksa model dan skema video tanpa memakai kredit. Uji generasi video admin di bawah hanya dikirim setelah quote dan persetujuan eksplisit.</p>
@@ -400,16 +433,18 @@ export function FreebeatPage() {
         </div>
         {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}</div>}
         {videoSchemas && <FreebeatCopyResult title="Struktur tool video" value={{ tools: videoSchemas.tools, truncated: videoSchemas.truncated === true }} description={`Hanya struktur dan nilai enumerasi aman; deskripsi dan data sesi tidak ditampilkan.${videoSchemas.truncated ? ' Daftar dibatasi hingga lima halaman; sebagian tool mungkin tidak ditampilkan.' : ''}`} />}
-        <FreebeatHailuoDiagnostic key={`hailuo-${user?.id || ''}`} connected={connected} loading={loading} request={request} videoModels={videoModels} />
         <FreebeatVideoDiagnostic key={user?.id || ''} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} videoModels={videoModels} videoBusy={videoBusy} />
-      </section>
-      <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
-      <FreebeatSingingLipSyncDiagnostic key={`vocal-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />
-      <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
-      <FreebeatRemainingSchemaDiagnostic key={`remaining-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
-      <FreebeatCatalogInspector key={`catalog-inspector-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
-      <FreebeatRemainingQuoteProbe key={`remaining-quote-probe-${user?.id || ''}`} connected={connected} loading={loading} request={request} />
-      <FreebeatMusicDiagnostic key={`music-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} />
+      </section>}
+      {page === 'hailuo' && <section className="freebeat-card freebeat-site-test">
+        {videoError && <div className="freebeat-alert is-error" role="alert">{videoError}<div className="freebeat-actions"><button type="button" disabled={loading || !connected || videoBusy} onClick={() => inspectVideos('video-models')}>Muat ulang model video</button></div></div>}
+        <FreebeatHailuoDiagnostic key={`hailuo-${user?.id || ''}`} connected={connected} loading={loading} request={request} videoModels={videoModels} /></section>}
+      {page === 'dance' && <FreebeatDanceDiagnostic key={`dance-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />}
+      {['singing', 'lip-sync'].includes(page) && <FreebeatSingingLipSyncDiagnostic key={`vocal-${user?.id || ''}`} onlyTool={page === 'singing' ? 'generate_singing_video' : 'generate_lip_sync_video'} connected={connected} imageAccess={imageAccess} loading={loading} request={request} userId={user?.id} storage={supabase.storage} />}
+      {page === 'vocal-schemas' && <FreebeatVocalSchemaDiagnostic key={`vocal-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />}
+      {page === 'remaining-schemas' && <FreebeatRemainingSchemaDiagnostic key={`remaining-schema-${user?.id || ''}`} connected={connected} loading={loading} request={request} />}
+      {page === 'catalog' && <FreebeatCatalogInspector key={`catalog-inspector-${user?.id || ''}`} connected={connected} loading={loading} request={request} />}
+      {page === 'remaining-quotes' && <FreebeatRemainingQuoteProbe key={`remaining-quote-probe-${user?.id || ''}`} connected={connected} loading={loading} request={request} />}
+      {page === 'music' && <FreebeatMusicDiagnostic key={`music-${user?.id || ''}`} connected={connected} imageAccess={imageAccess} loading={loading} request={request} />}
     </div>
   </DropXLayout>;
 }
