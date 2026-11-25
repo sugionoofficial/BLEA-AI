@@ -653,6 +653,7 @@ function mcpFailure(stage, kind, status) {
   console.warn('Freebeat MCP request failed', { stage, kind, ...(Number.isInteger(status) ? { status } : {}) });
   return Object.assign(fail(status === 402 ? message : `${message} ${tag}`, kind === 'http' && status === 401 ? 401 : 502), {
     isMcpFailure: true,
+    freebeatKind: kind,
     ...(Number.isInteger(status) ? { httpStatus: status } : {}),
     ...(status === 402 ? { balanceExhausted: true } : {}),
   });
@@ -5861,6 +5862,29 @@ function validateConsumerVocalPayload(payload) {
   };
 }
 
+// Consumer diagnostics contain only fixed categories, numeric protocol codes,
+// and allowlisted provider reasons. Never persist/echo provider prose, URLs,
+// credentials, or arbitrary object keys, even after best-effort redaction.
+function vocalDispatchFailure(value, kind = 'tool_rejected') {
+  const kinds = new Set(['tool_rejected', 'http', 'timeout', 'network', 'redirect', 'rpc', 'size', 'response', 'missing_task_id']);
+  const safeKind = kinds.has(kind) ? kind : 'response';
+  const reasons = new Set([...VIDEO_FAILURE_REASONS, 'invalid_audio', 'invalid_video', 'audio_download_failed', 'video_download_failed', 'audio_not_ready']);
+  const content = value && typeof value === 'object' ? modelContent(value) : null;
+  const candidates = [content?.failure?.reason, content?.error_code, content?.code, value?.error?.code, value?.error?.data?.reason];
+  const reason = candidates.find((item) => typeof item === 'string' && reasons.has(item.toLowerCase()))?.toLowerCase();
+  const httpStatus = Number.isInteger(value?.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? value.httpStatus : null;
+  const rpcCode = Number.isSafeInteger(value?.error?.code) ? value.error.code : null;
+  const diagnostic = {
+    kind: safeKind,
+    ...(httpStatus !== null ? { http_status: httpStatus } : {}),
+    ...(rpcCode !== null ? { rpc_code: rpcCode } : {}),
+    ...(reason ? { reason } : {}),
+  };
+  const tag = `FB-VOCAL-${safeKind.toUpperCase().replaceAll('_', '-')}`;
+  const detail = httpStatus !== null ? `HTTP ${httpStatus}` : rpcCode !== null ? `RPC ${rpcCode}` : null;
+  return { diagnostic, message: `[${tag}${detail ? `; ${detail}` : ''}${reason ? `; ${reason}` : ''}]` };
+}
+
 export async function consumerVocalGenerate(env, user, payload) {
   const input = validateConsumerVocalPayload(payload);
   await assertAccountActive(env, user.id);
@@ -5883,7 +5907,7 @@ export async function consumerVocalGenerate(env, user, payload) {
   let sawBalanceExhausted = false;
   let lastFailoverError = null;
 
-  const refundVocalSpend = async (reason, errorMessage, statusCode = 502) => {
+  const refundVocalSpend = async (reason, errorMessage, statusCode = 502, dispatchFailure = null) => {
     if (!spentState) return errorMessage;
     const refunded = await dbRpc(env, 'refund_credits', {
       p_user_id: user.id,
@@ -5899,6 +5923,7 @@ export async function consumerVocalGenerate(env, user, payload) {
       progress: 0,
       error_message: fullMsg,
       ...(refunded ? { credits_refunded: price } : {}),
+      ...(dispatchFailure ? { metadata: { ...spentState.metadata, dispatch_failure: dispatchFailure } } : {}),
     };
     await dbFetch(env, `/video_generations?id=eq.${encodeURIComponent(spentState.genId)}`, { method: 'PATCH', body: failedPatch }).catch(() => {});
     return fullMsg;
@@ -6162,6 +6187,7 @@ export async function consumerVocalGenerate(env, user, payload) {
 
       let content = null;
       let rejectedReason = null;
+      let dispatchFailure = null;
       try {
         const { result } = await rpc(opened.session.accessToken, {
           jsonrpc: '2.0',
@@ -6178,6 +6204,7 @@ export async function consumerVocalGenerate(env, user, payload) {
             continue;
           }
           rejectedReason = 'rejected';
+          dispatchFailure = vocalDispatchFailure(result);
           throw new Error('rejected');
         }
         content = modelContent(result);
@@ -6198,11 +6225,14 @@ export async function consumerVocalGenerate(env, user, payload) {
           lastFailoverError = err;
           continue;
         }
-        await recordPoolAccountOutcome(env, account, { success: false, error: `Freebeat menolak permintaan ${label}` });
+        dispatchFailure ||= vocalDispatchFailure(err, err?.freebeatKind || 'response');
+        spentState.metadata = activeMeta;
+        await recordPoolAccountOutcome(env, account, { success: false, error: `Pengiriman ${label} gagal ${dispatchFailure.message}` });
         const fullMsg = await refundVocalSpend(
           `Refund: Freebeat ${input.tool} gagal dikirim`,
-          `Permintaan ${label} gagal dikirim ke Freebeat.`,
+          `Permintaan ${label} gagal dikirim ke Freebeat. ${dispatchFailure.message}`,
           502,
+          dispatchFailure.diagnostic,
         );
         throw fail(fullMsg, 502);
       }
@@ -6221,10 +6251,13 @@ export async function consumerVocalGenerate(env, user, payload) {
       const taskId = typeof content.task_id === 'string' && TASK_ID.test(content.task_id) ? content.task_id : null;
       if (!taskId) {
         await recordPoolAccountOutcome(env, account, { success: false, error: `ID tugas ${label} tidak valid` });
+        const missingTask = vocalDispatchFailure(null, 'missing_task_id');
+        spentState.metadata = activeMeta;
         const fullMsg = await refundVocalSpend(
           `Refund: ID tugas ${label} tidak diterima dari Freebeat`,
-          'Freebeat tidak mengembalikan ID tugas yang valid.',
+          `Freebeat tidak mengembalikan ID tugas yang valid. ${missingTask.message}`,
           502,
+          missingTask.diagnostic,
         );
         throw fail(fullMsg, 502);
       }
