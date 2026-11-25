@@ -21,7 +21,7 @@ function formatSnapshot(snapshot) {
 export function BrowserAgentPanel({ model, provider, onClose }) {
   const [taskText, setTaskText] = useState('');
   const [sharePage, setSharePage] = useState(false);
-  const [status, setStatus] = useState('Pilih tab tujuan di side panel ekstensi, lalu tulis tugas browser.');
+  const [status, setStatus] = useState('Tulis tugas; BLEA akan membuka tab task baru secara otomatis.');
   const [running, setRunning] = useState(false);
   const [stopped, setStopped] = useState(false);
   const [completed, setCompleted] = useState(false);
@@ -127,9 +127,9 @@ export function BrowserAgentPanel({ model, provider, onClose }) {
     setStopped(false);
     controllerRef.current = new AbortController();
     try {
-      const target = await requestBrowserBridge('get-target');
-      if (!target?.url) throw new Error('Tab tujuan belum dipilih. Pilih tab di side panel ekstensi dan izinkan akses situs.');
-      setStatus(`Tab tujuan: ${target.title || target.url}. Memulai…`);
+      const target = await requestBrowserBridge('open-task-tab');
+      if (!target?.url) throw new Error('Ekstensi tidak dapat membuka tab task. Pastikan BLEA Browser Companion aktif.');
+      setStatus(`Tab task baru aktif: ${target.title || target.url}. Jika diminta, izinkan origin situs di side panel ekstensi.`);
       await requestPlan();
     } catch (cause) {
       setError(String(cause?.message || cause));
