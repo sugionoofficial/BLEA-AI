@@ -234,3 +234,15 @@ test('Hailuo private consent belongs to one record and only failure statuses exp
     assert.equal(Boolean(privateConsent('second')), ['partial_failed', 'action_required', 'rejected'].includes(status));
   }
 }));
+
+test('shared Hailuo prepare diagnostic distinguishes nonnumeric price and mismatched settings without relaxing consent', () => harness(async (h) => {
+  await h.render({ quote: { ...h.props.quote, quote: { status: 'quoted', credits: '130', message: 'PRIVATE-SECRET' } } });
+  const diagnostic = () => JSON.parse(document.querySelector('[aria-label="Diagnosis persiapan Hailuo"]').value);
+  assert.ok(diagnostic().blockers.includes('quote_credits_invalid')); assert.equal(h.button(prepare).disabled, true);
+  assert.match(document.querySelector('[aria-label="Syarat persiapan Hailuo"]').textContent, /biaya numerik valid/);
+  assert.doesNotMatch(JSON.stringify(diagnostic()), /PRIVATE-SECRET|quiet scene|static\.freebeat\.ai/);
+  await h.render({ quote: { ...h.props.quote, settings: { ...h.props.quote.settings, generation_type: 'text', model_id: 97 } } });
+  assert.ok(diagnostic().blockers.includes('quote_generation_mismatch')); assert.ok(diagnostic().blockers.includes('quote_model_mismatch'));
+  await h.render(); assert.equal(h.button(prepare).disabled, false); assert.equal(h.calls.length, 0);
+  await h.click(prepare); assert.equal(h.consent().checked, false); assert.equal(h.button(submit).disabled, true);
+}));
