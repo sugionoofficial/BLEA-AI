@@ -159,3 +159,38 @@ reproduksi di tes, bukan membuktikan penyebab setiap penolakan Freebeat. Token
 atau grant yang benar-benar dicabut tetap memerlukan otorisasi ulang; pemeriksaan
 hak akses/plan tetap mengikuti Freebeat. Koordinasi refresh lintas Worker/isolate
 tidak ditambahkan oleh perubahan ini.
+
+## Pemeriksaan Hailuo 2.3 Pro dari request web (ID 106)
+
+Panel **Hailuo 2.3 Pro · ID 106 · pemeriksaan MCP tanpa generate** di
+`/admin/freebeat` memakai ID 106 berdasarkan request web yang diberikan pengguna:
+`model=hailuo-2.3-pro`, durasi 10 detik, resolusi 768p, rasio parameter 16:9,
+dan satu gambar. Ini bukan bukti model MiniMax 3.0 atau dukungan MCP untuk akun
+tersebut. Teks prompt yang menyebut model/resolusi/rasio lain tidak mengganti
+parameter request.
+
+Tidak ada request otomatis saat panel dimuat. **Periksa informasi Hailuo #106**
+memanggil endpoint admin `video-model-help` → `get_model_help(type=video,
+model_id=106)`. Untuk **Periksa quote Hailuo #106**, isi URL HTTPS gambar dan
+prompt, pilih rasio parameter, lalu setujui pengiriman prompt/URL ke Freebeat.
+Endpoint `video-model-quote` memeriksa help dan meminta quote `generate_video`
+dengan `model_id=106`, `generation_type=image`, satu `images[]`, durasi 10,
+resolusi 768p, dan rasio yang dipilih. Angka `generationType=0` dari web tidak
+diteruskan ke MCP. Opsi dinormalisasi terhadap help live; periksa `settings`,
+`adjusted`, dan `supported` pada hasil sebelum menarik kesimpulan.
+
+Pemeriksaan tetap bisa dilakukan saat ID belum terlihat di katalog yang dimuat,
+karena daftar dapat dibatasi. Ini tidak menambahkan ID palsu ke daftar model,
+tidak mengaktifkan model konsumen, dan tidak memberi izin pengiriman berbayar.
+Panel hanya punya informasi/quote: tidak memanggil upload, prepare, submit,
+generate, atau RPC kredit. Hasil adalah respons yang disaring dan bisa disalin;
+hasil/consent dihapus saat input berubah atau koneksi diputus, dan respons lama
+yang tiba setelah pergantian input/koneksi diabaikan.
+
+Jalur informasi dan quote video juga memakai pemulihan handshake satu kali
+untuk token tersimpan yang usang (sama seperti saldo/quote vokal). Sesi MCP yang
+sudah dibuka dipakai ulang untuk help dan quote; tools/call tidak diulang.
+Tidak ada pemakaian cookie situs atau endpoint internal
+`/api/proxy/v1/aiVideo/createAiVideo` di integrasi ini. Belum ada verifikasi live
+MCP model 106 atau generasi berbayar oleh agent. Quote numerik pada tes hanyalah
+fixture, bukan tarif aktual Freebeat.

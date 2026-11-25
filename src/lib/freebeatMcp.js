@@ -1271,8 +1271,8 @@ function safeVideoHelp(value, depth = 0, field = '') {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([name]) => schemaName(name) && !QUOTE_PRIVATE_KEY.test(name)).slice(0, 50).map(([name, child]) => [name, safeVideoHelp(child, depth + 1, name)]));
   return safeQuote(value, depth, field);
 }
-async function videoDiagnostic(accessToken, action, input, raw = false, settings = FREEBEAT_VIDEO_TEST) {
-  const headers = await openMcp(accessToken);
+async function videoDiagnostic(accessToken, action, input, raw = false, settings = FREEBEAT_VIDEO_TEST, existingHeaders = null) {
+  const headers = existingHeaders || await openMcp(accessToken);
   const images = Array.isArray(input?.images) ? input.images : (input?.image_url ? [input.image_url] : []);
   const params = action === 'video-help'
     ? { name: 'get_model_help', arguments: { type: 'video', model_id: settings.model_id } }
@@ -3848,7 +3848,8 @@ async function dispatchFreebeat(request, url, env, user) {
       if (action === 'video-model-help') {
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => key !== 'model_id') || !Number.isSafeInteger(input.model_id) || input.model_id < 0) throw fail('Masukkan ID model video yang valid.', 400);
         const settings = videoSettings(input.model_id);
-        return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(session.accessToken, 'video-help', null, false, settings) });
+        const opened = await openMcpSession(env, session);
+        return response({ ok: true, model_id: settings.model_id, help: await videoDiagnostic(opened.session.accessToken, 'video-help', null, false, settings, opened.headers) });
       }
       const parsed = parseVideoModelRequest(input);
       const settings = {
@@ -3859,7 +3860,8 @@ async function dispatchFreebeat(request, url, env, user) {
         ...(parsed.resolution ? { resolution: parsed.resolution } : {}),
         ...(parsed.aspect_ratio ? { aspect_ratio: parsed.aspect_ratio } : {}),
       };
-      const help = await videoDiagnostic(session.accessToken, 'video-help', null, true, settings);
+      const opened = await openMcpSession(env, session);
+      const help = await videoDiagnostic(opened.session.accessToken, 'video-help', null, true, settings, opened.headers);
       assertModelUsable(help, parsed.model_id, env);
       const normalized = normalizeVideoSettings(help, settings, parsed.generation_type);
       return response({
@@ -3868,7 +3870,7 @@ async function dispatchFreebeat(request, url, env, user) {
         adjusted: normalized.adjusted,
         supported: normalized.options,
         member_only: help?.model?.member_only === true,
-        quote: await videoDiagnostic(session.accessToken, 'video-quote', parsed, false, normalized.settings),
+        quote: await videoDiagnostic(opened.session.accessToken, 'video-quote', parsed, false, normalized.settings, opened.headers),
       });
     }
     if (['video-help', 'video-quote', 'video-gemini-help', 'video-gemini-quote'].includes(action) && request.method === 'POST') {
