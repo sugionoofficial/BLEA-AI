@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowUpRight, BookOpen, Check, ChevronDown, CircleAlert, Coins, Copy, Cpu, FileText,
-  Clapperboard, Globe, Image as ImageIcon, ListChecks, Loader2, Music, Paperclip, Send, Sparkles,
+  Clapperboard, Globe, Image as ImageIcon, ListChecks, Loader2, Music, Paperclip, Send, Sparkles, MonitorPlay,
   Square, Trash2, Video, Wrench, X,
 } from 'lucide-react';
 import { fetchEnabledModelItems } from '../api/unorouter';
@@ -13,6 +13,7 @@ import { StudioMessageBody } from '../auth/AIStudio';
 import { supabase } from '../lib/supabase';
 import { analyzeVideo, isAnalysisSupported } from '../lib/videoAnalysis';
 import { ClipPlanPanel } from './ClipPlanPanel';
+import { BrowserAgentPanel } from './BrowserAgentPanel';
 import { SubtitlePanel } from './SubtitlePanel';
 import { transcribeMedia } from './transcribeClient';
 import { useAuth } from '../auth/AuthProvider';
@@ -160,6 +161,7 @@ export function AgentPage() {
   const [pinnedSkill, setPinnedSkill] = useState('');
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState(false);
+  const [browserPanelOpen, setBrowserPanelOpen] = useState(false);
   const [error, setError] = useState('');
   const [modelItems, setModelItems] = useState([]);
   const [model, setModel] = useState('');
@@ -474,6 +476,9 @@ export function AgentPage() {
           {studioMode && <em className="agent-model-source">OpenAI{studioPool?.ready === false ? ' · pool belum siap' : ''}</em>}
           {lastCredits > 0 && <em> · {lastCredits} kredit/giliran</em>}
         </span>
+        <button type="button" className="agent-ghost-btn" onClick={() => setBrowserPanelOpen(true)} disabled={running || !activeModelMeta.model}>
+          <MonitorPlay size={13} /> Browser live
+        </button>
         <button type="button" className="agent-ghost-btn" onClick={clearThread} disabled={!messages.length && !running}>
           <Trash2 size={13} /> Bersihkan
         </button>
@@ -716,6 +721,13 @@ export function AgentPage() {
           </section>
         </aside>
       </div>
+      {browserPanelOpen && (
+        <BrowserAgentPanel
+          model={activeModelMeta.model}
+          provider={activeModelMeta.provider}
+          onClose={() => setBrowserPanelOpen(false)}
+        />
+      )}
     </div>
   );
 }

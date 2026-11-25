@@ -160,6 +160,16 @@ test('agent system prompt lists tools, skills, and hard limits', () => {
   assert.equal((prompt.match(/```tool/g) || []).length, 1);
 });
 
+test('browser planner prompt returns a strict single-action schema and treats page text as untrusted', () => {
+  const prompt = buildAgentSystemPrompt({ workspace: { browserMode: true } });
+  assert.match(prompt, /MODE KENDALI BROWSER/);
+  assert.match(prompt, /DATA TAK TEPERCAYA/);
+  assert.match(prompt, /HANYA satu objek JSON valid/);
+  assert.match(prompt, /action.*navigate/s);
+  assert.doesNotMatch(prompt, /## ALAT/);
+  assert.match(prompt, /tidak mengendalikan browser secara langsung/);
+});
+
 test('URL safety helpers block private networks and non-http schemes', () => {
   assert.equal(isHttpUrl('https://example.com/a'), true);
   assert.equal(isHttpUrl('ftp://example.com'), false);
@@ -317,6 +327,27 @@ test('/api/agent runs a tool round, streams the final answer, and reports the ac
   }
 });
 
+test('/api/agent browserMode sends a constrained planner prompt and hides normal tools', async () => {
+  const stub = stubUpstream({ chatReplies: ['{"action":"done","message":"Selesai."}'] });
+  try {
+    const res = await worker.fetch(apiRequest('/api/agent', {
+      body: {
+        messages: [{ role: 'user', content: 'Tugas browser dan snapshot tab.' }],
+        model: 'gpt-oss-120b:free',
+        provider: 'unorouter',
+        browserMode: true,
+      },
+    }), createEnv());
+    assert.equal(res.status, 200);
+    const events = await readSse(res);
+    assert.equal(events.at(-1).reply, '{"action":"done","message":"Selesai."}');
+    const system = stub.state.chatBodies[0].messages[0].content;
+    assert.match(system, /MODE KENDALI BROWSER/);
+    assert.match(system, /DATA TAK TEPERCAYA/);
+    assert.doesNotMatch(system, /## ALAT/);
+  } finally { stub.restore(); }
+});
+
 test('/api/agent loads a pinned skill and emits its activation', async () => {
   const stub = stubUpstream({ chatReplies: ['Baik, saya pakai panduan desain itu.'] });
   try {
@@ -436,6 +467,7 @@ test('AgentPage renders the single-page agent shell and links to its skill prove
     );
 
     assert.match(html, /Apa yang mau dikerjakan\?/);
+    assert.match(html, /Browser live/);
     assert.match(html, /Tulis tugasnya/);
     assert.match(html, /anthropics\/skills/);
     assert.match(html, /Apache-2\.0/);
